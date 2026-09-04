@@ -419,3 +419,29 @@ test("an omitted quant list outranks a singular quant", () => {
   assert.deepEqual(legacy[0].quants, ["BF16"]);
   assert.equal(legacy[0].withheld, false);
 });
+
+// followedExampleModel reads the catalog row directly rather than the guarded option,
+// so the withheld signal has to be honoured there too or the snippet pins anyway.
+test("the followed model does not pin a quant the server withheld", () => {
+  const withheld = [
+    { id: "org/Foo", loaded: true, quant: "BF16", quants: [] },
+  ];
+  assert.equal(followedExampleModel({ ...base, catalog: withheld }), "org/Foo");
+  // An older server, which omits the field, still pins its singular quant.
+  assert.equal(
+    followedExampleModel({
+      ...base,
+      catalog: [{ id: "org/Foo", loaded: true, quant: "BF16" }],
+    }),
+    "org/Foo:BF16",
+  );
+  // Same through the stored-checkpoint branch.
+  assert.equal(
+    followedExampleModel({
+      ...base,
+      catalog: withheld,
+      checkpoint: "org/Foo",
+    }),
+    "org/Foo",
+  );
+});

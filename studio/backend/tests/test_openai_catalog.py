@@ -673,3 +673,35 @@ def test_copies_that_agree_apart_from_spelling_are_not_ambiguous(monkeypatch):
     monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+
+
+def test_a_stale_hf_variant_does_not_label_a_non_llama_resident(monkeypatch):
+    # hf_variant can outlive an unload. A model resident on the orchestrator under the
+    # same advertised id must not be labelled with the quant llama loaded earlier, or
+    # the panel calls `<id>:<quant>` already loaded and the request is rejected.
+    class _UnloadedLlama(_FakeLlama):
+        model_identifier = "org/Foo"
+        hf_variant = "Q8_0"
+
+        def __init__(self):
+            self.is_loaded = False
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _UnloadedLlama())
+
+    class _ResidentUnsloth(_FakeUnsloth):
+        active_model_name = "org/Foo"
+
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _ResidentUnsloth())
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+
+    async def _fake_catalog():
+        return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(
+        resolver, "local_servable_model", lambda info: (True, ("Q8_0", "BF16"))
+    )
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    row = ids.get("org/Foo", {})
+    # The scan's quants may be offered, but never as "the loaded one is Q8_0".
+    assert row.get("quant") != "Q8_0" or row.get("loaded") is not True

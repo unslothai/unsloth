@@ -31,6 +31,16 @@ export function looksLikePath(id: string): boolean {
   );
 }
 
+// The quant the server will stand behind for this row. An explicit empty `quants` is
+// it declining to vouch for any pin on this id, so the singular field is not a
+// fallback there -- only an older server, which omits `quants` entirely, offers one.
+export function vouchedQuant(model: OpenAIModel | undefined): string | undefined {
+  if (!model || model.quants?.length === 0) {
+    return undefined;
+  }
+  return model.quant;
+}
+
 export function pinQuant(id: string, quant: string | undefined): string {
   return quant && !id.includes(":") ? `${id}:${quant}` : id;
 }
@@ -134,7 +144,7 @@ export function followedExampleModel({
     if (!pick) {
       return null;
     }
-    return pinQuant(pick.id, pick.quant);
+    return pinQuant(pick.id, vouchedQuant(pick));
   };
   // The store keeps a checkpoint across an idle unload and across the model being
   // deleted, so it only names a runnable model while the catalog still lists it:
@@ -151,7 +161,8 @@ export function followedExampleModel({
     // Pin the quant the catalog advertises, not the stored one: membership proves the
     // repo, and the saved quant can name a file deleted while another quant remains.
     // Fall back to the store only before /v1/models answers.
-    const quant = catalog === null ? ggufVariant : entry?.quant;
+    const quant =
+      catalog === null ? (ggufVariant ?? undefined) : vouchedQuant(entry);
     return quant ? `${checkpoint}:${quant}` : checkpoint;
   }
   return fromCatalog();

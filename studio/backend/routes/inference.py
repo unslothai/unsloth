@@ -25352,7 +25352,15 @@ async def _openai_catalog_objects() -> list[dict]:
                 # cannot resolve is a dead pin. This scan just read the files, so a
                 # loaded variant that appears among them is exactly the proof that was
                 # missing; publish it now instead of after the next poll.
-                resident = getattr(get_llama_cpp_backend(), "hf_variant", None)
+                # Only from the llama backend's own row: `hf_variant` can outlive an
+                # unload, and a non-GGUF model resident under the same advertised id
+                # must not be labelled with a quant llama loaded some time ago.
+                _llama = get_llama_cpp_backend()
+                resident = (
+                    getattr(_llama, "hf_variant", None)
+                    if getattr(_llama, "is_loaded", False)
+                    else None
+                )
                 scanned = next(
                     (q for q in quants if resident and q.lower() == resident.lower()),
                     None,
