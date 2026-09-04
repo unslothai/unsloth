@@ -122,8 +122,16 @@ def _only_under(source: str, utility: str, *variants: str) -> bool:
 
 
 def _class_const(source: str, name: str) -> str:
-    """The class string of an exported `const NAME = "..."`."""
-    match = re.search(rf'\b{re.escape(name)}\b\s*=\s*\n?\s*"([^"]*)"', source)
+    """The class string of an exported `const NAME = "..."`.
+
+    Comments blanked and anchored on the `export`, like the banner extractors:
+    an old declaration left commented out above the live one would otherwise
+    answer for it, and a stale copy that still reads correctly is exactly how a
+    regression in the live one goes unnoticed.
+    """
+    match = re.search(
+        rf'export const {re.escape(name)}\s*=\s*\n?\s*"([^"]*)"', _without_comments(source)
+    )
     assert match, f"{name} is not an exported class constant"
     return match.group(1)
 
@@ -1702,6 +1710,10 @@ def _card_surface(source: str) -> str:
     assert match, "the update card has lost its data-testid"
     _, end = _opening_tag(clean, match.start())
     child = clean.index("<", end)
+    # A fragment emits no element, so it is not the surface and its `<` is not
+    # the surface's. Wrapping the card in one changes no rendered class.
+    while clean[child + 1] == ">":
+        child = clean.index("<", child + 2)
     start, child_end = _opening_tag(clean, child + 1)
     return _class_value(clean[start:child_end], "the painted surface")
 
