@@ -49,9 +49,20 @@ PROBE = textwrap.dedent(
         def scan_checkpoints(self, **kwargs):
             return []
 
-    for name in ("studio", "studio.backend", "studio.backend.core"):
+    # Each stub keeps the REAL directory on __path__ instead of []. The point is to skip
+    # the heavy studio.backend.core.export import, not to make the whole studio tree
+    # unimportable: unsloth_cli/__init__ eagerly imports commands.start, which pulls
+    # studio.backend.utils.coding_agents, and an empty __path__ turned that into
+    # ModuleNotFoundError. Submodules still load from disk; the package __init__ files
+    # are the thing that never runs, which is what kept this probe light to begin with.
+    repo_root = sys.argv[2]
+    for name, relative in (
+        ("studio", "studio"),
+        ("studio.backend", "studio/backend"),
+        ("studio.backend.core", "studio/backend/core"),
+    ):
         module = types.ModuleType(name)
-        module.__path__ = []
+        module.__path__ = [os.path.join(repo_root, *relative.split("/"))]
         sys.modules[name] = module
     export_module = types.ModuleType("studio.backend.core.export")
     export_module.ExportBackend = ExportBackend
@@ -87,7 +98,7 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
         PYTHONPATH = str(REPO_ROOT),
     )
     completed = subprocess.run(
-        [sys.executable, "-c", PROBE, command_name],
+        [sys.executable, "-c", PROBE, command_name, str(REPO_ROOT)],
         cwd = str(workdir),
         env = env,
         capture_output = True,
