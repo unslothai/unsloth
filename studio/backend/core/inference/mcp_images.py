@@ -215,6 +215,13 @@ def placeholder_turn(
     }
 
 
+def _is_image_turn_note(text) -> bool:
+    """Either lead the placeholder turn can carry, so a turn whose last picture went
+    is recognised as having nothing left to say on both paths."""
+    value = str(text or "")
+    return value.startswith(IMAGE_TURN_TEXT) or value.startswith(DETACHED_IMAGE_TURN_TEXT)
+
+
 def _all_image_url_parts(conversation: Sequence[dict]) -> list:
     return [
         part
@@ -240,16 +247,12 @@ def _drop_oldest_image_parts(
     excess: int,
     part_type: str,
     only: "list | None" = None,
-    skip: int = 0,
 ) -> None:
     """Drop the *excess* oldest image parts, and any turn they emptied.
 
     With *only*, a list of the exact part objects promotion created, nothing else
     is touched: a caller that attaches more than the cap keeps every one of its own
     images, which admission has already charged for.
-
-    *skip* is the same protection where the parts are bare markers that carry no
-    identity: the first *skip* of them are the caller's and are passed over.
     """
     owned = {id(part) for part in only} if only is not None else None
     drained = []
@@ -262,22 +265,20 @@ def _drop_oldest_image_parts(
         kept = []
         for part in content:
             if (
-                isinstance(part, dict)
+                excess > 0
+                and isinstance(part, dict)
                 and part.get("type") == part_type
                 and (owned is None or id(part) in owned)
             ):
-                if skip > 0:
-                    skip -= 1
-                elif excess > 0:
-                    excess -= 1
-                    continue
+                excess -= 1
+                continue
             kept.append(part)
         if len(kept) == len(content):
             continue
         if not kept or (
             len(kept) == 1
             and kept[0].get("type") == "text"
-            and str(kept[0].get("text", "")).startswith(IMAGE_TURN_TEXT)
+            and _is_image_turn_note(kept[0].get("text"))
         ):
             # An image-only turn whose last picture just went has nothing left to
             # say. Written back as content: [] it becomes an empty user message,
@@ -289,28 +290,75 @@ def _drop_oldest_image_parts(
         del conversation[index]
 
 
+def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> None:
+    """Drop the image parts at the given positions in document order.
+
+    Positional rather than oldest-first: a protected pixel can sit anywhere in the
+    sink, because the attachment's marker belongs to the turn that supplied it and
+    that turn can precede a tool's pictures. Dropping by count would take the wrong
+    marker and hand every later pixel to the one before it.
+    """
+    if not ordinals:
+        return
+    seen = 0
+    drained = []
+    for index, message in enumerate(conversation):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        kept = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == part_type:
+                ordinal = seen
+                seen += 1
+                if ordinal in ordinals:
+                    continue
+            kept.append(part)
+        if len(kept) == len(content):
+            continue
+        if not kept or (
+            len(kept) == 1
+            and kept[0].get("type") == "text"
+            and _is_image_turn_note(kept[0].get("text"))
+        ):
+            drained.append(index)
+        else:
+            conversation[index] = {**message, "content": kept}
+    for index in reversed(drained):
+        del conversation[index]
+
+
 def trim_image_turns(
     conversation: list,
     payloads: list,
     limit: int = MAX_TOTAL_MODEL_IMAGES,
-    protected: int = 0,
+    keep: "Sequence[int] | None" = None,
 ) -> None:
     """Keep the newest *limit* pictures: a loop that keeps calling an image tool
     otherwise re-sends every one it has seen. Markers and their own pixels go
     together, or the processor counts image tokens it was given none for.
 
-    *protected* is the count of leading payloads the caller attached. Bare markers
-    carry no identity the way promoted ``image_url`` parts do, so the sink's own
-    order is what says which are the caller's: they seed it before the loop runs.
-    Like the ``only`` scoping on the ``image_url`` cap, they are neither counted
-    against the limit nor deleted by it -- this cap is about what a tool loop
-    re-sends, and evicting the picture the question was asked about answers a
-    different question."""
-    excess = len(payloads) - protected - limit
+    *keep* holds indexes into *payloads* that must survive -- the caller's own
+    attachment, which this cap has no business evicting: it is about what a tool
+    loop RE-SENDS, and dropping the picture the question was asked about answers a
+    different question. Bare markers carry no identity the way promoted
+    ``image_url`` parts do, so the position in the sink is what names them.
+
+    They still COUNT against *limit*. Exempting them would let a resumed chat's
+    replayed pictures carry a second full allowance and put twice the cap in the
+    prompt; the route reserves the attachment's slot by trimming replay to
+    ``limit - 1`` before interleaving it, which is where that reservation belongs.
+    """
+    excess = len(payloads) - limit
     if excess <= 0:
         return
-    del payloads[protected : protected + excess]
-    _drop_oldest_image_parts(conversation, excess, "image", skip = protected)
+    protected = {index for index in (keep or ()) if 0 <= index < len(payloads)}
+    drop = [index for index in range(len(payloads)) if index not in protected][:excess]
+    if not drop:
+        return
+    _drop_image_parts_at(conversation, set(drop), "image")
+    for index in reversed(drop):
+        del payloads[index]
 
 
 def trim_image_url_turns(
@@ -516,6 +564,7 @@ def pixels_in_marker_order(
     prior_markers: Sequence[dict],
     prior_payloads: Sequence,
     new_payload,
+    placed_at: "list | None" = None,
 ) -> list:
     """The pixel list ordered the way its markers actually appear.
 
@@ -536,6 +585,10 @@ def pixels_in_marker_order(
         if id(part) in prior_ids and remaining:
             ordered.append(remaining.pop(0))
         elif not placed_new:
+            # Where the attachment landed, so the loop's cap can leave it alone: it
+            # is not always last, and the sink's positions are all that name it.
+            if placed_at is not None:
+                placed_at.append(len(ordered))
             ordered.append(new_payload)
             placed_new = True
         elif remaining:

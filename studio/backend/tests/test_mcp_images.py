@@ -826,7 +826,7 @@ def test_the_gguf_loop_caps_images_across_iterations_not_per_batch():
     from core.inference import llama_cpp
 
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
-    declared = body.index("loop_mcp_image_parts: list = []")
+    declared = body.index("loop_mcp_image_parts: list = list(replayed_image_parts)")
     loop_start = body.index("while True:")
     assert declared < loop_start, (
         "the ownership list has to outlive the iteration, or the cap only ever "
@@ -911,3 +911,31 @@ def test_history_still_takes_its_own_markers_first():
     ordered = mcp_images.pixels_in_marker_order(conversation, prior, ["A", "B"], "ATTACH")
 
     assert ordered == ["A", "B", "ATTACH"]
+
+
+def test_the_gguf_loop_starts_its_cap_from_the_replayed_parts():
+    """The list is seeded from the conversation, not from zero: a resumed chat whose
+    history already carries the allowance would otherwise get a second one for this
+    run and send both."""
+    import inspect
+
+    from core.inference import llama_cpp
+
+    signature = inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
+    assert "replayed_image_parts" in signature.parameters
+
+    body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
+    assert "loop_mcp_image_parts: list = list(replayed_image_parts)" in body
+
+
+def test_the_gguf_route_hands_the_loop_what_promotion_created():
+    import inspect
+
+    from routes import inference
+
+    builder = inspect.signature(inference._openai_messages_for_gguf_chat)
+    assert "promoted_out" in builder.parameters
+
+    route = inspect.getsource(inference.produce_openai_chat_completions)
+    assert "_gguf_replayed_image_parts: list = []" in route
+    assert "replayed_image_parts = tuple(_gguf_replayed_image_parts)" in route

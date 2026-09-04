@@ -1426,3 +1426,54 @@ def test_a_detached_replay_block_does_not_claim_the_turn_above_it(monkeypatch):
     ]
     assert leads, f"no replay block in {call['messages']}"
     assert all(mcp_images.DETACHED_IMAGE_TURN_TEXT in text for text in leads), leads
+
+
+def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
+    """The gate read `image is None`, so a resumed chat whose only pictures are
+    replayed MCP ones looked image-free and the loop took the request -- swapping the
+    caller's schemas for Unsloth's on exactly the path this change adds."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+
+    backend = _VisionToolLoopBackend(_fixed("a plain answer"))
+    payload = _request(
+        messages = [
+            ChatMessage(role = "user", content = "take a shot"),
+            ChatMessage(
+                role = "assistant",
+                content = "",
+                tool_calls = [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "mcp__fs__shot", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_0",
+                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+            ),
+            ChatMessage(role = "user", content = "what colour was it"),
+        ],
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend)
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]

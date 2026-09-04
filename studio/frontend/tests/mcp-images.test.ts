@@ -190,3 +190,39 @@ test("a partly-spent budget still leaves an older result its decode spares", () 
   );
   assert.equal(splitMcpImages(bounded[1].content).images.length, 1);
 });
+
+test("the decode-failure allowance survives an undecodable newest result", () => {
+  // Four entries the frontend cannot tell apart from PNGs, then two results of four
+  // real ones. Per-result, the first spends the whole room and the oldest envelope is
+  // dropped outright, so the backend can find only four decodable pictures out of the
+  // eight the cap allows.
+  const undecodable = Array.from({ length: 4 }, (_, i) => ({
+    data: `SVG${i}`,
+    mimeType: "image/svg+xml",
+  }));
+  const valid = (tag: string) =>
+    Array.from({ length: 4 }, (_, i) => ({ data: `${tag}${i}`, mimeType: "image/png" }));
+
+  const messages = [
+    { role: "tool", name: "mcp__s__a", content: "oldest" + mcpImagesEnvelope(valid("A")) },
+    { role: "tool", name: "mcp__s__b", content: "middle" + mcpImagesEnvelope(valid("B")) },
+    { role: "tool", name: "mcp__s__c", content: "newest" + mcpImagesEnvelope(undecodable) },
+  ];
+
+  const bounded = boundMcpImageEnvelopes(messages);
+  const kept = bounded.map((m) => splitMcpImages(m.content as string).images);
+
+  assert.equal(kept[2].length, 4, "the newest result is kept as candidates");
+  assert.equal(kept[1].length, 4, "the middle result keeps its four real pictures");
+  assert.equal(
+    kept[0].length,
+    4,
+    "the oldest result still ships candidates on the shared allowance",
+  );
+
+  const total = kept.reduce((n, images) => n + images.length, 0);
+  assert.ok(
+    total <= MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE,
+    `bounded: ${total} candidates uploaded`,
+  );
+});

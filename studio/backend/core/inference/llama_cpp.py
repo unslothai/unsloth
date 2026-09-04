@@ -28421,6 +28421,7 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         tools: list[dict],
+        replayed_image_parts: "tuple" = (),
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -28942,7 +28943,10 @@ class LlamaCppBackend:
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
         # images in the conversation untrimmed.
-        loop_mcp_image_parts: list = []
+        # Seeded with what promotion already put in the conversation, not empty. The cap
+        # is across the CONVERSATION, so a resumed chat whose history already carries the
+        # allowance would otherwise get a second one for this run and send both.
+        loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
             # Here rather than at each append: six sites grow the conversation and all of

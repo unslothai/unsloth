@@ -21514,9 +21514,15 @@ async def produce_openai_chat_completions(
             if video_rejection is not None:
                 raise _reject(*video_rejection)
 
+        # The parts promotion created from replayed envelopes. The loop's cap counts
+        # what MCP tools have returned across the whole conversation, so a resumed chat
+        # has to hand it these: seeded empty it counted only the current run and let a
+        # replayed eight sit beside a fresh eight.
+        _gguf_replayed_image_parts: list = []
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
+            _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
@@ -21745,6 +21751,7 @@ async def produce_openai_chat_completions(
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
+                    replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
                     temperature = payload.temperature,
                     top_p = payload.top_p,
@@ -23393,7 +23400,15 @@ async def produce_openai_chat_completions(
         # the client's tools silently gone. Studio's own chat names tools through
         # enabled_tools rather than sending schemas, so the picture still reaches the
         # loop there -- which is the request this whole path exists for.
-        and (image is None or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
+        #
+        # Gated on _sf_has_any_image, not on the attachment: a resumed chat whose
+        # only pictures are replayed MCP ones carries image input just the same, and
+        # reading `image is None` there let the loop take the request and swap the
+        # caller's schemas out on exactly the path this PR adds.
+        and (
+            not _sf_has_any_image
+            or (bool(_sf_model_info.get("is_vision")) and not payload.tools)
+        )
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -23492,6 +23507,10 @@ async def produce_openai_chat_completions(
         # The attachment rides in last, matching where its marker sits: the MCP
         # pictures came from earlier turns.
         _sf_loop_images = list(sf_mcp_images)
+        # Where the attachment lands among the replayed pixels: its marker sits on the
+        # turn that supplied it, which can precede a tool's pictures, so the position
+        # is read off the conversation rather than assumed to be last.
+        _sf_attachment_at: list[int] = []
         if image is not None:
             # The turn that supplied it, not simply the newest one: the extractor
             # takes the newest user image from anywhere in the thread, so a
@@ -23519,6 +23538,7 @@ async def produce_openai_chat_completions(
                 _sf_prior_markers,
                 sf_mcp_images,
                 _pil_to_png_b64(image),
+                placed_at = _sf_attachment_at,
             )
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
@@ -23530,6 +23550,9 @@ async def produce_openai_chat_completions(
                 tools = _sf_tools_to_use,
                 system_prompt = _sf_system_prompt or "",
                 images = _sf_loop_images or None,
+                # The loop's cap trims the replay it grows; the caller's own picture
+                # is not the loop's to evict, so it is named by position.
+                caller_image_indexes = tuple(_sf_attachment_at),
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 top_k = payload.top_k,
@@ -23970,7 +23993,10 @@ async def produce_openai_chat_completions(
         # recomputing here would hide that and drop the client catalog.
         # Once an image rules out the server loop the passthrough takes the request, or
         # image-plus-tools is answered with prose and no schemas at all (#10092).
-        (not _sf_tools_on or (image is not None and not _sf_use_tools))
+        # _sf_has_any_image, not the attachment: a resumed chat whose only pictures are
+        # replayed MCP ones is the same request, and reading `image is not None` there
+        # left it with neither the loop's tools nor its own.
+        (not _sf_tools_on or (_sf_has_any_image and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -31895,7 +31921,9 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
     return out
 
 
-def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
+def _openai_messages_for_gguf_chat(
+    payload, is_vision: bool, promoted_out: "Optional[list]" = None
+) -> tuple[list[dict], bool]:
     """Build llama-server messages for the standard GGUF chat path.
 
     llama-server accepts OpenAI multimodal content parts directly. Preserve all
@@ -31925,13 +31953,20 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
         }
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
-    return promote_mcp_history_images(messages, vision = is_vision), has_image
+    return (
+        promote_mcp_history_images(messages, vision = is_vision, promoted_out = promoted_out),
+        has_image,
+    )
 
 
-async def _openai_messages_for_gguf_chat_async(payload, is_vision: bool) -> tuple[list[dict], bool]:
+async def _openai_messages_for_gguf_chat_async(
+    payload, is_vision: bool, promoted_out: "Optional[list]" = None
+) -> tuple[list[dict], bool]:
     if _request_has_image(payload):
-        return await asyncio.to_thread(_openai_messages_for_gguf_chat, payload, is_vision)
-    return _openai_messages_for_gguf_chat(payload, is_vision)
+        return await asyncio.to_thread(
+            _openai_messages_for_gguf_chat, payload, is_vision, promoted_out
+        )
+    return _openai_messages_for_gguf_chat(payload, is_vision, promoted_out)
 
 
 def _extract_response_format(payload):

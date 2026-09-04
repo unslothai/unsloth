@@ -2126,6 +2126,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        caller_image_indexes: "tuple[int, ...]" = (),
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -2260,6 +2261,10 @@ class InferenceOrchestrator:
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
             images_sink = loop_images,
+            # Which sink entries are the caller's own attachment, so the loop's cap
+            # never evicts it. Empty when the model reads no images, since there is
+            # then no sink to protect anything in.
+            caller_image_indexes = tuple(caller_image_indexes) if loop_images else (),
         )
 
     def generate_with_adapter_control(
@@ -2351,6 +2356,10 @@ class InferenceOrchestrator:
                 request_id,
                 image_b64,
                 images_b64 = images,
+                # The dispatched path forwards this; dropping it here left the worker
+                # with None, and the marker top-up then put the attachment's marker on
+                # the newest user turn instead of the one that supplied it.
+                image_ordinal = image_ordinal,
                 messages = messages,
                 system_prompt = system_prompt,
                 temperature = temperature,

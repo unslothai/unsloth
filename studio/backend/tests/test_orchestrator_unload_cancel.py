@@ -2675,3 +2675,23 @@ def test_the_adapter_path_forwards_images_to_the_worker_command():
     assert (
         "images_b64 = images" in body
     ), "_build_generate_cmd carries the list to the worker as images_b64"
+
+
+def test_both_generation_paths_forward_the_image_ordinal():
+    """The dispatched path forwarded it and the locked one dropped it, so ordinary
+    non-adapter generation reached the worker with None. The marker top-up then put
+    the attachment's marker on the newest user turn rather than the turn that
+    supplied it, which changes which question appears to own the picture."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    for method in (
+        InferenceOrchestrator._generate_dispatched,
+        InferenceOrchestrator._generate_inner,
+    ):
+        assert "image_ordinal" in inspect.signature(method).parameters, method.__name__
+        assert "image_ordinal = image_ordinal" in inspect.getsource(method), (
+            f"{method.__name__} accepts the ordinal but does not put it on the "
+            "worker command"
+        )
