@@ -361,6 +361,21 @@ function Install-UnslothStudio {
         }
     }
 
+    # Append a path to a URL that may carry ?query / #fragment auth. A private mirror is
+    # allowed to be "https://mirror/whl?token=abc", and a naive "$base/$leaf" puts the leaf
+    # INSIDE the token value, leaving the path still /whl. Defined here rather than next to
+    # the torch steps because the Windows-on-ARM probes below build URLs long before those
+    # run, and PowerShell resolves a function only once its definition has executed.
+    function Join-UrlPath {
+        param([string]$Base, [string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Base)) { return $Path }
+        $cut = $Base.IndexOfAny([char[]]('?', '#'))
+        if ($cut -lt 0) { return "$($Base.TrimEnd('/'))/$Path" }
+        $head = $Base.Substring(0, $cut).TrimEnd('/')
+        $tail = $Base.Substring($cut)
+        return "$head/$Path$tail"
+    }
+
     # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with
     # _strip_index_url_credentials (install.sh / py / setup.ps1). Defined here, not next to
     # the torch steps: the Windows-on-ARM probe below prints an index URL long before those
@@ -442,7 +457,7 @@ function Install-UnslothStudio {
             return ""
         }
         try {
-            $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+            $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
                 if ($match.Value -like "*$tag-$tag*") { return "wheelhouse" }
             }
@@ -499,7 +514,7 @@ function Install-UnslothStudio {
         param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
         if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $false }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
-        $projectUrl = ($IndexUrl.TrimEnd('/')) + "/$Project/"
+        $projectUrl = Join-UrlPath $IndexUrl "$Project/"
         try {
             $body = [string](Invoke-RestMethod -Uri $projectUrl -UseBasicParsing -TimeoutSec 20)
         } catch {
@@ -4809,14 +4824,14 @@ exit 0
             } else {
                 $wheelName = $null
                 try {
-                    $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+                    $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
                     foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
                         if ($match.Value -like "*$tag-$tag*") { $wheelName = $match.Value; break }
                     }
                 } catch {}
                 if ($wheelName) {
                     try {
-                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$wheelName" -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $wheelName) -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
                         $script:WoaPyarrowWheelName = $wheelName
                         substep "windows on arm: downloaded pyarrow wheel $wheelName"
                     } catch {
@@ -4851,7 +4866,7 @@ exit 0
             }
         } else {
             try {
-                $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+                $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
                 foreach ($match in [regex]::Matches($index, '[A-Za-z0-9_.+-]+\.whl')) {
                     $name = $match.Value
                     if ($name -like "pyarrow-*") { continue }
@@ -4866,7 +4881,7 @@ exit 0
                         Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
                     }
                     try {
-                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$name" -OutFile $dest -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $name) -OutFile $dest -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
                         if (-not (Test-ZipArchiveReadable -Path $dest)) {
                             Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
                             continue
@@ -5822,16 +5837,6 @@ exit 0
     # allowed to be "https://mirror/whl?token=abc", and a naive "$base/$leaf" put the leaf
     # INSIDE the token value, leaving the path still /whl -- so the tokenized mirror this
     # exists to honour was the one case that could not resolve a wheel.
-    function Join-UrlPath {
-        param([string]$Base, [string]$Path)
-        if ([string]::IsNullOrWhiteSpace($Base)) { return $Path }
-        $cut = $Base.IndexOfAny([char[]]('?', '#'))
-        if ($cut -lt 0) { return "$($Base.TrimEnd('/'))/$Path" }
-        $head = $Base.Substring(0, $cut).TrimEnd('/')
-        $tail = $Base.Substring($cut)
-        return "$head/$Path$tail"
-    }
-
     # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
     # matching setup.ps1's stale-venv parse.
