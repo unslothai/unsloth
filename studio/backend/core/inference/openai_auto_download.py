@@ -782,12 +782,14 @@ async def _admit_and_start(
             timeout = _CODE_PROBE_TIMEOUT_S,
             default = (None, False),
         )
-        if definitive and audio_type is None:
-            # Some valid speech GGUF repositories publish only weights. The JSON
-            # probe is definitively empty there, but the selected GGUF vocabulary is
-            # the capability source the eventual llama.cpp load will use.
+        if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
+            # The selected GGUF vocabulary is the capability source the eventual
+            # llama.cpp load will use. A supported JSON sidecar is only a fallback
+            # when that bounded weight probe is inconclusive; an unsupported sidecar
+            # can still reject early without touching the weight.
+            sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
-            audio_type, definitive = await _bounded_probe(
+            probed_audio_type, probed_definitive = await _bounded_probe(
                 partial(
                     _probe_remote_gguf_audio_type,
                     repo_id,
@@ -798,6 +800,12 @@ async def _admit_and_start(
                 timeout = _CODE_PROBE_TIMEOUT_S,
                 default = (None, False),
             )
+            if probed_definitive:
+                audio_type, definitive = probed_audio_type, True
+            elif sidecar_audio_type in GGUF_TTS_AUDIO_TYPES:
+                audio_type, definitive = sidecar_audio_type, True
+            else:
+                audio_type, definitive = None, False
         if not definitive:
             _release(active)
             return AutoDownloadRefusal(

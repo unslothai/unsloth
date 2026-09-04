@@ -1772,6 +1772,32 @@ def test_a_sidecarless_speech_repo_is_probed_from_the_selected_gguf(hub, monkeyp
     assert len(hub["started"]) == 1
 
 
+def test_a_stale_positive_sidecar_cannot_admit_a_text_only_selected_gguf(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: ("bicodec", True),
+    )
+    seen = []
+
+    def _probe(*args):
+        seen.append(args)
+        return None, True
+
+    monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
+    refusal = asyncio.run(auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True))
+
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert seen == [
+        (
+            "unsloth/tts-GGUF",
+            "model-Q8_0-00001-of-00002.gguf",
+            None,
+            hub["info"].sha,
+        )
+    ]
+    assert hub["started"] == []
+
+
 def test_the_remote_gguf_probe_is_bounded_pinned_and_uses_the_caller_token(monkeypatch):
     import huggingface_hub
     from core.inference import diffusion_compat
@@ -1842,17 +1868,31 @@ def test_a_speech_request_does_not_download_an_unsupported_gguf_codec(hub, monke
 
 def test_a_speech_download_probe_uses_the_caller_identity_and_pinned_revision(hub, monkeypatch):
     seen = []
+    remote_seen = []
 
     def _detect(repo_id, **kwargs):
         seen.append((repo_id, kwargs))
         return "bicodec", True
 
+    def _probe(*args):
+        remote_seen.append(args)
+        return None, False
+
     monkeypatch.setattr("utils.models.model_config.detect_audio_type_checked", _detect)
+    monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
     refusal = asyncio.run(
         auto_dl.maybe_auto_download("unsloth/tts-GGUF:UD-Q5_K_XL", require_speech = True)
     )
     assert refusal.code == "model_downloading"
     assert seen == [("unsloth/tts-GGUF", {"hf_token": False, "revision": hub["info"].sha})]
+    assert remote_seen == [
+        (
+            "unsloth/tts-GGUF",
+            "model-UD-Q5_K_XL.gguf",
+            None,
+            hub["info"].sha,
+        )
+    ]
     assert len(hub["started"]) == 1
 
 
