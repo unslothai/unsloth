@@ -843,7 +843,7 @@ def test_an_unusable_admission_cadence_does_not_poison_the_lease(monkeypatch, ra
     finite one stretched the lease past any horizon instead, which is quieter and just as
     total.
     """
-    from core.inference.generation_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+    from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
 
     monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", raw)
     assert (

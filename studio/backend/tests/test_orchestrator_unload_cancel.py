@@ -15,13 +15,13 @@ import time
 
 import pytest
 
-from core.inference.stop_ledger import PendingTeardowns
+from core.inference.worker import PendingTeardowns
 from core.inference import orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 
 
 class _RecordOfStops:
-    """Stands in for the ledger. Only one thing about it is read here: whether the"""
+    """Stands in for the ledger; only whether the worker reads it matters here."""
 
     def __init__(self, read_by_worker: bool):
         self.stopped: list = []
@@ -128,7 +128,9 @@ def test_worker_closes_cancelled_generator_before_gen_done():
         cancel,
     )
 
-    assert [item["type"] for item in responses.items] == ["gen_done"]
+    assert [item["type"] for item in responses.items if item["type"] != "batch_state"] == [
+        "gen_done"
+    ]
 
 
 def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
@@ -1306,10 +1308,9 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
 def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
     # Same window, but the unload was a same-model reload so active_model_name is
     # unchanged and _unload_pending has already been cleared; the give-away is that the
-    # dispatcher was stopped. Registering a mailbox with no dispatcher to route the reply
-    # would hang the compare stream. A missing dispatcher usually passes -- the caller that
-    # held the worker lets go -- so this is what the request is told once waiting for it to
-    # come back has run out of time, and nothing then can say an unload was the cause.
+    # dispatcher was stopped. Registering a mailbox with nothing to route the reply would
+    # hang the compare stream, so this is what the request is told once waiting for a
+    # dispatcher to come back has run out of time.
     monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.05)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
@@ -2710,9 +2711,8 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
 
 
 def test_a_cancelled_row_stream_shows_no_token_a_single_reply_would_have_dropped():
-    # Several replies read on past the Stop so every row can still report done. A token
-    # the worker had already queued is not part of that: the same reply decoded alone
-    # discards it, and a caller must not see one more for having been batched.
+    # Replies read on past the Stop to report done, but a token already queued is one
+    # the same reply alone would have discarded.
     o = _bare_orchestrator()
     cancel = threading.Event()
     cancel.set()
@@ -2723,16 +2723,46 @@ def test_a_cancelled_row_stream_shows_no_token_a_single_reply_would_have_dropped
         {"type": "gen_done", "request_id": "r1"},
     ]
 
-    seen = list(
-        o._consume_token_stream(
-            lambda timeout: events.pop(0) if events else None,
-            lambda: None,
-            crash_context = "generation",
-            request_id = "r1",
-            cancel_event = cancel,
-            mark_started = False,
-            rows = 2,
-        )
-    )
+    seen = list(o._consume_token_stream(
+        lambda timeout: events.pop(0) if events else None, lambda: None,
+        crash_context = "generation", request_id = "r1", cancel_event = cancel,
+        mark_started = False, rows = 2,
+    ))
 
     assert seen == [(0, None), (1, None)]
+
+
+def _real_send_order_lock():
+    """The send-order lock exactly as InferenceOrchestrator.__init__ makes it."""
+    source = inspect.getsource(InferenceOrchestrator.__init__)
+    line = next(one for one in source.splitlines() if "self._send_order_lock = " in one)
+    return eval(line.split("=", 1)[1].strip(), {"threading": threading})
+
+
+def test_a_recovering_caller_resets_the_worker_without_deadlocking_on_itself():
+    """The reset decides under the send-order lock and then sends under it."""
+    from types import SimpleNamespace
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    # The lock production builds: a non-reentrant one here would hang rather than pass.
+    backend._send_order_lock = _real_send_order_lock()
+    backend._mailbox_lock = threading.Lock()
+    backend._request_cancel_events = {}
+    backend._cancel_event = threading.Event()
+    backend._proc = SimpleNamespace(is_alive = lambda: True)
+    sent = []
+    backend._send_cmd = sent.append
+    backend._teardown_going_out = backend._teardown_not_sent = lambda: None
+    backend._owns_worker = lambda event: True
+    done = threading.Event()
+
+    def reset():
+        backend.reset_generation_state(threading.Event())
+        done.set()
+
+    worker = threading.Thread(target = reset, daemon = True)
+    worker.start()
+    worker.join(timeout = 5)
+
+    assert done.is_set(), "the reset deadlocked on the lock it already held"
+    assert sent == [{"type": "reset"}]

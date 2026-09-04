@@ -679,6 +679,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("kv_cache_dtype", "cache_type_kv"),
         # Ungated like the UI's own load payload: non-MLX backends ignore it.
         ("mlx_kv_bits", "mlx_kv_bits"),
+        # Both backends decode several replies at once, so both are sized by it.
+        ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),
@@ -689,10 +691,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs[target] = override[source]
 
     if is_gguf:
-        # Slots are a llama-server flag, and the picker sends them for GGUF only.
-        if override.get("n_parallel") is not None:
-            kwargs["n_parallel"] = override["n_parallel"]
-        # batch sizes are llama-server flags too (--batch-size / --ubatch-size)
+        # batch sizes are llama-server flags (--batch-size / --ubatch-size)
         if override.get("n_batch") is not None:
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:

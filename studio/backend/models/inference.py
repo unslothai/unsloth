@@ -164,8 +164,11 @@ class LoadRequest(BaseModel):
             f"Replies this load may decode at once ({PARALLEL_MIN}..{PARALLEL_MAX}). "
             "For GGUF these are llama-server's --parallel slots, and the VRAM "
             "fitter may launch fewer to keep the model fully on GPU; omit for the "
-            "server-wide default set at launch. For every other runtime it bounds "
-            "how many replies to one turn are generated together."
+            "server-wide default set at launch. Elsewhere it is a ceiling, not a promise: "
+            "a runtime that decodes replies together commits its memory to this width and "
+            "spends it on both the replies to one turn and the concurrent chats joining a "
+            "batch already decoding, while one that does not answers every reply on its "
+            "own whatever this says. The load reply's parallel_slots is what it came to."
         ),
     )
     n_batch: Optional[int] = Field(
@@ -1117,9 +1120,26 @@ class _InferenceRuntimeFields(BaseModel):
     context_length_enforced: Optional[bool] = Field(
         None,
         description = (
-            "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
-            "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
-            "to check, since a model with its own make_cache ignores the requested size."
+            "Whether context_length bounds the runtime's KV cache for a reply decoded on "
+            "its own. True confirmed, false confirmed unbounded, null the backend does not "
+            "answer. MLX builds a cache to check, since a model with its own make_cache "
+            "ignores the requested size. Replies decoded together are answered for by "
+            "context_unbounded_when_batched, not by this."
+        ),
+    )
+    context_unbounded_when_batched: bool = Field(
+        False,
+        description = (
+            "Whether replies this load decodes together escape the window this reports. "
+            "mlx-vlm's batch generator takes no window control, so a vision load able to "
+            "run either batch reports true; everything else, llama.cpp included, reports "
+            "false. Which batch a given reply gets is a per-request question this cannot "
+            "settle, so it errs towards not promising a window. Both fields describe the "
+            "load as it was loaded and neither changes afterwards, so a client combines "
+            "them with parallel_slots to decide what to tell a user: a load reporting true "
+            "and more than one slot cannot promise a window. That is the load's answer, not "
+            "the reply's -- a load whose release keeps no batch open decodes a plain chat "
+            "bounded while still reporting true -- so read it as the weaker claim it is."
         ),
     )
     supports_reasoning: bool = Field(
@@ -1309,11 +1329,15 @@ class _InferenceRuntimeFields(BaseModel):
     parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Replies the loaded model actually decodes at once. For GGUF these "
-            "are llama-server's --parallel slots after any fit-time reduction; "
-            "elsewhere it is 1 when the runtime has no batched generation, or "
-            "its settings rule it out. None for the diffusion runner, which "
-            "ignores --parallel, and when the runtime did not say."
+            "Replies the loaded model is configured to decode at once. Not what any "
+            "one reply is running under: a batch already decoding keeps the width it "
+            "opened at until it drains, since resizing it would drop the replies "
+            "inside it, and a request submitted before a change carries the width it "
+            "was submitted with. For "
+            "GGUF these are llama-server's --parallel slots after any fit-time "
+            "reduction; elsewhere it is 1 when the runtime has no batched "
+            "generation, or its settings rule it out. None for the diffusion "
+            "runner, which ignores --parallel, and when the runtime did not say."
         ),
     )
     requested_n_batch: Optional[int] = Field(

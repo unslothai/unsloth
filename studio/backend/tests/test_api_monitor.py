@@ -1050,7 +1050,7 @@ def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
             effective_parallel_slots = 1,
         ),
     )
-    monkeypatch.setattr(inf, "peek_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
     monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
 
     state = inf._monitor_queue_state()
@@ -1092,9 +1092,9 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
 
 def test_parked_tool_resume_counts_as_queued():
     # Without resume tickets counted, the readout shows a full server with nothing queued.
-    from core.inference.generation_admission import AdmissionQueue
+    from core.inference.llama_admission import LlamaAdmissionQueue
 
-    queue = AdmissionQueue("http://llama.test")
+    queue = LlamaAdmissionQueue("http://llama.test")
     queue._unpark_tickets.append(1)
     assert queue.snapshot().queued == 1
 
@@ -1104,11 +1104,11 @@ def test_free_never_reports_a_slot_admission_would_refuse():
     a resume ticket holds a slot back, so counting it in `queued` without dropping it
     from `free` prints free slots next to a queued request.
     """
-    from core.inference.generation_admission import AdmissionQueue
+    from core.inference.llama_admission import LlamaAdmissionQueue
     for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
         if held > capacity:
             continue
-        queue = AdmissionQueue("http://llama.test")
+        queue = LlamaAdmissionQueue("http://llama.test")
         queue._resize_pool_locked(capacity)
         if any(queue._take_slot_locked(0) is None for _ in range(held)):
             continue
@@ -1129,9 +1129,9 @@ def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
     from types import SimpleNamespace
 
     import routes.inference as inf
-    from core.inference.generation_admission import AdmissionQueue
+    from core.inference.llama_admission import LlamaAdmissionQueue
 
-    queue = AdmissionQueue("http://llama.test")
+    queue = LlamaAdmissionQueue("http://llama.test")
     queue._unpark_tickets.append(1)
     monkeypatch.setattr(
         inf,
@@ -1143,7 +1143,7 @@ def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
             effective_parallel_slots = 1,
         ),
     )
-    monkeypatch.setattr(inf, "peek_admission_snapshot", lambda _base: queue.snapshot())
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: queue.snapshot())
     monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
 
     assert inf._monitor_queue_state() == {"capacity": 1, "active": 0, "queued": 1, "free": 0}
@@ -1261,14 +1261,14 @@ def _llama_slot_readout(
         _auth_headers = None,
     )
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inf, "peek_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
     monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
     return backend
 
 
 def test_queue_state_counts_rag_vision_captioning(monkeypatch):
     """RAG captioning/OCR reaches llama-server with no lease (see the
-    AdmissionQueue docstring), so without the direct count the panel reported an
+    LlamaAdmissionQueue docstring), so without the direct count the panel reported an
     idle server for the whole ingestion.
     """
     import routes.inference as inf

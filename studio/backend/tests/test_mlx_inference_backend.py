@@ -2529,53 +2529,29 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
             backend._render_template_probe(False)
 
 
-def _vlm_backend(
-    monkeypatch,
-    *,
-    markers,
-    prompt_tail = "",
-):
-    """A backend that renders a fixed vision prompt against a stub processor."""
+def _vlm_backend(monkeypatch, *, markers, prompt_tail = ""):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *a, **k: (
-            "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" + prompt_tail
-        ),
-    )
-    monkeypatch.setattr(
-        mlx_inference, "detect_reasoning_channel_markers", lambda target, tools = None: markers
-    )
+        lambda *a, **k: "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" + prompt_tail)
+    monkeypatch.setattr(mlx_inference, "detect_reasoning_channel_markers",
+                        lambda target, tools = None: markers)
     backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
     backend._tokenizer = SimpleNamespace(chat_template = "t", all_special_tokens = [])
-    backend._processor = SimpleNamespace(
-        chat_template = "t", tokenizer = backend._tokenizer, apply_chat_template = lambda *a, **k: ""
-    )
+    backend._processor = SimpleNamespace(chat_template = "t", tokenizer = backend._tokenizer,
+                                         apply_chat_template = lambda *a, **k: "")
     backend._model = object()
     monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
     return backend
 
 
-def _vlm_row(
-    backend,
-    *,
-    stop = None,
-    messages = None,
-    continue_final_message = False,
-):
+def _vlm_row(backend, *, stop = None, messages = None, continue_final_message = False):
     """One vision reply resolved by that backend."""
     return backend._plan_vlm_row(
-        messages or [{"role": "user", "content": "hi"}],
-        None,
-        temperature = 0.7,
-        top_p = 0.9,
-        top_k = 0,
-        min_p = 0.0,
-        max_new_tokens = 16,
-        repetition_penalty = 1.0,
-        continue_final_message = continue_final_message,
-        stop = stop,
+        messages or [{"role": "user", "content": "hi"}], None,
+        temperature = 0.7, top_p = 0.9, top_k = 0, min_p = 0.0, max_new_tokens = 16,
+        repetition_penalty = 1.0, continue_final_message = continue_final_message, stop = stop,
     ).stream
 
 
@@ -4151,3 +4127,229 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+class _TwoRowStream:
+    """A vision batch reporting two rows, recording whatever is taken back."""
+
+    def __init__(self, events, retired = ()):
+        self._events, self._retired, self.withdrawn = events, set(retired), []
+
+    def step(self):
+        return iter(self._events)
+
+    def withdraw(self, row):
+        self.withdrawn.append(row)
+        if row in self._retired:
+            return None
+        return SimpleNamespace(prompt_token_count = 3, token_ids = [1, 2])
+
+
+def _open_vision_session(rows):
+    """A session holding the given rows, with nothing else started."""
+    from core.inference import mlx_inference
+
+    session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
+    session._rows = {row.handle: row for row in rows}
+    session._by_row, session._settled = {row.row: row for row in rows}, {}
+    return session
+
+
+@pytest.mark.parametrize("stopping", (0, 1))
+@pytest.mark.parametrize("terminal", (False, True))
+def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, stopping, terminal):
+    """Whichever row stops is closed out where it stopped and its neighbour."""
+    from core.inference import mlx_inference
+
+    backend = _vlm_backend(monkeypatch, markers = None)
+    handles = ("a", "b")
+    session = _open_vision_session([
+        mlx_inference._VisionBatchRow(
+            handle = handle,
+            plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"])),
+            row = number,
+        )
+        for number, handle in enumerate(handles)
+    ])
+    other = 1 - stopping
+    result = SimpleNamespace(finish_reason = "length", prompt_token_count = 3, token_ids = [1, 2])
+    session.stream = _TwoRowStream([
+        SimpleNamespace(index = stopping, delta = "one HALT two",
+                        result = result if terminal else None),
+        SimpleNamespace(index = other, delta = "still going", result = None),
+    ], retired = (stopping,) if terminal else ())
+
+    reported = list(session.step())
+
+    assert (handles[stopping], None) in reported, "the stopped row is reported finished"
+    assert session._settled[handles[stopping]]["finish_reason"] == "stop"
+    assert handles[stopping] not in session._rows, "and it has left the batch"
+    assert handles[other] in session._rows, "its neighbour is still in the batch"
+    assert (handles[other], "still going") in reported
+    assert session.stream.withdrawn == ([] if terminal else [stopping]), (
+        "a row the engine has already retired is not handed back again")
+
+
+
+
+def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeypatch):
+    """The reply is owed the decode it would have had, not the error building raises."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+    from unsloth_zoo.mlx import generate as engine
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
+    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
+    for gap in ("BatchGenerator.insert missing", None):
+        monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: gap)
+        assert backend.resident_unavailable_reason({}) == gap
+        assert backend.batch_unavailable_reason([{}, {}]) == gap
+
+
+# ── several replies through one decode, on a real model ───────────────
+
+try:
+    import mlx.core as _mx
+
+    _METAL = _mx.metal.is_available()
+except Exception:
+    _METAL = False
+
+metal_only = pytest.mark.skipif(not _METAL, reason = "requires Apple Silicon Metal")
+
+BATCH_MODEL = "mlx-community/SmolLM2-135M-Instruct"
+BATCH_PROMPT = [{"role": "user", "content": "Name a colour and explain why."}]
+BATCH_VLM_MODEL = "mlx-community/SmolVLM-256M-Instruct-4bit"
+
+
+@pytest.fixture(scope = "module")
+def batch_backend():
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    loaded = MLXInferenceBackend()
+    loaded.load_model(BATCH_MODEL)
+    return loaded
+
+
+@pytest.fixture(scope = "module")
+def batch_vlm_backend():
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    loaded = MLXInferenceBackend()
+    loaded.load_model(SimpleNamespace(identifier = BATCH_VLM_MODEL, is_vision = True))
+    return loaded
+
+
+def _batch_request(**overrides):
+    base = dict(messages = BATCH_PROMPT, max_new_tokens = 24, temperature = 0.9)
+    base.update(overrides)
+    return base
+
+
+def _drain_batch(backend, requests, **kwargs):
+    """Cumulative snapshots per row, plus the stats latched at the end."""
+    replies: dict[int, list[str]] = {row: [] for row in range(len(requests))}
+    finished = []
+    for row, snapshot in backend.generate_chat_batch(requests, **kwargs):
+        if snapshot is None:
+            finished.append(row)
+        else:
+            replies[row].append(snapshot)
+    assert sorted(finished) == sorted(replies), "every row must report completion once"
+    return replies, list(backend.last_batch_generation_stats)
+
+
+@metal_only
+def test_a_batch_costs_one_forward_per_token_not_one_per_reply(batch_backend):
+    model = batch_backend._model
+    original = type(model).__call__
+    calls = {"n": 0}
+
+    def counted(self, *args, **kwargs):
+        calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    type(model).__call__ = counted
+    try:
+        _replies, stats = _drain_batch(
+            batch_backend, [_batch_request(seed = 200 + i) for i in range(4)]
+        )
+    finally:
+        type(model).__call__ = original
+
+    generated = sum(entry["usage"]["completion_tokens"] for entry in stats)
+    assert generated >= 4 * 20
+    assert calls["n"] < generated / 2, (
+        f"{calls['n']} forwards for {generated} tokens across 4 replies")
+
+
+@metal_only
+def test_an_out_of_range_logit_bias_id_cannot_corrupt_a_batch(batch_backend):
+    """MLX does no bounds checking on the gather these processors do."""
+    plain = _batch_request(seed = 21)
+    stray = _batch_request(seed = 21, logit_bias = {10**9: 5.0, -4: 3.0})
+    _first, _ = _drain_batch(batch_backend, [plain, plain])
+    opener = batch_backend._tokenizer.encode(_first[0][-1])[0]
+    real = _batch_request(seed = 21, logit_bias = {int(opener): -100.0})
+
+    replies, stats = _drain_batch(batch_backend, [plain, stray, stray, real])
+    assert all(entry["usage"]["completion_tokens"] > 0 for entry in stats)
+    assert replies[1] == replies[0]
+    assert replies[2] == replies[0]
+    assert replies[3] != replies[0]
+
+
+def test_a_repeated_token_is_charged_the_penalty_it_earned():
+    """The frequency processor counts occurrences in float32 and scales once."""
+    mx = pytest.importorskip("mlx.core")
+
+    from core.inference.mlx_inference import _make_mlx_frequency_penalty_processor
+
+    processor = _make_mlx_frequency_penalty_processor(0.3)
+    logits = mx.zeros((1, 8), dtype = mx.float16)
+    processor(mx.array([0, 1]), logits)  # latches the prompt length
+    tokens = mx.array([0, 1] + [5] * 1000)
+    charged = processor(tokens, logits)
+    assert abs(float(charged[0, 5]) + 300.0) < 0.5, float(charged[0, 5])
+    assert float(charged[0, 4]) == 0.0
+
+
+@metal_only
+def test_a_loaded_vision_model_says_a_batch_would_leave_its_window_behind(batch_vlm_backend):
+    stored = batch_vlm_backend.models[batch_vlm_backend.active_model_name]
+
+    assert stored["context_unbounded_when_batched"] is True
+
+
+@metal_only
+def test_a_vision_reply_stopped_partway_reports_the_tokens_it_actually_used(batch_vlm_backend):
+    """A stopped row has no result, so its usage has to come from what it produced."""
+    import threading
+
+    from PIL import Image
+
+    def rows():
+        return [dict(messages = [{"role": "user", "content": "Describe this in detail."}],
+                     image = Image.new("RGB", (64, 64), (12, 200, 60)),
+                     max_new_tokens = 64, temperature = 0.0) for _ in range(2)]
+
+    _replies, whole = _drain_batch(batch_vlm_backend, rows())
+
+    cancel = threading.Event()
+    delivered: dict[int, list[str]] = {0: [], 1: []}
+    for row, snapshot in batch_vlm_backend.generate_chat_batch(rows(), cancel_event = cancel):
+        if snapshot is not None:
+            delivered[row].append(snapshot)
+            if all(len(seen) >= 3 for seen in delivered.values()):
+                cancel.set()
+
+    cut_short = batch_vlm_backend.last_batch_generation_stats
+    assert all(delivered.values()), "nothing was delivered before the batch was cancelled"
+    for row, seen in delivered.items():
+        usage, entire = cut_short[row]["usage"], whole[row]["usage"]
+        assert usage["prompt_tokens"] == entire["prompt_tokens"], (
+            "a stopped row read a different prompt than the same row read whole")
+        # The count follows the row: a fixed report would answer any stop the same way.
+        assert len(seen) <= usage["completion_tokens"] < entire["completion_tokens"], (
+            f"row {row} delivered {len(seen)} snapshots and reported "
+            f"{usage['completion_tokens']} of {entire['completion_tokens']} tokens")

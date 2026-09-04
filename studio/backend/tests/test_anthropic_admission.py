@@ -3,7 +3,7 @@
 
 """Admission-control wiring for the Anthropic /v1/messages endpoint.
 
-The FIFO queue itself is unit-tested in test_generation_admission.py; here we exercise
+The FIFO queue itself is unit-tested in test_llama_admission.py; here we exercise
 how anthropic_messages reserves a slot, queues when the backend is saturated,
 streams keep-alives while waiting, releases on completion, and maps rejects to
 429/503. Slot occupancy is driven directly through the shared queue (keyed by the
@@ -37,15 +37,15 @@ from routes.inference import (
 )
 from models.inference import AnthropicMessagesRequest
 from core.inference.api_monitor import ApiMonitor
-from core.inference.generation_admission import (
+from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
     ADMISSION_QUEUE_PER_SLOT_ENV,
     ADMISSION_QUEUE_TIMEOUT_ENV,
-    AdmissionConfig,
-    get_admission_queue,
-    reset_admission_queues,
+    LlamaAdmissionConfig,
+    get_llama_admission_queue,
+    reset_llama_admission_queues,
 )
 from fastapi import HTTPException
 
@@ -54,7 +54,7 @@ _KEY = "http://llama.admission.test:9999"
 
 @pytest.fixture(autouse = True)
 def _isolate(monkeypatch):
-    reset_admission_queues()
+    reset_llama_admission_queues()
     monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 64))
     monkeypatch.setattr(inf_mod, "_CANCEL_REGISTRY", {})
     for name in (
@@ -71,7 +71,7 @@ def _isolate(monkeypatch):
     ):
         monkeypatch.delenv(name, raising = False)
     yield
-    reset_admission_queues()
+    reset_llama_admission_queues()
 
 
 class _Request:
@@ -145,14 +145,16 @@ def _record_admission_logs(monkeypatch):
 
 
 def _snapshot(key = _KEY):
-    return get_admission_queue(key).snapshot()
+    return get_llama_admission_queue(key).snapshot()
 
 
 def _occupy(key, capacity, n):
     """Hold ``n`` slots on the queue so the next reserve must wait; returns leases."""
     leases = []
     for _ in range(n):
-        reservation = get_admission_queue(key).reserve(capacity = capacity, config = AdmissionConfig())
+        reservation = get_llama_admission_queue(key).reserve(
+            capacity = capacity, config = LlamaAdmissionConfig()
+        )
         lease = reservation.lease_nowait()
         assert lease is not None
         leases.append(lease)
@@ -188,7 +190,9 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
     async def _run():
         held = _occupy(_KEY, 1, 1)  # slot busy
         # One waiter fills the max_queue=1; the next reserve rejects.
-        get_admission_queue(_KEY).reserve(capacity = 1, config = AdmissionConfig(max_queue = 1))
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
@@ -216,7 +220,9 @@ def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
 
     async def _run():
         held = _occupy(_KEY, 1, 1)
-        get_admission_queue(_KEY).reserve(capacity = 1, config = AdmissionConfig(max_queue = 1))
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
         with pytest.raises(HTTPException):
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         for lease in held:
@@ -418,7 +424,9 @@ def test_streaming_queue_full_returns_429(monkeypatch):
 
     async def _run():
         held = _occupy(_KEY, 1, 1)
-        get_admission_queue(_KEY).reserve(capacity = 1, config = AdmissionConfig(max_queue = 1))
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(stream = True), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
@@ -737,7 +745,7 @@ def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
 
         assert _snapshot().active == 0  # slot returned despite the failure
         # And the pool still serves the next caller.
-        again = get_admission_queue(_KEY).reserve(capacity = 1, config = AdmissionConfig())
+        again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         lease = again.lease_nowait()
         assert lease is not None
         lease.release()
@@ -820,7 +828,7 @@ def test_stream_setup_failure_returns_the_slot(monkeypatch):
         snap = _snapshot()
         assert snap.active == 0, f"slot leaked after stream setup failed: {snap}"
         # And the pool still serves the next caller.
-        again = get_admission_queue(_KEY).reserve(capacity = 1, config = AdmissionConfig())
+        again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         assert again.lease_nowait() is not None
 
     asyncio.run(_run())

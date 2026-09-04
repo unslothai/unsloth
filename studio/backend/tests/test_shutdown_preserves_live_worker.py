@@ -15,7 +15,7 @@ import threading
 import pytest
 
 from core.export.orchestrator import ExportOrchestrator
-from core.inference.stop_ledger import PendingTeardowns
+from core.inference.worker import PendingTeardowns
 from core.inference.orchestrator import InferenceOrchestrator
 
 

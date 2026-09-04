@@ -27,11 +27,121 @@ from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
-from core.inference.batch_errors import RowRefused
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
 from utils.native_tls import activate_native_tls
+
+
+# The parent builds these and the worker reads them; both processes import this
+# module, so they live here rather than in a file only the pair would share.
+_ID_BYTES = 36
+
+_SLOTS = 256
+
+
+class StopLedger:
+    """The request ids the parent has stopped, and whether the worker reads them."""
+
+    def __init__(self, ctx: Any):
+        self._lock = ctx.Lock()
+        self._slots = ctx.Array("c", _SLOTS * _ID_BYTES, lock = False)
+        self._read_by_worker = ctx.Value("b", 0, lock = False)
+        self._written = ctx.Value("l", 0, lock = False)
+
+    def worker_reads_this(self) -> None:
+        """Said once by the worker, as it enters the loop that reads names from here."""
+        self._read_by_worker.value = 1
+
+    def read_by_worker(self) -> bool:
+        return bool(self._read_by_worker.value)
+
+    def stop(self, request_id: str) -> bool:
+        """Record a stop. False for an id no slot could hold."""
+        entry = _entry(request_id)
+        if entry is None:
+            return False
+        with self._lock:
+            if not self._holds(entry):
+                start = (self._written.value % _SLOTS) * _ID_BYTES
+                self._slots[start : start + _ID_BYTES] = entry
+                self._written.value += 1
+        return True
+
+    def snapshot(self, since: int = -1) -> tuple[int, Optional[set]]:
+        written = self._written.value
+        if written == since:
+            return written, None
+        with self._lock:
+            written = self._written.value
+            raw = bytes(self._slots)
+        return written, {
+            raw[start : start + _ID_BYTES].rstrip(b"\0").decode("utf-8", "replace")
+            for start in range(0, min(written, _SLOTS) * _ID_BYTES, _ID_BYTES)
+        }
+
+    def _holds(self, entry: bytes) -> bool:
+        for slot in range(min(self._written.value, _SLOTS)):
+            start = slot * _ID_BYTES
+            if bytes(self._slots[start : start + _ID_BYTES]) == entry:
+                return True
+        return False
+
+
+def _entry(request_id: Optional[str]) -> Optional[bytes]:
+    """One slot's worth of bytes, or None for an id no slot could hold."""
+    if not request_id:
+        return None
+    entry = str(request_id).encode("utf-8", "replace")
+    if len(entry) > _ID_BYTES or b"\0" in entry:
+        return None
+    return entry.ljust(_ID_BYTES, b"\0")
+
+
+class PendingTeardowns:
+    """How many commands that end everything are on their way to the worker."""
+
+    def __init__(self, ctx: Any):
+        self._count = ctx.Value("l", 0)
+
+    def sending(self) -> None:
+        with self._count.get_lock():
+            self._count.value += 1
+
+    def unsent(self) -> None:
+        self._counted_off()
+
+    def taken(self) -> None:
+        self._counted_off()
+
+    def _counted_off(self) -> None:
+        """One fewer on its way, clamped: the two ends are different processes."""
+        with self._count.get_lock():
+            self._count.value = max(0, self._count.value - 1)
+
+    def any_in_flight(self) -> bool:
+        return self._count.value > 0
+
+
+class RowRefused(Exception):
+    """This batch will not take this reply, and is exactly as it was."""
+
+
+def narrow_load_reason(cmd: dict) -> Optional[str]:
+    """Why no batch of either kind may take this command, or None.
+
+    A batch one reply wide buys nothing and still costs what a batch cannot carry, the
+    KV window among it, so both paths ask this. A command carries the width the load had
+    when it was built and asking for more replies does not raise it: one grouping more
+    choices than the load serves decodes them apart.
+    """
+    width = int(cmd.get("parallel_slots") or 1)
+    if width <= 1:
+        return "this load decodes one reply at a time"
+    rows = len(cmd.get("rows") or [])
+    if rows > width:
+        return f"the load decodes {width} replies at once, and this asks for {rows}"
+    return None
 
 activate_native_tls()
 
@@ -521,6 +631,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 {
                     k: _entry[k]
                     for k in (
+                        # The window answer needs both halves: only the worker knows
+                        # whether these replies decode together, only the parent the width.
+                        "context_unbounded_when_batched",
                         "mlx_kv_bits",
                         "mlx_kv_bits_requested",
                         "mlx_kv_quant_eligibility",
@@ -613,14 +726,11 @@ def _drain_skip_generate(
 
 
 def _abandon_held_commands(held: list, resp_queue: Any) -> None:
-    """Answer the commands that were waiting for a batch that has gone."""
     while held:
         _abandon_one(held.pop(0), resp_queue)
 
 
 class _Stops:
-    """The record, and everything the loop is holding that a stop can name."""
-
     def __init__(self, stop_ledger, resp_queue, batch, held: list):
         self._ledger = stop_ledger
         self._resp_queue = resp_queue
@@ -630,7 +740,6 @@ class _Stops:
         self._stopped: set = set()
 
     def answer(self) -> None:
-        """Read the record and act on everything it names."""
         self._refresh()
         self._batch.drop_stopped(self)
         _drop_stopped_held(self._held, self._resp_queue, self)
@@ -647,7 +756,6 @@ class _Stops:
 
 
 class _StopWhileItRuns:
-    """What a generation with the worker to itself checks between tokens."""
 
     def __init__(self, cancel_event, stops, request_id: str):
         self._cancel_event = cancel_event
@@ -665,7 +773,6 @@ _TEARDOWN_COMMANDS = frozenset({"cancel", "reset", "unload", "shutdown"})
 
 
 def _teardown_skip(cmd: dict, resp_queue: Any, pending_teardowns) -> bool:
-    """Whether this command is about to be ended by something already on its way."""
     if pending_teardowns is None or not pending_teardowns.any_in_flight():
         return False
     _abandon_one(cmd, resp_queue)
@@ -673,14 +780,12 @@ def _teardown_skip(cmd: dict, resp_queue: Any, pending_teardowns) -> bool:
 
 
 def _drop_stopped_held(held: list, resp_queue: Any, stopped) -> None:
-    """Answer the held commands whose callers have stopped them."""
     for cmd in [held_cmd for held_cmd in held if _cmd_is_stopped(held_cmd, stopped)]:
         held.remove(cmd)
         _abandon_one(cmd, resp_queue)
 
 
 def _stopped_before_it_ran(cmd: dict, resp_queue: Any, stopped) -> bool:
-    """Whether this command is for a request its caller has stopped, read as of now."""
     stopped.answer()
     if not _cmd_is_stopped(cmd, stopped):
         return False
@@ -693,7 +798,6 @@ def _cmd_is_stopped(cmd: dict, stopped) -> bool:
 
 
 def _abandon_one(cmd: dict, resp_queue: Any) -> None:
-    """Answer one held command with the terminal response its reader waits for."""
     logger.info(
         "Abandoning held %s for request %s",
         cmd.get("type", ""),
@@ -754,7 +858,6 @@ def _backend_declares(
 
 
 def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-    """One reply, or an ask for several, by whether the command carries rows."""
 
     if cmd.get("rows"):
         _handle_generate_rows(backend, cmd, resp_queue, cancel_event)
@@ -763,7 +866,6 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
-    """The keyword set a generate command asks a backend for."""
 
     image = None
     image_b64 = cmd.get("image_base64")
@@ -805,12 +907,9 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
-    cancel_event is asked between tokens. Whether it answers for the record naming this
-    request as well as the shared event depends on what the caller passed: the batching
-    loop passes something that reads both, and the loop that runs one command at a time
-    passes the shared event alone. Generation stops within a token or two of whatever it
-    answers for, once it is producing tokens at all; nothing is asked during the prefill,
-    which yields nothing.
+    cancel_event is asked between tokens; what it answers for depends on the caller --
+    the batching loop passes something reading both the record and the shared event, the
+    one-at-a-time loop the shared event alone. Nothing is asked during the prefill.
     """
     request_id = cmd.get("request_id", "")
 
@@ -917,14 +1016,62 @@ def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
         },
     )
 
+
 def _load_can_batch(backend) -> bool:
-    """Whether this load can serve several replies in one command at all."""
-    probe = getattr(backend, "batch_unavailable_reason", None)
-    return callable(probe) and probe([{}, {}]) is None
+    """Whether this load serves several replies at once at all.
+
+    Either batch counts: a release that cannot keep one open still decodes a fan-out.
+    """
+    fixed = getattr(backend, "batch_unavailable_reason", None)
+    resident = getattr(backend, "resident_unavailable_reason", None)
+    return (callable(fixed) and fixed([{}, {}]) is None) or (
+        callable(resident) and resident({}) is None
+    )
+
+
+def _generate_rows_apart(backend, requests, request_id, resp_queue, cancel_event) -> None:
+    """Serve a declined batch reply by reply, reporting what the batch would have.
+
+    A cancelled command still closes out the rows it never reached.
+    """
+    for row, request in enumerate(requests):
+        stats = None
+        if not cancel_event.is_set():
+            generator = backend.generate_chat_response(
+                **request,
+                cancel_event = cancel_event,
+            )
+            try:
+                for cumulative_text in generator:
+                    if cancel_event.is_set():
+                        break
+
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "token",
+                            "request_id": request_id,
+                            "row": row,
+                            "text": cumulative_text,
+                        },
+                    )
+            finally:
+                close = getattr(generator, "close", None)
+                if callable(close):
+                    close()
+            stats = getattr(backend, "last_generation_stats", None)
+        _send_response(
+            resp_queue,
+            {
+                "type": "row_done",
+                "request_id": request_id,
+                "row": row,
+                "stats": stats,
+            },
+        )
 
 
 def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-    """Answer one command with several replies, tagging each event with its row."""
     request_id = cmd.get("request_id", "")
     rows = cmd.get("rows") or []
 
@@ -933,14 +1080,23 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
         shared.pop("cancel_event", None)
         requests = [{**shared, **row} for row in rows]
 
-        unavailable = getattr(backend, "batch_unavailable_reason", None)
-        reason = unavailable(requests) if callable(unavailable) else "backend cannot batch"
+        reason = narrow_load_reason(cmd)
+        if reason is None:
+            unavailable = getattr(backend, "batch_unavailable_reason", None)
+            reason = unavailable(requests) if callable(unavailable) else "backend cannot batch"
         if reason is not None:
             logger.info(
                 "Declining %d replies in one command for request_id=%s: %s",
                 len(requests),
                 request_id,
                 reason,
+            )
+            _generate_rows_apart(
+                backend,
+                requests,
+                request_id,
+                resp_queue,
+                cancel_event,
             )
         else:
             logger.info(
@@ -995,6 +1151,25 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
         )
 
 
+def _admitted_width(cmd: dict) -> int:
+    return max(1, int(cmd.get("parallel_slots") or 1))
+
+
+def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
+    """Whether the head comes off the hold on this pass; the batch can still turn it away.
+
+    It leaves on a drained batch rather than on a quiet queue, which busy traffic never
+    supplies, and on a decoding batch that can still take it, so replies held behind one
+    incompatible command do not decode a batch at a time.
+    """
+    if not held:
+        return False
+    if not batch.rows_in_flight:
+        return True
+    head = held[0]
+    return head.get("type") == "generate" and batch.unavailable_reason(head) is None
+
+
 class _ResidentBatch:
     """The replies an MLX worker is decoding at once."""
 
@@ -1002,22 +1177,33 @@ class _ResidentBatch:
         self.backend = backend
         self.resp_queue = resp_queue
         self.session = None
+        self.width = None
         self._owed: dict = {}
+        # Cleared with the batch, because that batch is what these were refused from.
+        self._refused: set = set()
 
     @property
     def rows_in_flight(self) -> int:
         return self.session.rows_in_flight if self.session is not None else 0
 
     def _live(self, request_id: str) -> list:
-        """The replies of one request the session still holds."""
         if self.session is None:
             return []
         return [handle for handle in self.session.handles if handle[0] == request_id]
 
     def unavailable_reason(self, cmd: dict) -> Optional[str]:
-        """Why this command cannot join the batch, or None if it can."""
+        if cmd.get("request_id", "") in self._refused:
+            return "this batch has already refused these replies"
         if cmd.get("use_adapter") is not None:
+            # This batch keeps one adapter state for everything inside it.
             return "the reply asks for a particular adapter state"
+        reason = narrow_load_reason(cmd)
+        if reason is not None:
+            return reason
+        if self.width is not None and self.width != _admitted_width(cmd):
+            # A command at another width waits for the batch to drain: joining at the old
+            # one would refill the batch, so a narrowed load never reaches its new width.
+            return "the open batch is decoding at a different width"
         probe = getattr(self.backend, "resident_unavailable_reason", None)
         if not callable(probe):
             return "this backend has no batch a reply can join"
@@ -1029,7 +1215,6 @@ class _ResidentBatch:
         return None
 
     def admit(self, cmd: dict, cancel_event) -> bool:
-        """Take a command's replies into the batch, reporting what precedes them."""
         request_id = cmd.get("request_id", "")
         rows = cmd.get("rows") or []
         shared = _generation_kwargs(self.backend, cmd, cancel_event)
@@ -1037,9 +1222,21 @@ class _ResidentBatch:
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 
         if self.session is None:
-            self.session = self.backend.open_resident_batch(
-                width = max(1, int(cmd.get("parallel_slots") or 1), len(requests)),
-            )
+            # A width change reaches an open batch only once it drains: a decoding
+            # generator cannot be resized without dropping the replies inside it.
+            self.width = _admitted_width(cmd)
+            try:
+                self.session = self.backend.open_resident_batch(width = self.width)
+            except Exception as unopened:
+                # A batch that will not open is not a reply that cannot be served: this
+                # one is owed the decode it would have had before any batch existed.
+                logger.warning(
+                    "No batch could be opened for request_id=%s, decoding it alone: %s",
+                    request_id,
+                    unopened,
+                )
+                self.width = None
+                return False
         handles = [(request_id, row if rows else None) for row in range(len(requests))]
         self._owed[request_id] = None
         prefixes = []
@@ -1051,6 +1248,7 @@ class _ResidentBatch:
                 self._fail_all(refusal)
                 raise
             logger.info("Request_id=%s cannot join this batch: %s", request_id, refusal)
+            self._refused.add(request_id)
             self._close_if_empty()
             return False
         except BaseException as exc:
@@ -1071,7 +1269,6 @@ class _ResidentBatch:
         return True
 
     def cancel(self, request_id: str) -> bool:
-        """Withdraw one request's replies, leaving every other reply decoding."""
         if request_id not in self._owed:
             return False
         live = self._live(request_id)
@@ -1093,13 +1290,11 @@ class _ResidentBatch:
             self.cancel(request_id)
 
     def drop_stopped(self, stopped) -> None:
-        """Withdraw the replies whose callers have stopped them."""
         for request_id in list(self._owed):
             if request_id in stopped:
                 self.cancel(request_id)
 
     def step(self) -> None:
-        """Decode one token for every reply, reporting what each produced."""
         if self.session is None or not self.session.rows_in_flight:
             return
         try:
@@ -1112,14 +1307,13 @@ class _ResidentBatch:
         self._close_if_empty()
 
     def _fail_all(self, exc: BaseException) -> None:
-        """Give up on the batch: a session that cannot be stepped or withdrawn from"""
+        """Give up on the batch: every request in it is owed an error, not silence."""
         stack = traceback.format_exc(limit = 20)
         for request_id in list(self._owed):
             self._fail(request_id, exc, stack)
         self.close()
 
     def _close_if_empty(self) -> None:
-        """Let go of a batch with nothing left in it."""
         if self.session is not None and not self.session.rows_in_flight:
             self.close()
 
@@ -1130,7 +1324,9 @@ class _ResidentBatch:
         for request_id in [r for r in self._owed if r in ending]:
             self._abandon(request_id)
         session, self.session = self.session, None
+        self.width = None
         self._owed.clear()
+        self._refused.clear()
         if session is None:
             return
         try:
@@ -1207,7 +1403,7 @@ class _ResidentBatch:
         )
 
     def _forget(self, request_id: str, *, withdraw: bool) -> bool:
-        """Stop answering for a request. False where taking its rows back failed,"""
+        """Stop answering for a request. False where taking its rows back failed."""
         live = self._live(request_id)
         self._owed.pop(request_id, None)
         taken_back = True
@@ -1223,12 +1419,10 @@ class _ResidentBatch:
         return taken_back
 
     def _take_stats(self, handle):
-        """What a retired reply settled with, dropped from the session as it is read."""
         return self.session.take_stats(handle) if self.session is not None else None
 
 
 def _handle_order(handle):
-    """Rows in the order their command asked for them."""
     _request_id, row = handle
     return -1 if row is None else row
 
@@ -1478,12 +1672,10 @@ def run_inference_process(
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
         stop_ledger: StopLedger in shared memory naming the requests the parent has
-            stopped. Read rather than received, because a reply decoding beside others
-            has to be stopped by name and a command cannot say it in time — a queue put
-            is not readable the moment it returns.
-        pending_teardowns: counts the commands that end everything on their way here, so
-            a command held back for a batch to empty is answered rather than run in front
-            of one. Read rather than received, for the same reason as the ledger.
+            stopped. Read rather than received: a reply decoding beside others is stopped
+            by name, and a queue put is not readable the moment it returns.
+        pending_teardowns: counts the commands that end everything on their way here, so a
+            held command is answered rather than run in front of one. Read, for the same reason.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -1637,18 +1829,21 @@ def run_inference_process(
             if not tearing_down:
                 batch.step()
             from_deferred = False
-            try:
-                cmd = cmd_queue.get(
-                    timeout = 0.0 if (batch.rows_in_flight or deferred) and not tearing_down else 1.0
-                )
-            except _queue.Empty:
-                if not deferred or batch.rows_in_flight:
-                    continue
+            if _held_head_leaves_the_hold(batch, deferred):
                 cmd = deferred.pop(0)
                 from_deferred = True
-            except (EOFError, OSError):
-                batch.close()
-                return
+            else:
+                try:
+                    cmd = cmd_queue.get(
+                        timeout = 0.0
+                        if (batch.rows_in_flight or deferred) and not tearing_down
+                        else 1.0
+                    )
+                except _queue.Empty:
+                    continue
+                except (EOFError, OSError):
+                    batch.close()
+                    return
             if cmd is None:
                 continue
             cmd_type = cmd.get("type", "")
@@ -1676,7 +1871,12 @@ def run_inference_process(
                             cmd.get("request_id", ""),
                             reason,
                         )
-                        deferred.append(cmd)
+                        if from_deferred:
+                            # Back where it was taken from, so a head the batch turned
+                            # away keeps its turn over what was waiting behind it.
+                            deferred.insert(0, cmd)
+                        else:
+                            deferred.append(cmd)
                         continue
                     batch.close()
                     cancel_event.clear()

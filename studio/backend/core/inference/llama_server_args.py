@@ -30,7 +30,6 @@ PARALLEL_DEFAULT = 4
 
 
 def clamp_parallel_slots(n_parallel) -> int:
-    """Replies a load may decode at once, from what its request asked for."""
     if n_parallel is None:
         return PARALLEL_DEFAULT
     try:

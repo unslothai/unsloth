@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from typing import Optional, Generator
-from core.inference.batch_errors import RowRefused
+from core.inference.worker import RowRefused
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
@@ -1363,12 +1363,26 @@ def _make_mlx_presence_penalty_processor(penalty: float):
     return _processor
 
 
-def _row_logits_processors(processors, prompt_len):
-    """Show a row's processors the history the single-reply path shows them."""
+def _row_logits_processors(processors):
+    """A reply's processors, each starting at the prompt's last token.
+
+    How much prompt a processor sees is otherwise an accident of the prefill, and a
+    repetition penalty windows recent tokens, so that accident would decide the reply.
+    """
     if not processors:
         return []
-    offset = max(prompt_len - 1, 0)
-    return [(lambda tokens, logits, _fn = fn: _fn(tokens[offset:], logits)) for fn in processors]
+
+    def _shown(processor):
+        state = {"offset": None}
+
+        def _narrowed(tokens, logits):
+            if state["offset"] is None:
+                state["offset"] = max(int(tokens.shape[0]) - 1, 0)
+            return processor(tokens[state["offset"] :], logits)
+
+        return _narrowed
+
+    return [_shown(processor) for processor in processors]
 
 
 def _make_mlx_frequency_penalty_processor(penalty: float):
@@ -1464,7 +1478,6 @@ _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_uni
 
 
 class _RowStream:
-    """Cumulative snapshots for one generation, from its raw token events."""
 
     def __init__(
         self,
@@ -1490,7 +1503,6 @@ class _RowStream:
         token = None,
         text = "",
     ):
-        """Consume one token event; return the snapshots it releases."""
         if token is not None:
             self.token_ids.append(token)
         if self._decode is not None:
@@ -1513,7 +1525,6 @@ class _RowStream:
         return []
 
     def settle(self):
-        """Snapshots owed once the token loop is over."""
         if not self._sequences:
             return []
         if not self.stopped:
@@ -1528,7 +1539,6 @@ class _RowStream:
         return []
 
     def drain(self, *, cancelled):
-        """Whatever the normalizer still holds, for a row that has one."""
         if self._normalizer is None:
             return []
         drained = cancelled and not self.stopped
@@ -1552,11 +1562,38 @@ def _messages_with_system_prompt(messages, system_prompt):
     return full
 
 
+def _engine_fields(engine, name):
+    return getattr(getattr(engine, name, None), "__dataclass_fields__", ())
+
+
+def _asks_for_row_processors(request):
+    return (
+        _mlx_sampling_processors(
+            repetition_penalty = request.get("repetition_penalty", 1.0),
+            presence_penalty = request.get("presence_penalty", 0.0),
+            frequency_penalty = request.get("frequency_penalty", 0.0),
+            logit_bias = request.get("logit_bias"),
+        )
+        is not None
+    )
+
+
+def _row_processor_gap(engine, requests):
+    """Why these replies' penalties cannot travel into a batch, or None.
+
+    Asked per batch, not at load: only a reply that wants a processor needs the release
+    to carry one.
+    """
+    if not any(_asks_for_row_processors(request) for request in requests):
+        return None
+    unavailable = getattr(engine, "row_logits_processors_unavailable_reason", None)
+    return unavailable() if callable(unavailable) else None
+
+
 def _batched_vision_engine_gap(engine):
-    """Which part of the engine's batch surface this path needs and does not have."""
 
     def fields(name):
-        return getattr(getattr(engine, name, None), "__dataclass_fields__", ())
+        return _engine_fields(engine, name)
 
     if not hasattr(engine, "stream_batch"):
         return "the installed unsloth-zoo has no batched vision generation"
@@ -1564,30 +1601,12 @@ def _batched_vision_engine_gap(engine):
         return "the installed unsloth-zoo cannot seed a batched reply"
     if "prompt_token_count" not in fields("GenerationResult"):
         return "the installed unsloth-zoo does not report what a batched prompt cost"
+    if "logits_processors" not in fields("GenerationRequest"):
+        return "the installed unsloth-zoo cannot carry a penalty into a batched reply"
     return None
 
 
-def _vlm_messages_with_image(messages, image):
-    """The conversation with an attached image in its last user turn."""
-    if image is None:
-        return messages
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if message.get("role") != "user":
-            continue
-        content = message.get("content", "")
-        if isinstance(content, str):
-            placed = [{"type": "image"}, {"type": "text", "text": content}]
-        elif isinstance(content, list) and _count_vlm_images(content) == 0:
-            placed = [{"type": "image"}, *content]
-        else:
-            return messages
-        return [*messages[:index], {**message, "content": placed}, *messages[index + 1 :]]
-    return messages
-
-
 class _TextRowPlan:
-    """One text reply's inputs, resolved before any model runs."""
 
     __slots__ = (
         "prompt",
@@ -1620,8 +1639,6 @@ class _TextRowPlan:
 
 
 class _TextBatchRow:
-    """One reply in an open batch: what it was admitted with, and what it owes."""
-
     __slots__ = (
         "handle",
         "plan",
@@ -1695,20 +1712,18 @@ class _TextBatchSession:
 
     @property
     def handles(self):
-        """The replies still in the batch, oldest first."""
         return list(self._rows)
 
     @property
     def ending(self):
-        """The replies asked to end that the batch has not given up."""
         return []
 
     def take_stats(self, handle):
-        """The usage a retired reply settled with, once. None for any other."""
+        """The usage a retired reply settled with, once."""
         return self._settled.pop(handle, None)
 
     def admit(self, request, handle):
-        """Take one reply into the batch, answering with what precedes its first"""
+        """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
         plan = backend._plan_text_row(
             _messages_with_system_prompt(
@@ -1751,7 +1766,7 @@ class _TextBatchSession:
             caches = [cache],
             all_tokens = [prefix],
             samplers = [plan.sampler],
-            logits_processors = [_row_logits_processors(plan.processors, len(all_tokens))],
+            logits_processors = [_row_logits_processors(plan.processors)],
             state_machines = None,
         )
         if len(uids) != 1:
@@ -1827,7 +1842,6 @@ class _TextBatchSession:
         yield from self._retire(row, cancelled = False)
 
     def withdraw(self, handles):
-        """Take replies back, banking the KV they built as any other reply's is."""
         rows = [self._rows[handle] for handle in handles if handle in self._rows]
         if not rows:
             return
@@ -1844,7 +1858,6 @@ class _TextBatchSession:
             yield from self._retire(row, cancelled = True)
 
     def _retire(self, row, *, cancelled):
-        """Close a reply out where it ends, rather than with the batch."""
         self._rows.pop(row.handle, None)
         self._by_uid.pop(row.uid, None)
         stream = row.plan.stream
@@ -1878,7 +1891,6 @@ class _TextBatchSession:
 
 
 class _VLMRowPlan:
-    """One vision reply's inputs, resolved before any model runs."""
 
     __slots__ = (
         "prompt",
@@ -1888,9 +1900,21 @@ class _VLMRowPlan:
         "kwargs",
         "sampling",
         "max_tokens",
+        "processors",
     )
 
-    def __init__(self, *, prompt, images, think_prefix, stream, kwargs, sampling, max_tokens):
+    def __init__(
+        self,
+        *,
+        prompt,
+        images,
+        think_prefix,
+        stream,
+        kwargs,
+        sampling,
+        max_tokens,
+        processors = None,
+    ):
         self.prompt = prompt
         self.images = images
         self.think_prefix = think_prefix
@@ -1898,10 +1922,10 @@ class _VLMRowPlan:
         self.kwargs = kwargs
         self.sampling = sampling
         self.max_tokens = max_tokens
+        self.processors = processors
 
 
 class _VisionBatchRow:
-    """One vision reply in an open batch: what it was admitted with, and what it"""
 
     __slots__ = (
         "handle",
@@ -1928,7 +1952,6 @@ class _VisionBatchRow:
 
 
 class _VisionBatchSession:
-    """unsloth-zoo's vision stream under the text batch's contract."""
 
     def __init__(
         self,
@@ -1970,20 +1993,16 @@ class _VisionBatchSession:
 
     @property
     def handles(self):
-        """The replies still in the batch, oldest first."""
         return list(self._rows)
 
     @property
     def ending(self):
-        """The replies asked to end that the stream has not given up."""
         return [handle for handle, row in self._rows.items() if row.cancelled]
 
     def take_stats(self, handle):
-        """The usage a retired reply settled with, once. None for any other."""
         return self._settled.pop(handle, None)
 
     def admit(self, request, handle):
-        """Take one reply into the batch, answering with what precedes its first"""
         from unsloth_zoo.mlx.generate import (
             BatchRowRefused,
             GenerationRequest,
@@ -1992,11 +2011,9 @@ class _VisionBatchSession:
 
         backend = self.backend
         plan = backend._plan_vlm_row(
-            _vlm_messages_with_image(
-                _messages_with_system_prompt(
-                    request.get("messages") or [],
-                    request.get("system_prompt", ""),
-                ),
+            backend._conversation_to_render(
+                request.get("messages") or [],
+                request.get("system_prompt", ""),
                 request.get("image"),
             ),
             request.get("image"),
@@ -2024,6 +2041,7 @@ class _VisionBatchSession:
                     image = plan.images[0] if plan.images else None,
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
+                    logits_processors = plan.processors,
                 )
             )
         except BatchRowRefused as refusal:
@@ -2041,7 +2059,6 @@ class _VisionBatchSession:
         return plan.think_prefix
 
     def step(self):
-        """Report what the batch produced, retiring every reply that ended."""
         now = None
         for event in self.stream.step():
             row = self._by_row.get(event.index)
@@ -2055,6 +2072,11 @@ class _VisionBatchSession:
                 yield from (
                     (row.handle, snapshot) for snapshot in row.plan.stream.feed(text = event.delta)
                 )
+                if row.plan.stream.stopped:
+                    # Its own stop sequence ended it: take the row back rather than decode
+                    # text nobody sees. A result means the batch already did.
+                    row.cancelled = True
+                    row.reason = "stop"
             if event.result is not None:
                 result = event.result
                 if not row.cancelled:
@@ -2066,7 +2088,6 @@ class _VisionBatchSession:
                 yield from self._retake(row)
 
     def withdraw(self, handles):
-        """Take replies back, leaving every other reply decoding."""
         for handle in list(handles):
             row = self._rows.get(handle)
             if row is None:
@@ -2076,7 +2097,6 @@ class _VisionBatchSession:
             yield from self._retake(row)
 
     def _retake(self, row):
-        """Get a cancelled reply's row back, and report it once it is gone."""
         managed = self.stream.withdraw(row.row)
         if managed is not None:
             row.prompt_tokens = managed.prompt_token_count
@@ -2084,7 +2104,6 @@ class _VisionBatchSession:
             yield from self._retire(row, cancelled = True)
 
     def _retire(self, row, *, cancelled):
-        """Close a reply out where it ends, rather than with the batch."""
         self._rows.pop(row.handle, None)
         self._by_row.pop(row.row, None)
         stream = row.plan.stream
@@ -2175,17 +2194,6 @@ class MLXInferenceBackend:
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
-
-    def _encode_prompt(self, prompt):
-        """Tokenize a rendered prompt the way mlx-lm would tokenize it itself."""
-        tokenizer = self._tokenizer
-        bos = getattr(tokenizer, "bos_token", None)
-        return list(
-            tokenizer.encode(
-                prompt,
-                add_special_tokens = bos is None or not prompt.startswith(bos),
-            )
-        )
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -2536,6 +2544,9 @@ class MLXInferenceBackend:
             # real cache, False confirmed unbounded, None nothing could be built to judge.
             # Without it the API reports a limit a client cannot tell from an enforced one.
             "context_length_enforced": _ctx_enforced,
+            # Replies decoded together escape the window, and whether this load decodes
+            # any together is settled outside the worker.
+            "context_unbounded_when_batched": self._vision_batch_is_available(),
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
@@ -2735,6 +2746,29 @@ class MLXInferenceBackend:
         full_messages.extend(messages)
         return full_messages
 
+    def _conversation_to_render(self, messages, system_prompt, image):
+        """The turns this request renders, whichever way its reply is decoded.
+
+        A processor template wants every turn's content as a part list, not only the one
+        carrying the image: a string renders differently or not at all. Shared with the
+        transformers vision path so both render the same turns (#10092).
+        """
+        if self._is_vlm and image is not None:
+            from core.inference.chat_template_helpers import (
+                chat_render_target as _chat_render_target,
+            )
+            full_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                structured_content = (
+                    self._processor is not None
+                    and _chat_render_target(self._processor) is self._processor
+                ),
+            )
+        else:
+            full_messages = self._with_system_prompt(messages, system_prompt)
+        return full_messages
+
     def count_chat_tokens(
         self,
         messages,
@@ -2822,26 +2856,9 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and image is not None:
-            # Processor templates want part lists, the tokenizer fallback wants strings.
-            from core.inference.chat_template_helpers import (
-                chat_render_target as _chat_render_target,
-            )
-            _renders_via_processor = (
-                self._processor is not None
-                and _chat_render_target(self._processor) is self._processor
-            )
-            full_messages = messages_with_attached_image(
-                messages,
-                system_prompt = system_prompt,
-                structured_content = _renders_via_processor,
-            )
-        else:
-            full_messages = self._with_system_prompt(messages, system_prompt)
+        full_messages = self._conversation_to_render(messages, system_prompt, image)
 
         if self._is_vlm:
-            full_messages = _vlm_messages_with_image(full_messages, image)
             stream = self._generate_vlm(
                 full_messages,
                 image,
@@ -2969,7 +2986,7 @@ class MLXInferenceBackend:
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
-                    gen_kwargs["logits_processors"] = logits_processors
+                    gen_kwargs["logits_processors"] = _row_logits_processors(logits_processors)
                 for response in stream_generate(
                     self._model,
                     self._tokenizer,
@@ -3039,7 +3056,6 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
     ) -> "_TextRowPlan":
-        """Resolve one text reply: rendered prompt, sampler, processors, snapshots."""
         from mlx_lm.sample_utils import make_sampler
 
         from core.inference.chat_template_helpers import detect_think_prefill
@@ -3054,12 +3070,10 @@ class MLXInferenceBackend:
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
-        # Not the request flag: a later tool-loop pass keeps it but renders an
-        # ordinary post-tool prompt.
+        # Not the request flag: a later tool-loop pass renders an ordinary prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
-        # An open <think> prefilled by the template lives in the prompt, not
-        # the generated tokens; re-emit it so the frontend renders the block.
+        # An open <think> prefilled by the template lives in the prompt, so re-emit it.
         think_prefix = detect_think_prefill(
             prompt, getattr(self._tokenizer, "all_special_tokens", None)
         )
@@ -3248,7 +3262,6 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
     ) -> "_VLMRowPlan":
-        """Resolve one vision reply: rendered prompt, images, kwargs, snapshots."""
         from mlx_vlm import stream_generate as vlm_stream
 
         images = [image] if image is not None else None
@@ -3309,21 +3322,16 @@ class MLXInferenceBackend:
                 top_k = int(top_k or 0),
                 min_p = float(min_p or 0.0),
             )
-        _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
-            0.0,
-            1.0,
+        processors = _mlx_sampling_processors(
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
         )
-        if presence_penalty or frequency_penalty or logit_bias:
-            # These need custom processors: pass the full list (repetition +
-            # the rest) instead of the repetition_penalty shortcut so all apply.
-            vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
-                repetition_penalty = repetition_penalty,
-                presence_penalty = presence_penalty,
-                frequency_penalty = frequency_penalty,
-                logit_bias = logit_bias,
-            )
-        elif _rep_active:
-            vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
+        if processors:
+            # Never the repetition_penalty shortcut: mlx-vlm would build that processor
+            # itself, outside the narrowing every other path applies.
+            vlm_kwargs["logits_processors"] = _row_logits_processors(processors)
 
         return _VLMRowPlan(
             prompt = prompt,
@@ -3339,6 +3347,7 @@ class MLXInferenceBackend:
                 "seed": seed,
             },
             max_tokens = vlm_kwargs["max_tokens"],
+            processors = processors,
         )
 
     def _generate_vlm(
@@ -3435,30 +3444,63 @@ class MLXInferenceBackend:
         if row.stopped:
             self._mark_stopped()
 
-    def batch_unavailable_reason(self, requests):
-        """Why these replies cannot share one decode, or None if they can."""
-        if self._model is None:
-            return "no model is loaded"
+    def _kv_policy_batch_reason(self):
+        """Why the load-time KV policy rules out a batch, or None if it does not.
+
+        A quantized cache does, for both runtimes but not for the same reason. mlx-lm's
+        batch generator takes no quantization controls at all. mlx-vlm's does, but
+        unsloth-zoo's vision adapter does not forward them, so either way a batch decodes
+        unquantized and drops a memory bound the caller believes is in force. A cache
+        window does not rule a batch out: mlx-vlm's batch generator takes no window
+        control, so refusing would refuse every vision batch of a bounded load.
+        """
         if self._kv_quant_generate_kwargs():
             return "quantized KV cache is enabled"
+        return None
+
+    def batch_unavailable_reason(self, requests):
+        if self._model is None:
+            return "no model is loaded"
+        reason = self._kv_policy_batch_reason()
+        if reason is not None:
+            return reason
         if len(requests) < 2:
             return "fewer than two replies were requested"
         if self._is_vlm:
-            return self._vlm_batch_unavailable_reason(requests)
-        return None
+            reason = self._vlm_batch_unavailable_reason(requests)
+            if reason is not None:
+                return reason
+            if any(_mlx_stop_sequences(request.get("stop")) for request in requests):
+                # A fixed set offers no per-row cancel, so a row cut by its own stop
+                # sequence keeps costing a forward per token.
+                return "a reply asks for stop sequences"
+            return None
+        return self._text_batch_unavailable_reason()
 
     def resident_unavailable_reason(self, request):
-        """Why this reply cannot join a batch that is already decoding, or None."""
         if self._model is None:
             return "no model is loaded"
-        if self._kv_quant_generate_kwargs():
-            return "quantized KV cache is enabled"
+        reason = self._kv_policy_batch_reason()
+        if reason is not None:
+            return reason
         if self._is_vlm:
             return self._vlm_resident_unavailable_reason(request)
-        return None
+        return self._text_batch_unavailable_reason()
+
+    def _text_batch_unavailable_reason(self):
+        """Why the installed mlx-lm cannot batch this load's replies, or None.
+
+        Asked before committing, because building the batch is what fails otherwise, and
+        a reply whose batch cannot be built is owed the one-at-a-time decode it would
+        have had rather than an error.
+        """
+        try:
+            from unsloth_zoo.mlx.generate import stream_unavailable_reason
+        except ImportError:
+            return "the installed unsloth-zoo cannot keep a batch open"
+        return stream_unavailable_reason(self._model, self._tokenizer)
 
     def _vlm_resident_unavailable_reason(self, request):
-        """Why this vision reply cannot join a batch left open, or None."""
         reason = self._vlm_batch_unavailable_reason([request])
         if reason is not None:
             return reason
@@ -3474,7 +3516,6 @@ class MLXInferenceBackend:
         width,
         adapter_state = None,
     ):
-        """A batch replies join and leave while it decodes."""
         reason = self.resident_unavailable_reason({})
         if reason is not None:
             raise RuntimeError(f"MLX batched generation is unavailable: {reason}")
@@ -3486,8 +3527,20 @@ class MLXInferenceBackend:
             owns_model = True,
         )
 
+    def _vision_batch_is_available(self) -> bool:
+        """Whether this load will decode vision replies together, asked without a request.
+
+        Either batch counts: both leave the window behind, and a release that cannot keep
+        one open still decodes a fan-out together. The conservative answer, deliberately.
+        """
+        if not self._is_vlm:
+            return False
+        return (
+            self.batch_unavailable_reason([{}, {}]) is None
+            or self.resident_unavailable_reason({}) is None
+        )
+
     def _vlm_batch_unavailable_reason(self, requests):
-        """Why these vision replies cannot share one decode, or None if they can."""
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:
@@ -3495,21 +3548,11 @@ class MLXInferenceBackend:
         gap = _batched_vision_engine_gap(engine)
         if gap is not None:
             return gap
+        gap = _row_processor_gap(engine, requests)
+        if gap is not None:
+            return gap
         if not getattr(self._model, "_is_vlm_model", False):
             return "this model was not loaded as a vision model"
-        for request in requests:
-            if request.get("stop"):
-                return "a reply asks for stop sequences"
-            if (
-                _mlx_sampling_processors(
-                    repetition_penalty = request.get("repetition_penalty", 1.0),
-                    presence_penalty = request.get("presence_penalty", 0.0),
-                    frequency_penalty = request.get("frequency_penalty", 0.0),
-                    logit_bias = request.get("logit_bias"),
-                )
-                is not None
-            ):
-                return "a reply asks for a penalty or bias applied to the logits"
         return None
 
     def generate_chat_batch(
@@ -3519,7 +3562,6 @@ class MLXInferenceBackend:
         cancel_event = None,
         _adapter_state = None,
     ):
-        """Run several chat replies through one batched decode."""
         reason = self.batch_unavailable_reason(requests)
         if reason is not None:
             raise RuntimeError(f"MLX batched generation is unavailable: {reason}")
@@ -3537,10 +3579,7 @@ class MLXInferenceBackend:
         cancel_event = None,
         _adapter_state = None,
     ):
-        """The text half of ``generate_chat_batch``, over mlx-lm's own batch."""
-
         def report(events):
-            """Pass the batch's events on, collecting each reply's usage as it ends."""
             for row, snapshot in events:
                 if snapshot is None:
                     self.last_batch_generation_stats[row] = session.take_stats(row)
@@ -3573,7 +3612,6 @@ class MLXInferenceBackend:
         cancel_event = None,
         _adapter_state = None,
     ):
-        """The vision half of ``generate_chat_batch``, over unsloth-zoo's engine."""
         import time
 
         from unsloth_zoo.mlx.generate import (
@@ -3585,11 +3623,9 @@ class MLXInferenceBackend:
 
         plans = [
             self._plan_vlm_row(
-                _vlm_messages_with_image(
-                    _messages_with_system_prompt(
-                        request.get("messages") or [],
-                        request.get("system_prompt", ""),
-                    ),
+                self._conversation_to_render(
+                    request.get("messages") or [],
+                    request.get("system_prompt", ""),
                     request.get("image"),
                 ),
                 request.get("image"),
@@ -3618,6 +3654,7 @@ class MLXInferenceBackend:
                 image = plan.images[0] if plan.images else None,
                 max_tokens = plan.max_tokens,
                 sampling = SamplingParams(**plan.sampling),
+                logits_processors = plan.processors,
             )
             for plan in plans
         ]
@@ -3640,29 +3677,31 @@ class MLXInferenceBackend:
                     yield row, plan.think_prefix
             started = time.perf_counter()
             prefilled_at: list[float | None] = [None] * len(plans)
+            counted: dict[int, tuple[int, int]] = {}
             pending = set(range(len(plans)))
             events = stream_batch(self._model, self._processor, batch, defaults = defaults)
 
             def _retire(row, result, *, cancelled):
-                """Close a row out where it ends, rather than with the batch."""
                 stream = plans[row].stream
                 yield from ((row, snap) for snap in stream.settle())
                 yield from ((row, snap) for snap in stream.drain(cancelled = cancelled))
                 ready_at = prefilled_at[row] or time.perf_counter()
                 decoded = time.perf_counter() - ready_at
                 prefill_s = ready_at - started
-                prompt_n = result.prompt_token_count if result is not None else 0
+                seen_prompt, seen_generated = counted.get(row, (0, 0))
+                prompt_n = result.prompt_token_count if result is not None else seen_prompt
+                # A row cut short reports what it produced, which is already with the caller.
                 generated = (
                     len(result.token_ids) + (result.finish_reason == "stop")
                     if result is not None
-                    else 0
+                    else seen_generated
                 )
                 self.last_batch_generation_stats[row] = _build_generation_stats(
                     prompt_n,
                     (prompt_n / prefill_s) if prefill_s > 0 else 0.0,
                     generated,
                     generated / max(decoded, 1e-9),
-                    finish_reason = result.finish_reason if result is not None else "stop",
+                    finish_reason = (result.finish_reason if result is not None else "stop"),
                 )
                 yield row, None
 
@@ -3673,6 +3712,10 @@ class MLXInferenceBackend:
                         continue
                     if prefilled_at[row] is None:
                         prefilled_at[row] = time.perf_counter()
+                    counted[row] = (
+                        getattr(event, "prompt_tokens", 0),
+                        getattr(event, "generated_tokens", 0),
+                    )
                     if event.delta:
                         yield from (
                             (row, snapshot) for snapshot in plans[row].stream.feed(text = event.delta)
@@ -3695,7 +3738,6 @@ class MLXInferenceBackend:
                     close()
 
     def _batch_prompt_row(self, prompt, adapter_state):
-        """One row's KV for a batch, from the same history a single reply reads."""
         rest, cache, key, tokens, cached_n = self._prepare_prompt_cache(prompt, adapter_state)
         if cache is None or tokens is None:
             tokens = self._encode_prompt(prompt)
@@ -3704,11 +3746,15 @@ class MLXInferenceBackend:
         return list(tokens[:cached_n]), list(rest), cache, key, list(tokens)
 
     def _make_row_cache(self):
+        """A row's own cache: mlx-lm applies ``max_kv_size`` only to caches it builds."""
         from mlx_lm.models.cache import make_prompt_cache
-        return make_prompt_cache(self._model)
+
+        window = getattr(self, "_kv_cache_window", None)
+        if window is None:
+            return make_prompt_cache(self._model)
+        return make_prompt_cache(self._model, max_kv_size = window)
 
     def _bank_row_cache(self, cache_key, event, withdrawn, prompt_tokens, stream):
-        """Offer a finished reply's KV to the history, so the next turn reuses it."""
         history = self._prompt_cache_history
         if history is None or cache_key is None:
             return

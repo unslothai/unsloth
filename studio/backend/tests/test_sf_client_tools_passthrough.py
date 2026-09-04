@@ -111,7 +111,9 @@ class _ScriptedBackend:
         **kwargs,
     ):
         """Every choice's first reply in one command, as the real bridge does."""
-        self.batch_calls.append(rows)
+        # Rows AND the shared kwargs: choice zero takes the base seed from the latter, so
+        # recording only the overrides cannot show which seed each choice actually ran on.
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
         reported: list = []
         for index, row in enumerate(rows):
             holder: dict = {}
@@ -1225,3 +1227,19 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
     assert backend.calls[0]["image"] is not None
+
+
+def test_a_turn_asking_for_several_replies_sends_them_as_one_batch(monkeypatch):
+    """One command carries every choice, each with its own seed."""
+    from routes.inference import _choice_seed
+
+    backend = _ScriptedBackend(_fixed("hi"))
+    body = _json_body(_call(_request(stream = False, n = 3, seed = 11), monkeypatch, backend))
+
+    assert len(body["choices"]) == 3
+    assert len(backend.batch_calls) == 1, "the choices did not go out together"
+    call = backend.batch_calls[0]
+    # The seed each choice actually decodes on: the first takes the one the caller sent,
+    # and the rest are derived from it, in choice order.
+    effective = [row.get("seed", call["shared"].get("seed")) for row in call["rows"]]
+    assert effective == [11, _choice_seed(11, 1), _choice_seed(11, 2)], effective

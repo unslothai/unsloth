@@ -26,7 +26,7 @@ import pytest
 from fastapi import FastAPI
 
 from auth.authentication import get_current_subject
-from core.inference import generation_admission
+from core.inference import llama_admission
 import routes.inference as inference_route
 from .llama_backend_double import FakeLlamaCppBackend
 from .asgi_stream_helpers import wait_for_frame
@@ -34,14 +34,14 @@ from .asgi_stream_helpers import wait_for_frame
 
 @pytest.fixture(autouse = True)
 def _fresh_queues():
-    generation_admission.reset_admission_queues()
+    llama_admission.reset_llama_admission_queues()
     yield
-    generation_admission.reset_admission_queues()
+    llama_admission.reset_llama_admission_queues()
 
 
 def _active_slots() -> int:
-    with generation_admission._QUEUES_LOCK:
-        queues = list(generation_admission._QUEUES.values())
+    with llama_admission._QUEUES_LOCK:
+        queues = list(llama_admission._QUEUES.values())
     return sum(queue.snapshot().active for queue in queues)
 
 

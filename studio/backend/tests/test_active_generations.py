@@ -11,13 +11,14 @@ import multiprocessing as _mp
 import os
 import sys
 import threading
+import uuid
 
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference.stop_ledger import PendingTeardowns
+from core.inference.worker import _SLOTS, PendingTeardowns, StopLedger
 from state import active_generations
 
 
@@ -282,12 +283,6 @@ def _stub_load_route(
     active_model_name,
     backend = None,
 ):
-    """Point POST /load at an in-memory safetensors backend.
-
-    active_model_name == the requested path makes the request idempotent, so
-    _load_model_impl takes its already_loaded fast return. The backend is a real
-    orchestrator with nothing running, so the route reaches its actual methods.
-    """
     from types import SimpleNamespace
 
     import routes.inference as inf_mod
@@ -352,6 +347,27 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
             )
         assert response.status == "already_loaded"
         assert not ev.is_set()
+
+
+def test_a_width_change_reaches_the_resident_model_without_replacing_it(monkeypatch):
+    _route_gate()
+    import asyncio
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+    applied = []
+    inf_mod.get_inference_backend().set_parallel_slots = applied.append
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.load_model(LoadRequest(model_path = "org/A", n_parallel = 2), object(), "tester")
+        )
+
+    assert response.status == "already_loaded"
+    assert applied == [2]
+    assert not ev.is_set(), "a width change ended a reply that was decoding"
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
@@ -1110,14 +1126,14 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
     _route_gate()
     import asyncio
 
-    from core.inference import generation_admission
+    from core.inference import llama_admission
     from models.inference import ChatMessage, ResponsesRequest
 
     for name in (
-        generation_admission.ADMISSION_CONTROL_ENV,
-        generation_admission.ADMISSION_QUEUE_TIMEOUT_ENV,
-        generation_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
-        generation_admission.ADMISSION_MAX_QUEUE_ENV,
+        llama_admission.ADMISSION_CONTROL_ENV,
+        llama_admission.ADMISSION_QUEUE_TIMEOUT_ENV,
+        llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
+        llama_admission.ADMISSION_MAX_QUEUE_ENV,
     ):
         monkeypatch.delenv(name, raising = False)
 
@@ -1127,13 +1143,13 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
     payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
     messages = [ChatMessage(role = "user", content = "hi")]
 
-    generation_admission.reset_admission_queues()
+    llama_admission.reset_llama_admission_queues()
     try:
 
         async def run():
             # Hold the backend's only decode slot so the run below has to queue.
-            queue = generation_admission.get_admission_queue("http://llama.test")
-            holder = queue.reserve(capacity = 1, config = generation_admission.AdmissionConfig())
+            queue = llama_admission.get_llama_admission_queue("http://llama.test")
+            holder = queue.reserve(capacity = 1, config = llama_admission.LlamaAdmissionConfig())
             assert holder.lease_nowait() is not None
             response = await inf_mod._responses_stream(
                 payload, messages, _NeverDisconnectedRequest()
@@ -1157,7 +1173,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
 
         chunks = asyncio.run(run())
     finally:
-        generation_admission.reset_admission_queues()
+        llama_admission.reset_llama_admission_queues()
 
     body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
     # It gave up its place instead of taking the slot: no upstream call, no envelope.
@@ -2561,9 +2577,61 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
-class _Ledger:
-    """The requests the orchestrator has stopped, as the worker would read them."""
+# ── what the parent records about a stop, and what the worker reads ───
 
+
+def _ids(n):
+    return [str(uuid.uuid4()) for _ in range(n)]
+
+
+def _stopped(ledger):
+    """What the worker would read: the only way the record is read."""
+    return ledger.snapshot()[1]
+
+
+def test_a_request_reads_as_stopped_once_it_is():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, theirs = _ids(2)
+
+    assert _stopped(ledger) == set()
+    assert ledger.stop(mine)
+    assert _stopped(ledger) == {mine}, "a stop names one request and no other"
+    assert theirs not in _stopped(ledger)
+
+
+def test_the_oldest_stop_is_the_one_that_ages_out():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    recorded = _ids(_SLOTS + 1)
+    for request_id in recorded:
+        assert ledger.stop(request_id)
+
+    assert _stopped(ledger) == set(recorded[1:]), "the oldest made way for the newest"
+
+
+def test_stopping_the_same_request_twice_spends_one_slot():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    theirs, mine = _ids(2)
+    assert ledger.stop(theirs)
+    for _ in range(_SLOTS):
+        assert ledger.stop(mine)
+
+    assert _stopped(ledger) == {mine, theirs}, "the one stopped first is still stopped"
+
+
+def test_a_snapshot_answers_for_every_reply_at_once():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, absent = _ids(2)
+    theirs = "short"
+    ledger.stop(mine)
+    ledger.stop(theirs)
+
+    written, stopped = ledger.snapshot()
+    assert written == 2
+    assert stopped == {mine, theirs}, "the ids as recorded, with nothing padded onto them"
+    assert absent not in stopped
+
+
+class _Ledger:
     def __init__(self, read_by_worker = False):
         self.stopped: set = set()
         self._read_by_worker = read_by_worker
@@ -2888,4 +2956,3 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
     assert row["ttft_ms"] is not None
     assert row["stop_reason"] == "tool_calls"
-

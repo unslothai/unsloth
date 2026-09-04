@@ -24,10 +24,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference.generation_admission import (
+from core.inference.llama_admission import (
     DEFAULT_RECOST_WAIT_TIMEOUT_S,
-    AdmissionConfig,
-    AdmissionQueue,
+    LlamaAdmissionConfig,
+    LlamaAdmissionQueue,
 )
 
 
@@ -65,7 +65,7 @@ def _lease(
 ):
     reservation = queue.reserve(
         capacity = capacity,
-        config = config or AdmissionConfig(),
+        config = config or LlamaAdmissionConfig(),
         tokens = tokens,
         budget = budget,
     )
@@ -114,7 +114,7 @@ async def test_the_slots_a_backend_reports_can_all_be_filled(label, slots, n_ctx
     advertises rather than running one at a time."""
     budget = _budget(n_ctx, slots, kv_unified)
     cost = _tokens(_payload(), budget = budget, capacity = slots, tool_loop = True)
-    queue = AdmissionQueue(label)
+    queue = LlamaAdmissionQueue(label)
     admitted = [_lease(queue, tokens = cost, budget = budget, capacity = slots) for _ in range(slots)]
     assert all(
         lease is not None for lease in admitted
@@ -147,17 +147,18 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
     @pytest.mark.asyncio
     async def test_slot_only_admission_still_fills_every_slot(self):
-        queue = AdmissionQueue("no-budget")
+        queue = LlamaAdmissionQueue("no-budget")
         leases = [
-            queue.reserve(capacity = 4, config = AdmissionConfig()).lease_nowait() for _ in range(4)
+            queue.reserve(capacity = 4, config = LlamaAdmissionConfig()).lease_nowait()
+            for _ in range(4)
         ]
         assert all(lease is not None for lease in leases)
 
     @pytest.mark.asyncio
     async def test_recost_waiting_is_a_no_op_without_a_budget(self):
         """It must not block, and must not invent a commitment out of nothing."""
-        queue = AdmissionQueue("no-budget")
-        lease = queue.reserve(capacity = 4, config = AdmissionConfig()).lease_nowait()
+        queue = LlamaAdmissionQueue("no-budget")
+        lease = queue.reserve(capacity = 4, config = LlamaAdmissionConfig()).lease_nowait()
         assert lease.recost_waiting(999999, timeout_s = 1.0) is True
         assert queue.snapshot().committed == 0
         assert queue._reparking == 0
@@ -165,8 +166,8 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
     @pytest.mark.asyncio
     async def test_recost_waiting_is_a_no_op_when_admission_is_disabled(self):
         """config.enabled False hands back a lease with no queue behind it."""
-        queue = AdmissionQueue("disabled")
-        lease = queue.reserve(capacity = 4, config = AdmissionConfig(enabled = False)).lease_nowait()
+        queue = LlamaAdmissionQueue("disabled")
+        lease = queue.reserve(capacity = 4, config = LlamaAdmissionConfig(enabled = False)).lease_nowait()
         assert lease.recost_waiting(999999, timeout_s = 1.0) is True
         lease.release()
 
@@ -174,8 +175,8 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
     async def test_the_kv_budget_escape_hatch_still_overcommits(self):
         """UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0, the documented way out for a backend whose
         reported context length does not match the cache it allocated."""
-        queue = AdmissionQueue("escape")
-        config = AdmissionConfig(kv_budget = False)
+        queue = LlamaAdmissionQueue("escape")
+        config = LlamaAdmissionConfig(kv_budget = False)
         first = _lease(queue, tokens = 1500, budget = 2048, config = config)
         second = _lease(queue, tokens = 1500, budget = 2048, config = config)
         assert first is not None and second is not None
@@ -188,7 +189,7 @@ class TestOldCallers:
 
     @pytest.mark.asyncio
     async def test_recost_waiting_without_any_new_keyword(self):
-        queue = AdmissionQueue("compat")
+        queue = LlamaAdmissionQueue("compat")
         lease = _lease(queue, tokens = 100, budget = 4096)
         assert lease.recost_waiting(200) is True
         assert queue.snapshot().committed == 200
@@ -196,7 +197,7 @@ class TestOldCallers:
     @pytest.mark.asyncio
     async def test_the_old_non_blocking_recost_still_exists_and_still_declines(self):
         """Callers that must not block keep the old contract: refuse, never wait."""
-        queue = AdmissionQueue("compat")
+        queue = LlamaAdmissionQueue("compat")
         first = _lease(queue, tokens = 3000, budget = 4096)
         second = _lease(queue, tokens = 1000, budget = 4096)
         assert second.recost(4000) is False
@@ -242,9 +243,9 @@ class TestOldCallers:
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
         import inspect
 
-        from core.inference.generation_admission import AdmissionLease
+        from core.inference.llama_admission import LlamaAdmissionLease
 
-        signature = inspect.signature(AdmissionLease.recost_waiting)
+        signature = inspect.signature(LlamaAdmissionLease.recost_waiting)
         assert signature.parameters["timeout_s"].default == DEFAULT_RECOST_WAIT_TIMEOUT_S
 
 
@@ -254,14 +255,14 @@ class TestNoPersistentStateChanged:
     def test_no_new_environment_variable_is_required(self):
         import os
 
-        from core.inference.generation_admission import admission_config_from_env
+        from core.inference.llama_admission import llama_admission_config_from_env
 
         # A completely bare environment must still produce a usable config.
         saved = {k: v for k, v in os.environ.items() if k.startswith("UNSLOTH_")}
         try:
             for key in list(saved):
                 os.environ.pop(key, None)
-            config = admission_config_from_env()
+            config = llama_admission_config_from_env()
         finally:
             os.environ.update(saved)
         assert config.enabled is True
@@ -270,8 +271,8 @@ class TestNoPersistentStateChanged:
     def test_the_queue_carries_no_serialised_state(self):
         """Nothing about a queue is written to disk, and the slots are the whole of its
         state, so a new field cannot break an old install's stored data."""
-        assert "_reparking" in AdmissionQueue.__slots__
-        queue = AdmissionQueue("fresh")
+        assert "_reparking" in LlamaAdmissionQueue.__slots__
+        queue = LlamaAdmissionQueue("fresh")
         assert queue._reparking == 0, "a fresh queue must start with the line open"
 
 
@@ -345,7 +346,7 @@ class TestTheInjectedToolCatalogueIsCharged:
             tool_loop = True,
             injected_tools = self.CATALOG,
         )
-        queue = AdmissionQueue("catalog")
+        queue = LlamaAdmissionQueue("catalog")
         admitted = sum(
             _lease(queue, tokens = cost, budget = budget, capacity = 4) is not None for _ in range(4)
         )

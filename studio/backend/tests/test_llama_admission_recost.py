@@ -22,13 +22,13 @@ import time
 
 import pytest
 
-from core.inference.generation_admission import AdmissionConfig, AdmissionQueue
+from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
 
 def _reserve(queue, *, capacity, tokens, budget):
     return queue.reserve(
         capacity = capacity,
-        config = AdmissionConfig(),
+        config = LlamaAdmissionConfig(),
         tokens = tokens,
         budget = budget,
     )
@@ -51,7 +51,7 @@ def _lease(
 class TestTheQueueSide:
     @pytest.mark.asyncio
     async def test_growth_that_fits_is_applied(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 1000, budget = 4096)
         assert queue.try_recost(1000, 2000) is True
         assert queue.snapshot().committed == 2000
@@ -60,7 +60,7 @@ class TestTheQueueSide:
     async def test_growth_that_does_not_fit_is_refused_and_changes_nothing(self):
         """Refused, not blocked: this runs inside the generator, where a round that waited
         could be waiting on a holder that is waiting on it."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
         assert queue.snapshot().committed == 4000
@@ -71,14 +71,14 @@ class TestTheQueueSide:
     async def test_a_lone_holder_may_grow_past_the_budget(self):
         """The escape admission uses: refusing the only holder stalls a conversation
         nothing else can unblock, and llama.cpp surfaces a real overflow itself."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
         assert queue.try_recost(2000, 9000) is True
         assert queue.snapshot().committed == 9000
 
     @pytest.mark.asyncio
     async def test_shrinking_always_applies(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
         assert queue.try_recost(2000, 500) is True
@@ -86,14 +86,14 @@ class TestTheQueueSide:
 
     @pytest.mark.asyncio
     async def test_no_budget_means_nothing_to_account(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         assert queue.try_recost(1000, 999999) is True
 
 
 class TestTheLeaseSide:
     @pytest.mark.asyncio
     async def test_recost_moves_the_queue_and_the_lease_together(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         lease = _lease(queue, tokens = 1000, budget = 8192)
         assert lease.recost(2500) is True
         assert queue.snapshot().committed == 2500
@@ -105,7 +105,7 @@ class TestTheLeaseSide:
     async def test_a_refused_recost_leaves_release_correct(self):
         """The leak this guards: if the queue took the growth while the lease kept the old
         number, release would hand back less than it holds and strand the difference."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 3000, budget = 4096)
         second = _lease(queue, tokens = 1000, budget = 4096)
         assert second.recost(3000) is False
@@ -115,7 +115,7 @@ class TestTheLeaseSide:
 
     @pytest.mark.asyncio
     async def test_a_released_lease_recosts_to_nothing(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         lease = _lease(queue, tokens = 1000, budget = 4096)
         lease.release()
         assert lease.recost(3000) is True, "a finished run is not an error"
@@ -123,7 +123,7 @@ class TestTheLeaseSide:
 
     @pytest.mark.asyncio
     async def test_recost_is_idempotent_at_the_same_size(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         lease = _lease(queue, tokens = 1000, budget = 4096)
         for _ in range(5):
             assert lease.recost(1000) is True
@@ -134,7 +134,7 @@ class TestTheLeaseSide:
         """release() takes the lease lock and then the queue's; recost takes them in the
         same order, which is what keeps this from deadlocking or leaking."""
         for _ in range(40):
-            queue = AdmissionQueue("test")
+            queue = LlamaAdmissionQueue("test")
             lease = _lease(queue, tokens = 1000, budget = 1_000_000)
             barrier = threading.Barrier(2)
 
@@ -163,7 +163,7 @@ class TestFourToolChatsTogether:
     @pytest.mark.asyncio
     async def test_four_tool_chats_are_admitted_and_can_each_grow_a_little(self):
         """The behaviour the change exists for, end to end at the queue level."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         budget = 262144
         share = budget // 4
         leases = [_lease(queue, tokens = share, budget = budget) for _ in range(4)]
@@ -187,7 +187,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_growth_that_fits_never_touches_the_wait_line(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         lease = _lease(queue, tokens = 1000, budget = 8192)
         assert lease.recost_waiting(2000) is True
         assert queue.snapshot().committed == 2000
@@ -195,7 +195,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_a_waiter_is_let_in_when_a_holder_finishes(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 2000, budget = 4096)
         second = _lease(queue, tokens = 2000, budget = 4096)
 
@@ -222,7 +222,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         """The deadlock case that decides the design. Every holder wants more than a
         share, so blocking while still holding leaves all four waiting on each other.
         Yielding first means _committed strictly falls, so somebody fits."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
         assert queue.snapshot().committed == budget
@@ -251,7 +251,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
     async def test_the_budget_is_never_exceeded_while_they_wait(self):
         """Only one reparker may win the committed-is-zero escape: four racing an empty
         cache would each see zero and each admit itself."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
         peak = []
@@ -282,7 +282,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
     async def test_cancelling_a_waiting_round_restores_its_commitment(self):
         """Stop pressed while waiting. Until the run releases it still occupies
         llama-server's cache, so the pool must know about it."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 3000, budget = 4096)
         second = _lease(queue, tokens = 1000, budget = 4096)
         cancel = threading.Event()
@@ -309,7 +309,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
     async def test_a_reparker_is_not_overtaken_by_a_new_arrival(self):
         """An in-flight conversation beats one that has not started. Otherwise a steady
         arrival rate holds a growing run at its opening size indefinitely."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 2000, budget = 4096)
         second = _lease(queue, tokens = 2000, budget = 4096)
 
@@ -322,7 +322,9 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         assert thread.is_alive()
         # A newcomer arrives while the reparker waits, and must not be granted the room
         # the reparker just gave up.
-        newcomer = queue.reserve(capacity = 4, config = AdmissionConfig(), tokens = 1000, budget = 4096)
+        newcomer = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
+        )
         assert newcomer.lease_nowait() is None, "a new arrival overtook a growing run"
         first.release()
         thread.join(5)
@@ -352,7 +354,7 @@ class TestGivingUpTheWait:
 
     @pytest.mark.asyncio
     async def test_a_full_cache_cannot_refuse_the_restore(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         loser = _lease(queue, tokens = 1024, budget = 4096)
         winner = _lease(queue, tokens = 1024, budget = 4096)
         assert queue.snapshot().committed == 2048
@@ -387,7 +389,9 @@ class TestGivingUpTheWait:
             queue.snapshot().committed == 4096
         ), "release subtracted a commitment that was never restored"
         # And the phantom room that leak created must not admit anyone.
-        newcomer = queue.reserve(capacity = 4, config = AdmissionConfig(), tokens = 1000, budget = 4096)
+        newcomer = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
+        )
         assert (
             newcomer.lease_nowait() is None
         ), "a newcomer was admitted into room the winner is still using"
@@ -397,7 +401,7 @@ class TestGivingUpTheWait:
     async def test_a_released_lease_restores_nothing(self):
         """release() already handed back the 0 held while parked, so re-committing here
         would strand the difference for the life of the process."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
 
@@ -429,14 +433,14 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
     @pytest.mark.asyncio
     async def test_growth_that_fits_does_not_care(self):
         """The cheap path never yields anything, so gating must not disturb it."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 1000, budget = 4096)
         assert holder.recost_waiting(2000, allow_yield = False) is True
         assert queue.snapshot().committed == 2000
 
     @pytest.mark.asyncio
     async def test_growth_that_does_not_fit_declines_instead_of_yielding(self):
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
 
@@ -449,7 +453,7 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
     async def test_it_does_not_block(self):
         """Declining is the pre-existing behaviour: do not wait for room that is never
         coming back on this server."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
 
@@ -460,7 +464,7 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
     @pytest.mark.asyncio
     async def test_yielding_is_still_the_default(self):
         """Old callers, and every server that does clear, keep the waiting behaviour."""
-        queue = AdmissionQueue("test")
+        queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         other = _lease(queue, tokens = 2000, budget = 4096)
 

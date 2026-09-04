@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Admission control for local generation requests."""
+"""Admission control for local llama-server generation requests.
+
+llama.cpp is the only backend that reserves here: every call site derives its capacity and
+KV budget from a llama-server, and the MLX path does not reserve at all. Admitting MLX
+needs those inputs answered for a shared cache under a fixed batch width, not another queue.
+"""
 
 from __future__ import annotations
 
@@ -121,7 +126,7 @@ def _drop_park() -> None:
         _parked_total = max(0, _parked_total - 1)
 
 
-def _live_capacity(current: "AdmissionQueue") -> int:
+def _live_capacity(current: "LlamaAdmissionQueue") -> int:
     """Slots across every backend still serving requests.
 
     One queue's capacity is the wrong denominator for a budget sized against the
@@ -137,7 +142,7 @@ def _live_capacity(current: "AdmissionQueue") -> int:
 
 
 @dataclass(frozen = True, **_SLOTS)
-class AdmissionConfig:
+class LlamaAdmissionConfig:
     enabled: bool = DEFAULT_ADMISSION_ENABLED
     queue_timeout_s: Optional[float] = DEFAULT_ADMISSION_QUEUE_TIMEOUT_S
     keepalive_interval_s: float = DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
@@ -166,7 +171,7 @@ class AdmissionConfig:
 
 
 @dataclass(frozen = True, **_SLOTS)
-class AdmissionSnapshot:
+class LlamaAdmissionSnapshot:
     key: str
     capacity: int
     active: int
@@ -178,26 +183,26 @@ class AdmissionSnapshot:
     budget: int = 0
 
 
-class AdmissionError(Exception):
+class LlamaAdmissionError(Exception):
     def __init__(
         self,
         message: str,
         *,
-        snapshot: Optional[AdmissionSnapshot] = None,
+        snapshot: Optional[LlamaAdmissionSnapshot] = None,
     ):
         super().__init__(message)
         self.snapshot = snapshot
 
 
-class AdmissionQueueFull(AdmissionError):
+class LlamaAdmissionQueueFull(LlamaAdmissionError):
     pass
 
 
-class AdmissionTimeout(AdmissionError):
+class LlamaAdmissionTimeout(LlamaAdmissionError):
     pass
 
 
-class AdmissionCancelled(AdmissionError):
+class LlamaAdmissionCancelled(LlamaAdmissionError):
     pass
 
 
@@ -271,9 +276,9 @@ def _queue_limits_from_env() -> tuple[Optional[int], Optional[int], Optional[int
     return (parsed, None, None) if parsed > 0 else (None, None, None)
 
 
-def admission_config_from_env() -> AdmissionConfig:
+def llama_admission_config_from_env() -> LlamaAdmissionConfig:
     max_queue, queue_per_slot, min_queue = _queue_limits_from_env()
-    return AdmissionConfig(
+    return LlamaAdmissionConfig(
         queue_per_slot = queue_per_slot,
         min_queue = min_queue,
         enabled = _bool_env(ADMISSION_CONTROL_ENV, DEFAULT_ADMISSION_ENABLED),
@@ -295,13 +300,13 @@ class _Waiter:
     loop: asyncio.AbstractEventLoop
     future: asyncio.Future
     cancelled: bool = False
-    granted_lease: Optional["AdmissionLease"] = None
+    granted_lease: Optional["LlamaAdmissionLease"] = None
     # KV tokens this caller will occupy once admitted. Read while the head of the
     # line is considered, so a large request cannot be overtaken by small ones.
     tokens: int = 0
 
 
-class AdmissionLease:
+class LlamaAdmissionLease:
     __slots__ = (
         "_queue",
         "_slot",
@@ -314,7 +319,7 @@ class AdmissionLease:
 
     def __init__(
         self,
-        queue: Optional["AdmissionQueue"],
+        queue: Optional["LlamaAdmissionQueue"],
         slot: Optional[int] = None,
         tokens: int = 0,
     ):
@@ -554,23 +559,23 @@ class AdmissionLease:
                 queue.unpark()
             queue.release(self._slot, self._tokens)
 
-    async def __aenter__(self) -> "AdmissionLease":
+    async def __aenter__(self) -> "LlamaAdmissionLease":
         return self
 
     async def __aexit__(self, *_args) -> None:
         self.release()
 
 
-class AdmissionReservation:
+class LlamaAdmissionReservation:
     __slots__ = ("_queue", "_lease", "_waiter", "snapshot")
 
     def __init__(
         self,
         *,
-        queue: Optional["AdmissionQueue"],
-        lease: Optional[AdmissionLease] = None,
+        queue: Optional["LlamaAdmissionQueue"],
+        lease: Optional[LlamaAdmissionLease] = None,
         waiter: Optional[_Waiter] = None,
-        snapshot: Optional[AdmissionSnapshot] = None,
+        snapshot: Optional[LlamaAdmissionSnapshot] = None,
     ):
         self._queue = queue
         self._lease = lease
@@ -581,7 +586,7 @@ class AdmissionReservation:
     def is_cancelled(self) -> bool:
         return self._lease is None and self._waiter is None
 
-    def lease_nowait(self) -> Optional[AdmissionLease]:
+    def lease_nowait(self) -> Optional[LlamaAdmissionLease]:
         if self._lease is not None:
             return self._lease
         if self._waiter is None or not self._waiter.future.done():
@@ -594,7 +599,7 @@ class AdmissionReservation:
         self._waiter = None
         return self._lease
 
-    async def wait(self, timeout_s: float) -> Optional[AdmissionLease]:
+    async def wait(self, timeout_s: float) -> Optional[LlamaAdmissionLease]:
         """Wait up to ``timeout_s`` for a slot.
 
         A timeout leaves this reservation queued so the caller can poll again.
@@ -629,13 +634,13 @@ class AdmissionReservation:
             self._queue.cancel(self._waiter)
         self._waiter = None
 
-    def snapshot_now(self) -> Optional[AdmissionSnapshot]:
+    def snapshot_now(self) -> Optional[LlamaAdmissionSnapshot]:
         if self._queue is None:
             return self.snapshot
         return self._queue.snapshot()
 
 
-class AdmissionQueue:
+class LlamaAdmissionQueue:
     """A fixed pool of generation slots for one backend, plus a FIFO wait line.
 
     The pool mirrors the backend's own parallel slots: ``capacity`` slot ids
@@ -648,7 +653,7 @@ class AdmissionQueue:
     None); the wait line itself is bounded, and only how many may line up before
     new arrivals are rejected. By default that is ``16 x slots`` floored at 64,
     not unlimited: an unbounded line takes ``max_queue`` or ``queue_per_slot``
-    set to 0. See ``AdmissionConfig.queue_limit``.
+    set to 0. See ``LlamaAdmissionConfig.queue_limit``.
     """
 
     __slots__ = (
@@ -751,10 +756,10 @@ class AdmissionQueue:
         self,
         *,
         capacity: int,
-        config: AdmissionConfig,
+        config: LlamaAdmissionConfig,
         tokens: Optional[int] = None,
         budget: Optional[int] = None,
-    ) -> AdmissionReservation:
+    ) -> LlamaAdmissionReservation:
         """Take a serving slot, waiting in FIFO order when none is available.
 
         ``tokens`` is the KV this caller will occupy and ``budget`` the size of the
@@ -763,10 +768,10 @@ class AdmissionQueue:
         """
         capacity = max(1, int(capacity or 1))
         if not config.enabled:
-            return AdmissionReservation(
+            return LlamaAdmissionReservation(
                 queue = None,
-                lease = AdmissionLease(None),
-                snapshot = AdmissionSnapshot(self.key, capacity, 0, 0, capacity),
+                lease = LlamaAdmissionLease(None),
+                snapshot = LlamaAdmissionSnapshot(self.key, capacity, 0, 0, capacity),
             )
 
         if not config.kv_budget:
@@ -786,16 +791,15 @@ class AdmissionQueue:
             if not self._waiters and self._reparking == 0:
                 slot = self._take_slot_locked(len(self._unpark_tickets), cost)
                 if slot is not None:
-                    # No snapshot here: callers read it through snapshot_now(),
-                    # which re-reads the queue, so building one per admitted
-                    # request would be pure allocation on the hot path.
-                    return AdmissionReservation(
+                    # No snapshot here: callers read it through snapshot_now(), so
+                    # building one per admitted request is pure allocation.
+                    return LlamaAdmissionReservation(
                         queue = self,
-                        lease = AdmissionLease(self, slot, cost),
+                        lease = LlamaAdmissionLease(self, slot, cost),
                     )
             limit = config.queue_limit(self._capacity)
             if limit is not None and self._live_waiters_locked() >= limit:
-                raise AdmissionQueueFull(
+                raise LlamaAdmissionQueueFull(
                     "Generation queue is full",
                     snapshot = self._snapshot_locked(),
                 )
@@ -805,7 +809,7 @@ class AdmissionQueue:
                 tokens = cost,
             )
             self._waiters.append(waiter)
-            return AdmissionReservation(
+            return LlamaAdmissionReservation(
                 queue = self,
                 waiter = waiter,
             )
@@ -867,7 +871,7 @@ class AdmissionQueue:
     def yield_commitment(self, tokens: int) -> None:
         """Hand a live commitment back before asking for a bigger one.
 
-        Half of ``AdmissionLease.recost_waiting``. Unconditional by design: a holder
+        Half of ``LlamaAdmissionLease.recost_waiting``. Unconditional by design: a holder
         that blocked while still holding its old commitment would be waiting on holders
         waiting on it -- four runs at a quarter of the cache each, all wanting half, never
         resolve. Letting go first cannot deadlock, since ``_committed`` strictly falls.
@@ -915,7 +919,7 @@ class AdmissionQueue:
             self._grant_waiters_locked()
 
     def try_park(self, slot: Optional[int]) -> bool:
-        """Return a parked holder's slot to the pool. See ``AdmissionLease.park``.
+        """Return a parked holder's slot to the pool. See ``LlamaAdmissionLease.park``.
 
         False leaves the slot with its holder, so a refused park costs nothing to
         undo. The per-queue count is only what ``is_idle`` reads; the budget and
@@ -995,7 +999,7 @@ class AdmissionQueue:
         if lease_to_release is not None:
             lease_to_release.release()
 
-    def snapshot(self) -> AdmissionSnapshot:
+    def snapshot(self) -> LlamaAdmissionSnapshot:
         with self._lock:
             self._prune_waiters_locked()
             return self._snapshot_locked()
@@ -1023,7 +1027,7 @@ class AdmissionQueue:
             if waiter.cancelled or waiter.future.done():
                 continue
             slot = self._take_slot_locked(len(self._unpark_tickets), waiter.tokens)
-            lease = AdmissionLease(self, slot, waiter.tokens)
+            lease = LlamaAdmissionLease(self, slot, waiter.tokens)
             waiter.granted_lease = lease
             try:
                 waiter.loop.call_soon_threadsafe(self._deliver_lease, waiter, lease)
@@ -1034,7 +1038,7 @@ class AdmissionQueue:
                 self._release_slot_locked(slot)
                 self._committed = max(0, self._committed - max(0, waiter.tokens))
 
-    def _deliver_lease(self, waiter: _Waiter, lease: AdmissionLease) -> None:
+    def _deliver_lease(self, waiter: _Waiter, lease: LlamaAdmissionLease) -> None:
         # Runs on the waiter's own loop thread, which is also the only thread that
         # cancels that reservation, so waiter state is safe to touch unlocked here.
         # release() may be called from any thread, but only reaches this via
@@ -1068,8 +1072,8 @@ class AdmissionQueue:
         self._prune_waiters_locked()
         return len(self._waiters)
 
-    def _snapshot_locked(self) -> AdmissionSnapshot:
-        return AdmissionSnapshot(
+    def _snapshot_locked(self) -> LlamaAdmissionSnapshot:
+        return LlamaAdmissionSnapshot(
             key = self.key,
             capacity = self._capacity,
             active = self._held,
@@ -1089,14 +1093,14 @@ class AdmissionQueue:
 
 
 _QUEUES_LOCK = threading.Lock()
-_QUEUES: dict[str, AdmissionQueue] = {}
+_QUEUES: dict[str, LlamaAdmissionQueue] = {}
 
 
-def get_admission_queue(key: str) -> AdmissionQueue:
+def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
     with _QUEUES_LOCK:
         queue = _QUEUES.get(key)
         if queue is None:
-            queue = AdmissionQueue(key)
+            queue = LlamaAdmissionQueue(key)
             _QUEUES[key] = queue
             # base_url carries a fresh ephemeral port on every model load, so each load registers a new key. Drop the
             # now-idle queues from prior loads so the registry can't grow without bound on a long-running server. Queues
@@ -1106,14 +1110,14 @@ def get_admission_queue(key: str) -> AdmissionQueue:
         return queue
 
 
-def peek_admission_snapshot(key: str) -> Optional[AdmissionSnapshot]:
+def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
     """Read-only view of one queue's state; never creates a queue."""
     with _QUEUES_LOCK:
         queue = _QUEUES.get(key)
     return queue.snapshot() if queue is not None else None
 
 
-def reset_admission_queues() -> None:
+def reset_llama_admission_queues() -> None:
     global _parked_total
     with _QUEUES_LOCK:
         _QUEUES.clear()

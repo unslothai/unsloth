@@ -282,11 +282,11 @@ class TestMediaIsCharged:
         """A large base64 transport must not turn each vision request into a full-cache lease."""
         import asyncio
 
-        from core.inference.generation_admission import AdmissionConfig, AdmissionQueue
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
-            queue = AdmissionQueue("media")
-            config = AdmissionConfig()
+            queue = LlamaAdmissionQueue("media")
+            config = LlamaAdmissionConfig()
             image = _image_b64(1024)
             leases = []
             for _ in range(2):
@@ -325,11 +325,11 @@ class TestMediaIsCharged:
         """The live failure, with images instead of text."""
         import asyncio
 
-        from core.inference.generation_admission import AdmissionConfig, AdmissionQueue
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
         async def scenario():
-            queue = AdmissionQueue("media")
-            config = AdmissionConfig()
+            queue = LlamaAdmissionQueue("media")
+            config = LlamaAdmissionConfig()
             image = _image_b64(4)
             leases = []
             for _ in range(2):
@@ -369,7 +369,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
     """#9392 reserved the WHOLE cache for any tool loop, making every tool chat run alone
     (any lit pill sets enable_tools). The loop now opens at an equal share and re-costs
     per round (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
-    AdmissionLease.recost), the alternative #9392 named and skipped.
+    LlamaAdmissionLease.recost), the alternative #9392 named and skipped.
     """
 
     def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
@@ -488,20 +488,20 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         """Open a tool lease from ``payload``, then re-cost it before it has grown."""
         import asyncio
 
-        from core.inference.generation_admission import AdmissionConfig, AdmissionQueue
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
         from routes.inference import (
             _openai_llama_admission_recost,
             _openai_llama_admission_tokens,
         )
 
         async def _run():
-            queue = AdmissionQueue("test")
+            queue = LlamaAdmissionQueue("test")
             opened = _openai_llama_admission_tokens(
                 payload, budget = 4096, capacity = 4, tool_loop = True
             )
             reservation = queue.reserve(
                 capacity = 4,
-                config = AdmissionConfig(),
+                config = LlamaAdmissionConfig(),
                 tokens = opened,
                 budget = 4096,
             )

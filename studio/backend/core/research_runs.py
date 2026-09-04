@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
-from core.inference.generation_admission import admission_config_from_env
+from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
@@ -1469,7 +1469,8 @@ class ResearchSupervisor:
             admission_gap_budget = max(
                 first_output_budget,
                 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
-                admission_config_from_env().keepalive_interval_s * _ADMISSION_HEARTBEAT_MISSES,
+                llama_admission_config_from_env().keepalive_interval_s
+                * _ADMISSION_HEARTBEAT_MISSES,
             )
             timeout = (
                 httpx.Timeout(model_timeout)

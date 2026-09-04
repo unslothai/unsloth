@@ -21,7 +21,7 @@ import pytest
 from fastapi import FastAPI
 
 from auth.authentication import get_current_subject
-from core.inference import generation_admission
+from core.inference import llama_admission
 import routes.inference as inference_route
 from .llama_backend_double import FakeLlamaCppBackend
 from .asgi_stream_helpers import wait_for_frame
@@ -29,23 +29,23 @@ from .asgi_stream_helpers import wait_for_frame
 
 @pytest.fixture(autouse = True)
 def _fresh_queues():
-    generation_admission.reset_admission_queues()
+    llama_admission.reset_llama_admission_queues()
     yield
-    generation_admission.reset_admission_queues()
+    llama_admission.reset_llama_admission_queues()
 
 
 def _active_slots() -> int:
-    with generation_admission._QUEUES_LOCK:
-        queues = list(generation_admission._QUEUES.values())
+    with llama_admission._QUEUES_LOCK:
+        queues = list(llama_admission._QUEUES.values())
     return sum(queue.snapshot().active for queue in queues)
 
 
-_ONE_SLOT = generation_admission.AdmissionConfig(max_queue = 4)
+_ONE_SLOT = llama_admission.LlamaAdmissionConfig(max_queue = 4)
 
 
 def _reserve_one_slot():
     """Take the single slot of a 1-parallel backend. Needs a running loop."""
-    queue = generation_admission.get_admission_queue("http://llama.test")
+    queue = llama_admission.get_llama_admission_queue("http://llama.test")
     reservation = queue.reserve(capacity = 1, config = _ONE_SLOT)
     return queue, reservation.lease_nowait()
 
@@ -252,7 +252,7 @@ def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
                 "slot still held after [DONE] on the real route; the next chat "
                 "request would queue behind a finished generation"
             )
-            queue = generation_admission.get_admission_queue("http://llama.test")
+            queue = llama_admission.get_llama_admission_queue("http://llama.test")
             second = queue.reserve(capacity = 1, config = _ONE_SLOT).lease_nowait()
             assert second is not None, "next request was refused a free slot"
             second.release()

@@ -95,16 +95,16 @@ from core.inference.orchestrator import (
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
-from core.inference.generation_admission import (
-    AdmissionCancelled,
-    AdmissionConfig,
-    AdmissionLease,
-    AdmissionQueueFull,
-    AdmissionReservation,
-    AdmissionTimeout,
-    get_admission_queue,
-    admission_config_from_env,
-    peek_admission_snapshot,
+from core.inference.llama_admission import (
+    LlamaAdmissionCancelled,
+    LlamaAdmissionConfig,
+    LlamaAdmissionLease,
+    LlamaAdmissionQueueFull,
+    LlamaAdmissionReservation,
+    LlamaAdmissionTimeout,
+    get_llama_admission_queue,
+    llama_admission_config_from_env,
+    peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 
@@ -2117,12 +2117,12 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
-) -> tuple[AdmissionReservation, AdmissionConfig]:
-    config = admission_config_from_env()
+) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
+    config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     budget = _openai_llama_admission_budget(llama_backend)
-    reservation = get_admission_queue(key).reserve(
+    reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
         budget = budget,
@@ -2228,7 +2228,7 @@ def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
 
 def _llama_admission_log(
     event: str,
-    reservation: Optional[AdmissionReservation] = None,
+    reservation: Optional[LlamaAdmissionReservation] = None,
     *,
     snapshot = None,
     request: Optional[Request],
@@ -2293,25 +2293,25 @@ def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> 
     )
 
 
-def _openai_admission_timeout_error(reservation: AdmissionReservation) -> AdmissionTimeout:
-    return AdmissionTimeout(
+def _openai_admission_timeout_error(reservation: LlamaAdmissionReservation) -> LlamaAdmissionTimeout:
+    return LlamaAdmissionTimeout(
         "Timed out waiting for an available local llama-server generation slot",
         snapshot = reservation.snapshot_now(),
     )
 
 
-def _openai_admission_cancelled_error(reservation: AdmissionReservation) -> AdmissionCancelled:
-    return AdmissionCancelled(
+def _openai_admission_cancelled_error(reservation: LlamaAdmissionReservation) -> LlamaAdmissionCancelled:
+    return LlamaAdmissionCancelled(
         "Client disconnected before an upstream llama-server generation slot was available",
         snapshot = reservation.snapshot_now(),
     )
 
 
 async def _raise_if_openai_admission_cancelled(
-    reservation: AdmissionReservation, *, request: Optional[Request], cancel_event
+    reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
     # Cancelled before leasing an upstream, so the model was never used. A streaming caller
-    # has flushed the 200 headers and its `except AdmissionCancelled` just returns, so
+    # has flushed the 200 headers and its `except LlamaAdmissionCancelled` just returns, so
     # flag failed: the middleware must not treat that empty 200 as a successful generation and
     # claim a preview-owned slot. Harmless for non-streaming callers (they surface a non-2xx).
     from core.inference.llama_keepwarm import mark_current_response_failed
@@ -2325,12 +2325,12 @@ async def _raise_if_openai_admission_cancelled(
 
 
 async def _wait_for_openai_admission_non_streaming(
-    reservation: AdmissionReservation,
-    config: AdmissionConfig,
+    reservation: LlamaAdmissionReservation,
+    config: LlamaAdmissionConfig,
     *,
     request: Optional[Request],
     cancel_event,
-) -> AdmissionLease:
+) -> LlamaAdmissionLease:
     lease = reservation.lease_nowait()
     if lease is not None:
         try:
@@ -2342,7 +2342,7 @@ async def _wait_for_openai_admission_non_streaming(
         except asyncio.CancelledError:
             lease.release()
             raise
-        except AdmissionCancelled:
+        except LlamaAdmissionCancelled:
             lease.release()
             raise
         return lease
@@ -2370,7 +2370,7 @@ async def _wait_for_openai_admission_non_streaming(
                 except asyncio.CancelledError:
                     lease.release()
                     raise
-                except AdmissionCancelled:
+                except LlamaAdmissionCancelled:
                     lease.release()
                     raise
                 return lease
@@ -2398,8 +2398,8 @@ async def _wait_for_openai_admission_non_streaming(
 
 
 async def _openai_admission_wait_stream_chunks(
-    reservation: AdmissionReservation,
-    config: AdmissionConfig,
+    reservation: LlamaAdmissionReservation,
+    config: LlamaAdmissionConfig,
     *,
     request: Optional[Request],
     cancel_event,
@@ -6102,7 +6102,7 @@ def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
     # Disabled admission takes no leases and stays at capacity 1, so a multi-slot
     # server would be misreported.
-    if not admission_config_from_env().enabled:
+    if not llama_admission_config_from_env().enabled:
         return None
     llama_backend = get_llama_cpp_backend()
     if not getattr(llama_backend, "is_loaded", False) or getattr(
@@ -6110,7 +6110,7 @@ def _monitor_queue_state() -> Optional[dict]:
     ):
         return None
     direct = _direct_llama_inflight
-    snapshot = peek_admission_snapshot(str(getattr(llama_backend, "base_url", "llama-server")))
+    snapshot = peek_llama_admission_snapshot(str(getattr(llama_backend, "base_url", "llama-server")))
     if snapshot is not None:
         busy = snapshot.active + direct
         active = min(snapshot.capacity, busy)
@@ -6419,12 +6419,21 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
-def _unsloth_slot_fields(model_info: dict) -> dict:
-    """The width a non-GGUF load committed, for the replies that report it."""
+def _unsloth_serving_fields(model_info: dict) -> dict:
+    """What a non-GGUF load says about serving replies, for the replies that report it.
+
+    One helper because a client cannot use any of them alone: a reply carrying some of
+    the three answers nothing.
+    """
     slots = model_info.get("parallel_slots")
     batches = model_info.get("can_batch")
     effective = None if slots is None or batches is None else (slots if batches else 1)
-    return {"requested_parallel_slots": slots, "parallel_slots": effective}
+    return {
+        "requested_parallel_slots": slots,
+        "parallel_slots": effective,
+        "context_length_enforced": model_info.get("context_length_enforced"),
+        "context_unbounded_when_batched": bool(model_info.get("context_unbounded_when_batched")),
+    }
 
 
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
@@ -6443,8 +6452,10 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
-        # llama.cpp allocates the window it reports: bounded by construction.
+        # llama.cpp allocates the window it reports: bounded by construction, and it
+        # decodes each slot against its own.
         context_length_enforced = True,
+        context_unbounded_when_batched = False,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -13503,7 +13514,7 @@ async def _load_model_impl(
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
-                backend.set_parallel_slots(request.n_parallel)
+                backend.set_parallel_slots(_n_parallel)
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
@@ -13538,7 +13549,7 @@ async def _load_model_impl(
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
-                    **_unsloth_slot_fields(_model_info),
+                    **_unsloth_serving_fields(_model_info),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -13564,7 +13575,6 @@ async def _load_model_impl(
                         _model_info.get("native_context_length")
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
-                    context_length_enforced = _model_info.get("context_length_enforced"),
                     chat_template = _chat_template,
                 )
 
@@ -14186,7 +14196,7 @@ async def _load_model_impl(
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
-                n_parallel = request.n_parallel,
+                n_parallel = _n_parallel,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -14304,7 +14314,7 @@ async def _load_model_impl(
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             is_mlx = bool(_model_info.get("is_mlx", False)),
-            **_unsloth_slot_fields(_model_info),
+            **_unsloth_serving_fields(_model_info),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -14326,7 +14336,6 @@ async def _load_model_impl(
             context_length = _positive_int_or_none(_model_info.get("context_length")),
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
-            context_length_enforced = _model_info.get("context_length_enforced"),
             chat_template = _chat_template,
         )
 
@@ -16428,7 +16437,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             audio_type = audio_type,
             has_audio_input = has_audio_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
-            **_unsloth_slot_fields(model_info),
+            **_unsloth_serving_fields(model_info),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
@@ -16452,7 +16461,6 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             context_length = _positive_int_or_none(model_info.get("context_length")),
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
-            context_length_enforced = model_info.get("context_length_enforced"),
             # 0 is an answer (size it yourself); None means no request is recorded. Either
             # spelling: the route stamps max_seq_length_requested on every non-GGUF load,
             # and the MLX mirror carries requested_context_length.
@@ -21593,7 +21601,7 @@ async def produce_openai_chat_completions(
                 # Hand the rounds their reservation now it exists; no round can have run
                 # before this, since the generator is not iterated until admission returns.
                 _gguf_admission_hold["reservation"] = reservation
-            except AdmissionQueueFull as exc:
+            except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
@@ -21980,7 +21988,7 @@ async def produce_openai_chat_completions(
                                 iterator,
                                 cancelled = stream_cancelled,
                             )
-                    except AdmissionTimeout as exc:
+                    except LlamaAdmissionTimeout as exc:
                         _llama_admission_log(
                             "timeout",
                             reservation,
@@ -21994,7 +22002,7 @@ async def produce_openai_chat_completions(
                         yield _openai_stream_error_sse(
                             _openai_admission_error_body(exc, status_code = 503)
                         )
-                    except AdmissionCancelled:
+                    except LlamaAdmissionCancelled:
                         _llama_admission_log(
                             "cancelled-before-upstream",
                             reservation,
@@ -22217,7 +22225,7 @@ async def produce_openai_chat_completions(
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
                 raise
-            except AdmissionTimeout as exc:
+            except LlamaAdmissionTimeout as exc:
                 _llama_admission_log(
                     "timeout",
                     reservation,
@@ -22232,7 +22240,7 @@ async def produce_openai_chat_completions(
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
-            except AdmissionCancelled as exc:
+            except LlamaAdmissionCancelled as exc:
                 _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
@@ -22326,7 +22334,7 @@ async def produce_openai_chat_completions(
                     llama_backend = llama_backend,
                     payload = payload,
                 )
-            except AdmissionQueueFull as exc:
+            except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
                 _llama_admission_log(
                     "queue-full",
@@ -22596,7 +22604,7 @@ async def produce_openai_chat_completions(
                             iterator,
                             cancelled = stream_cancelled,
                         )
-                except AdmissionTimeout as exc:
+                except LlamaAdmissionTimeout as exc:
                     _llama_admission_log(
                         "timeout",
                         reservation,
@@ -22610,7 +22618,7 @@ async def produce_openai_chat_completions(
                     yield _openai_stream_error_sse(
                         _openai_admission_error_body(exc, status_code = 503)
                     )
-                except AdmissionCancelled:
+                except LlamaAdmissionCancelled:
                     _llama_admission_log(
                         "cancelled-before-upstream",
                         reservation,
@@ -22667,7 +22675,7 @@ async def produce_openai_chat_completions(
                     llama_backend = llama_backend,
                     payload = payload,
                 )
-            except AdmissionQueueFull as exc:
+            except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
@@ -22723,7 +22731,7 @@ async def produce_openai_chat_completions(
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
                 raise
-            except AdmissionTimeout as exc:
+            except LlamaAdmissionTimeout as exc:
                 _llama_admission_log(
                     "timeout",
                     reservation,
@@ -22738,7 +22746,7 @@ async def produce_openai_chat_completions(
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
-            except AdmissionCancelled as exc:
+            except LlamaAdmissionCancelled as exc:
                 _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
@@ -24166,10 +24174,8 @@ async def produce_openai_chat_completions(
             async def _one_choice(choice_index):
                 """One sampled answer, healing and nudge retry included.
 
-                Its own seed and its own stats, exactly as the llama-server path
-                drains its own ``n``. The reply itself comes from the batch when
-                one produced it; everything after the reply runs per choice
-                either way, and a nudge retry is always a generation of its own.
+                Its own seed and its own stats, exactly as the llama-server path drains
+                its own ``n``. Everything after the reply runs per choice either way.
                 """
                 # Cleared per choice: one cancelled before it publishes must report
                 # nothing rather than inherit the previous choice's token count.
@@ -24202,11 +24208,9 @@ async def produce_openai_chat_completions(
                 if _reasoning_text:
                     _msg["reasoning_content"] = _reasoning_text
                 # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
-                # stopped on request, not at the cap, so it stays "stop". A reply the batch
-                # produced reports its own end instead: a Stop aimed at some other choice must
-                # not rewrite the reason this one already finished for, and a row the cancel did
-                # catch has "stop" in its own stats anyway. A row cut off part-way carries no
-                # stats to read a reason out of, so it reports the stopped turn it is.
+                # stopped on request, not at the cap, so it stays "stop". A reply the
+                # batch produced reports its own end instead: a Stop aimed at some other
+                # choice must not rewrite the reason this one already finished for.
                 _finish = (
                     "stop"
                     if cancel_event.is_set() and choice_index not in _produced
@@ -24364,9 +24368,8 @@ async def produce_openai_chat_completions(
             if len(_choices) > 1:
                 # Every choice, labelled, as the llama-server drain reports them:
                 # showing the last one alone would hide the rest of the turn.
-                # Numbered from the choice's own index, not its place in the list:
-                # a cancelled turn publishes the choices the batch produced and skips
-                # the ones it did not, so position and identity come apart.
+                # Numbered from the choice's own index, not its place in the list: a
+                # cancelled turn skips the choices the batch never produced.
                 _monitor_reply = "\n\n".join(
                     f"Choice {_choice.index + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
                     for _reply, _choice in zip(_monitor_replies, _choices)
@@ -24825,8 +24828,14 @@ def _openai_model_objects() -> list[dict]:
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value
-        if model_info.get("context_length_enforced") is not None:
-            entry["context_length_enforced"] = bool(model_info["context_length_enforced"])
+        # Through the same helper the load and status replies use, so this catalogue
+        # cannot disagree with the reply that loaded the model.
+        _serving = _unsloth_serving_fields(model_info)
+        if _serving["context_length_enforced"] is not None:
+            entry["context_length_enforced"] = bool(_serving["context_length_enforced"])
+        entry["context_unbounded_when_batched"] = _serving["context_unbounded_when_batched"]
+        if _serving["parallel_slots"] is not None:
+            entry["parallel_slots"] = _serving["parallel_slots"]
         models.append(entry)
 
     return models
@@ -26907,7 +26916,7 @@ async def _responses_stream(
             # one equal cache share no matter how large the request really was.
             payload = chat_req,
         )
-    except AdmissionQueueFull as exc:
+    except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
@@ -27914,7 +27923,7 @@ async def _responses_stream(
                     iterator,
                     cancelled = stream_cancelled,
                 )
-        except AdmissionTimeout as exc:
+        except LlamaAdmissionTimeout as exc:
             _llama_admission_log(
                 "timeout",
                 reservation,
@@ -27926,7 +27935,7 @@ async def _responses_stream(
             )
             api_monitor.fail(monitor_id, str(exc))
             yield _responses_admission_failed_sse(exc, status_code = 503)
-        except AdmissionCancelled:
+        except LlamaAdmissionCancelled:
             _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
@@ -29265,7 +29274,7 @@ async def anthropic_messages(
             # GeneratorExit, or its handler never finalizes the monitor entry.
             stream_cancelled = True
             raise
-        except AdmissionTimeout as exc:
+        except LlamaAdmissionTimeout as exc:
             api_monitor.fail(monitor_id, str(exc))
             _llama_admission_log(
                 "timeout",
@@ -29279,7 +29288,7 @@ async def anthropic_messages(
                 "error",
                 anthropic_error_body(str(exc), status = 503),
             )
-        except AdmissionCancelled:
+        except LlamaAdmissionCancelled:
             _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
@@ -29342,7 +29351,7 @@ async def anthropic_messages(
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation
-        except AdmissionQueueFull as exc:
+        except LlamaAdmissionQueueFull as exc:
             coro.close()
             api_monitor.fail(monitor_id, str(exc))
             _llama_admission_log(
@@ -29410,11 +29419,11 @@ async def anthropic_messages(
             # llama-server, so it has no business blocking a swap.
             monitored = await _tracked_anthropic_non_streaming(coro)
             return monitored
-        except AdmissionTimeout as exc:
+        except LlamaAdmissionTimeout as exc:
             coro.close()
             api_monitor.fail(monitor_id, str(exc))
             raise _anthropic_admission_http_exception(exc, status_code = 503)
-        except AdmissionCancelled as exc:
+        except LlamaAdmissionCancelled as exc:
             coro.close()
             api_monitor.finish(monitor_id, "cancelled")
             raise _anthropic_admission_http_exception(exc, status_code = 499)
@@ -31767,7 +31776,7 @@ async def _openai_passthrough_stream(
             llama_backend = llama_backend,
             payload = payload,
         )
-    except AdmissionQueueFull as exc:
+    except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
         _llama_admission_log(
             "queue-full",
@@ -31793,7 +31802,7 @@ async def _openai_passthrough_stream(
             lease.release()
             _tracker.__exit__(None, None, None)
             raise
-        except AdmissionCancelled as exc:
+        except LlamaAdmissionCancelled as exc:
             lease.release()
             _tracker.__exit__(None, None, None)
             api_monitor.finish(monitor_id, "cancelled")
@@ -31882,7 +31891,7 @@ async def _openai_passthrough_stream(
                         if cleanup is not None:
                             await cleanup()
                 return
-        except AdmissionTimeout as exc:
+        except LlamaAdmissionTimeout as exc:
             _llama_admission_log(
                 "timeout",
                 reservation,
@@ -31894,7 +31903,7 @@ async def _openai_passthrough_stream(
             )
             api_monitor.fail(monitor_id, str(exc))
             yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
-        except AdmissionCancelled:
+        except LlamaAdmissionCancelled:
             _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
@@ -31951,7 +31960,7 @@ async def _openai_passthrough_stream_admitted(
     completion_id,
     monitor_id: Optional[str] = None,
     *,
-    admission_lease: AdmissionLease,
+    admission_lease: LlamaAdmissionLease,
     tracker,
 ):
     """Streaming client-side pass-through after Unsloth granted an upstream slot.
@@ -32821,7 +32830,7 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
             payload = payload,
         )
-    except AdmissionQueueFull as exc:
+    except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
@@ -32872,7 +32881,7 @@ async def _openai_passthrough_non_streaming(
             request = request,
             cancel_event = cancel_event,
         )
-    except AdmissionTimeout as exc:
+    except LlamaAdmissionTimeout as exc:
         _llama_admission_log(
             "timeout",
             reservation,
@@ -32883,7 +32892,7 @@ async def _openai_passthrough_non_streaming(
         )
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 503)
-    except AdmissionCancelled as exc:
+    except LlamaAdmissionCancelled as exc:
         _llama_admission_log(
             "cancelled-before-upstream",
             reservation,

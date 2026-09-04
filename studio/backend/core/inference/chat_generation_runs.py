@@ -362,11 +362,11 @@ def _minimum_lease_seconds() -> float:
     only produces a renewable marker that often. A shorter lease expires between markers
     however fast we poll, reaping a healthy queued run.
     """
-    from core.inference.generation_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+    from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
 
     try:
-        from core.inference.generation_admission import admission_config_from_env
-        interval = float(admission_config_from_env().keepalive_interval_s)
+        from core.inference.llama_admission import llama_admission_config_from_env
+        interval = float(llama_admission_config_from_env().keepalive_interval_s)
     except Exception:
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
     # That parser is not ours and only checks the value is positive, so `inf` arrives intact and makes the applied lease
