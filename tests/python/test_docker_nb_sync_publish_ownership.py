@@ -112,8 +112,7 @@ def _run(
 def _assert_refreshed_and_still_the_owners(dest: Path, res):
     live = dest / REL
     assert live.read_text(encoding = "utf-8") == V2, (
-        f"the upstream change must reach the container; stdout={res.stdout!r} "
-        f"stderr={res.stderr!r}"
+        f"the upstream change must reach the container; stdout={res.stdout!r} stderr={res.stderr!r}"
     )
     mode = stat.S_IMODE(live.stat().st_mode)
     assert mode == HOST_MODE, (
@@ -135,9 +134,7 @@ def test_the_ebusy_fallback_keeps_the_destinations_metadata(tmp_path: Path):
     binp.mkdir()
     stub = binp / "mv"
     stub.write_text(
-        "#!/usr/bin/env bash\n"
-        'case "$*" in *.unsloth_nb_new.*) exit 1 ;; esac\n'
-        'exec /bin/mv "$@"\n',
+        '#!/usr/bin/env bash\ncase "$*" in *.unsloth_nb_new.*) exit 1 ;; esac\nexec /bin/mv "$@"\n',
         encoding = "utf-8",
     )
     stub.chmod(0o755)
@@ -162,9 +159,9 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     # user could not edit a notebook upstream had just added. It now falls
     # through to own_like_dir instead.
     assert 'if [ ! -e "$2" ]; then' in block
-    assert (
-        "own_like_dir" in block
-    ), "a brand-new notebook must take the owner of the directory it lands in"
+    assert "own_like_dir" in block, (
+        "a brand-new notebook must take the owner of the directory it lands in"
+    )
 
 
 @pytest.mark.skipif(
@@ -222,7 +219,7 @@ def _drive_mkdir_keep_owner(tmp_path: Path, target: Path) -> list:
     log = tmp_path / "chown.log"
     shim = bin_dir / "chown"
     shim.write_text(
-        "#!/usr/bin/env bash\n" f'printf "%s\\n" "$*" >> "{log}"\n' "exit 0\n",
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{log}"\nexit 0\n',
         encoding = "utf-8",
     )
     shim.chmod(0o755)
@@ -268,15 +265,26 @@ def test_an_existing_notebook_directory_is_left_alone(tmp_path: Path):
 
 
 def test_every_directory_creating_site_routes_through_the_helper():
-    """Three sites create directories inside $DEST; none may call bare mkdir."""
+    """Four sites create $DEST or a directory inside it; none may call bare mkdir."""
     source = SYNC_SH.read_text(encoding = "utf-8")
+    # The WHOLE file, not just what follows the helper: `mkdir -p "$DEST"` sat above
+    # it, and the root it created as root:root is the anchor every other site
+    # inherits from, so scoping this scan to the tail is what let that one through.
+    stray = [
+        line.strip() for line in source.splitlines() if "mkdir -p" in line and '"$DEST' in line
+    ]
+    assert not stray, f"these still create a directory as root inside $DEST: {stray}"
     body = source[source.index("mkdir_keep_owner() {") :]
     body = body[body.index("\n}\n") :]  # everything after the helper itself
-    stray = [line.strip() for line in body.splitlines() if "mkdir -p" in line and "$DEST/" in line]
-    assert not stray, f"these still create a directory as root inside $DEST: {stray}"
-    assert (
-        body.count("mkdir_keep_owner ") == 3
-    ), "expected populate, restore and publish to route through the helper"
+    # Real invocations only: counting the substring also counted the word where a
+    # comment merely names the helper, so prose could satisfy or break this.
+    calls = [
+        line.strip() for line in body.splitlines() if line.strip().startswith("mkdir_keep_owner ")
+    ]
+    assert len(calls) == 4, (
+        "expected the notebook root, populate, restore and publish to route "
+        f"through the helper: {calls}"
+    )
 
 
 # --- a notebook that has no destination to inherit from -------------------------
@@ -297,7 +305,7 @@ def _drive_sh(tmp_path: Path, snippet: str, *funcs: str) -> list:
     log = tmp_path / "chown.log"
     shim = bin_dir / "chown"
     shim.write_text(
-        "#!/usr/bin/env bash\n" f'printf "%s\\n" "$*" >> "{log}"\n' "exit 0\n",
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{log}"\nexit 0\n',
         encoding = "utf-8",
     )
     shim.chmod(0o755)
@@ -334,9 +342,9 @@ def test_a_brand_new_notebook_gets_the_destination_directorys_owner(tmp_path: Pa
         "stage_metadata",
     )
 
-    assert calls == [
-        f"--reference={dest_dir} {staged}"
-    ], f"a new notebook must take the owner of the directory it lands in: {calls}"
+    assert calls == [f"--reference={dest_dir} {staged}"], (
+        f"a new notebook must take the owner of the directory it lands in: {calls}"
+    )
     # 0666 & ~022, the mode a plain write would have produced.
     assert stat.S_IMODE(os.stat(staged).st_mode) == 0o644, oct(
         stat.S_IMODE(os.stat(staged).st_mode)
@@ -379,6 +387,69 @@ def test_both_template_copies_hand_the_file_to_the_host_user():
     lines = source.splitlines()
     for i in copies:
         window = "\n".join(lines[i : i + 4])
-        assert (
-            "own_like_dir" in window
-        ), f"the copy at line {i + 1} publishes the template's root:root mode"
+        assert "own_like_dir" in window, (
+            f"the copy at line {i + 1} publishes the template's root:root mode"
+        )
+
+
+# --- the notebook root itself ---------------------------------------------------
+# `mkdir -p "$DEST"` ran as root before any helper was involved, so on first boot
+# under a host-owned bind mount (UNSLOTH_NOTEBOOKS_DIR=/workspace/host/notebooks,
+# with -v $PWD:/workspace/host) the notebook root landed root:root. Every later
+# mkdir_keep_owner anchors on the NEAREST EXISTING ancestor and own_like_dir copies
+# the owner of the directory a file lands in, so that one root:root directory is
+# then inherited by every category folder and every notebook underneath it, and the
+# host user cannot edit or delete their own notebooks. unsloth_run.py's
+# _makedirs_as_host has always chowned the leaf it creates; the shell twin did not.
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_notebook_root_is_created_with_its_ancestors_owner(tmp_path: Path):
+    template = tmp_path / "template"
+    (template / "nb").mkdir(parents = True)
+    (template / REL).write_text(V1, encoding = "utf-8")
+    (template / ".unsloth_template_commit").write_text("old\n", encoding = "utf-8")
+
+    host = tmp_path / "host"  # the bind mount, owned by the host user
+    host.mkdir()
+    dest = host / "notebooks"  # first boot: does not exist yet
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "chown.log"
+    shim = bin_dir / "chown"
+    shim.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{log}"\nexit 0\n',
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
+        UNSLOTH_NOTEBOOKS_DIR = str(dest),
+        UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
+        UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
+        UNSLOTH_KEEP_COLAB_INTRO = "1",
+        PATH = f"{bin_dir}{os.pathsep}" + os.environ["PATH"],
+    )
+    res = subprocess.run(
+        ["bash", str(SYNC)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 120,
+    )
+
+    assert (dest / REL).is_file(), (
+        f"populate must still run; stdout={res.stdout!r} stderr={res.stderr!r}"
+    )
+    calls = [
+        line
+        for line in (log.read_text(encoding = "utf-8").splitlines() if log.exists() else [])
+        if line
+    ]
+    assert f"--reference={host} {dest}" in calls, (
+        "the notebook root was created as root:root, so every directory and "
+        f"notebook under it inherits root ownership from it: {calls}"
+    )

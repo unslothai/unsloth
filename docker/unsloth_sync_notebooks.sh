@@ -56,7 +56,6 @@ middle_unchanged() {
 
 [ "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" = "1" ] && exit 0
 [ -d "$TEMPLATE" ] || exit 0
-mkdir -p "$DEST" 2>/dev/null || exit 0
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
@@ -116,6 +115,12 @@ mkdir_keep_owner() {
     done
     return 0
 }
+
+# Created through the helper, not a plain `mkdir -p` earlier: $DEST is the anchor
+# every later mkdir_keep_owner and own_like_dir inherits from, so a root:root root
+# under a host-owned bind mount publishes root ownership down the whole tree.
+mkdir_keep_owner "$DEST"
+[ -d "$DEST" ] || exit 0
 
 # The refresh runs in a DETACHED child, so two copies mutate $DEST and $STATE at once
 # by design and a notebook the child copied while the parent hashed it is permanently
