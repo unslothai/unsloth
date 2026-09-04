@@ -3203,6 +3203,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         disable_vision: effectiveDisableVision,
         // Not GGUF-only: an MLX load decodes several replies at once too, and one
         // auto-loaded without its remembered width comes up at the server default.
+        n_parallel: config.nParallel ?? null,
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
         ...(candidate.kind === "gguf"

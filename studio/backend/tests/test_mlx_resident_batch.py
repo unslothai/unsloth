@@ -215,10 +215,10 @@ _HOLD_CASES = [
                 "r4": ["d", None],
             },
             idle = 12,
-            widths = [4, 2],
+            widths = [4, 2, 2],
             order = ["r1", "r2", "r3", "r4"],
         ),
-        id = "everything held behind one incompatible command still batches together",
+        id = "everything held behind one incompatible command still batches, within the width",
     ),
     pytest.param(
         dict(

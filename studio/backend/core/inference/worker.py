@@ -1202,6 +1202,12 @@ class _ResidentBatch:
             # A command at another width waits for the batch to drain: joining at the old
             # one would refill the batch, so a narrowed load never reaches its new width.
             return "the open batch is decoding at a different width"
+        if (
+            self.width is not None
+            and self.rows_in_flight + len(cmd.get("rows") or [None]) > self.width
+        ):
+            # Past the width, rows would wait inside the generator holding their prompt state.
+            return "the open batch is full"
         probe = getattr(self.backend, "resident_unavailable_reason", None)
         if not callable(probe):
             return "this backend has no batch a reply can join"
@@ -1865,7 +1871,7 @@ def run_inference_process(
                         reason = "it does not prepare like the replies in the batch"
                     if batch.rows_in_flight:
                         logger.info(
-                            "Holding request_id=%s until the batch empties: %s",
+                            "Holding request_id=%s until the batch takes it or drains: %s",
                             cmd.get("request_id", ""),
                             reason,
                         )
