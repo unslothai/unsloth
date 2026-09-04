@@ -58,10 +58,26 @@ mkdir -p "$DEST" 2>/dev/null || exit 0
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
+# Give a file that has no destination to inherit from the mode a plain write would
+# have produced and the OWNER of the directory it lands in. Under -v $PWD:/workspace
+# that directory is the host user's, so without this the clone's or template's
+# root:root 0644 is published and they cannot edit their own notebook. This is the
+# new-file branch of unsloth_run.py's _stage_metadata, which the shell twin lacked.
+own_like_dir() {
+    chmod "$(printf '%03o' "$(( 0666 & ~0$(umask) ))")" "$1" 2>/dev/null || true
+    chown --reference="$2" "$1" 2>/dev/null || true
+    return 0
+}
+
 # rename swaps the DIRECTORY ENTRY, so without this the clone's root:root 0644 lands
 # on a bind-mounted notebook the host user owns. Best effort.
 stage_metadata() {
-    [ -e "$2" ] || return 0
+    if [ ! -e "$2" ]; then
+        # A notebook upstream just added: no destination metadata exists, and
+        # returning here published the clone's ownership unchanged.
+        own_like_dir "$1" "$(dirname "$2")"
+        return 0
+    fi
     chmod --reference="$2" "$1" 2>/dev/null || true
     chown --reference="$2" "$1" 2>/dev/null || true
     return 0
@@ -201,6 +217,8 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             continue
         fi
         if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+            # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
+            own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
             printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
         else
             populate_failed=$((populate_failed + 1))
@@ -227,6 +245,8 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
            && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
             mkdir_keep_owner "$DEST/$(dirname "$rel")"
             if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+                # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
+                own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
                 printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$RS_TMP"
                 restored=$((restored + 1))
                 continue
