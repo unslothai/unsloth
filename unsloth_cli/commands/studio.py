@@ -187,9 +187,22 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     matter what storage_roots decides. Same predicate as
     storage_roots._inherits_parent_portable_marker; the two must not disagree.
 
-    Case-folded where the filesystem is: the installer writes `studio`, but a
-    user typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory and
-    resolve() does not correct the spelling.
+    A leaf spelled otherwise can still BE <parent>/studio, because a
+    case-insensitive filesystem opens the `studio` the installer wrote for a user
+    who typed `Studio` into UNSLOTH_STUDIO_HOME, and resolve() does not correct
+    the spelling. Asked of the FILESYSTEM, not of the platform: macOS is
+    case-insensitive by default but not by rule, and a case-sensitive APFS volume
+    is exactly what an external disk carrying a portable install tends to be
+    formatted as. There `studio` and `Studio` are two directories, and a
+    platform-wide fold hands a separate normal install at <master>/Studio the
+    nested portable sibling's master root and managed runtimes -- which this CLI
+    then exports, outranking whatever the backend decides on its own. samefile is
+    the st_dev/st_ino pair `[ x -ef y ]` compares for the two shell copies.
+
+    The cheap name test stays in front so the common case costs no stat. DECLINES
+    when the probe cannot run, for the reason storage_roots does: a nested
+    portable root still has its own .unsloth-master-root record, which
+    _in_root_master_root reads and which outranks this lookup.
 
     Necessary, not sufficient: a marker beside a FLAT install is that install's
     own, and `studio` is a name a separate install placed under it can equally
@@ -198,9 +211,12 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     name = root.name
     if name == _STUDIO_CHILD_DIRNAME:
         return True
-    if os.name == "nt" or sys.platform == "darwin":
-        return name.lower() == _STUDIO_CHILD_DIRNAME
-    return False
+    if name.lower() != _STUDIO_CHILD_DIRNAME:
+        return False
+    try:
+        return root.samefile(root.parent / _STUDIO_CHILD_DIRNAME)
+    except (OSError, ValueError):
+        return False
 
 
 def _parent_marker_is_trustworthy(parent: Path) -> bool:
