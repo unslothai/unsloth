@@ -860,6 +860,65 @@ def _is_uv_pip_sync(argv):
     return [tok for _, tok in _positionals(argv)][:2] == ["pip", "sync"]
 
 
+# Options that send the install somewhere OTHER than the venv this shim guards.
+# pip documents --target as "Install packages into <dir>" and --python as "Run pip
+# with the specified Python interpreter"; uv documents --python as "The Python
+# interpreter into which packages should be installed".
+_DEST_DIR_FLAGS = {"--target", "-t", "--prefix", "--root"}
+_DEST_PYTHON_FLAGS = {"--python", "-p"}
+# pip honours PIP_<OPTION> for every option and uv documents --python as
+# [env: UV_PYTHON=]; both redirect with nothing on the command line at all.
+_DEST_DIR_ENV = ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT")
+_DEST_PYTHON_ENV = ("UV_PYTHON", "PIP_PYTHON")
+
+
+def _flag_values(argv, flags):
+    """Every value given for any of `flags`, in the spellings both tools accept:
+    separated, `--flag=value`, and a short flag with its value attached."""
+    out, want = [], False
+    for tok in argv:
+        if want:
+            out.append(tok)
+            want = False
+            continue
+        if tok in flags:
+            want = True
+            continue
+        for f in flags:
+            if tok.startswith(f + "="):
+                out.append(tok[len(f) + 1 :])
+                break
+            if len(f) == 2 and f[0] == "-" and f[1] != "-" and tok.startswith(f) and len(tok) > 2:
+                out.append(tok[2:])
+                break
+    return [v for v in out if v]
+
+
+def _inside_base_venv(path):
+    root = os.path.realpath(os.path.dirname(os.path.dirname(REAL["pip"])))
+    resolved = os.path.realpath(path)
+    return resolved == root or resolved.startswith(root + os.sep)
+
+
+def _installs_elsewhere(argv):
+    """True when this install is aimed at an environment that is NOT the baked venv.
+
+    Every reason to filter is about protecting that venv, so filtering an install
+    bound for somewhere else drops the packages the caller actually asked for and
+    then reports success having installed nothing.
+
+    Deliberately conservative: only a destination we can positively resolve OUTSIDE
+    the venv counts. A bare `--python python3` or `--python 3.12` may well name the
+    baked interpreter, so it keeps the protective behaviour."""
+    dirs = _flag_values(argv, _DEST_DIR_FLAGS)
+    dirs += [os.environ[v] for v in _DEST_DIR_ENV if os.environ.get(v)]
+    if any(not _inside_base_venv(d) for d in dirs):
+        return True
+    pythons = _flag_values(argv, _DEST_PYTHON_FLAGS)
+    pythons += [os.environ[v] for v in _DEST_PYTHON_ENV if os.environ.get(v)]
+    return any((os.path.isabs(p) or os.sep in p) and not _inside_base_venv(p) for p in pythons)
+
+
 def main():
     tool = "uv" if os.path.basename(sys.argv[0]).startswith("uv") else "pip"
     argv = sys.argv[1:]
@@ -868,6 +927,12 @@ def main():
         _selfcheck_value_flags()
 
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
+        os.execv(REAL[tool], [REAL[tool]] + argv)
+        return
+
+    # Before the sync refusal as well: `uv pip sync --python <other>` only uninstalls
+    # from that other environment, so there is no baked stack for it to strip.
+    if _installs_elsewhere(argv):
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 

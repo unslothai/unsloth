@@ -1157,7 +1157,10 @@ def test_a_protected_target_under_uv_tool_install_is_not_swallowed(shim, monkeyp
     "argv",
     [
         ["uv", "pip", "--directory", "/tmp", "install", "snac"],
-        ["uv", "pip", "--python", "/usr/bin/python3", "install", "snac"],
+        # aimed AT the guarded venv on purpose: an interpreter elsewhere is a
+        # destination and is deliberately bypassed, which would not exercise the
+        # subcommand search this test is about
+        ["uv", "pip", "--python", "/opt/unsloth-venv/bin/python", "install", "snac"],
         ["uv", "pip", "--cache-dir", "/c", "--color", "never", "install", "snac"],
         ["uv", "pip", "--directory=/tmp", "install", "snac"],
     ],
@@ -1542,3 +1545,112 @@ def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, t
     assert ran is None or not any(
         "unsloth" in a for a in ran
     ), f"the baked unsloth was forwarded for replacement: {ran}"
+
+
+# --target/--prefix/--root/--python send the install to an environment this shim does
+# not guard. Filtering the baked stack out of one of those drops the packages the
+# caller actually asked for, and the "nothing to install" path then prints ok and
+# installs nothing at all.
+
+BAKED_VENV = "/opt/unsloth-venv"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pip", "--python", "/tmp/venv/bin/python", "install", "torch==2.5.0"],
+        ["pip", "install", "--target", "/tmp/lib", "torch==2.5.0"],
+        ["pip", "install", "--target=/tmp/lib", "torch==2.5.0"],
+        ["pip", "install", "-t", "/tmp/lib", "torch==2.5.0"],
+        ["pip", "install", "-t/tmp/lib", "torch==2.5.0"],
+        ["pip", "install", "--prefix", "/tmp/pfx", "torch==2.5.0"],
+        ["pip", "install", "--root", "/tmp/root", "torch==2.5.0"],
+        ["uv", "pip", "install", "--python", "/tmp/venv/bin/python", "torch==2.5.0"],
+        ["uv", "pip", "install", "-p", "/tmp/venv/bin/python", "torch==2.5.0"],
+        ["uv", "pip", "install", "--target", "/tmp/lib", "torch==2.5.0"],
+        ["uv", "pip", "install", "--prefix", "/tmp/pfx", "torch==2.5.0"],
+    ],
+    ids = [
+        "pip-python",
+        "pip-target",
+        "pip-target-eq",
+        "pip-t",
+        "pip-t-attached",
+        "pip-prefix",
+        "pip-root",
+        "uv-python",
+        "uv-p",
+        "uv-target",
+        "uv-prefix",
+    ],
+)
+def test_an_install_aimed_elsewhere_keeps_the_packages_it_asked_for(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    ran = _full_argv(shim, argv)
+    assert ran is not None, "the shim installed nothing and reported success"
+    assert "torch==2.5.0" in ran, f"torch was dropped from another environment: {ran}"
+
+
+@pytest.mark.parametrize(
+    "var, value",
+    [
+        ("PIP_TARGET", "/tmp/lib"),
+        ("PIP_PREFIX", "/tmp/pfx"),
+        ("PIP_ROOT", "/tmp/root"),
+        ("UV_PYTHON", "/tmp/venv/bin/python"),
+    ],
+)
+def test_a_destination_environment_variable_redirects_too(shim, monkeypatch, var, value):
+    """pip honours PIP_<OPTION> for every option and uv documents --python as
+    [env: UV_PYTHON=], so the destination moves with nothing on the command line."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    monkeypatch.setenv(var, value)
+    tool = "uv" if var.startswith("UV_") else "pip"
+    argv = (
+        ["uv", "pip", "install", "torch==2.5.0"]
+        if tool == "uv"
+        else ["pip", "install", "torch==2.5.0"]
+    )
+    ran = _full_argv(shim, argv)
+    assert ran is not None, "the shim installed nothing and reported success"
+    assert "torch==2.5.0" in ran, f"torch was dropped from another environment: {ran}"
+
+
+def test_a_sync_aimed_elsewhere_is_not_refused(shim, monkeypatch):
+    """The sync refusal exists because sync UNINSTALLS everything missing from the
+    file, stripping the baked stack. Pointed at another environment there is no baked
+    stack for it to strip."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    ran = _full_argv(shim, ["uv", "pip", "sync", "--python", "/tmp/venv/bin/python", "r.txt"])
+    assert ran is not None and "r.txt" in ran, f"a sync aimed elsewhere was refused: {ran}"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pip", "install", "torch==2.5.0"],
+        ["uv", "pip", "install", "torch==2.5.0"],
+        # a bare name or version may well BE the baked interpreter, so it must not
+        # buy a bypass
+        ["uv", "pip", "install", "--python", "python3", "torch==2.5.0"],
+        ["uv", "pip", "install", "--python", "3.12", "torch==2.5.0"],
+        # and a destination INSIDE the guarded venv is still the guarded venv
+        [
+            "pip",
+            "install",
+            "--target",
+            BAKED_VENV + "/lib/python3.12/site-packages",
+            "torch==2.5.0",
+        ],
+        ["uv", "pip", "install", "--python", BAKED_VENV + "/bin/python", "torch==2.5.0"],
+    ],
+    ids = ["pip-plain", "uv-plain", "bare-name", "bare-version", "target-in-venv", "python-in-venv"],
+)
+def test_the_baked_venv_is_still_protected(shim, monkeypatch, argv):
+    """Guard on already-correct behaviour: the bypass must fire only for a destination
+    positively resolved OUTSIDE the venv."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    ran = _full_argv(shim, argv)
+    assert (
+        ran is None or "torch==2.5.0" not in ran
+    ), f"the baked torch was forwarded for replacement: {ran}"
