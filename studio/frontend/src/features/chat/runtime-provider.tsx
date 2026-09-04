@@ -364,10 +364,10 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
-  // Refused here, not at send: the composer empties itself before it awaits send(), so a
-  // ceiling that only fires there discards the typed message too. The throw is invisible
-  // (nothing subscribes to attachmentAddError, the picker never awaits addAttachment), so
-  // the toast is the only thing telling the user why no file appeared.
+  // Refused here, not at send: the composer empties itself before it awaits send(), so a ceiling
+  // that only fires there discards the typed message too. The throw is invisible: nothing
+  // subscribes to attachmentAddError and the picker never awaits addAttachment, so the toast is
+  // the only thing telling the user why no file appeared.
   add({ file }: { file: File }): Promise<PendingAttachment> {
     const sizeError = getDocumentAttachmentSizeError(file, "PDF");
     if (sizeError) {
@@ -402,9 +402,8 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for source files, so also match by extension
-  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
-  // config and other plain-text formats; html keeps its own adapter below.
+  // MIME is unreliable for source files, so also match by extension (assistant-ui's
+  // fileMatchesAccept supports ".ext"). Covers svg, code and plain text; html has its own.
   accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
@@ -477,8 +476,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          // A pasted file gets its own tag and size, the markers that outlive
-          // the File once the message is stored.
+          // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
           text: attachmentContentText(
             attachment.name,
             text,
@@ -531,9 +529,8 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  // The archive's own parts are checked too, not just the upload ceiling: a small .docx
-  // can declare a part that only mammoth's inflate grows past the cap, and refusing that
-  // at send() would empty the composer.
+  // The archive's own parts are checked too: a small .docx can declare a part that only mammoth's
+  // inflate grows past the cap, and refusing that at send() would empty the composer.
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const error = await getDocxAttachmentError(file);
     if (error) {
@@ -672,9 +669,8 @@ function extractTextParts(m: ThreadMessage | undefined): string {
     .trim();
 }
 
-// A paste leaves the message's text in an attachment, so a title built from
-// inline text alone is "New Chat" for a paste-only turn and the bare
-// instruction for "summarise this" plus a paste. The sample is bounded.
+// A paste leaves the message's text in an attachment, so a title built from inline text alone
+// is "New Chat" for a paste-only turn. The sample is bounded.
 function titleTextOf(m: ThreadMessage | undefined): string {
   const text = extractTextParts(m);
   if (m?.role !== "user") return text;
@@ -730,9 +726,8 @@ async function generateTitleWithModel(payload: {
       repetition_penalty: 1.0,
       enable_thinking: false,
       reasoning_effort: "none",
-      // Titling is a one-shot summarisation: never let it enter the tool loop.
-      // Omitting the field would inherit the server's tools-on default and put
-      // python/terminal schemas in a 24-token prompt.
+      // Titling is a one-shot summarisation: never let it enter the tool loop. Omitting the field
+      // would inherit the server's tools-on default and put tool schemas in a 24-token prompt.
       enable_tools: false,
       messages: [
         {
@@ -807,15 +802,11 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     hasRunId &&
     generationStatus === "completed" &&
     custom.generationSettled !== true;
-  // Persisted metadata alone must never restore a running message: a run that never
-  // terminalised still says "running" on every later load, and `{type:"running"}`
-  // unmounts Send, so the reply the user cannot stop is the one they cannot reply past.
-  // Ask whether the run is corroborated live, and otherwise show the partial as
-  // interrupted, which keeps every character and offers the Continue bar.
-  // The gate is for unfinished runs only. A completed-but-unsettled run has a terminal
-  // status, so /chat-runs/active never lists it and it could never be corroborated; it
-  // still owns an unreplayed tail, and the follow that replays it returns on the first
-  // snapshot rather than holding the composer.
+  // Persisted metadata alone must never restore a running message: a run that never terminalised
+  // still says "running" on every later load, and `{type:"running"}` unmounts Send. Ask
+  // whether the run is corroborated live, else show the partial as interrupted, which keeps
+  // every character and offers Continue. Unfinished runs only: a completed-but-unsettled run
+  // has a terminal status and is replayed by the follow instead.
   const needsGenerationRecovery =
     generationUnsettled ||
     (generationUnfinished && generationIsCorroboratedLive(custom, m.threadId));
@@ -861,10 +852,8 @@ function scheduleGenerationRecovery(
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
   const runId = metadata.generationRunId;
   if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
-  // This tab is streaming the run itself. Following it from storage as well gives the reply
-  // two writers, and the follower is always behind, so it imports a lagging prefix over the
-  // live text. It also costs a PUT and a full re-parse per chunk against the same backend the
-  // model is saturating.
+  // This tab is streaming the run itself: following it from storage as well gives the reply two
+  // writers, and the follower is always behind, so it imports a lagging prefix.
   if (isLiveGenerationRun(runId)) return;
   const existingRecovery = generationRecoveries.get(runId);
   if (existingRecovery) {
@@ -908,13 +897,9 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
-    /**
-     * Write one state of the reply to storage and to every view showing it.
-     *
-     * `running` is the caller's, not derived here: a follow that hit its no-progress
-     * deadline settles the message while its persisted run status is still non-terminal,
-     * which is exactly the pair `generationNeedsRecovery` reads as "still going".
-     */
+    /** Write one state of the reply to storage and to every view showing it. `running` is the
+     *  caller's, not derived here: a follow that hit its no-progress deadline settles the message
+     *  while its persisted run status is still non-terminal. */
     const commit = async (
       nextMetadata: Record<string, unknown>,
       running: boolean,
@@ -932,8 +917,8 @@ function scheduleGenerationRecovery(
         metadata: nextMetadata,
         createdAt: storedMessage.createdAt,
       }).catch(() => {
-        // The producer may have committed a newer status between the event and
-        // this write. Keep following; the terminal publish carries all content.
+        // The producer may have committed a newer status between the event and this write. Keep
+        // following; the terminal publish carries all content.
       });
 
       for (const view of views) {
@@ -946,10 +931,8 @@ function scheduleGenerationRecovery(
                   ...item,
                   message: {
                     ...item.message,
-                    // The status and the metadata are always this publish's:
-                    // they are what the recovery is following the run FOR. The
-                    // body is not, because a run this tab is also streaming is
-                    // replayed hundreds of characters behind the live reply.
+                    // The status and the metadata are always this publish's, since they are what the recovery is
+                    // following the run FOR. The body is not: a run this tab also streams replays far behind.
                     content: recoveredContentToImport(
                       item.message.content,
                       content,
@@ -1012,9 +995,8 @@ function scheduleGenerationRecovery(
     try {
       let lastPublishedStatus = "";
       let identityValidated = false;
-      // The follower reports its no-progress deadline by throwing, and the settlement
-      // below is exactly what must happen when it does. Without this catch the throw
-      // reaches the outer no-op handler and leaves a message marked running forever.
+      // The follower reports its no-progress deadline by throwing, and the settlement below is
+      // exactly what must happen then; without this catch the message stays running forever.
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {
@@ -1036,9 +1018,9 @@ function scheduleGenerationRecovery(
                 lastRequestMessage?.role === "assistant" &&
                 typeof lastRequestMessage.content === "string"
               ) {
-                // Continue sends the old partial as an assistant prefill. The
-                // server-owned placeholder is empty until the first client save,
-                // so a reload before that save must seed replay from the request.
+                // Continue sends the old partial as an assistant prefill. The server-owned placeholder is
+                // empty until the first client save, so a reload before that save seeds replay from the
+                // request instead.
                 raw = lastRequestMessage.content;
               }
             }
@@ -1123,10 +1105,9 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
-            // Only another successful active-list sync would otherwise drop it, so the
-            // thread would keep reading as durable and a later subscriber-owned stream
-            // on it would be capped, losing the checkpoints that are its only
-            // persistence.
+            // Only another successful active-list sync would otherwise drop it, so the thread would keep
+            // reading as durable and a later subscriber-owned stream would be capped, losing the
+            // checkpoints that are its only persistence.
             forgetServerActiveGenerationRun(runId);
           }
         }
@@ -1135,27 +1116,20 @@ function scheduleGenerationRecovery(
         followStalled = true;
       }
       if (followStalled || generationNeedsRecovery(currentMetadata)) {
-        // Fence the run before presenting the reply as resumable. Settling only in this
-        // tab leaves the row queued/running/cancelling, and create_run refuses a thread
-        // that already has an active generation, so Continue and the next message would
-        // both 409 against a reply the UI had just declared finished. Best effort, and
-        // not sufficient on its own: a producer wedged inside the engine stays in
-        // `cancelling`, which is still active. That case is what the server-side sweeper
-        // settles, and this path is reachable mainly when the sweeper is disabled.
+        // Fence the run before presenting the reply as resumable: settling only in this tab leaves the
+        // row active, and create_run refuses a thread that already has one, so Continue would 409.
+        // Best effort: a producer wedged inside the engine stays in `cancelling` for the sweeper.
         serverCancel();
-        // The follow returned with the run still non-terminal, so its no-progress
-        // deadline expired. Settle the reply here rather than leaving a message that
-        // says "running" until the next reload, which is what keeps Send unmounted.
-        // Everything replayed so far is kept.
+        // The follow returned with the run still non-terminal, so its no-progress deadline expired.
+        // Settle the reply here rather than leaving a message that says "running" and keeps Send
+        // unmounted. Everything replayed so far is kept.
         await commit(
           {
             ...currentMetadata,
             incomplete: { reason: "interrupted" as const },
-            // The run row may still be non-terminal, so without this marker
-            // generationNeedsRecovery stays true and the next online, pageshow or
-            // visibility trigger starts another follower that republishes the message
-            // as running. history.load clears it if /chat-runs/active still names the
-            // run, so the server, not this tab, gets the last word.
+            // The run row may still be non-terminal, so without this marker generationNeedsRecovery stays
+            // true and the next trigger starts another follower. history.load clears it if
+            // /chat-runs/active still names the run, so the server gets the last word.
             generationLocallyInterrupted: true,
           },
           false,
@@ -1200,7 +1174,7 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
-  // Snapshot mutable creation inputs synchronously, before the await below. This runs in the same
+  // Snapshot mutable creation inputs synchronously, before the await below: this runs in the same
   // tick as the user's send, so a toggle or checkpoint change during the point lookup cannot
   // change the identity of the thread a retry persists.
   const runtimeStateAtInit = useChatRuntimeStore.getState();
@@ -1213,8 +1187,7 @@ export async function ensureThreadRecord({
   const createdAtInit = createdAt ?? Date.now();
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
-  // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats
-  // incognito whenever a caller passed the open chat's id with the toggle on.
+  // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats.
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
     return;
@@ -1224,8 +1197,8 @@ export async function ensureThreadRecord({
   if (existing) {
     return;
   }
-  // After the row check, so an already-persisted thread is never tagged: that is what keeps
-  // a real chat saving normally when the toggle flips on mid-stream.
+  // After the row check, so an already-persisted thread is never tagged: that is what keeps a
+  // real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
     return;
@@ -1246,9 +1219,8 @@ export async function ensureThreadRecord({
   try {
     await saveStoredChatThread(record);
   } catch (error) {
-    // assistant-ui can issue overlapping first-message persistence calls. If
-    // another call created the same thread while this one waited, treat init as
-    // successful and let the message write continue.
+    // assistant-ui can issue overlapping first-message persistence calls, so if another call
+    // created the same thread while this one waited, treat init as successful.
     const existingAfterRace = await getStoredChatThread(threadId).catch(
       () => undefined,
     );
@@ -1273,9 +1245,8 @@ function createStudioDbAdapter(
       }
       return {
         remoteId: thread.id,
-        // Always regular: archive state is owned by the app's own controls.
-        // Reporting archived here makes assistant-ui unarchive a chat the
-        // moment it is opened.
+        // Always regular: archive state is owned by the app's own controls, and reporting archived here
+        // makes assistant-ui unarchive a chat the moment it is opened.
         status: "regular",
         title: thread.title,
       };
@@ -1310,13 +1281,9 @@ function createStudioDbAdapter(
     },
 
     initialize(threadId: string) {
-      // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
-      // Captured here, not inside the creator: a retry belongs to the send that initialized it,
-      // not to a later incognito or checkpoint selection.
-      // What the SEND was made under, not what is on screen now. Materialization is no longer
-      // the same tick as the send, and all four move in between: the adapter is rebuilt with
-      // the new project, and ChatPage's view effect clears `incognito`. A claim of null/false
-      // wins over the store for the same reason.
+      // assistant-ui withholds the first message until this resolves, so the row write is tracked,
+      // not awaited. Captured here, not inside the creator: these describe what the SEND was made
+      // under, and all four move in between, since materialization is no longer the send's tick.
       const claim = readThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
       const incognitoAtInit = claim ? claim.incognito : runtimeStateAtInit.incognito;
@@ -1335,17 +1302,16 @@ function createStudioDbAdapter(
           pairId,
           projectId: projectIdAtInit,
           incognito: incognitoAtInit,
-          // The one caller that can promise this: assistant-ui runs initialize() once, for
-          // the id it just minted. Others hand in whatever chat is open.
+          // The one caller that can promise this: assistant-ui runs initialize() once, for the id it
+          // just minted. Others hand in whatever chat is open.
           neverSent: true,
           modelId: modelIdAtInit,
           modelGgufVariant: modelGgufVariantAtInit,
           createdAt: createdAtInit,
         }),
       );
-      // A run already streaming on this thread filed its handles under "__default" because
-      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
-      // id nothing is registered against.
+      // A run already streaming on this thread filed its handles under "__default" because the id did
+      // not exist yet. Re-key them, or the sidebar row and Stop look up an unregistered id.
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return Promise.resolve({ remoteId: threadId, externalId: undefined });
     },
@@ -1361,9 +1327,8 @@ function createStudioDbAdapter(
     },
 
     async unarchive(remoteId: string) {
-      // No-op on archive state: the app owns it via the sidebar menu and the
-      // archived chats settings dialog. assistant-ui calls this when an
-      // archived chat is opened, which must not unarchive it.
+      // No-op on archive state: the app owns it via the sidebar menu, and assistant-ui calls this
+      // when an archived chat is opened, which must not unarchive it.
       await ensureStoredChatThread(remoteId);
     },
 
@@ -1373,10 +1338,9 @@ function createStudioDbAdapter(
 
     async generateTitle(remoteId: string, messages: readonly ThreadMessage[]) {
       const autoTitle = useChatRuntimeStore.getState().autoTitle;
-      // The run normally waits for its history append, but a bounded persistence wait can expire
-      // while the creator is still queued. Use the same retry choke point as other mutations so a
-      // temporarily missing row does not permanently skip first-turn title generation. A title is
-      // cosmetic, so a row that never landed falls back to the default rather than rejecting here.
+      // The run normally waits for its history append, but a bounded persistence wait can expire while
+      // the creator is still queued, so use the same retry choke point as other mutations. A title
+      // is cosmetic, so a row that never landed falls back to the default.
       const thread = await ensureStoredChatThread(remoteId).catch(
         () => undefined,
       );
@@ -1536,8 +1500,8 @@ function runStartThreadIdsForMessages(
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
 ): Promise<string | undefined> {
-  // Deep Research reserves an assistant placeholder before invoking the model
-  // adapter, so the user message is not necessarily the final entry here.
+  // Deep Research reserves an assistant placeholder before invoking the model adapter, so the
+  // user message is not necessarily the final entry here.
   const userMessage = [...messages]
     .reverse()
     .find((message) => message.role === "user");
@@ -1612,10 +1576,8 @@ function createPersistedRunAdapter(
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
         }
-        // Queued runs do not carry a direct-send reservation. Their persisted
-        // preflight can still fail before the model adapter consumes the queued
-        // settings. Stop matching pending/waiting work as well as an already
-        // dispatched item so a rapid follow-up cannot run after persistence failed.
+        // Queued runs carry no direct-send reservation and their persisted preflight can still fail
+        // before the model adapter consumes the queued settings, so match pending/waiting work too.
         requestPromptQueueStop(persistedRunThreadIds);
         notifyPromptQueueRunFailed(
           options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
@@ -1629,8 +1591,7 @@ function createPersistedRunAdapter(
         ]);
       }
       // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
-      // before the await. Hand the run its real id so a first turn never files its handles
-      // under the unresolved key that concurrent runs share.
+      // before the await. Hand the run its real id so a first turn never uses the shared key.
       const result = adapter.run(
         !options.unstable_threadId && adoptedThreadId
           ? { ...options, unstable_threadId: adoptedThreadId }
@@ -1653,8 +1614,8 @@ function useStudioRuntimeAdapters(
   pairId?: string,
   reloadReadyThreadId?: string,
   onInitialHistoryReady?: () => void,
-  // A ref, so handing it down never changes the memoized runtime hook's identity: a new
-  // hook identity would rebuild the runtime, which is the one thing this PR must not do.
+  // A ref, so handing it down never changes the memoized runtime hook's identity: a new identity
+  // would rebuild the runtime, which is the one thing this must not do.
   backgroundedRef?: { current: boolean },
   newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): StudioRuntimeAdapters {
@@ -1685,9 +1646,8 @@ function useStudioRuntimeAdapters(
     );
   }, [aui]);
 
-  // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
-  // repository otherwise keeps the attachment, and a later repo-to-storage sync
-  // (e.g. deleting a message in the thread) would write it back.
+  // Mirror Data-tab attachment deletions into the loaded thread: the in-memory repository
+  // otherwise keeps the attachment, and a later repo-to-storage sync would write it back.
   useEffect(() => {
     let active = true;
     let pendingDeletion = Promise.resolve();
@@ -1733,8 +1693,8 @@ function useStudioRuntimeAdapters(
                 return;
               }
 
-              // Preserve any messages added or streamed while WebCrypto ran.
-              // Retry if the target's managed content itself changed.
+              // Preserve any messages added or streamed while WebCrypto ran; retry if the target's managed
+              // content itself changed.
               const latest = thread.export();
               const latestTarget = latest.messages.find(
                 (item) => item.message.id === messageId,
@@ -1848,8 +1808,8 @@ function useStudioRuntimeAdapters(
     () => ({
       async load() {
         const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
-          // A runtime bootstraps on an empty thread before switching to the
-          // requested one, so an unrequested load is not readiness.
+          // A runtime bootstraps on an empty thread before switching to the requested one, so an
+          // unrequested load is not readiness.
           const loadedTheRequestedThread =
             !reloadReadyThreadId || loadedThreadId === reloadReadyThreadId;
           if (onInitialHistoryReady) {
@@ -1892,22 +1852,17 @@ function useStudioRuntimeAdapters(
           activeGenerationRuns = [];
           activeGenerationRunsLoaded = false;
         }
-        // The endpoint is named for active runs but returns rows, so a run that
-        // terminalised between the write and this read comes back with it, and
-        // force-writing `generationSettled: false` over a finished reply revives it.
-        // Take the still-live rows only and publish them as the corroboration
-        // `toThreadMessage` restores a running status from. A failed read is silence,
-        // not a report of "nothing is running".
+        // The endpoint is named for active runs but returns rows, so a run that terminalised between
+        // the write and this read comes back with it, and force-writing `generationSettled: false`
+        // over a finished reply revives it. Take the still-live rows only; a failed read is silence.
+        // Publish the still-live rows as the corroboration toThreadMessage restores a running status from.
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !isTerminalChatGenerationRun(run),
         );
-        // And drop any run the message snapshot already shows as finished. The runs read
-        // happens first, so a run that completed in between is still listed as running
-        // here. Filtering the LIST rather than skipping at the overlay matters: the
-        // registry sync below runs first, and a stale mapping there keeps the thread
-        // reading as durable, so a later subscriber-owned stream on it would be capped
-        // and lose everything it streamed past the cap. In another tab nothing else
-        // would ever remove that mapping.
+        // And drop any run the message snapshot already shows as finished: the runs read happens first,
+        // so a run that completed in between is still listed. Filtering the LIST rather than
+        // skipping at the overlay matters, since a stale mapping keeps the thread reading as durable
+        // and a later subscriber-owned stream would be capped.
         const terminalMessageRuns = new Set(
           msgs
             .filter((message) => {
@@ -1924,15 +1879,13 @@ function useStudioRuntimeAdapters(
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !terminalMessageRuns.has(run.assistantMessageId),
         );
-        // The runs read happens BEFORE the messages read, so a run created between the
-        // two would read as interrupted and re-enable the composer for a thread the
-        // server is still generating on. Close that gap with one more lookup, and only
-        // when a message actually names a run the first read missed.
+        // The runs read happens BEFORE the messages read, so a run created between the two would read
+        // as interrupted and re-enable the composer for a thread still generating. Close that gap
+        // with one more lookup, only when a message names a run the first read missed.
         if (!activeGenerationRunsLoaded) {
-          // The initial read failed, so this thread has no current answer. Retract any
-          // answer from an earlier load: another tab may have started a run since, and
-          // the stale answer would restore that live reply as interrupted and briefly
-          // enable a conflicting send.
+          // The initial read failed, so this thread has no current answer. Retract any answer from an
+          // earlier load: another tab may have started a run since, and the stale answer would restore
+          // that live reply as interrupted.
           markServerActiveGenerationRunsUnknown(remoteId);
         }
         if (activeGenerationRunsLoaded) {
@@ -1957,11 +1910,8 @@ function useStudioRuntimeAdapters(
                 (run) => !isTerminalChatGenerationRun(run),
               );
             } catch {
-              // `missed` already proved the first list predates this run, so it is not
-              // an answer either. Leave the thread unanswered rather than promoting a
-              // list known to be stale, and retract any answer from an earlier load:
-              // another tab may have started a run since, and the stale answer would
-              // restore that live reply as interrupted.
+              // `missed` already proved the first list predates this run, so it is not an answer either.
+              // Leave the thread unanswered rather than promoting a list known to be stale.
               answered = false;
               markServerActiveGenerationRunsUnknown(remoteId);
             }
@@ -1985,14 +1935,13 @@ function useStudioRuntimeAdapters(
             generationStatus: run.status,
             generationSettled: false,
             serverManaged: true,
-            // The server still has this run, which overrules a follower that gave up on
-            // it locally. Clearing the marker here is what lets a genuinely slow run be
-            // picked back up instead of staying interrupted for the life of the page.
+            // The server still has this run, which overrules a follower that gave up locally. Clearing the
+            // marker here is what lets a genuinely slow run be picked back up.
             generationLocallyInterrupted: false,
           };
         }
-        // Durable research can outlive this runtime. Reattach its server-owned
-        // assistant message to the inline card after navigation or refresh.
+        // Durable research can outlive this runtime, so reattach its server-owned assistant message to
+        // the inline card after navigation or refresh.
         const researchThreadState = await getResearchThreadState(
           remoteId,
         ).catch(() => null);
@@ -2077,9 +2026,8 @@ function useStudioRuntimeAdapters(
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
         if (restoredUsage) {
-          // Key by the thread this loader read, not whichever is active when the await resolves:
-          // a switch inside it would file this thread's usage under the incoming one. Same rule
-          // the adapter's end-of-run write follows.
+          // Key by the thread this loader read, not whichever is active when the await resolves: a switch
+          // inside it would file this thread's usage under the incoming one.
           store.setThreadContextUsage(remoteId, restoredUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(restoredUsage);
@@ -2088,17 +2036,15 @@ function useStudioRuntimeAdapters(
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
         // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
         // them with an estimate whose completionTokens is 0. A thread opened after a model switch
-        // fails modelMatches and still gets priced (#7450).
-        // Primary pane only: a compare pane never owns the global bar, so its count would be
-        // rebuilt from storage, sent, then dropped at publish for not being activeThreadId.
+        // fails modelMatches and still gets priced (#7450). Primary pane only: a compare pane
+        // never owns the global bar.
         if (!restoredUsage && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
 
-        // If any message has a stored parentId, reconstruct the tree so
-        // retries/regenerations load as branches rather than a flat list. For
-        // mixed legacy/new threads, infer sequential parents for old messages to
-        // preserve the chain. Fall back to fromArray for fully legacy threads.
+        // If any message has a stored parentId, reconstruct the tree so retries load as branches rather
+        // than a flat list, inferring sequential parents for old messages in mixed threads. Fall
+        // back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           const resolveParent = createParentResolver();
@@ -2143,25 +2089,21 @@ function useStudioRuntimeAdapters(
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;
-          // The model run waits for the authoritative row. Clear-all does not: it tombstones this
-          // known id directly, so a stalled request cannot hold the clear hostage.
+          // The model run waits for the authoritative row. Clear-all does not: it tombstones this known
+          // id directly, so a stalled request cannot hold the clear hostage.
           await awaitStoredChatThreadWrites(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;
           }
-          // published before the reads below: a temporary chat has no row to confirm, and a read
-          // that fails must not leave the runtime pointing at the previously open chat
-          //
-          // ...but not while this pane is only mounted to keep its run attached: a hidden pane
-          // naming itself active reaches Compare's exportThreadIds, so Export pulls the unrelated
-          // base chat. Through a ref, read at publish time, since the write may have been queued
-          // while the pane was still on screen.
-          //
-          // Nor mid-switch. switchToNewThread() is async, so mainThreadId is still the OUTGOING
-          // thread for the whole gap and the guard below reads that as "this pane is on screen"; a
-          // write landing there republishes the chat the user just left into the project they
-          // navigated to. attempt !== landedAttempt is that gap.
+          // Published before the reads below: a temporary chat has no row to confirm, and a read that
+          // fails must not leave the runtime pointing at the previously open chat. Not while this pane
+          // is only mounted to keep its run attached, since a hidden pane naming itself active makes
+          // Export pull the unrelated base chat. Nor mid-switch: switchToNewThread() is async, so
+          // mainThreadId is still the OUTGOING thread for that gap, which the attempt check catches.
+          // Nor mid-switch: switchToNewThread() is async, so mainThreadId is still the OUTGOING thread for
+          // the whole gap, and a write landing there republishes the chat the user just left.
+          // attempt !== landedAttempt is that gap.
           const switchState = newThreadSwitchStateRef?.current;
           const switchInFlight = Boolean(
             switchState &&
@@ -2228,14 +2170,12 @@ function useStudioRuntimeAdapters(
               sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // The backend owns this message and refuses client edits, and every field the save
-          // would send was just read back from it, so the request is answered 409 every time.
-          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
-          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
-          // drops both.
-          //
-          // `parentId` is the one field not echoed back, so a reparent could differ. It is
-          // dropped either way: the server rejects the whole request, so it never landed here.
+          // The backend owns this message and refuses client edits, and every field the save would send
+          // was just read back from it, so the request is answered 409 every time: one measured 43.6 s
+          // generation cost 265 PUTs, 256 rejected. `parentId` is the one field not echoed back, and
+          // it is dropped either way, since the server rejects the whole request.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs from the
+          // ensureStoredChatThread inside saveStoredChatMessage. Returning here drops both.
           if (preserveServerManaged) {
             await throwIfHistoryWasCleared(remoteId);
             return;
@@ -2266,9 +2206,8 @@ function useStudioRuntimeAdapters(
     ],
   );
 
-  // Always register the adapter so the mic stays clickable for any engine. The
-  // engine is resolved at listen() time and the composer shows guidance when it
-  // cannot run, so engine switches also work on an already-mounted thread.
+  // Always register the adapter so the mic stays clickable for any engine: the engine is resolved
+  // at listen() time and the composer shows guidance when it cannot run.
   const dictation = useMemo(() => new StudioDictationAdapter(), []);
   const speech = useMemo(
     () =>
@@ -2283,8 +2222,8 @@ function useStudioRuntimeAdapters(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
-          // Before the document adapters: a composite takes the first match,
-          // and .mkv/.mov must not fall through to them.
+          // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
+          // through to them.
           new VideoAttachmentAdapter(),
           new TextAttachmentAdapter(),
           new HtmlAttachmentAdapter(),
@@ -2366,26 +2305,21 @@ type PendingSavedThreadSwitch = { id: string; settled: boolean };
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
-  // Bumped by every switch this provider starts. The nonce alone does not identify an
-  // attempt: leaving for a saved chat and coming back releases it, so two switches for
-  // the SAME nonce can be in flight and the older must not speak for the newer.
+  // Bumped by every switch this provider starts. The nonce alone does not identify an attempt:
+  // leaving for a saved chat and coming back releases it, so two switches for the SAME nonce
+  // can be in flight.
   attempt: number;
-  // One entry per switch STARTED, so a nonce view recognises any of these ids landing after
-  // the route moved on. By id rather than id SHAPE, which cannot tell a stale arrival from a
-  // fresh switch's thread. Duplicates matter: two switches for one thread can overlap.
-  // `settled` retires a claim with its own switch, so one that finished off-screen cannot be
-  // spent by a later, legitimate open.
+  // One entry per switch STARTED, so a nonce view recognises any of these ids landing after the
+  // route moved on. By id rather than id SHAPE, which cannot tell a stale arrival from a fresh
+  // switch's thread. `settled` retires a claim with its own switch.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];
   // The thread a nonce view is on, with the nonce it belongs to. Once the user has sent,
-  // assistant-ui's newThreadId is gone and switchToNewThread() mints a SECOND blank thread
-  // instead of restoring theirs. A ?new= URL survives materialization, so Back returns to the
-  // same nonce; the pair is what tells a returning nonce from a new one.
+  // assistant-ui's newThreadId is gone and switchToNewThread() mints a SECOND blank thread; a
+  // ?new= URL survives materialization, so the pair is what tells a returning nonce from a new.
   nonceThread: { nonce: string; threadId: string } | null;
-  // The newest attempt whose own switch has LANDED. Ownership is only recorded from a thread
-  // this nonce's switch actually opened: entering a nonce from a saved chat leaves that chat
-  // as `mainThreadId` until switchToNewThread() resolves and its claim is already retired, so
-  // "unclaimed and current" is not proof of ownership -- recording it there reopened the chat
-  // the user had LEFT.
+  // The newest attempt whose own switch has LANDED. Ownership is only recorded from a thread this
+  // nonce's switch actually opened: entering a nonce from a saved chat leaves that chat as
+  // `mainThreadId` until switchToNewThread() resolves, so "unclaimed and current" is no proof.
   landedAttempt: number;
 };
 
@@ -2407,20 +2341,18 @@ function ThreadAutoSwitch({
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
 
   useEffect(() => {
-    // Paused as well as loading: requestTemporaryPromptQueueStop() names every temporary queue
-    // on the page, not this provider's, so a backgrounded pane would stop a queue the on-screen
-    // view owns. `paused` is a dependency, so both are paid on resume.
+    // Paused as well as loading: requestTemporaryPromptQueueStop() names every temporary queue on
+    // the page, not this provider's, so a backgrounded pane would stop the on-screen queue.
     if (isLoading || paused) {
       return;
     }
     newThreadSwitchStateRef.current.activeNonce = null;
     if (mainThreadId !== threadId) {
-      // Bumped, not read: this resolves asynchronously into a shared provider, so a newer
-      // switch of EITHER kind must supersede it. Sharing one token across two saved
-      // switches let a late rejection detach the chat already on screen.
+      // Bumped, not read: this resolves asynchronously into a shared provider, so a newer switch of
+      // EITHER kind must supersede it. One shared token let a late rejection detach the chat.
       const attemptAtStart = (newThreadSwitchStateRef.current.attempt += 1);
-      // One entry per switch started, duplicates included: A, B, A starts two A switches
-      // and both can land, so each arrival must spend exactly one entry.
+      // One entry per switch started, duplicates included: A, B, A starts two A switches and both can
+      // land, so each arrival must spend exactly one entry.
       const claims = newThreadSwitchStateRef.current.pendingSavedThreadIds;
       const claim: PendingSavedThreadSwitch = { id: threadId, settled: false };
       claims.push(claim);
@@ -2428,28 +2360,27 @@ function ThreadAutoSwitch({
       if (claims.length > MAX_PENDING_SAVED_THREAD_SWITCHES) {
         claims.splice(0, claims.length - MAX_PENDING_SAVED_THREAD_SWITCHES);
       }
-      // Saved chats keep running in the background, but a temporary chat is
-      // unreachable after this switch and must not retain an active queue.
+      // Saved chats keep running in the background, but a temporary chat is unreachable after this
+      // switch and must not retain an active queue.
       requestTemporaryPromptQueueStop();
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
         typeof (switchResult as Promise<void>).then === "function"
       ) {
-        // Both arms retire the claim, because both end the switch. A rejected switch never
-        // assigns a main thread, so its claim could otherwise sit armed for ever.
+        // Both arms retire the claim, because both end the switch: a rejected switch never assigns a
+        // main thread, so its claim could otherwise sit armed for ever.
         void (switchResult as Promise<void>).then(
           () => {
             claim.settled = true;
           },
           () => {
             claim.settled = true;
-            // Ahead of the staleness guard, deliberately (#9251): this releases the
-            // retained reload shell, and a superseded attempt still ended.
+            // Ahead of the staleness guard, deliberately (#9251): this releases the retained reload shell,
+            // and a superseded attempt still ended.
             onSwitchFailed?.();
-            // Only if this switch is still the current one. Unguarded, a rejection landing
-            // after the user moved to a project landing cleared the active id that view had
-            // just set, detaching a chat this failure has nothing to do with.
+            // Only if this switch is still the current one: unguarded, a rejection landing after the user
+            // moved to a project landing cleared the active id that view had just set.
             if (newThreadSwitchStateRef.current.attempt !== attemptAtStart) return;
             if (syncActiveThreadId) {
               useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -2476,11 +2407,9 @@ function ThreadAutoSwitch({
     if (isLoading || mainThreadId !== threadId) {
       return;
     }
-    // The switch landed while this view is still mounted, so it was not stale and the
-    // nonce view has nothing to correct. Released here rather than in the promise: this
-    // effect only runs while the saved chat is on screen, which is exactly the condition.
-    // Every SETTLED claim, not just this thread's: the view is stable here, so a finished
-    // switch has had its chance to be corrected. In-flight ones can still land wrong.
+    // The switch landed while this view is still mounted, so it was not stale. Released here rather
+    // than in the promise, since this effect only runs while the saved chat is on screen. Every
+    // SETTLED claim, not just this thread's: in-flight ones can still land wrong.
     const state = newThreadSwitchStateRef.current;
     state.pendingSavedThreadIds = state.pendingSavedThreadIds.filter(
       (claim) => !claim.settled,
@@ -2528,18 +2457,15 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce === nonce) {
       return;
     }
-    // Only this nonce's own thread, and only once sent to: a blank placeholder is still
-    // replaced, as a new nonce and an untouched landing both expect.
+    // Only this nonce's own thread, and only once sent to: a blank placeholder is still replaced.
     const recorded =
       switchState.nonceThread?.nonce === nonce
         ? switchState.nonceThread.threadId
         : null;
     const runtimeThreads = aui.threads().__internal_getAssistantRuntime?.();
-    // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this
-    // one is REMEMBERED, in a ref that outlives every view switch. getItemById() THROWS
-    // "Entry not available in the store" for a dropped id rather than returning undefined, so
-    // the optional chain would not catch it and the effect would take the app down. Unsloth
-    // deletes through tombstones today; the point is not to depend on that.
+    // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this one is
+    // REMEMBERED in a ref that outlives every view switch, and getItemById() THROWS for a
+    // dropped id rather than returning undefined, so the optional chain would not catch it.
     let recordedRemoteId: string | undefined;
     if (recorded) {
       try {
@@ -2551,10 +2477,9 @@ function ThreadNewChatSwitch({
         recordedRemoteId = undefined;
       }
     }
-    // A tombstoned chat is not one to return to, for the same reason and by the same
-    // mechanism as the resume restore above: deletion leaves the runtime item and its
-    // remoteId intact, so "the store still knows it" is not "it still exists". Falling
-    // through clears nonceThread below, which is what a nonce owning nothing looks like.
+    // A tombstoned chat is not one to return to: deletion leaves the runtime item and its remoteId
+    // intact, so "the store still knows it" is not "it still exists".
+    // Falling through clears nonceThread below, which is what a nonce owning nothing looks like.
     const returningToOwnChat = Boolean(
       recorded && recordedRemoteId && !isChatThreadDeleted(recordedRemoteId),
     );
@@ -2571,8 +2496,8 @@ function ThreadNewChatSwitch({
     switchState.hasSwitched = true;
     const clearAttachments = () => {
       try {
-        // Chained, not just called: clearAttachments() removes each staged file through
-        // the attachment adapter, so a rejecting remove() would go unhandled.
+        // Chained, not just called: clearAttachments() removes each staged file through the attachment
+        // adapter, so a rejecting remove() would go unhandled.
         void Promise.resolve(aui.composer().clearAttachments()).catch(
           () => undefined,
         );
@@ -2583,13 +2508,11 @@ function ThreadNewChatSwitch({
     if (shouldClearAttachments && !clearAfterSwitch) {
       clearAttachments();
     }
-    // Saved chats keep running in the background. A temporary chat is never
-    // persisted, so abandoning it must also discard its otherwise unreachable
-    // queue. Queue provenance remains reliable even if incognito was cleared first.
+    // Saved chats keep running in the background, but a temporary chat is never persisted, so
+    // abandoning it must also discard its otherwise unreachable queue.
     requestTemporaryPromptQueueStop();
-    // A reopen is as cancellable as a saved switch: a project landing remounts with the
-    // OLD nonce and rotates it in an effect, so the reopen is already in flight when the
-    // rotation starts its own. Claimed so a reopen that resolves last is undone below.
+    // A reopen is as cancellable as a saved switch: a project landing remounts with the OLD nonce
+    // and rotates it in an effect, so the reopen is in flight when the rotation starts its own.
     let reopenClaim: PendingSavedThreadSwitch | null = null;
     if (returningToOwnChat && recorded) {
       reopenClaim = { id: recorded, settled: false };
@@ -2605,8 +2528,8 @@ function ThreadNewChatSwitch({
         );
       }
     }
-    // Dropped when this nonce is still on screen: the reopen did its job and an armed
-    // claim would have the correction undo it. Left armed only if the nonce moved on.
+    // Dropped when this nonce is still on screen: the reopen did its job and an armed claim would
+    // have the correction undo it.
     const settleReopenClaim = () => {
       if (!reopenClaim) return;
       reopenClaim.settled = true;
@@ -2615,8 +2538,7 @@ function ThreadNewChatSwitch({
       const at = switchStateNow.pendingSavedThreadIds.indexOf(reopenClaim);
       if (at !== -1) switchStateNow.pendingSavedThreadIds.splice(at, 1);
     };
-    // Switch to a fresh local thread without persisting it yet; persistence
-    // still happens on first message append.
+    // Switch to a fresh local thread without persisting it yet; persistence still happens on first message append.
     void Promise.resolve(
       returningToOwnChat && recorded
         ? aui.threads().switchToThread(recorded)
@@ -2624,9 +2546,8 @@ function ThreadNewChatSwitch({
     ).then(
       () => {
         settleReopenClaim();
-        // This attempt's own switch has landed, so the main thread from here on is one it
-        // opened. Only for the CURRENT attempt: a superseded switch landing late says
-        // nothing about the thread a newer one is on.
+        // This attempt's own switch has landed, so the main thread from here on is one it opened. Only
+        // for the CURRENT attempt: a superseded switch landing late says nothing.
         {
           const switchStateNow = newThreadSwitchStateRef.current;
           if (switchStateNow.attempt === attempt) {
@@ -2635,23 +2556,20 @@ function ThreadNewChatSwitch({
         }
         if (!clearAfterSwitch) return;
         const switchStateNow = newThreadSwitchStateRef.current;
-        // By attempt as well as nonce, matching the rejection arm. A saved-thread detour
-        // releases the nonce, so returning starts a newer attempt; without the attempt check
-        // this older completion still matches on nonce and wipes an attachment the newer one
-        // staged. The nonce check stays: the detour nulls it without bumping the attempt.
+        // By attempt as well as nonce, matching the rejection arm: a saved-thread detour releases the
+        // nonce, so returning starts a newer attempt and this older completion would otherwise wipe
+        // an attachment the newer one staged.
         if (switchStateNow.attempt !== attempt) return;
         if (switchStateNow.activeNonce !== nonce) return;
         clearAttachments();
       },
       () => {
         settleReopenClaim();
-        // The fresh thread never opened, so the view is still on the outgoing one.
-        // Release the nonce, or the guard at the top of this effect reads it as already
-        // served and the same New Chat can never be retried in place. Both arms are
-        // handled, so a rejection is never unhandled.
+        // The fresh thread never opened, so the view is still on the outgoing one. Release the nonce, or
+        // the guard at the top reads it as served and the same New Chat can never be retried.
         const switchStateNow = newThreadSwitchStateRef.current;
-        // By attempt, not by nonce alone: a later switch for the same nonce owns the
-        // thread it opened, and releasing it would switch away from a chat in use.
+        // By attempt, not by nonce alone: a later switch for the same nonce owns the thread it opened,
+        // and releasing it would switch away from a chat in use.
         if (
           switchStateNow.attempt === attempt &&
           switchStateNow.activeNonce === nonce
@@ -2663,14 +2581,10 @@ function ThreadNewChatSwitch({
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
 
-  // Reassert this view's thread when a switch started before it lands anyway.
-  //
-  // Leaving a landing for a saved chat and coming back before switchToThread resolves used
-  // to end with assistant-ui assigning that saved thread as the main one: the promise does
-  // not know the route moved, and the shared provider has no remount to absorb it, so the
-  // next message went to the wrong conversation. Recognised by the exact id that switch
-  // asked for, which ThreadAutoSwitch records; the claim clears when honoured, so this fires
-  // once per stale arrival.
+  // Reassert this view's thread when a switch started before it lands anyway. Leaving a landing
+  // for a saved chat and coming back before switchToThread resolves used to end with
+  // assistant-ui assigning that saved thread as the main one, since the promise does not know
+  // the route moved. Recognised by the exact id that switch asked for.
   useEffect(() => {
     if (isLoading || paused) {
       return;
@@ -2679,11 +2593,9 @@ function ThreadNewChatSwitch({
     if (switchState.activeNonce !== nonce) {
       return;
     }
-    // Already on the thread this nonce owns, so there is nothing to correct -- and the claim
-    // here is the sibling effect's OWN reopen. switchToThread() early-returns when its target
-    // is already current (assistant-ui#2577), so the reopen resolves on a microtask and its
-    // claim is still outstanding in the same commit. Reading that as a stale arrival replaced
-    // the conversation with a blank chat, via Back from a materialized ?new= chat's own row.
+    // Already on the thread this nonce owns, and the claim here is the sibling effect's OWN reopen:
+    // switchToThread() early-returns when its target is already current (assistant-ui#2577), so
+    // the reopen resolves on a microtask and its claim is still outstanding in the same commit.
     if (
       mainThreadId &&
       switchState.nonceThread?.nonce === nonce &&
@@ -2695,10 +2607,8 @@ function ThreadNewChatSwitch({
       ? switchState.pendingSavedThreadIds.findIndex((claim) => claim.id === mainThreadId)
       : -1;
     if (claimed === -1) {
-      // Not a stale arrival, so this is the thread this view owns. Recorded here, not at
-      // the switch: the id changes on materialization and a reattach needs the persisted one.
-      // Only once this nonce's own switch has landed, though -- until then `mainThreadId` is
-      // still the chat the user came FROM.
+      // Not a stale arrival, so this is the thread this view owns. Recorded here, not at the switch:
+      // the id changes on materialization and a reattach needs the persisted one.
       if (mainThreadId && switchState.landedAttempt === switchState.attempt) {
         switchState.nonceThread = { nonce, threadId: mainThreadId };
       }
@@ -2716,9 +2626,8 @@ function ThreadNewChatSwitch({
     ).catch(() => undefined);
   }, [aui, isLoading, mainThreadId, newThreadSwitchStateRef, nonce, paused]);
 
-  // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
-  // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
-  // the model too: on a RELOAD of /chat?new=<uuid> nothing is known until status answers.
+  // The effect above blanks the bar, and this view reaches no other recount trigger. Keyed on the
+  // model too: on a RELOAD of /chat?new=<uuid> nothing is known until status answers.
   useEffect(() => {
     if (
       isLoading ||
@@ -2733,10 +2642,9 @@ function ThreadNewChatSwitch({
     const store = useChatRuntimeStore.getState();
     if (store.activeThreadId != null || store.contextUsage != null) return;
     void refreshContextUsage();
-    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
-    // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
-    // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
-    // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
+    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again. runActive
+    // is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything generates,
+    // and nothing else re-fires this when the run ends.
   }, [
     checkpoint,
     loadedContextLength,
@@ -2785,28 +2693,23 @@ function NonceThreadResumeRestore({
     if (useChatRuntimeStore.getState().activeThreadId != null) {
       return;
     }
-    // Published raw, as ActiveThreadSync does on the paths this stands in for. A `__LOCALID_`
-    // id is NOT a reason to skip: initialize() writes the row under whatever id assistant-ui
-    // minted and hands it back, so skipping would make this a no-op for the ordinary case.
-    // Consumers needing a persisted id filter for themselves.
+    // Published raw, as ActiveThreadSync does on the paths this stands in for. A `__LOCALID_` id is
+    // NOT a reason to skip: initialize() writes the row under whatever id assistant-ui minted.
     if (!mainThreadId) {
       return;
     }
     // ...but an UNTOUCHED landing must stay untouched: a compare round trip leaves a blank
-    // placeholder here, and publishing it makes ProjectLanding swap the overview for an
-    // empty Thread. On remoteId, not id shape (see above): a materialized chat keeps its
-    // `__LOCALID_` id and has a remoteId; a placeholder has none.
+    // placeholder here, and publishing it makes ProjectLanding swap the overview for an empty
+    // Thread. On remoteId, not id shape.
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const { remoteId } =
       runtime?.threads.getItemById(mainThreadId).getState() ?? {};
     if (!remoteId) {
       return;
     }
-    // ...and neither must a chat the user deleted while they were away. Unsloth deletes by
-    // tombstoning storage rather than calling runtime.threads.delete(), so the runtime item
-    // and its remoteId both survive and every check above still passes. On remoteId, which
-    // is the id storage and the sidebar delete agree on. Restoring here would undo
-    // ProjectLanding's own tombstone check: this publishes the id that check refused to.
+    // ...and neither must a chat the user deleted while away. Unsloth deletes by tombstoning storage
+    // rather than calling runtime.threads.delete(), so every check above still passes. On
+    // remoteId, which is the id storage and the sidebar delete agree on.
     if (isChatThreadDeleted(remoteId)) {
       return;
     }
@@ -2834,20 +2737,19 @@ function ThreadScopedSettingsSync({
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
-    // A chat not yet sent to has no row, so pairing it holds every edit behind a read certain
-    // to 404 -- which is how an edit on a fresh /chat stopped reaching the installation
-    // defaults. The `__LOCALID_` prefix stays on the id for good, so only the runtime's
+    // A chat not yet sent to has no row, so pairing it holds every edit behind a read certain to
+    // 404. The `__LOCALID_` prefix stays on the id for good, so only the runtime's
     // pending-new-thread id tells the two apart.
     if (activeThreadId !== null && activeThreadId === pendingNewThreadId) {
       applyThreadScopedSettings(null, null);
       return;
     }
     if (!enabled) {
-      // Compare panes share one composer between two threads, so there is no single
-      // chat whose snapshot could apply: compare runs on the installation defaults and
-      // its edits move them, as every chat did before this change. Say so here rather
-      // than leaving the module still pointing at the last single chat, whose stored
-      // pills a model load would otherwise read back through threadScopedOverride.
+      // Compare panes share one composer between two threads, so no single chat's snapshot could
+      // apply: compare runs on the installation defaults and its edits move them. Said here rather
+      // than leaving the module pointing at the last single chat.
+      // Otherwise the module still points at the last single chat, whose stored pills a model load would
+      // read back through threadScopedOverride.
       applyThreadScopedSettings(null, null);
       return;
     }
@@ -2855,15 +2757,15 @@ function ThreadScopedSettingsSync({
       if (settingsHydrated) applyThreadScopedSettings(null, null);
       return;
     }
-    // The composer is interactive while /api/chat/settings is still out, so start holding
-    // this chat's edits as soon as its id is known. Waiting for hydration to begin the
-    // pairing left that window writing edits into the installation defaults instead.
+    // The composer is interactive while /api/chat/settings is still out, so start holding this
+    // chat's edits as soon as its id is known; waiting for hydration left that window writing
+    // edits into the installation defaults.
     beginThreadScopedPairing(activeThreadId);
     if (!settingsHydrated) {
       return () => {
-        // Hydration finishing re-runs this effect for the same chat, and the held edits are
-        // still waiting for that chat's read, so keep holding them. Any other reason to
-        // leave means the chat is going away and they belong to it.
+        // Hydration finishing re-runs this effect for the same chat, and the held edits are still
+        // waiting for that chat's read, so keep holding them. Any other reason to leave means the
+        // chat is going away.
         const now = useChatRuntimeStore.getState();
         if (!now.settingsHydrated || now.activeThreadId !== activeThreadId) {
           commitHeldThreadScopedEditsToTheirThread();
@@ -2876,9 +2778,8 @@ function ThreadScopedSettingsSync({
     let defaulted = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let retriesLeft = THREAD_READ_RETRIES;
-    // One per attempt, aborted when the attempt's deadline passes and when the chat is
-    // left. Without it the losing side of the race below stayed open on the server for
-    // the full write timeout while the next try opened another.
+    // One per attempt, aborted when the attempt's deadline passes and when the chat is left. Without
+    // it the losing side of the race stayed open on the server for the full write timeout.
     const reads = new Set<AbortController>();
     const abortReads = () => {
       for (const read of reads) read.abort();
@@ -2887,42 +2788,34 @@ function ThreadScopedSettingsSync({
 
     const sync = () => {
       if (cancelled || paired) return;
-      // the composer is live while this read is out, so hold any edit made in the meantime
-      // rather than writing it to the installation defaults and then discarding it.
-      // Drop to the installation defaults for the duration of the read. Until it lands the
-      // store still holds the OUTGOING chat's values, and the composer is usable: a send in
-      // that window is captured by snapshotQueuedChatRunSettings and carries the previous
-      // chat's permission level and pills, so a chat stored as "ask" could run tools
-      // without asking. The defaults are the only honest thing to show for a chat whose
-      // own settings are not known yet, and a read that never resolves now leaves those
-      // rather than another chat's.
-      //
-      // The pairing opened above survives this: a drop to the defaults for the chat that is
-      // still open and still waiting on its read keeps holding rather than releasing.
+      // The composer is live while this read is out, so hold any edit made meanwhile rather than
+      // writing it to the installation defaults. Drop to those defaults for the duration: until
+      // the read lands the store still holds the OUTGOING chat's values, and a send in that window
+      // would carry the previous chat's permission level and pills.
+      // A send in that window is captured by snapshotQueuedChatRunSettings and carries the previous
+      // chat's permission level and pills, so a chat stored as "ask" could run tools without asking.
       if (!defaulted) {
         defaulted = true;
         applyThreadScopedSettings(null, null);
       }
       beginThreadScopedPairing(activeThreadId);
-      // Settle this chat's own PATCH first. Edit a chat, leave, come straight back and the
-      // read can overtake the write and return the pre-edit snapshot, which then goes back
-      // over the values the user set and is written out again by the next edit.
+      // Settle this chat's own PATCH first: edit a chat, leave, come straight back and the read can
+      // overtake the write and return the pre-edit snapshot.
       const read = new AbortController();
       reads.add(read);
-      // The deadline covers the WAITS as well as the read: neither is bounded on its own (the
-      // settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening
-      // with an unbounded getStoredChatThread). In front of it their time went uncounted, so
-      // the chain could outlast THREAD_PAIRING_WAIT_MS with the gate shut and the send refused.
-      // Inside it, a stall is one failed attempt, which retryThreadRead handles.
+      // The deadline covers the WAITS as well as the read, neither of which is bounded on its own; in
+      // front of it their time went uncounted and the chain could outlast THREAD_PAIRING_WAIT_MS
+      // with the gate shut. Inside it, a stall is one failed attempt.
+      // The settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening with
+      // an unbounded getStoredChatThread. Inside the deadline a stall is one failed attempt, which
+      // retryThreadRead handles.
       void Promise.race([
         Promise.all([
-          // This chat's own PATCH first: a read that overtakes it returns the pre-edit
-          // snapshot, which then goes back over the values the user just set.
+          // This chat's own PATCH first: a read that overtakes it returns the pre-edit snapshot.
           awaitThreadScopedSettingsWrite(activeThreadId),
-          // And its row, which may not exist yet: initialize() resolves as soon as the id is
-          // minted and leaves the POST tracked, so on a first send a read can overtake it, find
-          // no row, and release this chat's held edits into the installation defaults. Settles
-          // at once when nothing is tracked, so an existing chat waits for nothing.
+          // And its row, which may not exist yet: initialize() resolves as soon as the id is minted and
+          // leaves the POST tracked, so on a first send a read can overtake it and release this chat's
+          // held edits into the installation defaults.
           awaitStoredChatThreadWrites(activeThreadId),
         ]).then(() =>
           getStoredChatThreadReadResult(activeThreadId, {
@@ -2932,8 +2825,8 @@ function ThreadScopedSettingsSync({
         ),
         new Promise<never>((_, reject) =>
           setTimeout(() => {
-            // The waits can expire before the fetch is issued; the controller is the only
-            // thing stopping one issued a moment later from outliving them.
+            // The waits can expire before the fetch is issued; the controller is the only thing stopping one
+            // issued a moment later from outliving them.
             read.abort();
             reject(new Error("thread settings read timed out"));
           }, THREAD_READ_TIMEOUT_MS),
@@ -2944,21 +2837,17 @@ function ThreadScopedSettingsSync({
         })
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
-          // A legacy fallback row means the backend GET FAILED and Dexie answered instead.
-          // That is the failure case, not a confirmed missing row: the thread may well
-          // have a snapshot on the server, so keep holding and retry rather than
-          // releasing this chat's edits into the installation defaults.
+          // A legacy fallback row means the backend GET FAILED and Dexie answered instead: that is the
+          // failure case, not a confirmed missing row, so keep holding and retry.
           if (thread && !cacheable) {
             retryThreadRead();
             return;
           }
           // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
           if (!thread) {
-            // a new chat's runtime-made id has no row yet, so it stays on the global
-            // settings. The answer is in: there is no snapshot to wait for, so an edit
-            // held for it is a plain default change and goes out now. Deferring that to a
-            // second missing read meant an unsaved chat's click was written to a row that
-            // does not exist, or attached to the chat once it was saved.
+            // A new chat's runtime-made id has no row yet, so it stays on the global settings. The answer is
+            // in, so an edit held for it is a plain default change and goes out now; deferring that
+            // wrote an unsaved chat's click to a row that does not exist.
             releaseHeldThreadScopedEdits();
             if (unpaired) return;
             unpaired = true;
@@ -2974,25 +2863,21 @@ function ThreadScopedSettingsSync({
               : null,
           );
         })
-        // A failed read leaves the installation defaults up (dropped to above), not the
-        // outgoing chat's settings, which would otherwise stay live indefinitely. The held
-        // edit goes to the chat it was made in.
+        // A failed read leaves the installation defaults up, not the outgoing chat's settings, which
+        // would otherwise stay live indefinitely. The held edit goes to the chat it was made in.
         .catch(() => retryThreadRead());
     };
 
-    // The read did not answer for this chat. Send what is held to the chat it was made
-    // in, then keep the chat paired, or every later edit in it would fall through to the
-    // installation defaults for as long as it stays open. A fresh browser with no legacy
-    // cache has nothing else to fall back on, so retry a bounded few times.
+    // The read did not answer for this chat: send what is held to the chat it was made in, then
+    // keep the chat paired, or every later edit would fall through to the installation defaults.
+    // Retry a bounded few times.
     const retryThreadRead = () => {
       if (cancelled) return;
       commitHeldThreadScopedEditsToTheirThread();
       if (retryTimer !== null) return;
       if (retriesLeft <= 0) {
-        // Out of tries. Staying paired would hold every send behind "Loading this
-        // chat's settings" with nothing left to resolve it, so give up openly: the
-        // chat runs on the installation defaults, which is what it is already
-        // showing, and say so once rather than failing silently.
+        // Out of tries. Staying paired would hold every send behind "Loading this chat's settings" with
+        // nothing left to resolve it, so give up openly and say so once.
         applyThreadScopedSettings(null, null);
         releaseHeldThreadScopedEdits();
         toast.error("Could not load this chat's settings", {
@@ -3001,9 +2886,7 @@ function ThreadScopedSettingsSync({
         });
         return;
       }
-      // Keep the chat paired between tries, or an edit in it would fall through to
-      // the installation defaults. A fresh browser with no legacy cache has nothing
-      // else to fall back on, so it is worth a few goes.
+      // Keep the chat paired between tries, or an edit in it would fall through to the installation defaults.
       beginThreadScopedPairing(activeThreadId);
       retriesLeft -= 1;
       retryTimer = setTimeout(() => {
@@ -3017,11 +2900,10 @@ function ThreadScopedSettingsSync({
     return () => {
       cancelled = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
-      // Nothing is waiting on these once the chat is gone, and leaving them running is
-      // how an outage turned every chat opened during it into three open requests.
+      // Nothing is waiting on these once the chat is gone, and leaving them running is how an outage
+      // turned every chat opened during it into three open requests.
       abortReads();
-      // switched away mid-read: the edit belongs to the chat it was made in, not to the
-      // installation defaults that every other snapshot-less chat follows.
+      // switched away mid-read: the edit belongs to the chat it was made in, not to the installation defaults.
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
@@ -3056,9 +2938,8 @@ function ActiveBranchRegistrar({
 }
 
 // Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
-// it: (1) a model change empties contextUsageByThreadId and a mounted thread does not rerun its
-// history loader; (2) on a deep link to /chat/:id the history loader and status can each land
-// before the other, so neither independently timed callback counts.
+// it: a model change empties contextUsageByThreadId while a mounted thread does not rerun
+// its history loader, and on a deep link the loader and status can each land before the other.
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3067,8 +2948,7 @@ function ThreadContextUsageRecount({
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
-  // for being busy would never be retried. Every run, not just local ones, since that is what the
-  // endpoint refuses on.
+  // for being busy would never be retried. Every run, since that is what the endpoint refuses on.
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
@@ -3099,8 +2979,8 @@ function ThreadContextUsageRecount({
   return null;
 }
 
-// Exposes the current thread's cancelRun() via the shared store so external
-// surfaces can stop an in-flight stream before deleting the thread.
+// Exposes the current thread's cancelRun() via the shared store so external surfaces can stop an
+// in-flight stream before deleting the thread.
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -3148,9 +3028,8 @@ function CancelRegistrar(): ReactElement | null {
         }
         return;
       }
-      // assistant-ui enters its running state before adapter preflight turns
-      // on runningByThreadId. Keep the only cancel handle after navigation,
-      // then release it when assistant-ui reports that the run actually ended.
+      // assistant-ui enters its running state before adapter preflight turns on runningByThreadId, so
+      // keep the only cancel handle after navigation and release it when the run ends.
       let unsubscribe = () => {};
       unsubscribe = thread.subscribe(() => {
         if (thread.getState().isRunning) {
@@ -3181,8 +3060,8 @@ function ThreadBackendAutosave({
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
   const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
-  // A ref, not a saveThread dependency: the save may be queued while visible and resolve
-  // after Compare hides the pane, so this must read at PUBLISH time, not schedule time.
+  // A ref, not a saveThread dependency: the save may be queued while visible and resolve after
+  // Compare hides the pane, so this must read at PUBLISH time.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
 
@@ -3217,10 +3096,9 @@ function ThreadBackendAutosave({
         return;
       }
 
-      // The save still runs while backgrounded; only the PUBLICATION is suppressed, or a hidden
-      // pane reaches Compare's exportThreadIds and Export pulls the unrelated base chat. Same
-      // stand-down mid-switch, for the same reason as the history adapter's publication:
-      // mainThreadId is still the OUTGOING thread until switchToNewThread() resolves.
+      // The save still runs while backgrounded; only the PUBLICATION is suppressed, or a hidden pane
+      // reaches Compare's exportThreadIds. Same stand-down mid-switch: mainThreadId is still the
+      // OUTGOING thread until switchToNewThread() resolves.
       const switchState = newThreadSwitchStateRef.current;
       const switchInFlight =
         switchState.activeNonce !== null &&
@@ -3274,9 +3152,8 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
-  // runEnd only reaches whichever thread is main, so a thread that stops being main
-  // mid-run never gets its own and would checkpoint for the life of the page. Ask the
-  // runtime instead of trusting the event, as CancelRegistrar above already does.
+  // runEnd only reaches whichever thread is main, so a thread that stops being main mid-run never
+  // gets its own and would checkpoint for the life of the page. Ask the runtime instead.
   const isRunActive = useCallback(
     (threadId: string): boolean => {
       const runtime = aui.threads().__internal_getAssistantRuntime?.();
@@ -3293,8 +3170,8 @@ function ThreadBackendAutosave({
     [aui],
   );
 
-  // Keep one scheduler for the component lifetime so its timers remain stoppable. The refs
-  // give it the latest queueSave and liveness check when dependencies change.
+  // Keep one scheduler for the component lifetime so its timers remain stoppable; the refs give it
+  // the latest queueSave and liveness check.
   const queueSaveRef = useRef(queueSave);
   useEffect(() => {
     queueSaveRef.current = queueSave;
@@ -3316,10 +3193,9 @@ function ThreadBackendAutosave({
   }, []);
 
   useEffect(() => {
-    // A hidden renderer may never get its next interval: Chromium throttles chained timers
-    // to a wake a minute and a WebView can be parked outright, so checkpoint on the way
-    // out. No beforeunload, matching flushSettingsOnPageHidden: it does not fire on every
-    // platform and a Tauri quit never fires it at all.
+    // A hidden renderer may never get its next interval: Chromium throttles chained timers to a wake
+    // a minute and a WebView can be parked outright, so checkpoint on the way out. No
+    // beforeunload, matching flushSettingsOnPageHidden.
     const flush = () => {
       checkpointsRef.current?.flushAll();
     };
@@ -3357,18 +3233,16 @@ function ThreadBackendAutosave({
   return null;
 }
 
-// True when the chat tab is visible. While false, ChatPage stays mounted (runtime +
-// autosave alive, so the stream survives) but its views/composers unmount, so no
-// body-portaled surface bleeds over the active tab. Defaults true for use elsewhere.
+// True when the chat tab is visible. While false, ChatPage stays mounted (runtime and autosave
+// alive, so the stream survives) but its views unmount, so no portaled surface bleeds through.
 export const ChatActiveContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);
 }
 
-// True inside a Compare pane. Both panes mount the same message controls, so a
-// window-level chord would otherwise be answered by whichever pane mounted
-// first, whatever the user was looking at.
+// True inside a Compare pane. Both panes mount the same message controls, so a window-level
+// chord would otherwise be answered by whichever pane mounted first.
 const ComparePaneContext = createContext(false);
 
 export function useInComparePane(): boolean {
@@ -3395,21 +3269,18 @@ export function ChatRuntimeProvider({
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
-  // Mounted only to keep an in-flight run attached while another view is on screen. The
-  // runtime stays alive; everything driving the shared single-chat state (active thread,
-  // context bar, thread-scoped settings) stands down so it can't fight the visible view.
+  // Mounted only to keep an in-flight run attached while another view is on screen: the runtime
+  // stays alive, and everything driving the shared single-chat state stands down.
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
 }): ReactElement {
-  // Read by the history adapter's own active-thread publication, which is the sibling of
-  // ThreadBackendAutosave's and needs the same stand-down. Kept in a ref so the memo below
-  // never sees it change: rebuilding the runtime hook would rebuild the runtime, and the
-  // whole point of the shared provider is that it does not.
+  // Read by the history adapter's own active-thread publication, the sibling of
+  // ThreadBackendAutosave's, which needs the same stand-down. Kept in a ref so the memo below
+  // never sees it change, since rebuilding the runtime hook would rebuild the runtime.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
-  // Declared before the memo below because the memo reads it. Same ref the switch
-  // components mutate, so the adapter can tell "this pane is on screen" from "this pane is
-  // the thread we are switching AWAY from and mainThreadId has not caught up yet".
+  // Declared before the memo below because the memo reads it. Same ref the switch components
+  // mutate, so the adapter can tell "this pane is on screen" from "this pane is being left".
   const newThreadSwitchStateRef = useRef<NewThreadSwitchState>({
     activeNonce: null,
     hasSwitched: false,
@@ -3451,9 +3322,8 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      {/* Pane identity for the tool-output store maps: the adapter prefixes its
-          keys with this scope so concurrent panes with colliding tool ids
-          ("call_0") can't bleed live output into each other's cards. */}
+      {/* Pane identity for the tool-output store maps: the adapter prefixes its keys with this scope so
+          concurrent panes with colliding tool ids cannot bleed output into each other's cards. */}
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ComparePaneContext.Provider value={Boolean(pairId)}>
@@ -3466,13 +3336,10 @@ export function ChatRuntimeProvider({
             !backgrounded
           }
         />
-        {/* Compare clears activeThreadId on the way in, and this view is hidden rather
-            than unmounted, so nothing puts it back: the nonce is unchanged so
-            ThreadNewChatSwitch returns, and ActiveThreadSync is off while a nonce is
-            present. ThreadScopedSettingsSync is NOT nonce-gated, so the chat came back
-            detached -- on installation defaults, its edits moving those instead of its
-            own snapshot, with no title, context usage or model notice. ProjectLanding
-            restores on resume for the same reason; this is the single-chat half. */}
+        {/* Compare clears activeThreadId on the way in and this view is hidden rather than unmounted, so
+            nothing puts it back: the nonce is unchanged so ThreadNewChatSwitch returns, and
+            ActiveThreadSync is off while a nonce is present. ThreadScopedSettingsSync is NOT
+            nonce-gated, so the chat came back detached, with no title or context usage. */}
         <NonceThreadResumeRestore
           enabled={
             modelType === "base" &&
@@ -3514,8 +3381,8 @@ export function ChatRuntimeProvider({
             newThreadSwitchStateRef={newThreadSwitchStateRef}
           />
         )}
-        {/* The view stays mounted (only CSS-hidden) while off-route so the run
-            stays attached and the stream alive; unmounting aborts generation. */}
+        {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
+            stream alive; unmounting aborts generation. */}
         {children}
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
