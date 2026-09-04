@@ -38,8 +38,24 @@ def read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def require_code_anchor(marker: str, role: str) -> None:
+    """Refuse a comment as a slice anchor.
+
+    A comment is prose about the code, not the code, so it can be reworded or dropped
+    without a line of behaviour moving. #10114 trimmed comments across studio/frontend
+    and took 93 tests here down with it, none of which were about anything it changed.
+    Anchor on the declaration or statement the comment sits above instead.
+    """
+    if marker.lstrip().startswith(("//", "/*")):
+        raise AssertionError(
+            f"{role} anchor is a comment, so rewording it breaks this test: {marker!r}"
+        )
+
+
 def slice_between(text: str, start_marker: str, end_marker: str) -> str:
     """The source from ``start_marker`` up to (not including) ``end_marker``."""
+    require_code_anchor(start_marker, "start")
+    require_code_anchor(end_marker, "end")
     start = text.index(start_marker)
     end = text.index(end_marker, start + len(start_marker))
     return text[start:end]
