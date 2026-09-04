@@ -698,9 +698,7 @@ def test_a_stale_hf_variant_does_not_label_a_non_llama_resident(monkeypatch):
         return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(
-        resolver, "local_servable_model", lambda info: (True, ("Q8_0", "BF16"))
-    )
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q8_0", "BF16")))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     row = ids.get("org/Foo", {})
     # The scan's quants may be offered, but never as "the loaded one is Q8_0".
