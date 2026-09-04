@@ -19409,6 +19409,16 @@ def _build_external_messages(
     return promote_mcp_history_images(result, vision = promote, promoted_out = promoted_out)
 
 
+async def _promote_mcp_history_images_async(messages, *, vision: bool, promoted_out = None):
+    """Promotion off the shared loop when there is really an envelope to rebuild.
+    Same hop, and the same reason, as the local and external replay paths take."""
+    if vision and _messages_have_mcp_image_envelope(messages):
+        return await asyncio.to_thread(
+            promote_mcp_history_images, messages, vision = vision, promoted_out = promoted_out
+        )
+    return promote_mcp_history_images(messages, vision = vision, promoted_out = promoted_out)
+
+
 async def _promote_local_mcp_images_async(messages, *, vision: bool):
     """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
     A permitted image runs to 40 megapixels, so that belongs off the shared loop --
@@ -29128,6 +29138,12 @@ async def anthropic_count_tokens(
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
+    # Priced as the images the request really sends, not as the base64 the envelope
+    # carries: rendered verbatim a replayed screenshot counts thousands of tokens the
+    # completion never sends, and the two endpoints must agree on the same prompt.
+    openai_messages = promote_mcp_history_images(
+        openai_messages, vision = llama_backend.is_vision
+    )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
@@ -29388,6 +29404,17 @@ async def anthropic_messages(
             openai_messages,
             llama_backend.is_vision,
         )
+
+    # The same promotion /v1/chat/completions applies, because a client replaying an
+    # Anthropic history sends the envelope back in the tool_result: without this the
+    # model reads megabytes of base64 as text and is shown no picture at all. After
+    # the image normalizer, since promotion emits PNG data URLs already.
+    _anthropic_replayed_image_parts: list = []
+    openai_messages = await _promote_mcp_history_images_async(
+        openai_messages,
+        vision = llama_backend.is_vision,
+        promoted_out = _anthropic_replayed_image_parts,
+    )
 
     # Fill omitted sampling fields with the per-model recommendation (or an operator
     # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
@@ -29893,6 +29920,7 @@ async def anthropic_messages(
             return llama_backend.generate_chat_completion_with_tools(
                 reasoning_provenance = _think_prov,
                 messages = openai_messages,
+                replayed_image_parts = tuple(_anthropic_replayed_image_parts),
                 tools = openai_tools,
                 temperature = temperature,
                 top_p = top_p,

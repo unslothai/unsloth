@@ -4959,3 +4959,115 @@ def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
     )
     assert args["enable_thinking"] is True
     assert args["reasoning_effort"] == "high"
+
+
+def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():
+    """A client replaying an Anthropic history sends the envelope back inside the
+    tool_result. Without promotion the model reads megabytes of base64 as text and is
+    shown no picture -- the very defect this feature exists to remove, on the endpoint
+    Claude Code actually uses."""
+    import inspect
+
+    from routes import inference
+
+    generate = inspect.getsource(inference.anthropic_messages)
+    assert "_promote_mcp_history_images_async(" in generate, (
+        "the /v1/messages path never promotes the replayed envelope"
+    )
+    assert "replayed_image_parts = tuple(_anthropic_replayed_image_parts)" in generate, (
+        "the loop's conversation cap has to start from what promotion put back"
+    )
+
+    count = inspect.getsource(inference.anthropic_count_tokens)
+    assert "promote_mcp_history_images(" in count, (
+        "the count endpoint prices the base64 the completion never sends"
+    )
+
+
+def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
+    import asyncio
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _promote_mcp_history_images_async
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (12, 12), (24, 90, 219)).save(buffer, format = "PNG")
+    payload = base64.b64encode(buffer.getvalue()).decode()
+    envelope = json.dumps([{"data": payload, "mimeType": "image/png"}])
+
+    # The shape anthropic_messages_to_openai produces from a replayed tool_result.
+    messages = [
+        {"role": "user", "content": "take a screenshot"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "mcp__shot__capture", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "name": "mcp__shot__capture",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        },
+        {"role": "user", "content": "what colour was it"},
+    ]
+
+    promoted: list = []
+    out = asyncio.run(
+        _promote_mcp_history_images_async(messages, vision = True, promoted_out = promoted)
+    )
+
+    text = "".join(
+        message["content"] if isinstance(message.get("content"), str) else ""
+        for message in out
+    ) + "".join(
+        part.get("text", "")
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert mcp_images.SENTINEL not in text
+    assert payload not in text, "the base64 reached the model as prompt text"
+    assert len(promoted) == 1
+    assert sum(
+        1
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ) == 1
+
+
+def test_a_text_only_anthropic_model_is_not_shown_the_envelope_either():
+    import asyncio
+    import json
+
+    from core.inference import mcp_images
+    from routes.inference import _promote_mcp_history_images_async
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "name": "mcp__shot__capture",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        }
+    ]
+
+    out = asyncio.run(_promote_mcp_history_images_async(messages, vision = False))
+
+    assert mcp_images.SENTINEL not in json.dumps(out)
+    assert not any(isinstance(message.get("content"), list) for message in out)
