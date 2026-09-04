@@ -207,7 +207,8 @@ export function WindowTitlebar({
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
   const { width } = useSidebarWidth();
-  const sidebarWidth = showSidebarSurface
+  const showDesktopSidebarSurface = showSidebarSurface && !isMobile;
+  const sidebarWidth = showDesktopSidebarSurface
     ? pinned
       ? // The live value only exists mid-drag; otherwise the committed width.
         `var(--studio-sidebar-live-width, ${width}px)`
@@ -215,8 +216,13 @@ export function WindowTitlebar({
     : "0px";
 
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
-  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
+    showSidebarSurface && (!showDesktopSidebarSurface || !pinned)
+      ? "7rem"
+      : sidebarWidth;
+  const contentBorderLeft =
+    showDesktopSidebarSurface && pinned
+      ? `calc(${sidebarWidth} + 12px)`
+      : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -348,7 +354,7 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showSidebarSurface && (
+      {showDesktopSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
           // Marks a consumer of --studio-sidebar-live-width. Only this and the
