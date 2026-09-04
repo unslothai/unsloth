@@ -1239,7 +1239,7 @@ class DownloadMetadata:
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
     # Includes the shared mmproj companion for vision GGUF repos.
     progress_blob_hashes: frozenset[str] = field(default_factory = frozenset)
-    # Bytes already complete before this job started; not counted as this run's
+    # Bytes already complete before this job started; not counted as this run's progress.
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
@@ -1934,7 +1934,8 @@ class DownloadRegistry:
                 if proc.poll() is None
             ]
             live_keys = {key for key, _proc, _metadata in live}
-            # Flag as an intentional stop so the watcher's exit classification
+            # Flag as an intentional stop so the watcher's exit classification reports them cancelled rather than an
+            # OOM/crash once SIGKILL lands.
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
