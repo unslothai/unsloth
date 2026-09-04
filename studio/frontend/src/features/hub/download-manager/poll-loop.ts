@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
+import {
+  carriesOverSeed,
+  idleProbeVerdict,
+  seededMeasuredTransfer,
+} from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -406,12 +410,22 @@ function handleIdleAfterProgress(
   rt: JobRuntime,
   key: string,
   madeProgress: boolean,
+  progressResp: ProgressLike,
 ): void {
   const updatedJob = getState().jobs[key];
   if (updatedJob && hasObservedExpectedBytes(updatedJob)) {
     finalize(key, "complete", { bytes: updatedJob.downloadedBytes });
   } else if (rt.cancelRequested) {
     finalize(key, "cancelled");
+  } else if (
+    idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    ) === "gone"
+  ) {
+    finalize(key, "gone");
   } else if (madeProgress) {
     rt.idleSinceMs = null;
   } else {
@@ -506,7 +520,7 @@ async function tick(key: string): Promise<void> {
     );
 
     if (status.state === "idle") {
-      handleIdleAfterProgress(rt, key, madeProgress);
+      handleIdleAfterProgress(rt, key, madeProgress, progressResp);
     } else {
       rt.idleSinceMs = null;
     }
