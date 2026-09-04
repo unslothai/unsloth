@@ -49,6 +49,7 @@ import {
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 import { maxTokensIsTheLimit } from "./generation-length.ts";
+import { isAssistantLocalThreadId } from "../utils/thread-ids";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -856,6 +857,12 @@ export async function getChatThread(
   threadId: string,
   options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
+  // A `__LOCALID_` thread has never been written to the server, so asking for it is a
+  // guaranteed 404. The 404 was already handled below and nothing broke -- but the browser
+  // still logs "Failed to load resource: 404" for every draft thread, and a console that
+  // cries wolf on a normal path is a console people stop reading. Answering `null` here is
+  // the same result the round-trip produced, minus the request and the noise.
+  if (isAssistantLocalThreadId(threadId)) return null;
   // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
   // the write timeout exists to keep moving. Callers on a render path stay unbounded.
   // `timeoutMs` is for a caller with a deadline of its own: the settings pairing gives up
