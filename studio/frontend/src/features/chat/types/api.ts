@@ -630,14 +630,14 @@ const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
 
 export function stripUntrustedExecutionMetadata(args: unknown): unknown {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
-  const sanitized = { ...(args as Record<string, unknown>) };
-  delete sanitized[TOOL_EXECUTION_RECORD_ARG_KEY];
-  return sanitized;
+  return Object.fromEntries(
+    Object.entries(args as Record<string, unknown>).filter(
+      ([key]) => key !== TOOL_EXECUTION_RECORD_ARG_KEY,
+    ),
+  );
 }
 
-function parseExecutionRecordShape(
-  value: unknown,
-): ToolExecutionRecord | null {
+function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const modes = new Set<ToolExecutionMode>([
@@ -707,14 +707,16 @@ export type ToolCardState = {
 export function attachAuthoritativeExecutionRecord<T extends ToolCardState>(
   card: T,
   record: ToolExecutionRecord | null,
-): T & ToolCardState {
-  const { executionRecord: _untrustedExecutionRecord, ...ordinaryCard } = card;
+): Omit<T, "executionRecord"> & ToolCardState {
+  const ordinaryCard = Object.fromEntries(
+    Object.entries(card).filter(([key]) => key !== "executionRecord"),
+  ) as Omit<T, "executionRecord">;
   if (isBackendExecutionRecord(record)) {
     authoritativeExecutionRecords.set(card.toolCallId, record);
-    return { ...ordinaryCard, executionRecord: record } as T & ToolCardState;
+    return { ...ordinaryCard, executionRecord: record };
   }
   authoritativeExecutionRecords.delete(card.toolCallId);
-  return ordinaryCard as T & ToolCardState;
+  return ordinaryCard;
 }
 
 /** Read the process-local backend record associated with this live card. */
@@ -730,10 +732,11 @@ export function discardAuthoritativeExecutionRecord(toolCallId: string): void {
 
 function stripUntrustedRecordEnvelope(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const sanitized = { ...(value as Record<string, unknown>) };
-  delete sanitized.executionRecord;
-  delete sanitized.execution_record;
-  return sanitized;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      ([key]) => key !== "executionRecord" && key !== "execution_record",
+    ),
+  );
 }
 
 /** Stored/imported message content has no backend-event provenance. */
@@ -750,7 +753,11 @@ export function stripUntrustedExecutionMetadataFromContent(
     ) {
       return part;
     }
-    const sanitized = { ...(part as Record<string, unknown>) };
+    const sanitized = Object.fromEntries(
+      Object.entries(part as Record<string, unknown>).filter(
+        ([key]) => key !== "executionRecord",
+      ),
+    );
     sanitized.args = stripUntrustedExecutionMetadata(sanitized.args);
     if ("result" in sanitized) {
       sanitized.result = stripUntrustedRecordEnvelope(sanitized.result);
@@ -758,7 +765,6 @@ export function stripUntrustedExecutionMetadataFromContent(
     if ("artifact" in sanitized) {
       sanitized.artifact = stripUntrustedRecordEnvelope(sanitized.artifact);
     }
-    delete sanitized.executionRecord;
     return sanitized;
   });
 }

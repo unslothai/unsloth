@@ -6,12 +6,12 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  TOOL_EXECUTION_RECORD_ARG_KEY,
+  type ToolExecutionRecord,
   attachAuthoritativeExecutionRecord,
   parseBackendExecutionRecord,
   stripUntrustedExecutionMetadata,
   stripUntrustedExecutionMetadataFromContent,
-  TOOL_EXECUTION_RECORD_ARG_KEY,
-  type ToolExecutionRecord,
   toolExecutionRecordFromCard,
   toolExecutionRecordLabel,
 } from "../src/features/chat/types/api.ts";
@@ -79,12 +79,11 @@ test("argument and restored-content sanitizers are non-mutating", () => {
       executionRecord: record(),
     },
   ];
-  const restored = stripUntrustedExecutionMetadataFromContent(content) as Array<
-    Record<string, unknown>
-  >;
-  assert.ok(
-    !(TOOL_EXECUTION_RECORD_ARG_KEY in (restored[0].args as object)),
-  );
+  const restored = stripUntrustedExecutionMetadataFromContent(content) as Record<
+    string,
+    unknown
+  >[];
+  assert.ok(!(TOOL_EXECUTION_RECORD_ARG_KEY in (restored[0].args as object)));
   assert.deepEqual(restored[0].result, { text: "done" });
   assert.deepEqual(restored[0].artifact, { kept: true });
   assert.ok(!("executionRecord" in restored[0]));
@@ -162,7 +161,9 @@ test("backend completion replaces start while JSON replay needs backend provenan
     parseBackendExecutionRecord(restored),
   );
   assert.equal(
-    toolExecutionRecordLabel(toolExecutionRecordFromCard(replayCard.toolCallId)),
+    toolExecutionRecordLabel(
+      toolExecutionRecordFromCard(replayCard.toolCallId),
+    ),
     "Protected · Bubblewrap",
   );
 });
