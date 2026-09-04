@@ -3825,35 +3825,39 @@ function Get-UvSafePath {
 # publishes no win_arm64 wheel. The resolver would fall to the sdist and try to build a C
 # extension. The generated file is the record of every such drop, so restore it rather than
 # re-deriving the list here.
+# Each of the three is restored on its own. Treating them as a group meant that a shell
+# carrying an unrelated PIP_FIND_LINKS -- a corporate wheel mirror, say -- silently cost
+# the user the brotli exclusions and put the sdist build back. A value the caller set is
+# still never overwritten: on the install.ps1 path all three are already populated, so
+# every branch below no-ops and the function is invisible there.
 function Restore-WoaResolverEnvironment {
     if (-not (Test-WinArm64Venv)) { return }
-    # Anything already set is a caller driving the resolve itself -- usually install.ps1,
-    # which set these moments ago in this very process. Never override that.
-    if ($env:UV_OVERRIDE -or $env:UV_FIND_LINKS -or $env:PIP_FIND_LINKS) { return }
     $woaDir = Join-Path $StudioHome "woa"
     $overrides = Join-Path $woaDir "overrides.txt"
-    if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
-        # A native venv whose overrides file was deleted. Guessing the contents would be
-        # worse than saying so: the drops depend on what the wheelhouse turned out to hold.
-        substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
-        substep "overrides cannot be restored. Re-run install.ps1 if this pass fails to resolve." "Yellow"
-        return
-    }
-    $safeOverrides = Get-UvSafePath $overrides
-    if ($safeOverrides -match '\s') {
-        substep "windows on arm: $overrides contains a space and has no 8.3 short name," "Yellow"
-        substep "which uv cannot read. Re-run install.ps1 if this pass fails to resolve." "Yellow"
-        return
-    }
-    $env:UV_OVERRIDE = $safeOverrides
-    # UV_FIND_LINKS is comma-separated, so it is passed through untouched; PIP_FIND_LINKS
-    # is split on whitespace like UV_OVERRIDE. Same asymmetry as install.ps1.
     $wheels = Join-Path $woaDir "wheels"
-    if (Test-Path -LiteralPath $wheels -PathType Container) {
-        $env:UV_FIND_LINKS = $wheels
-        $env:PIP_FIND_LINKS = Get-UvSafePath $wheels
+    if (-not $env:UV_OVERRIDE) {
+        if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
+            # A native venv whose overrides file was deleted. Guessing the contents would
+            # be worse than saying so: the drops depend on what the wheelhouse held.
+            substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
+            substep "overrides cannot be restored. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+        } else {
+            $safeOverrides = Get-UvSafePath $overrides
+            if ($safeOverrides -match '\s') {
+                substep "windows on arm: $overrides contains a space and has no 8.3 short name," "Yellow"
+                substep "which uv cannot read. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+            } else {
+                $env:UV_OVERRIDE = $safeOverrides
+                substep "windows on arm: restored requirement overrides from $overrides"
+            }
+        }
     }
-    substep "windows on arm: restored requirement overrides from $overrides"
+    if (Test-Path -LiteralPath $wheels -PathType Container) {
+        # UV_FIND_LINKS is comma-separated, so it is passed through untouched;
+        # PIP_FIND_LINKS is split on whitespace like UV_OVERRIDE. As in install.ps1.
+        if (-not $env:UV_FIND_LINKS) { $env:UV_FIND_LINKS = $wheels }
+        if (-not $env:PIP_FIND_LINKS) { $env:PIP_FIND_LINKS = Get-UvSafePath $wheels }
+    }
 }
 
 # Written before anything that could be interrupted, and cleared when torch is
@@ -5077,12 +5081,45 @@ $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($Pi
 # no-torch mode never reaches the assignment below.
 $XpuIndexUrl = $null
 
+# ── Windows on ARM: recover what a fresh shell lost ──
+# Outside the no-torch guard, unlike the torch-index USES below, because neither thing this
+# recovers is about torch. install_python_stack.py installs studio.txt in every mode, and
+# that is where ddgs -> httpx[brotli] -> Brotli resolves; it also rewrites the manifest in
+# every mode, so an update that did not re-export the index would erase the record of it.
+#
+# Ask the interpreter uv resolves for, not PROCESSOR_ARCHITECTURE, which describes the host
+# process.
+$WinArm64Venv = Test-WinArm64Venv
+# The index install.ps1 probed and used. Without it the CUDA branch further down would
+# point at the driver-derived family (cu130), which publishes no win_arm64 CUDA wheel at
+# all, so a repair or a missing companion on this venv could not resolve. Absent -- an
+# older installer that recorded nothing -- this stays empty and every index choice is
+# exactly as before.
+$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
+} elseif ($WinArm64Venv) {
+    # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
+    # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
+    # channels, since write_manifest refuses any URL that could carry a credential, so a
+    # user's pinned mirror is not recovered here and is supplied through their own
+    # environment as before. Empty on every other host, leaving the index unchanged.
+    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
+} else { "" }
+# Put it back in the environment, not just in this variable: install_python_stack.py reads
+# UNSLOTH_WOA_SELECTED_TORCH_INDEX when it rewrites the manifest at the end of the run.
+# Recovering it locally and not re-exporting would have let the first fresh-shell update
+# write a manifest without the index, losing for good the one thing the manifest exists to
+# carry. Only ever set to a value that came from install.ps1 or from write_manifest's own
+# credential-free allowlist.
+if ($WinArm64TorchIndexUrl) {
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
+}
+# The other half of the lost handover: the generated requirement overrides and wheelhouse.
+Restore-WoaResolverEnvironment
+
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
-# so every branch below drops it. Ask the interpreter uv resolves for, not
-# PROCESSOR_ARCHITECTURE, which describes the host process. Inside the no-torch guard
-# because all three uses are, and no-torch installs nothing to skip.
-$WinArm64Venv = Test-WinArm64Venv
+# so every branch below drops it.
 # torchaudio is not a foregone loss on this platform any more: NVIDIA's GA out-of-tree
 # channel publishes a win_arm64 build (2.11.0+cu134), and install.ps1 reports through
 # UNSLOTH_WOA_HAS_TORCHAUDIO which way the index it chose went. Absent that (a direct
@@ -5117,25 +5154,8 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 $WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
     @("--prerelease=allow", "--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
 } else { @() }
-# The index those arguments are FOR. Without it the CUDA branch below would point them at
-# the driver-derived family (cu130), which publishes no win_arm64 CUDA wheel at all, so a
-# repair or a missing companion on this venv could not resolve. install.ps1 reports the
-# index it actually probed and used; absent it -- a direct `unsloth studio update`, or an
-# older installer -- this stays empty and every index choice is exactly as before.
-$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
-    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
-} elseif ($WinArm64Venv) {
-    # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
-    # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
-    # channels, since write_manifest refuses any URL that could carry a credential, so a
-    # user's pinned mirror is not recovered here and is supplied through their own
-    # environment as before. Empty on every other host, leaving the index unchanged.
-    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
-} else { "" }
-
-# The other half of what a fresh shell lost. Restored here, before the torch installs and
-# the dependency pass, because that is where install.ps1 has them set for its own run.
-Restore-WoaResolverEnvironment
+# $WinArm64TorchIndexUrl is the index those arguments are FOR; it is recovered and
+# re-exported above the no-torch guard, since the manifest rewrite needs it in every mode.
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {

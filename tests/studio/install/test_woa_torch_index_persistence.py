@@ -280,7 +280,23 @@ class TestResolverEnvironmentRestore:
             preset = "$env:UV_OVERRIDE = 'C:\\caller\\ov.txt'",
         )
         assert got["ov"] == "C:\\caller\\ov.txt"
-        assert not got["uvfl"], "the whole restore is skipped, not merged half-way"
+
+    @requires_pwsh
+    @pytest.mark.parametrize("held", ["UV_FIND_LINKS", "PIP_FIND_LINKS"])
+    def test_an_unrelated_find_links_does_not_cost_the_exclusions(
+        self, tmp_path: pathlib.Path, held: str
+    ):
+        """
+        The three are restored independently. Grouping them meant a shell carrying a
+        corporate wheel mirror in PIP_FIND_LINKS silently lost the brotli exclusions and
+        got the sdist build back -- a setting with nothing to do with the drop list.
+        """
+        overrides = self._stage(tmp_path)
+        got = self._invoke(tmp_path, preset = f"$env:{held} = 'https://mirror.example/whl'")
+        assert got["ov"] == str(overrides), f"{held} is unrelated to the overrides"
+        assert got[{"UV_FIND_LINKS": "uvfl", "PIP_FIND_LINKS": "pipfl"}[held]] == (
+            "https://mirror.example/whl"
+        ), "and the caller's own value is still not overwritten"
 
     @requires_pwsh
     def test_a_deleted_overrides_file_says_so_rather_than_guessing(self, tmp_path: pathlib.Path):
@@ -328,3 +344,76 @@ class TestResolverEnvironmentRestore:
         restore = setup.index("\nRestore-WoaResolverEnvironment")
         stack = setup.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert restore < stack
+
+
+class TestTheRecoveryReachesEveryModeThatNeedsIt:
+    """Placement, which is what decided whether the two recoveries above fire at all.
+
+    Both were originally written next to the torch index work, inside setup.ps1's
+    `if (-not $NoTorchMode)` guard. Neither is about torch: install_python_stack.py
+    installs studio.txt in every mode -- that is where ddgs resolves -- and it rewrites
+    the manifest in every mode too.
+    """
+
+    @staticmethod
+    def _setup() -> str:
+        return SETUP_PS1.read_text(encoding = "utf-8")
+
+    @staticmethod
+    def _enclosing_blocks(text: str, needle: str) -> list:
+        """The `{`-opening lines still unclosed where `needle` appears."""
+        target = text.index(needle)
+        stack = []
+        for index, char in enumerate(text[:target]):
+            if char == "{":
+                stack.append(text.rfind("\n", 0, index) + 1)
+            elif char == "}" and stack:
+                stack.pop()
+        return [text[start : text.index("\n", start)].strip() for start in stack]
+
+    def test_the_restore_is_not_trapped_in_the_no_torch_guard(self):
+        blocks = self._enclosing_blocks(self._setup(), "\nRestore-WoaResolverEnvironment")
+        assert not any("NoTorchMode" in b for b in blocks), (
+            "UNSLOTH_NO_TORCH=1 still installs studio.txt, and ddgs -> httpx[brotli] -> "
+            f"Brotli has no win_arm64 wheel. Enclosing blocks: {blocks}"
+        )
+
+    def test_the_index_re_export_is_not_trapped_either(self):
+        blocks = self._enclosing_blocks(
+            self._setup(), "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl",
+        )
+        assert not any("NoTorchMode" in b for b in blocks), (
+            f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
+        )
+
+    def test_the_recovered_index_is_put_back_in_the_environment(self):
+        """
+        The bug this guards: recovering the index into a local variable only. The
+        dependency pass rewrites the manifest from UNSLOTH_WOA_SELECTED_TORCH_INDEX, so a
+        fresh-shell update would write one with no index at all -- erasing, on the first
+        update, the only record of the one thing that cannot be re-derived from the host.
+        """
+        text = self._setup()
+        assign = text.index("$WinArm64TorchIndexUrl = if (")
+        export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
+        stack = text.index('python "$PSScriptRoot\\install_python_stack.py"')
+        assert assign < export < stack, "recovered, re-exported, then read by the stack"
+        assert "if ($WinArm64TorchIndexUrl) {" in text[export - 120 : export], (
+            "guarded: an empty recovery must not export an empty value"
+        )
+
+    def test_studio_txt_is_installed_in_no_torch_mode(self):
+        """
+        The premise of the placement test above. If the studio.txt pass ever moves under
+        a NO_TORCH guard, the reasoning changes and this should be revisited rather than
+        quietly left stale.
+        """
+        source = STACK_PY.read_text(encoding = "utf-8")
+        call = source.index('req = REQ_ROOT / "studio.txt"')
+        line_start = source.rfind("\n", 0, source.rindex("pip_install(", 0, call)) + 1
+        indent = len(source[line_start:]) - len(source[line_start:].lstrip())
+        assert indent == 4, (
+            "the studio.txt install is no longer unconditional inside install_python_stack()"
+        )
+        skip_list = source[source.index("NO_TORCH_SKIP_PACKAGES = {"):][:400]
+        assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
