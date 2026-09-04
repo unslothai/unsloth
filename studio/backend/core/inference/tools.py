@@ -7206,7 +7206,10 @@ def _limited_preexec() -> None:
     nproc, memory, cpu_time, nofile = _limited_resource_limits()
     apply_limit("RLIMIT_NPROC", nproc)
     apply_limit("RLIMIT_FSIZE", 100 * 1024 * 1024)
-    apply_limit("RLIMIT_AS", memory)
+    # Darwin exposes RLIMIT_AS through Python, but setrlimit(2) rejects it on
+    # current macOS. RLIMIT_DATA is the supported address-space-adjacent limit
+    # there; Linux keeps RLIMIT_AS so mmap-backed allocations remain bounded.
+    apply_limit("RLIMIT_DATA" if sys.platform == "darwin" else "RLIMIT_AS", memory)
     apply_limit("RLIMIT_CPU", cpu_time)
     apply_limit("RLIMIT_NOFILE", nofile)
 
