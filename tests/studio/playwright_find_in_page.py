@@ -742,6 +742,15 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         "the failure offers reload recovery",
         failure.get_by_role("button").count() == 2,
     )
+
+    check(
+        engine,
+        mode,
+        "the failure recovery receives keyboard focus",
+        failure.get_by_role("button", name = "Reload").evaluate(
+            "button => button === document.activeElement",
+        ),
+    )
     check(
         engine,
         mode,
@@ -756,6 +765,10 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         page.locator('[role="search"]').count() == 0,
     )
 
+    if ENTRY_SCREENSHOT:
+        Path(ENTRY_SCREENSHOT.format(engine = engine)).parent.mkdir(parents = True, exist_ok = True)
+        page.screenshot(path = ENTRY_SCREENSHOT.format(engine = engine), full_page = False)
+
     failure.get_by_role("button", name = "Close").click()
     check(
         engine,
@@ -763,9 +776,6 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         "the failed bar can be dismissed without reloading",
         failure.count() == 0,
     )
-    if ENTRY_SCREENSHOT:
-        Path(ENTRY_SCREENSHOT.format(engine = engine)).parent.mkdir(parents = True, exist_ok = True)
-        page.screenshot(path = ENTRY_SCREENSHOT.format(engine = engine), full_page = False)
     context.close()
 
 
