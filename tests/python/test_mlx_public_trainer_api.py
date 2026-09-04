@@ -1210,7 +1210,7 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     trl.__getattr__ = _lazy_getattr
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()
+    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
 
     # trainers declared in __all__ are stubbed WITHOUT ever resolving the real one
     assert resolved == []
@@ -1228,7 +1228,7 @@ def test_mlx_stubs_trl_trainers_outside_fixed_set(monkeypatch):
     trl.__all__ = ["SFTTrainer", "SFTConfig", "RLOOTrainer"]
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
+    unsloth._install_mlx_trl_sft_shim()
 
     with pytest.raises(NotImplementedError) as exc:
         trl.RLOOTrainer(model = None)

@@ -518,6 +518,7 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
         import_utils._tf_available = True
         _exec_guard(modules, {_var: "1"})
         assert import_utils._tf_available is True, _var
+    # An imported TensorFlow is one in use.
     import_utils._tf_available = True
     _exec_guard(dict(modules, tensorflow = object()), {})
     assert import_utils._tf_available is True
@@ -544,7 +545,6 @@ def test_the_default_snapshot_is_not_an_opt_in():
     """All three default to `"AUTO"` when unset, which Transformers reads as "enable
     if installed": accepting it would make the guard a no-op on most machines."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
-    # An imported TensorFlow is one in use.
     import_utils._tf_available = True
     import_utils._flax_available = True
     import_utils.USE_TF = "AUTO"

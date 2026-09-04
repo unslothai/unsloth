@@ -223,6 +223,9 @@ def test_processing_utils_unpack_importable(tag: str):
     )
 
 
+# Models: gemma3, gpt_oss forward signature drift.
+
+
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_gemma3_attention_forward_present(tag: str):
     src = fetch_text(
@@ -235,7 +238,6 @@ def test_gemma3_attention_forward_present(tag: str):
     assert has_def(src, "Gemma3Attention", "class"), f"{tag}: class Gemma3Attention missing"
 
 
-# Models: gemma3, gpt_oss forward signature drift.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_gpt_oss_model_forward_present(tag: str):
     src = fetch_text(

@@ -1591,6 +1591,7 @@ def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
         "the skipped trigger must be replayed once the stale count settles, or it is not "
         "deferred but lost"
     )
+    # 62, not 12: the replay prices the branch as it moved, which is the point of deferring it.
     assert (
         (out["contextUsage"] or {}).get("totalTokens") == 62
     ), "and the replay must publish the current branch, which is why it is deferred not dropped"
@@ -1629,7 +1630,6 @@ def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
             """
         )
     )
-    # 62, not 12: the replay prices the branch as it moved, which is the point of deferring it.
     assert (
         out["during"]["counts"] == 0
     ), "a New Chat must not count while the outgoing conversation is still generating"

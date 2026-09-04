@@ -474,6 +474,7 @@ if code == 200 or 400 <= code < 500:
 else:
     fail(f"/v1/responses -> {code} (expected 200 or 4xx)")
 
+# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -503,7 +504,6 @@ def _llama_pid() -> int | None:
 
 
 before_pid = _llama_pid()
-# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",

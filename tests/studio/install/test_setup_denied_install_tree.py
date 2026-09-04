@@ -141,6 +141,7 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
         r"|\$LlamaServerBin|\$CmakeCacheFile|\$QuantizeBin|\$altBin"
         r"|Join-Path \$BuildDir)"
     )
+    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
@@ -152,7 +153,6 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
 def test_metadata_reads_are_literal_like_the_probes_that_gate_them():
     """A literal probe followed by a globbing read still fails on a path holding
     [ or ], so the probe passes and the read throws into the catch."""
-    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
