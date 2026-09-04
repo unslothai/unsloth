@@ -346,14 +346,21 @@ def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch)
     The synthesis prompt is already fitted to the local window, so clamping against it spends
     the report's budget down to the leftover reserve and undoes the ceiling just resolved.
     """
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    # main reads the window off the local backend only for a local run; a run carrying a
+    # providerType reports None. Model that contract rather than a flat value, or the stub
+    # itself would clamp what the real call never reaches.
+    monkeypatch.setattr(
+        research_runs,
+        "_loaded_context_length",
+        lambda _inf = None: None if (_inf or {}).get("providerType") else 8_192,
+    )
     inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
     messages = [{"role": "user", "content": "x" * 30_000}]
     assert _resolve_max_tokens(32_768, inference, messages) == 32_768
 
 
 def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
     messages = [{"role": "user", "content": "x" * 30_000}]
     assert _resolve_max_tokens(16_384, {}, messages) < 16_384
 
@@ -438,15 +445,19 @@ def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
 
 def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
     """The loaded local window explains nothing about a report a connection generated."""
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
-    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 32_768, external = True)
+    notice = _synthesis_length_limit_error(
+        usage,
+        requested_max_tokens = 32_768,
+        inference = {"providerType": "gemini", "providerId": "p1"},
+    )
     assert "Context Length" not in notice
     assert "Local model" not in notice
 
 
 def test_a_local_truncation_still_names_the_context_window(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
     notice = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
     assert "Context Length" in notice
