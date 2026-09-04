@@ -370,3 +370,29 @@ def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
     assert (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8") == "keep-v2"
     assert _state(dest).get("nb/keep.ipynb") == _sha256(dest / "nb" / "keep.ipynb")
     assert (dest / ".unsloth_sync_commit").is_file()
+
+
+@behavioural
+def test_a_stale_state_temp_file_does_not_block_the_refresh_forever(tmp_path: Path):
+    """The bail above must not become permanent. A run killed between the truncate and
+    the mv leaves $STATE.tmp behind, and if that run was a different uid (root once,
+    then --user) the file cannot be truncated even though $DEST is writable. Bailing
+    then would strand the tree on every future start, which is the failure the bail
+    exists to prevent. Unlinking needs write on $DEST, which the real bail case does
+    not have, so clearing it first cannot weaken the guard."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+
+    stale = dest / ".unsloth_sync_state.tmp"
+    stale.write_text("LEFTOVER FROM A KILLED RUN\n", encoding = "utf-8")
+    stale.chmod(0o444)  # cannot be truncated by this uid; can still be unlinked
+    assert not os.access(stale, os.W_OK), "precondition: the leftover is not truncatable"
+
+    run = _refresh(tmp_path, remote, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert (dest / "nb" / "keep.ipynb").read_text(
+        encoding = "utf-8"
+    ) == "keep-v2", "a stale temp file the uid cannot truncate blocked the refresh"
+    assert _state(dest).get("nb/keep.ipynb") == _sha256(dest / "nb" / "keep.ipynb")
+    assert (dest / ".unsloth_sync_commit").is_file()

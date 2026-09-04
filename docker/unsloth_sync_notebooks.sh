@@ -348,6 +348,12 @@ TMPSTATE="$STATE.tmp"
 # `kept`, not `failed`, so the marker IS stamped and they are stranded for good.
 # Nothing has been published yet here, so bailing costs only this cycle. Same shape as
 # record_state's abort above and the mid-clone bail below.
+# Clear a leftover first. A run killed between the truncate and the mv leaves one
+# behind, and if that run was a different uid (root once, then --user) it cannot be
+# truncated even though $DEST is writable, which would make the bail below permanent.
+# Unlinking needs write on $DEST, which the real bail case does not have, so this
+# cannot weaken the guard.
+rm -f "$TMPSTATE" 2>/dev/null || true
 if ! : > "$TMPSTATE" 2>/dev/null; then
     echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker so the next start retries"
     rm -rf "$TMP"
