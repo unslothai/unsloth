@@ -65,9 +65,9 @@ test("preserves image parts in order while joining adjacent text", () => {
     { role: "user", content: [{ type: "text", text: "b" }, image] },
   ]);
   assert.equal(merged.length, 1);
-  const parts = merged[0].content as Array<{ type: string }>;
+  const parts = merged[0].content as Array<{ type: string; text?: string }>;
   assert.deepEqual(parts.map((p) => p.type), ["image_url", "text", "image_url"]);
-  assert.equal((parts[1] as { text: string }).text, "a\n\nb");
+  assert.equal(parts[1].text, "a\n\nb");
 });
 
 test("collapses empty-string neighbors without leaving stray separators", () => {
