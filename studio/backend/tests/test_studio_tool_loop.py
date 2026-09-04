@@ -1133,9 +1133,7 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
     # must keep its own fragments instead of inheriting the other's tail. The order the
     # model sees is asserted where it matters, on the transcript, which is still built in
     # call order by `_settle_call`.
-    assert sorted(
-        (call["arguments"]["query"] for call in executed)
-    ) == ["first", "second"]
+    assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]
 
 
 def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
@@ -1180,6 +1178,4 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     # must keep its own fragments instead of inheriting the other's tail. The order the
     # model sees is asserted where it matters, on the transcript, which is still built in
     # call order by `_settle_call`.
-    assert sorted(
-        (call["arguments"]["query"] for call in executed)
-    ) == ["first", "second"]
+    assert sorted((call["arguments"]["query"] for call in executed)) == ["first", "second"]

@@ -1576,9 +1576,7 @@ async def stream_with_studio_tools(
                 )
                 for item in calls
             )
-        parallel_round = (
-            parallel_tool_calls_enabled() and len(calls) > 1 and not _approval_gate
-        )
+        parallel_round = parallel_tool_calls_enabled() and len(calls) > 1 and not _approval_gate
         # (decision, name, call_id, card_id, tool_stream, outcome, queue, pump)
         pending_calls: list[tuple] = []
 

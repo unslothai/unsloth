@@ -60,7 +60,11 @@ from test_studio_tool_loop import (  # noqa: E402
 )
 
 
-def _two_calls(first = "alpha", second = "beta", tool = "web_search"):
+def _two_calls(
+    first = "alpha",
+    second = "beta",
+    tool = "web_search",
+):
     """One turn asking for two calls of the same tool, the shape providers emit."""
     return FakeTransport(
         [
@@ -217,10 +221,7 @@ class TestOrderIsStillTheModelsOrder:
         messages = transport.requests[1]["messages"]
         tool_rows = [m for m in messages if m.get("role") == "tool"]
         assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b"]
-        assert [row.get("content") for row in tool_rows] == [
-            "RESULT<alpha>",
-            "RESULT<beta>",
-        ]
+        assert [row.get("content") for row in tool_rows] == ["RESULT<alpha>", "RESULT<beta>"]
 
     def test_the_assistant_row_lists_both_calls(self, recorder):
         transport = _two_calls("alpha", "beta")
@@ -296,9 +297,7 @@ class TestCancellation:
 
         monkeypatch.setattr(loop_mod, "execute_tool", _execute)
         monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-        monkeypatch.setattr(
-            loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python"
-        )
+        monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
 
         transport = _two_calls()
         cancel_event = threading.Event()
