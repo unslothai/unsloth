@@ -757,6 +757,19 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+
+    # The backend's own stall watchdog (#9712). Liveness answers prove the loop is
+    # serving only when something probes from outside, and the observed stalls were
+    # over before anyone could attach py-spy. This dumps thread stacks from inside
+    # the process while a stall is still in progress. Diagnostic, so it only runs
+    # where UNSLOTH_STUDIO_STALL_WATCHDOG=1 asks for it, which the mac smoke
+    # workflow does; a desktop run gets no extra thread. Stood down from its first
+    # beat until the warm is over: its dead man's switch cannot be disarmed once
+    # the warm's `import torch` has the GIL, so it must never be armed before then.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
+
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -811,6 +824,12 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Retire the stall watchdog before teardown starts blocking the loop on purpose,
+    # or shutdown itself reads as a stall and dumps into the exit log.
+    from utils.stall_watchdog import stop_stall_watchdog
+
+    stop_stall_watchdog()
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats
     # this after cleanup, but its awaits would otherwise let startup imports continue for
