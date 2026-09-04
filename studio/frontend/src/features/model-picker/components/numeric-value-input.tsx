@@ -75,20 +75,16 @@ export const NumericValueInput = forwardRef<
   const cancelBlurCommitRef = useRef(false);
   const draftRef = useRef("");
   const dirtyRef = useRef(false);
-  // Same-click Load: blur commits via onChange and clears dirtyRef before the
-  // button onClick runs, while parent `value` is still stale. Keep the blur
-  // result for one imperative commit(); clear when `value` catches up or on
-  // focus / external edits (Reset, slider).
+  // Same-click Load: blur commits via onChange and clears dirtyRef before the button onClick runs,
+  // while parent `value` is still stale. Keep the blur result for one imperative commit(); clear
+  // when `value` catches up or on focus or an external edit.
   const lastBlurCommittedRef = useRef<number | null>(null);
 
-  // The blur bridge is only valid across the single synchronous gesture that set
-  // it: blur commits during a button's mousedown and that button's onClick
-  // consumes it via commit() before React re-renders. Any settled render means the
-  // gesture is over, so drop the cache on every commit. Keying this on [value]
-  // alone missed a Reset (or other external edit) that restores the shown value
-  // unchanged when the blur did dispatch onChange (final !== value): value nets
-  // back to its prior number, so the effect never re-ran, the stale pin survived,
-  // and the next Load/Save replayed the override Reset had removed.
+  // The blur bridge is only valid across the single synchronous gesture that set it: blur commits
+  // during a button's mousedown and that button's onClick consumes it before React re-renders. Any
+  // settled render means the gesture is over, so drop the cache on every commit. Keying on
+  // [value] alone missed a Reset that restores the shown value unchanged, so value netted back to
+  // its prior number, the effect never re-ran, and the next Load replayed the removed override.
   useEffect(() => {
     lastBlurCommittedRef.current = null;
   });

@@ -112,7 +112,7 @@ def _harness_source() -> str:
         HARNESS
         + _adapter_slice("function collectTextParts(", "function normalizeOpenAIReasoningItem(")
         + _adapter_slice(
-            "// Refusal flag stamped on assistant metadata",
+            "function isAnthropicRefusalMessage(",
             "type SerializedMessage = {",
         )
         + _adapter_slice(
@@ -130,7 +130,7 @@ def _harness_source() -> str:
         )
         + slice_between(
             read(CONTINUATION),
-            "/** Why a turn ended before the model was done. */",
+            "export type IncompleteReason =",
             "const INCOMPLETE_LABELS",
         )
         + """
