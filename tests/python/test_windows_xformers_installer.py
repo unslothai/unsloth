@@ -239,11 +239,18 @@ def test_installer_never_installs_an_unpinned_xformers():
     necessarily built for the CUDA family the resident torch came from. The installer
     picks the exact version for (torch, cuda) instead, so every spec must be pinned."""
     source = _source()
+    # The Windows on ARM drop list names packages the installer REMOVES from the
+    # requirements, so a bare name there is the opposite of an install spec: pinning it
+    # would be meaningless, and the name has to match the requirement line exactly.
+    drop_list = re.search(r"\$WoaDropCandidates = @\(.*?\n\s*\)\n", source, re.DOTALL)
+    drop_span = drop_list.span() if drop_list else (-1, -1)
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)
         # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to
         # anything else, which is the whole point of preferring it.
         if spec.endswith('.whl"'):
+            continue
+        if drop_span[0] <= match.start() < drop_span[1]:
             continue
         assert spec == '"xformers==$_xfVersion"', f"unpinned xFormers spec in install.ps1: {spec}"
 
