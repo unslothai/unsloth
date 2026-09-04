@@ -1189,16 +1189,25 @@ def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
     for path in paths:
         if not os.path.exists(path):
             continue
-        encoded, is_directory = _sbpl_path(path)
-        spellings = (json.dumps(os.path.abspath(path)), encoded)
-        for spelling in spellings:
-            if spelling in seen:
+        _, is_directory = _sbpl_path(path)
+        for spelling in _sbpl_path_spellings(path):
+            encoded = json.dumps(spelling)
+            if encoded in seen:
                 continue
-            seen.add(spelling)
-            filters.append(f"(literal {spelling})")
+            seen.add(encoded)
+            filters.append(f"(literal {encoded})")
             if is_directory:
-                filters.append(f"(subpath {spelling})")
+                filters.append(f"(subpath {encoded})")
     return filters
+
+
+def _sbpl_path_spellings(path: str) -> tuple[str, ...]:
+    canonical, _ = _sbpl_path(path)
+    selected = [os.path.abspath(path), json.loads(canonical)]
+    for spelling in tuple(selected):
+        if spelling == "/private/var" or spelling.startswith("/private/var/"):
+            selected.append(spelling[len("/private") :])
+    return tuple(dict.fromkeys(selected))
 
 
 def _sbpl_ancestor_filters(paths: tuple[str, ...]) -> list[str]:
@@ -1207,8 +1216,7 @@ def _sbpl_ancestor_filters(paths: tuple[str, ...]) -> list[str]:
     for path in paths:
         if not os.path.exists(path):
             continue
-        canonical, _ = _sbpl_path(path)
-        for spelling in (os.path.abspath(path), json.loads(canonical)):
+        for spelling in _sbpl_path_spellings(path):
             current = os.path.dirname(spelling.rstrip(os.path.sep)) or os.path.sep
             while current:
                 encoded = json.dumps(current)

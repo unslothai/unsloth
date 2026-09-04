@@ -149,6 +149,17 @@ def test_sbpl_ancestor_filters_are_literal_and_not_global(tmp_path):
     assert all(filter_.startswith("(literal ") for filter_ in filters)
 
 
+def test_sbpl_spellings_include_only_the_selected_macos_var_alias(monkeypatch):
+    canonical = "/private/var/folders/session/work"
+    monkeypatch.setattr(os_sandbox.os.path, "exists", lambda _path: True)
+    monkeypatch.setattr(os_sandbox.os.path, "realpath", lambda _path: canonical)
+    monkeypatch.setattr(os_sandbox.os.path, "abspath", lambda _path: canonical)
+
+    spellings = os_sandbox._sbpl_path_spellings(canonical)
+
+    assert spellings == (canonical, "/var/folders/session/work")
+
+
 def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     monkeypatch, tmp_path
 ):
