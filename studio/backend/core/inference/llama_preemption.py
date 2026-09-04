@@ -539,6 +539,7 @@ class PreemptionController:
     __slots__ = (
         "key", "_lock", "_participants", "_seq", "_epoch_winner", "_budget",
         "_kv_unified", "_draft_tokens", "_slots", "_batch_tokens", "_resident",
+        "_reclaimable",
         "_residency_probe",
     )
 
@@ -563,6 +564,8 @@ class PreemptionController:
         self._draft_tokens = 0
         # --batch-size llama-server was launched with, so the buffer can cover one chunk.
         self._batch_tokens = 0
+        # Of `_resident`, how much is idle slots' cache: real, but erasable on demand.
+        self._reclaimable = 0
         self._slots = 1
         # True cells resident in the cache from the last GET /slots, or None when it
         # could not be read. Includes the residue of FINISHED requests, which the ledger
@@ -754,7 +757,14 @@ class PreemptionController:
         others = ledger_others
         if self._resident is not None:
             mine = self._participants.get(gen_id)
-            others = max(others, self._resident - (mine.tokens if mine else 0))
+            # Minus this generation's own cells, and minus the idle residue, which is
+            # erased for the waiter before it resumes rather than waited out. Counting
+            # residue here deadlocked scheduling on 2026-09-04: with no live generation
+            # at all the ledger read 0 while the summed slots read 21304 against a 14312
+            # ceiling, so every resume was refused, nineteen chats gave up, and three
+            # consecutive runs completed nothing.
+            occupied = self._resident - self._reclaimable
+            others = max(others, occupied - (mine.tokens if mine else 0))
         need = max(0, int(want or 0))
         others = max(0, others)
         if others + need <= ceiling:
@@ -809,10 +819,31 @@ class PreemptionController:
             # ledger-only path already assumes.
             _log.debug("residency probe failed", exc_info = True)
 
-    def note_resident(self, resident: Optional[int]) -> None:
-        """The cache as llama-server actually sees it. None means the read failed."""
+    def note_resident(
+        self, resident: Optional[int], reclaimable: int = 0
+    ) -> None:
+        """The cache as llama-server actually sees it. None means the read failed.
+
+        ``reclaimable`` is the part of it held by IDLE slots. That residue is real
+        occupancy, so it still counts toward the watermark and still gets somebody
+        evicted, but it must not stand between a waiting chat and its resume: it belongs
+        to finished requests and is erased on demand before the resume proceeds. See
+        ``_room_for_locked``.
+        """
         with self._lock:
-            self._resident = None if resident is None else max(0, int(resident))
+            if resident is None:
+                self._resident = None
+                self._reclaimable = 0
+                return
+            # Clamped to the cache. A per-slot sum is an upper bound, not a measurement:
+            # chats sending the same prompt share prefix cells under --kv-unified, and
+            # idle entries can be stale, so the total can exceed the cache outright.
+            # 21304 cells were reported for a 16384 cache on 2026-09-04. Left unclamped
+            # the figure is not merely pessimistic, it is unreachable, and every resume
+            # is refused forever.
+            ceiling = self._budget if self._budget > 0 else int(resident)
+            self._resident = max(0, min(int(resident), ceiling))
+            self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
 
     def note_tokens(self, gen_id: str, tokens: int) -> None:
         with self._lock:

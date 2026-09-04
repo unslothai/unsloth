@@ -2264,7 +2264,10 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
             _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
             get_preemption_controller(
                 str(getattr(llama_backend, "base_url", "llama-server"))
-            ).note_resident(max(0, int(occupancy.get("resident") or 0) - freed))
+            ).note_resident(
+                max(0, int(occupancy.get("resident") or 0) - freed),
+                max(0, int(occupancy.get("idle_tokens") or 0) - freed),
+            )
     except Exception:
         pass
 def _openai_llama_admission_enforced_max_tokens(
@@ -20951,7 +20954,8 @@ async def produce_openai_chat_completions(
                     return
                 occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base))
                 controller.note_resident(
-                    None if occupancy is None else occupancy.get("resident")
+                    None if occupancy is None else occupancy.get("resident"),
+                    0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
                 )
                 _gguf_slots_seen["occupancy"] = occupancy
                 if occupancy is None:
@@ -20998,7 +21002,8 @@ async def produce_openai_chat_completions(
                             resident = occupancy.get("resident"),
                         )
                         controller.note_resident(
-                            max(0, int(occupancy.get("resident") or 0) - freed)
+                            max(0, int(occupancy.get("resident") or 0) - freed),
+                            max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                         )
                         _gguf_slots_seen["occupancy"] = None
 

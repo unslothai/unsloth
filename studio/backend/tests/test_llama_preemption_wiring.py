@@ -1263,6 +1263,48 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.note_resident(12)  # mid prefill, almost nothing visible yet
         assert controller.committed_tokens() == 9000
 
+    def test_idle_residue_does_not_stand_between_a_waiter_and_its_resume(self):
+        """The deadlock of 2026-09-04: three runs completing nothing.
+
+        With no live generation at all the ledger read 0 while the summed slots read
+        21304 against a 14312 ceiling, so room_for refused every resume, nineteen chats
+        gave up, and 0 of 4 completed on three consecutive runs. That residue belongs to
+        finished requests and is erased for the waiter before it resumes, so waiting it
+        out is waiting for something nobody will ever do.
+        """
+        controller = PreemptionController("idle-deadlock")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        controller.register("waiter", tokens = 5000, signal = PreemptSignal())
+        controller.set_state("waiter", ParticipantState.PAUSED)
+        # Everything resident is idle residue, exactly the live reading.
+        controller.note_resident(21304, 21304)
+        assert controller.room_for("waiter", 5000) is True, (
+            "a cache holding nothing but reclaimable residue must not block a resume"
+        )
+
+    def test_live_cells_still_block_a_resume(self):
+        """The discount is for idle residue only; a decoding chat still counts."""
+        controller = PreemptionController("idle-live")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        controller.register("waiter", tokens = 5000, signal = PreemptSignal())
+        controller.set_state("waiter", ParticipantState.PAUSED)
+        # 16000 live cells, minus this waiter's own 5000, still leaves 11000 that a
+        # 5000 token resume cannot fit beside under the ceiling. 14000 was the first
+        # figure tried and it fits comfortably, so it asserted nothing.
+        controller.note_resident(16000, 0)
+        assert controller.room_for("waiter", 5000) is False
+
+    def test_a_reading_above_the_cache_is_clamped_to_it(self):
+        """A per-slot sum is an upper bound, not a measurement: prompts share prefix
+        cells under --kv-unified and idle entries go stale, so the total can exceed the
+        cache. Left unclamped the figure is unreachable rather than merely pessimistic."""
+        controller = PreemptionController("clamp")
+        controller.configure(budget = 16384, kv_unified = True, slots = 4)
+        controller.register("a", tokens = 100, signal = PreemptSignal())
+        controller.observe("a", 0)
+        controller.note_resident(21304, 0)
+        assert controller.committed_tokens() == 16384
+
     def test_a_resume_is_refused_against_a_cache_only_slots_can_see(self):
         controller = PreemptionController("resident-room")
         controller.configure(budget = 16384, kv_unified = True)
