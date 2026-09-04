@@ -331,3 +331,42 @@ def test_a_published_state_still_stamps_the_commit(tmp_path: Path):
     run = _refresh(tmp_path, remote, template, dest)
     assert run.returncode == 0, run.stdout + run.stderr
     assert (dest / ".unsloth_sync_commit").is_file()
+
+
+@behavioural
+def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
+    """$DEST unwritable while a notebook subdir still is, which is the container shape:
+    the image bakes the root and only the subdirs get chowned to the host user.
+
+    Staging the state in /tmp here would publish the new notebook bytes and then be
+    unable to record them. Run two reads every one of them as a user edit, and a user
+    edit counts as `kept`, not `failed`, so the marker IS stamped and the whole managed
+    set is stranded permanently. Nothing is published yet at that point, so the refresh
+    must bail and leave the tree exactly as it was."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+    before_state = _state(dest)
+    before_bytes = (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8")
+
+    (dest / "nb").chmod(0o755)
+    dest.chmod(0o555)  # root writable by nobody; the subdir still is
+    try:
+        run = _refresh(tmp_path, remote, template, dest)
+        assert run.returncode == 0, run.stdout + run.stderr
+
+        assert (dest / "nb" / "keep.ipynb").read_text(
+            encoding = "utf-8"
+        ) == before_bytes, "notebooks were published with no way to record them"
+        assert _state(dest) == before_state
+        assert not (
+            dest / ".unsloth_sync_commit"
+        ).is_file(), "the marker was stamped over a refresh that could not record itself"
+    finally:
+        dest.chmod(0o755)
+
+    # the whole point of bailing: the next start recovers instead of being stranded
+    run2 = _refresh(tmp_path, remote, template, dest)
+    assert run2.returncode == 0, run2.stdout + run2.stderr
+    assert (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8") == "keep-v2"
+    assert _state(dest).get("nb/keep.ipynb") == _sha256(dest / "nb" / "keep.ipynb")
+    assert (dest / ".unsloth_sync_commit").is_file()

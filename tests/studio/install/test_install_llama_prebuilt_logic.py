@@ -1822,6 +1822,49 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
     assert "falling back to file-by-file copy" in captured.out + captured.err
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "soname links are a Unix bundle layout")
+@pytest.mark.parametrize("dst_exists", [False, True])
+def test_activate_staged_dir_copy_keeps_soname_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dst_exists: bool
+):
+    """The EXDEV copy must not turn a bundle's soname chain into duplicate libraries.
+
+    A Linux llama.cpp release ships libllama.so -> libllama.so.0 -> libllama.so.0.3.0
+    (10 such links in b10715), and copytree's default symlinks = False dereferences
+    every one of them into a full copy of the shared library.
+    """
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    real = staging_dir / "libllama.so.0.3.0"
+    real.write_bytes(b"\0" * 4096)
+    (staging_dir / "libllama.so.0").symlink_to("libllama.so.0.3.0")
+    (staging_dir / "libllama.so").symlink_to("libllama.so.0")
+    dst = tmp_path / "llama.cpp"
+    if dst_exists:
+        # os.replace also refuses an EMPTY existing dst cross-device, and the copy
+        # still has to complete there
+        dst.mkdir()
+
+    def cross_device_replace(src, dst_arg):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "libllama.so.0.3.0").read_bytes() == b"\0" * 4096
+    for link, target in (("libllama.so.0", "libllama.so.0.3.0"), ("libllama.so", "libllama.so.0")):
+        assert (
+            dst / link
+        ).is_symlink(), f"{link} was dereferenced into a copy of the library it aliases"
+        assert os.readlink(dst / link) == target
+    on_disk = sum(p.lstat().st_size for p in dst.iterdir())
+    assert on_disk < 2 * len(
+        b"\0" * 4096
+    ), f"the activated tree duplicated libraries ({on_disk} bytes)"
+    assert not staging_dir.exists()
+
+
 def test_activate_staged_dir_reraises_non_busy_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

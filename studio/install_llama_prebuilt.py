@@ -4488,7 +4488,19 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
         if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        # symlinks = True, like the aside-move and rollback-restore copies below. The
+        # default DEREFERENCES every link, so each soname alias is written out as a
+        # full second copy of its library. Measured on the linux-x64-cuda12 bundle
+        # this branch exists for (Docker overlayfs EXDEV): 5 symlinks, 13.1 MiB
+        # duplicated. Not the headline number one might expect -- the 358 MB
+        # libggml-cuda.so is a regular file and is copied once either way -- but it is
+        # wasted bytes and it replaces the link topology the loader resolves against.
+        # dirs_exist_ok stays for the empty-dst case
+        # os.replace also accepts; a NON-empty dst never reaches here on one device
+        # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
+        # behind, os.symlink's FileExistsError fails the activation into the rollback
+        # path instead of silently half-merging two installs.
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
 
 
@@ -4539,8 +4551,10 @@ def move_install_dir_aside(
             # replace the install's link topology with independent files. Safe here
             # only because copy_tmp is a fresh uniquified path: combined with
             # dirs_exist_ok it raises FileExistsError on any name the destination
-            # already holds, which is why the three dirs_exist_ok calls in this file
-            # cannot simply be given the same flag.
+            # already holds, which is why the remaining dirs_exist_ok calls in this
+            # file (which merge into populated trees) cannot simply be given the same
+            # flag. activate_staged_dir can, because a dst os.replace refused is empty
+            # or absent.
             shutil.copytree(src, copy_tmp, symlinks = True)
             os.replace(copy_tmp, dst)
         except BaseException:

@@ -342,7 +342,17 @@ fi
 # had landed, and no marker check can undo that -- the stale hashes then read every
 # freshly written notebook as user-edited for good.
 TMPSTATE="$STATE.tmp"
-: > "$TMPSTATE" 2>/dev/null || TMPSTATE="$(mktemp)"
+# No /tmp fallback: it would fire in exactly the case the sibling exists to prevent.
+# $DEST unwritable while a notebook subdir still is publishes the new bytes and then
+# cannot record them, and run two reads every one of them as a user edit, which is
+# `kept`, not `failed`, so the marker IS stamped and they are stranded for good.
+# Nothing has been published yet here, so bailing costs only this cycle. Same shape as
+# record_state's abort above and the mid-clone bail below.
+if ! : > "$TMPSTATE" 2>/dev/null; then
+    echo "[unsloth-nb] the sync state could not be staged in $DEST; leaving the sync marker so the next start retries"
+    rm -rf "$TMP"
+    exit 0
+fi
 updated=0; kept=0; unchanged=0; failed=0
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"

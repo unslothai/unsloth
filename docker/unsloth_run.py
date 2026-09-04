@@ -171,10 +171,20 @@ def main():
         out_path = os.path.abspath(args.out)
         out_dir = os.path.dirname(out_path) or "."
         _makedirs_as_host(out_dir)
-        fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
-        with os.fdopen(fd, "w") as f:
-            json.dump(nb, f)
-        tmp_files.append(src_path)
+        if args.notebook.startswith(("http://", "https://")):
+            # A URL has no source tree to run in, so the download stays beside --out:
+            # that is the directory the run's own artifacts should land in.
+            fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
+            with os.fdopen(fd, "w") as f:
+                json.dump(nb, f)
+            tmp_files.append(src_path)
+        else:
+            # nbconvert makes the INPUT notebook's directory the kernel cwd
+            # (Exporter.from_filename sets resources["metadata"]["path"] to it), so a
+            # staged copy under --out would resolve the notebook's relative opens,
+            # local imports and saves against the OUTPUT tree. Execute the original
+            # where it lives; only the result is staged beside --out.
+            src_path = args.notebook
         fd, publish_from = tempfile.mkstemp(
             prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
         )

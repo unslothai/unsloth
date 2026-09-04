@@ -18,6 +18,30 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 
+# Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
+# the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
+# on the COMMAND STRING alone, so with the default "main" the pip-install layer is a
+# cache HIT on every rebuild and the image keeps the commits of the first build while
+# reporting success. A sha changes the build arg exactly when the branch moves.
+resolve_git_ref() {
+    local repo="$1" ref="$2" ls_out sha
+    printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' && { printf '%s' "$ref"; return 0; }
+    command -v git >/dev/null 2>&1 || { printf '%s' "$ref"; return 0; }
+    # ls-remote exits 0 whether or not a ref matched, so a non-zero exit means the
+    # remote was never reached; an offline build cannot install from git anyway, so
+    # warn and pass the name through rather than fail before docker has even started.
+    if ! ls_out="$(git ls-remote "$repo" "$ref" 2>/dev/null)"; then
+        echo "warning: ${repo} unreachable; passing mutable ref '${ref}' (docker may reuse a cached layer)" >&2
+        printf '%s' "$ref"
+        return 0
+    fi
+    sha="$(printf '%s\n' "$ls_out" | awk 'NR==1{print $1}')"
+    [ -n "$sha" ] || sha="$ref"     # not a branch/tag: a short sha or already-gone ref
+    printf '%s' "$sha"
+}
+UNSLOTH_REF="$(resolve_git_ref https://github.com/unslothai/unsloth "$UNSLOTH_REF")"
+UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UNSLOTH_ZOO_REF")"
+
 # Resolved to a concrete tag here, so the build-arg changes only on a new release and
 # layer caching stays correct. Pin with LLAMA_PREBUILT_TAG=... for a frozen build.
 resolve_latest_llama_tag() {
