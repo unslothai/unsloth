@@ -1063,9 +1063,7 @@ def test_a_partially_trimmed_turn_stops_claiming_the_images_it_lost():
     note = next(part["text"] for part in partial["content"] if part.get("type") == "text")
     assert remaining == 2, remaining
     assert f"({remaining} of 8)" in note, note
-    assert "first" not in note, (
-        "the survivors are the newest images, not the first ones"
-    )
+    assert "first" not in note, "the survivors are the newest images, not the first ones"
 
 
 def test_the_owned_list_drops_evicted_parts_before_it_counts():
@@ -1151,9 +1149,9 @@ def test_the_allowance_still_looks_past_a_run_of_rejects():
     finally:
         mcp_images._png_data_url = original
 
-    assert len(urls) == mcp_images.MAX_MODEL_IMAGES, (
-        f"the bound cut into the real pictures: {len(urls)}"
-    )
+    assert (
+        len(urls) == mcp_images.MAX_MODEL_IMAGES
+    ), f"the bound cut into the real pictures: {len(urls)}"
 
 
 def test_the_note_never_claims_the_survivors_are_the_first_ones():
