@@ -597,7 +597,7 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     repo = tmp_path / "models--org--repo"
     (repo / "snapshots" / "abc" / "BF16").mkdir(parents = True)
     (repo / "snapshots" / "abc" / "BF16" / "model-BF16.gguf").write_text("x")
-    e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo)))
+    e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo), source = "hf_cache"))
     assert e2 is not None and e2.variants
 
 
@@ -1847,7 +1847,9 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
 
-    entry = resolver._local_gguf_entry("org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo)))
+    entry = resolver._local_gguf_entry(
+        "org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache")
+    )
     assert entry is not None
     assert entry.loader_id == "org/Repo"  # advertised id unchanged
     assert "snapshots" in entry.load_path  # loads from the concrete snapshot dir
@@ -1879,7 +1881,7 @@ def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     # The generic cache resolver correctly picks the latest revision; GGUF
     # discovery needs the stronger rule because this revision has no weights.
     assert Path(resolver._resolve_load_dir(repo)) == newer.parent.resolve()
-    info = SimpleNamespace(id = "unsloth/Qwen3.8-Flash-Next-GGUF", path = str(repo))
+    info = SimpleNamespace(id = "unsloth/Qwen3.8-Flash-Next-GGUF", path = str(repo), source = "hf_cache")
     entry = resolver._local_gguf_entry(
         "unsloth/Qwen3.8-Flash-Next-GGUF",
         info,
@@ -1920,12 +1922,13 @@ def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeyp
 
     entry = resolver._local_gguf_entry(
         "org/Vision-GGUF",
-        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo)),
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo), source = "hf_cache"),
     )
 
     assert entry is not None
     assert Path(entry.load_path) == old
-    roots = resolver.local_gguf_companion_roots(entry.load_path)
+    assert resolver.local_gguf_companion_roots(entry.load_path) == ()
+    roots = resolver.local_gguf_companion_roots(entry.load_path, repo_level = True)
     assert tuple(map(Path, roots)) == (old, newer)
     assert detect_mmproj_file(str(old / "vision-model-Q4_K_M.gguf"), search_root = str(newer)) is None
     monkeypatch.setattr(
@@ -1975,10 +1978,10 @@ def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatc
 
     entry = resolver._local_gguf_entry(
         "org/Vision-GGUF",
-        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo)),
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo), source = "hf_cache"),
     )
     assert entry is not None
-    roots = resolver.local_gguf_companion_roots(entry.load_path)
+    roots = resolver.local_gguf_companion_roots(entry.load_path, repo_level = True)
     assert tuple(map(Path, roots)) == (old, unreadable, newer)
 
     original_iter = model_config_module._iter_gguf_files
@@ -1994,6 +1997,26 @@ def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatc
         gguf_variant = entry.variants[0],
         gguf_companion_roots = roots,
     )
+
+
+def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
+    """A selected snapshot still walks intermediate parents before sibling revisions."""
+    from utils.models.model_config import detect_mmproj_file
+
+    snapshot = tmp_path / "models--org--Vision-GGUF" / "snapshots" / "weights-revision"
+    checkpoint = snapshot / "checkpoint"
+    quant = checkpoint / "Q4_K_M"
+    quant.mkdir(parents = True)
+    weights = quant / "vision-model-Q4_K_M.gguf"
+    weights.write_bytes(b"GGUF weights")
+    mmproj = checkpoint / "mmproj-vision-model-F16.gguf"
+    mmproj.write_bytes(b"GGUF companion")
+
+    assert detect_mmproj_file(
+        str(weights),
+        search_root = str(snapshot),
+        allow_disjoint_search_root = True,
+    ) == str(mmproj.resolve())
 
 
 def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkeypatch):
@@ -2040,6 +2063,44 @@ def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkey
     )
 
 
+def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            old.name,
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]._gguf_companion_roots == ()
+    assert resolver.local_gguf_companion_roots(str(old), repo_level = False) == ()
+    assert tuple(map(Path, resolver.local_gguf_companion_roots(str(old), repo_level = True))) == (
+        old,
+        newer,
+    )
+
+
 def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatch):
     from pathlib import Path
     from core.inference import llama_keepwarm as kw
@@ -2061,7 +2122,7 @@ def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatc
     monkeypatch.setattr(
         kw,
         "_last_unloaded_model",
-        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        (str(old), "Q4_K_M", "org/Vision-GGUF", (str(old), str(newer))),
     )
 
     asyncio.run(
@@ -2075,6 +2136,60 @@ def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatc
 
     assert len(recorder.calls) == 1
     assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+
+
+def test_loaded_identity_stashes_only_roots_used_by_the_load():
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("cache/snapshots/weights-revision", "Q4_K_M")
+    backend._openai_advertised_id = "org/Vision-GGUF"
+    backend._openai_gguf_companion_roots = ("weights-revision", "companion-revision")
+
+    assert kw._loaded_identity(backend) == (
+        "cache/snapshots/weights-revision",
+        "Q4_K_M",
+        "org/Vision-GGUF",
+        ("weights-revision", "companion-revision"),
+    )
+    backend._openai_gguf_companion_roots = ()
+    assert kw._loaded_identity(backend) == (
+        "cache/snapshots/weights-revision",
+        "Q4_K_M",
+        "org/Vision-GGUF",
+    )
+
+
+def test_idle_stash_reload_of_manual_snapshot_does_not_add_sibling_roots(tmp_path, monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-other-model-F16.gguf").write_bytes(b"GGUF companion")
+
+    backend = _FakeBackend(None)
+    recorder = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = recorder)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL,
+            object(),
+            "tester",
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]._gguf_companion_roots == ()
 
 
 def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch):
@@ -2096,7 +2211,8 @@ def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch
     entered = threading.Event()
     release = threading.Event()
 
-    def _slow_companion_scan(_load_path):
+    def _slow_companion_scan(_load_path, *, repo_level = False):
+        assert repo_level is True
         entered.set()
         release.wait(1.0)
         return ()
@@ -2173,7 +2289,7 @@ def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
 
     entry = resolver._local_gguf_entry(
         "Org/Repo",
-        SimpleNamespace(id = "Org/Repo", path = str(scanned_repo)),
+        SimpleNamespace(id = "Org/Repo", path = str(scanned_repo), source = "hf_cache"),
     )
 
     assert entry is not None
@@ -2193,7 +2309,7 @@ def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
 
     entry = resolver._local_gguf_entry(
         "org/Repo",
-        SimpleNamespace(id = "org/Repo", path = str(repo)),
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
     )
 
     assert entry is not None
@@ -2211,7 +2327,7 @@ def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
 
     entry = resolver._local_gguf_entry(
         "org/Repo",
-        SimpleNamespace(id = "org/Repo", path = str(repo)),
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
     )
 
     assert entry is not None
@@ -2230,23 +2346,25 @@ def test_selected_snapshot_preserves_local_variant_labels(tmp_path):
 
     entry = resolver._local_gguf_entry(
         "org/Repo",
-        SimpleNamespace(id = "org/Repo", path = str(repo)),
+        SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
     )
 
     assert entry is not None
     assert set(entry.variants) == {"small", "large"}
 
 
-def test_model_dir_with_empty_snapshots_keeps_root_gguf(tmp_path):
+def test_model_dir_with_snapshots_subdir_keeps_root_gguf(tmp_path):
     """A regular model dir is not an HF cache just because snapshots/ exists."""
     from types import SimpleNamespace
 
-    (tmp_path / "snapshots").mkdir()
+    nested = tmp_path / "snapshots" / "revision"
+    nested.mkdir(parents = True)
+    (nested / "mmproj-model-F16.gguf").write_bytes(b"GGUF companion")
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
 
     entry = resolver._local_gguf_entry(
         "custom/model",
-        SimpleNamespace(id = "custom/model", path = str(tmp_path)),
+        SimpleNamespace(id = "custom/model", path = str(tmp_path), source = "models_dir"),
     )
 
     assert entry is not None
@@ -2265,7 +2383,7 @@ def test_hf_cache_entries_do_not_rescan_the_cache_root(monkeypatch, tmp_path):
         snapshot = repo / "snapshots" / "revision"
         snapshot.mkdir(parents = True)
         (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
-        infos.append(SimpleNamespace(id = f"org/Repo-{index}", path = str(repo)))
+        infos.append(SimpleNamespace(id = f"org/Repo-{index}", path = str(repo), source = "hf_cache"))
 
     original_iterdir = Path.iterdir
     root_scans = 0

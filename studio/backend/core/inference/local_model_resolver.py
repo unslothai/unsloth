@@ -129,17 +129,19 @@ def _resolve_gguf_load_snapshot(p):
     return selected
 
 
-def local_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
-    """Trusted sibling snapshots for a resolver-selected HF cache path.
+def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> tuple[str, ...]:
+    """Trusted sibling snapshots for a repo-level HF cache resolution.
 
     The selected snapshot remains first so a colocated companion wins. Other
     revisions are returned newest first for the case where a later download
-    contains only a compatible mmproj. Paths outside an exact ``models--*``
-    cache-repo layout never widen their companion search.
+    contains only a compatible mmproj. Exact revision paths and paths outside
+    an exact ``models--*`` cache-repo layout never widen their companion search.
     """
     from pathlib import Path
     from hub.utils.hf_cache_state import snapshot_selection_key
 
+    if not repo_level:
+        return ()
     selected = Path(load_path)
     snapshots = selected.parent
     repo = snapshots.parent
@@ -177,17 +179,19 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
-        try:
-            cache_repo_dir = p if (p / "snapshots").is_dir() else None
-        except OSError:
-            return None
-        if (
-            cache_repo_dir is None
-            and getattr(info, "source", None) == "hf_cache"
-            and p.parent.name == "snapshots"
-            and p.parent.parent.name.startswith("models--")
-        ):
-            cache_repo_dir = p.parent.parent
+        cache_repo_dir = None
+        if getattr(info, "source", None) == "hf_cache":
+            try:
+                if p.name.startswith("models--") and (p / "snapshots").is_dir():
+                    cache_repo_dir = p
+            except OSError:
+                return None
+            if (
+                cache_repo_dir is None
+                and p.parent.name == "snapshots"
+                and p.parent.parent.name.startswith("models--")
+            ):
+                cache_repo_dir = p.parent.parent
         if cache_repo_dir is not None:
             selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:

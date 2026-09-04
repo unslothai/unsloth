@@ -1806,19 +1806,20 @@ def detect_mmproj_file(
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            if allow_disjoint_search_root:
-                _add(root_resolved)
-            elif root_resolved == start_resolved or (
+            root_contains_start = root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
-            ):
+            )
+            if root_contains_start:
                 cur = start_resolved
                 while cur != root_resolved and cur.parent != cur:
                     cur = cur.parent
                     _add(cur)
                     if cur == root_resolved:
                         break
+            elif allow_disjoint_search_root:
+                _add(root_resolved)
         except OSError:
             pass
 
