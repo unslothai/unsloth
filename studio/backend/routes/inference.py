@@ -25295,8 +25295,23 @@ async def _openai_catalog_objects() -> list[dict]:
             # never resolves; advertising its quants would hand out a `repo:quant` that
             # 404s with variant_not_found.
             listed = by_id[cid]
-            if listed.get("quant") and quants and "quants" not in listed:
-                listed["quants"] = _quant_list(listed["quant"], quants)
+            if quants and "quants" not in listed:
+                base = listed.get("quant")
+                if not base and listed.get("loaded"):
+                    # A cold resolver index withholds the resident quant, because a pin
+                    # it cannot resolve is a dead pin. This scan just read the files, so
+                    # a loaded variant that appears among them is exactly the proof that
+                    # was missing; publish it now instead of after the next poll.
+                    resident = getattr(get_llama_cpp_backend(), "hf_variant", None)
+                    scanned = next(
+                        (q for q in quants if resident and q.lower() == resident.lower()),
+                        None,
+                    )
+                    if scanned:
+                        base = scanned
+                        listed["quant"] = scanned
+                if base:
+                    listed["quants"] = _quant_list(base, quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:

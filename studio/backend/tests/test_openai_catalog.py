@@ -581,3 +581,26 @@ def test_a_resident_model_with_no_other_quant_advertises_no_list(monkeypatch):
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quant"] == "Q8_0"
     assert "quants" not in ids["org/Foo"]
+
+
+def test_a_cold_resolver_index_still_advertises_the_scanned_quants(monkeypatch):
+    # On the first request after a start, _quant_reference_resolves only warms the
+    # index and answers False, so the loaded row carries no quant. The scan has just
+    # read the files, so the resident variant among them is proof the pin resolves;
+    # without this the quant picker is missing for a whole poll interval.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q8_0", "BF16"))
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["loaded"] is True
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+
+
+def test_a_resident_quant_the_scan_cannot_see_is_not_advertised(monkeypatch):
+    # The dead-pin guard still holds: if the loaded variant is not among the files the
+    # scan found, nothing proves the pin resolves, so neither key is published.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",), resident = "Q8_0")
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert "quant" not in ids["org/Foo"]
+    assert "quants" not in ids["org/Foo"]
