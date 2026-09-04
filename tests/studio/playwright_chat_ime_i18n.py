@@ -695,6 +695,8 @@ with sync_playwright() as p:
     step("BUG REPRO: Mac IME switch - onKeyDown immediate recovery")
     clear()
     composer.click()
+    # Seed sendable content so Send's state reflects composition only, not empty-content gating (insertFromPaste leaves
+    # composingRef false).
     set_value_via_setter("hello")
     # Switch TO Chinese: compositionstart fires but compositionend never arrives.
     composer.evaluate(
@@ -703,6 +705,7 @@ with sync_playwright() as p:
             el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
         }"""
     )
+    # Let React process compositionstart and update isComposing.
     page.wait_for_timeout(200)
     send_btn_mac_kd = page.locator('button[aria-label="Send message"]')
     # Dispatch ONLY a keydown (no input event) so onChange never fires and the onKeyDown else-if branch is the only path
@@ -740,11 +743,12 @@ with sync_playwright() as p:
     clear()
 
     # 6f. Candidate-confirming Enter must not unblock submit.
+    #     Some IMEs report it as isComposing=false/keyCode=13 while composingRef
+    #     is still pinned; it must be swallowed and keep Send disabled, else it
+    #     submits before the candidate is committed.
     step("BUG REPRO: Mac IME switch - Enter must not unblock submit")
     clear()
     composer.click()
-    # Seed sendable content so Send's state reflects composition only, not empty-content gating (insertFromPaste leaves
-    # composingRef false).
     set_value_via_setter("hello")
     composer.evaluate(
         """(el) => {
@@ -752,10 +756,8 @@ with sync_playwright() as p:
             el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
         }"""
     )
-    # Let React process compositionstart and update isComposing.
     page.wait_for_timeout(200)
     send_btn_mac_enter = page.locator('button[aria-label="Send message"]')
-    # Switch TO Chinese: compositionstart fires but compositionend never arrives.
     composer.evaluate(
         """(el) => {
             el.focus();

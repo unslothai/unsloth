@@ -162,13 +162,13 @@ def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
     _test_fake_quantizers_are_called(model, inputs, full_finetuning, qat_scheme)
 
 
+# TODO: there are bad interactions across tests right now, need to figure out how to disable model caching before
+# re-enabling this test
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def _test_full_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = True)
 
 
-# TODO: there are bad interactions across tests right now, need to figure out how to disable model caching before
-# re-enabling this test
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def test_lora_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = False)

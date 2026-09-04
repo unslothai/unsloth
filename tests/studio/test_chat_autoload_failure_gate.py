@@ -847,12 +847,14 @@ def _build_harness(run_dir: Path):
     # #7699 did by adding a syncModelCapabilities call here.
     imported = set()
     source = "\n".join(lines)
+    # Default and namespace forms bind a name too, and it is the same ReferenceError when the harness lacks it.
+    # chat-adapter.ts has none today, so this is for the first one somebody adds.
     for match in re.finditer(
         r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
     ):
         imported.add(match.group(1))
-    # Default and namespace forms bind a name too, and it is the same ReferenceError when the harness lacks it.
-    # chat-adapter.ts has none today, so this is for the first one somebody adds.
+    # The optional prefix is the mixed form, `import def, { named } from`, whose braces a `^import\s+\{` anchor
+    # would skip entirely.
     for match in re.finditer(
         r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
     ):

@@ -656,6 +656,8 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "run: echo 'import x from \"next-themes\";'",
         None,
     ),
+    # HTML script/link must respect package-name boundaries: a `/node_modules/foo-extra/...` reference does NOT use
+    # `foo`.
     ClassifyCase(
         "U41",
         "HTML <script src=...> with similar-prefix package is NOT a match",
@@ -664,8 +666,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '<script src="/node_modules/foo-extra/dist/index.js"></script>',
         None,
     ),
-    # HTML script/link must respect package-name boundaries: a `/node_modules/foo-extra/...` reference does NOT use
-    # `foo`.
     ClassifyCase(
         "U42",
         "HTML <link href=...> with similar-prefix package is NOT a match",
@@ -682,6 +682,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '<script src="/node_modules/foo/dist/index.js"></script>',
         "html_script",
     ),
+    # CSS url() unquoted variant must classify the same as the quoted one.
     ClassifyCase(
         "U44",
         "CSS url() unquoted bare package path",
@@ -690,7 +691,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "src: url(katex/dist/fonts/font.woff2);",
         "css_url",
     ),
-    # CSS url() unquoted variant must classify the same as the quoted one.
     ClassifyCase(
         "U45",
         "CSS url() quoted bare package path still works",

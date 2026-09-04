@@ -714,6 +714,8 @@ def test_pins_manifest_is_declared_in_package_data():
 
 
 def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypatch):
+    # The short-circuit must not keep a version-matching install whose recorded digest is not the pin (old
+    # remote-SHASUMS install or a tampered artifact).
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "aa")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
@@ -743,8 +745,9 @@ def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monk
 
 
 def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, monkeypatch):
-    # The short-circuit must not keep a version-matching install whose recorded digest is not the pin (old
-    # remote-SHASUMS install or a tampered artifact).
+    # Symmetry with the short-circuit guard: the transient-failure fallback must not keep a same-version install whose
+    # recorded digest is not the pin. (A different usable version is still kept for offline resilience - covered
+    # above.)
     host = _host("linux", "x64")
     version = M.pinned_default_version(M.load_pins())
     asset = M.node_asset_name(version, host)
@@ -754,12 +757,9 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     monkeypatch.setattr(M, "detect_host", lambda: host)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
-    monkeypatch.setattr(M, "download_file_verified", _offline)
+    monkeypatch.setattr(M, "download_file_verified", _offline)  # transient download failure
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
-
-
-# Seen in CI:
 
 
 # ── _replace_with_retry: transient Windows sharing violations ──────────────────
