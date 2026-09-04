@@ -137,18 +137,34 @@ def test_backend_forwards_shard_size_to_the_local_export_it_then_uploads(tmp_pat
         def __init__(self, token = None):
             seen["token"] = token
 
-        def create_repo(self, repo_id, private = False, exist_ok = False):
+        def create_repo(
+            self,
+            repo_id,
+            private = False,
+            exist_ok = False,
+        ):
             seen["repo"] = {"repo_id": repo_id, "private": private}
             return _RepoUrl("https://huggingface.co/owner/model")
 
-        def upload_folder(self, folder_path, repo_id, repo_type, ignore_patterns = None):
+        def upload_folder(
+            self,
+            folder_path,
+            repo_id,
+            repo_type,
+            ignore_patterns = None,
+        ):
             seen["upload"] = folder_path
 
     class _ModelCard:
         def __init__(self, content):
             pass
 
-        def push_to_hub(self, repo_id, token = None, commit_message = None):
+        def push_to_hub(
+            self,
+            repo_id,
+            token = None,
+            commit_message = None,
+        ):
             pass
 
     monkeypatch.setattr(export_module, "HfApi", _HfApi)

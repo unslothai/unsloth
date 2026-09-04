@@ -67,18 +67,34 @@ def _hub_doubles(export_mod, monkeypatch, calls: dict):
         def __init__(self, token = None):
             calls["token"] = token
 
-        def create_repo(self, repo_id, private = False, exist_ok = False):
+        def create_repo(
+            self,
+            repo_id,
+            private = False,
+            exist_ok = False,
+        ):
             calls["repo"] = {"repo_id": repo_id, "private": private}
             return _RepoUrl("https://huggingface.co/org/model")
 
-        def upload_folder(self, folder_path, repo_id, repo_type, ignore_patterns = None):
+        def upload_folder(
+            self,
+            folder_path,
+            repo_id,
+            repo_type,
+            ignore_patterns = None,
+        ):
             calls["upload"] = folder_path
 
     class _ModelCard:
         def __init__(self, content):
             calls["card"] = content
 
-        def push_to_hub(self, repo_id, token = None, commit_message = None):
+        def push_to_hub(
+            self,
+            repo_id,
+            token = None,
+            commit_message = None,
+        ):
             calls["card_repo"] = repo_id
 
     monkeypatch.setattr(export_mod, "HfApi", _HfApi)

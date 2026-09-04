@@ -27,11 +27,22 @@ def _hub_doubles(calls, seen):
         def __init__(self, token = None):
             seen["token"] = token
 
-        def create_repo(self, repo_id, private = False, exist_ok = False):
+        def create_repo(
+            self,
+            repo_id,
+            private = False,
+            exist_ok = False,
+        ):
             seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
             return _RepoUrl("https://huggingface.co/owner/model")
 
-        def upload_folder(self, folder_path, repo_id, repo_type, ignore_patterns = None):
+        def upload_folder(
+            self,
+            folder_path,
+            repo_id,
+            repo_type,
+            ignore_patterns = None,
+        ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
             ignored = set(ignore_patterns or ())
@@ -43,7 +54,12 @@ def _hub_doubles(calls, seen):
         def __init__(self, content):
             seen["card"] = content
 
-        def push_to_hub(self, repo_id, token = None, commit_message = None):
+        def push_to_hub(
+            self,
+            repo_id,
+            token = None,
+            commit_message = None,
+        ):
             seen["card_repo"] = repo_id
 
     return _HfApi, _ModelCard
