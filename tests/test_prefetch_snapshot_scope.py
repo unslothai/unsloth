@@ -733,6 +733,7 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
         def model_info(self, *a, **k):
             return type("MI", (), {"siblings": [_Sib(n) for n in self._names]})()
 
+    # Subdir safetensors only -> not reported present.
     monkeypatch.setattr(
         huggingface_hub,
         "HfApi",
@@ -741,7 +742,6 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
         ),
     )
     assert U._adapter_repo_has_safetensors("org/repo") is False
-    # Subdir safetensors only -> not reported present.
     # Root safetensors -> reported present.
     monkeypatch.setattr(
         huggingface_hub,

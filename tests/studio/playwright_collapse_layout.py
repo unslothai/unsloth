@@ -390,6 +390,7 @@ def grow_probe(page) -> dict:
     toggle time is already stale by the time it is applied, and is the shape of reasoning text
     streaming into a pane the reader has just opened.
     """
+    # The toggle loop ran whole cycles, so the pane is closed and this click opens it.
     page.evaluate(CLICK_TRIGGER_JS)
     page.wait_for_timeout(SETTLE_MS)
     settled_before = page.evaluate(PANE_SNAPSHOT_JS)
@@ -404,7 +405,6 @@ def grow_probe(page) -> dict:
     page.evaluate(CLICK_TRIGGER_JS)
     page.wait_for_timeout(SETTLE_MS)
 
-    # The toggle loop ran whole cycles, so the pane is closed and this click opens it.
     page.evaluate(CLICK_TRIGGER_JS)
     page.wait_for_timeout(MIDFLIGHT_GROW_DELAY_MS)
     page.evaluate("(n) => window.__probeGrow(n)", GROW_PARAGRAPHS)
@@ -770,6 +770,7 @@ def run(options: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     global _LOG
     options = parse_args(sys.argv[1:] if argv is None else argv)
+    # Everything human goes to stderr under --json, so stdout stays a single parseable document.
     if options.json:
         _LOG = sys.stderr
 
@@ -816,7 +817,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     info(f"wrote {out}")
 
-    # Everything human goes to stderr under --json, so stdout stays a single parseable document.
     if options.json:
         print(json.dumps(report, indent = 2), flush = True)
 

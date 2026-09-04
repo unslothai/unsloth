@@ -2018,6 +2018,8 @@ def test_evaluate_caps_the_split_stored_on_the_trainer():
     stub.evaluate()
 
     assert max(len(r) for r in seen["ds"]["input_ids"]) <= cap
+    # Swapped in for the call only: the trainer keeps the split it was given, so
+    # a caller reading it back does not find it silently rewritten.
     assert stub.eval_dataset is late
 
 
@@ -2041,7 +2043,6 @@ def test_the_stored_split_is_restored_even_when_evaluate_raises():
     stub.eval_dataset = late
     with pytest.raises(RuntimeError):
         stub.evaluate()
-    # Swapped in for the call only:
     assert stub.eval_dataset is late
 
 

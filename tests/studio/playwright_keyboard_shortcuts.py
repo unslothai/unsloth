@@ -244,7 +244,8 @@ def check_bare_keys(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # The whole reason the stand-aside exists:
+    # The whole reason the stand-aside exists: preventDefault runs before the
+    # handler, so without it Enter on Deny would cancel the click and approve.
     reset(page)
     page.focus("#smoke-button")
     page.keyboard.press("Enter")
@@ -515,6 +516,7 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
+    # With no selection the latch is never stamped, so nothing is swallowed.
     reset(page)
     page.keyboard.press(archive)
     page.keyboard.press(archive)
@@ -526,7 +528,6 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # With no selection the latch is never stamped, so nothing is swallowed.
     # Deleting needs no latch: it has no open-chat branch to fall through to.
     reset(page)
     page.evaluate(

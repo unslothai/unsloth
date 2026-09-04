@@ -858,6 +858,9 @@ class TestDamagedCorePayloadRepair:
             return ["gone"] if seen["n"] == 1 else []
 
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        # Stubbed, or the presence check added beside the scan answers for the
+        # host: a source checkout with no unsloth distribution installed would
+        # fail this on the environment rather than on the code.
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
         monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
@@ -879,7 +882,6 @@ class TestDamagedCorePayloadRepair:
 
     def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
-        # Stubbed, or the presence check added beside the scan answers for the host:
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
         assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is True
 

@@ -161,6 +161,7 @@ def test_pushtohubmixin_create_repo_status(tag: str):
     _ = has_create
 
 
+# integrations.bitsandbytes: _replace_with_bnb_linear vs new path.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_integrations_bitsandbytes_module_present(tag: str):
     src = fetch_text(
@@ -173,7 +174,6 @@ def test_integrations_bitsandbytes_module_present(tag: str):
     ), f"{tag}: integrations/bitsandbytes.py has no Linear4bit reference"
 
 
-# integrations.bitsandbytes:
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_quantizers_should_convert_module_signature(tag: str):
     """unsloth-zoo#491/#488: 5.x moved is_replaceable to quantizers_utils.should_convert_module; snapshot its form."""

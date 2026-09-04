@@ -23,7 +23,7 @@ accepts = _load_helper()
 
 
 class PrepHasKwargs_ForwardHasKey:
-    # kwargs on prepare unions forward params;
+    # **kwargs on prepare unions forward params; key in forward -> ACCEPTED.
     def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
     def forward(
         self,

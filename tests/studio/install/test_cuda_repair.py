@@ -1646,12 +1646,12 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is True, "nothing here touched torch"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
+        # torchao depends on torch: resolving deps re-pulls the wheel just removed.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])
 
     def test_a_pass_that_ran_a_torch_touching_install_asks_to_be_re_verified(self):
-        # torchao depends on torch:
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["ok"] is False
 
