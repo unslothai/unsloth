@@ -1752,6 +1752,7 @@ def test_evaluate_uses_the_trainer_resolved_completion_only_mode():
     stub.evaluate(eval_dataset = late)
     assert len(seen["ds"]) == 0, "the mask truncated to all zeros, so the row has no supervision"
 
+    # Without the trainer's answer this split alone reads as full-sequence loss.
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
@@ -1822,7 +1823,6 @@ def test_evaluate_caps_a_split_with_no_map(monkeypatch):
 
     rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(3)]
 
-    # Without the trainer's answer this split alone reads as full-sequence loss.
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
@@ -2214,6 +2214,7 @@ def test_predict_keeps_every_row_it_was_given():
     stub.predict(test_dataset = rows)
     assert len(seen["ds"]) == 2, "predict dropped a row it must return a prediction for"
 
+    # evaluate still drops it: a loss over an all -100 row is meaningless.
     stub.evaluate(eval_dataset = rows)
     assert len(seen["ds"]) == 1
 
@@ -2234,7 +2235,6 @@ def test_the_memo_does_not_serve_a_stale_cap_for_a_mutable_split():
     assert len(list(seen["ds"])) == 1
 
     rows.append(_row())
-    # evaluate still drops it: a loss over an all -100 row is meaningless.
     stub.evaluate(eval_dataset = rows)
     assert len(list(seen["ds"])) == 2, "the memo served a cap taken before the append"
 

@@ -943,6 +943,8 @@ _DATASETS_MESSAGE = (
 
 
 def test_worker_death_is_reraised_with_context(dnp):
+    # datasets discards the child's exit status, so the original message cannot distinguish an OOM kill from
+    # anything else.
     with pytest.raises(RuntimeError) as caught:
         with dnp.map_failure_diagnostics(8):
             raise RuntimeError(_DATASETS_MESSAGE)
@@ -959,6 +961,7 @@ def test_worker_death_is_reraised_with_context(dnp):
 
 
 def test_worker_death_diagnostics_handles_in_process_runs(dnp):
+    # num_proc=None still reaches the wrapper; it must not divide by a None.
     with pytest.raises(RuntimeError) as caught:
         with dnp.map_failure_diagnostics(None):
             raise RuntimeError(_DATASETS_MESSAGE)
@@ -969,8 +972,6 @@ def test_worker_death_diagnostics_handles_in_process_runs(dnp):
 def test_unrelated_errors_pass_through_untouched(dnp):
     # Only the dead-worker message is rewritten, and non-RuntimeError types are not caught at all.
     original = RuntimeError("CUDA out of memory")
-    # num_proc=None still reaches the wrapper; it must not divide by a None.
-    # datasets discards the child's exit status, so the original message cannot distinguish an OOM kill from anything
     with pytest.raises(RuntimeError) as caught:
         with dnp.map_failure_diagnostics(4):
             raise original
@@ -1167,6 +1168,7 @@ def test_memory_budget_follows_the_cgroup_not_the_host(monkeypatch, dnp):
 
 
 def test_memory_already_spent_in_the_container_is_not_counted_as_free(monkeypatch, dnp):
+    # Otherwise a container that has already spent most of its limit still reads as having the whole thing available.
     psutil = pytest.importorskip("psutil")
     _force_start_method(monkeypatch, dnp, "fork")
     _force_cpus(monkeypatch, dnp, 64)
@@ -1182,6 +1184,8 @@ def test_memory_already_spent_in_the_container_is_not_counted_as_free(monkeypatc
 
 
 def test_cpu_count_follows_the_affinity_mask(monkeypatch, dnp):
+    # Under taskset or Slurm pinning the host count is not what this process can run on, and workers would only
+    # contend for the cores it does have.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
     monkeypatch.setattr(dnp, "_cgroup_cpu_quota", lambda: None)
@@ -1243,6 +1247,8 @@ def test_serial_is_one_when_the_two_modules_disagree(monkeypatch, dnp, capsys):
 
 
 def test_serial_stays_none_when_the_zoo_would_refuse_workers_too(monkeypatch, dnp):
+    # macOS: multiprocess forks, stdlib spawns. Its own veto fires, so None is genuinely in-process there and 1 would
+    # be a pool it did not need.
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(dnp.sys, "platform", "darwin")
     _force_stdlib_start_method(monkeypatch, dnp, "spawn")
@@ -1253,13 +1259,9 @@ def test_serial_stays_none_when_the_zoo_would_refuse_workers_too(monkeypatch, dn
 
 
 def test_agreeing_modules_are_left_alone(monkeypatch, dnp):
-    # macOS: multiprocess forks, stdlib spawns.
     _force_start_method(monkeypatch, dnp, "fork")
     _force_stdlib_start_method(monkeypatch, dnp, "fork")
     _force_cpus(monkeypatch, dnp, 32)
-    # Otherwise a container that has already spent most of its limit still reads as having the whole thing available.
-    # Under taskset or Slurm pinning the host count is not what this process can run on, and workers would only contend
-    # Kubernetes "cpu: 500m" is cpu.max "50000 100000" = 0.5 cores.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(
         psutil, "virtual_memory", lambda: type("m", (), {"available": 256 * 1024**3})()

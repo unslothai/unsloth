@@ -2439,6 +2439,7 @@ class TestRecordlessDistributionRecovery:
         assert not stub.exists()
 
     def test_a_complete_install_of_the_same_name_is_left_alone(self, tmp_path, monkeypatch):
+        # A RECORD means pip knows what it owns; whatever failed, it was not this.
         root = self._site_packages(tmp_path, monkeypatch)
         intact = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = True)
 
@@ -2446,6 +2447,7 @@ class TestRecordlessDistributionRecovery:
         assert intact.exists()
 
     def test_other_packages_are_never_touched(self, tmp_path, monkeypatch):
+        # The blast radius is the names pip named, not every stub in site-packages.
         root = self._site_packages(tmp_path, monkeypatch)
         bystander = self._write_dist_info(root, "fastapi-0.121.0.dist-info", record = False)
 
@@ -2453,6 +2455,7 @@ class TestRecordlessDistributionRecovery:
         assert bystander.exists()
 
     def test_an_unrelated_failure_clears_nothing(self, tmp_path, monkeypatch):
+        # No RECORD marker: a different problem, which deleting metadata cannot fix.
         root = self._site_packages(tmp_path, monkeypatch)
         stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
 
@@ -2474,9 +2477,6 @@ class TestRecordlessDistributionRecovery:
 
     def test_the_fallback_retries_once_after_clearing(self, tmp_path, monkeypatch):
         """The recovery is only worth anything if pip_install actually re-runs."""
-        # No RECORD marker: a different problem, which deleting metadata cannot fix.
-        # A RECORD means pip knows what it owns;
-        # The blast radius is the names pip named, not every stub in site-packages.
         root = self._site_packages(tmp_path, monkeypatch)
         self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
         monkeypatch.setattr(ips, "USE_UV", False)

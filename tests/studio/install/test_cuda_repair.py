@@ -1144,6 +1144,7 @@ class TestExpectedXpuFlavorIsEnforced:
             expected_env = "rocm",
         )
         mock_pip.rocm_repair.assert_called_once()
+        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
         assert ok is True
 
@@ -1235,13 +1236,14 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
 
     def test_a_published_cpu_tag_with_no_pin_is_still_left_alone(self):
+        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing; the healthy cu124
+        # venv underneath must not be downgraded.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0+cu124",
             expected_env = "cpu",
             nvidia = False,
         )
         assert ok is True
-        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
 
     def test_a_cpu_venv_under_a_cpu_pin_is_a_no_op(self):

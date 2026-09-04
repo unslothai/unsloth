@@ -689,7 +689,7 @@ _SELF_TESTS = {
         "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
         # after: someone normalized _b -> b ; now f().b is the int, re is lost
         "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
-        "BLOCKER",
+        "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
     ),
     "clean_rename": (
         "def f():\n    import glob as _g\n    return _g.glob('*')\n",
@@ -740,7 +740,7 @@ _SELF_TESTS = {
     "reexport_in_ordinary_module_is_still_blocked": (
         'from .a import A\n__all__ = ["A"]\n',
         'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
-        "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
+        "BLOCKER",
         "pkg/helpers.py",
     ),
     "unexported_new_import_in_init_is_still_blocked": (

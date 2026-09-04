@@ -281,6 +281,7 @@ def exercise_permission_mode_controls(page, shoot):
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
 
+    # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     menu = open_menu()
     for label in (
@@ -383,7 +384,6 @@ def exercise_permission_mode_controls(page, shoot):
 
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
-    # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     shoot("04-permission-levels")
 
@@ -2080,6 +2080,8 @@ with sync_playwright() as p:
     # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
     try:
         ctx.clear_cookies()
     except Exception as exc:
@@ -2239,8 +2241,6 @@ with sync_playwright() as p:
     stop_btn.wait_for(state = "visible", timeout = 5_000)
     stop_btn.click()
 
-    # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
     try:
         page.wait_for_function(
             """() => /Unsloth has stopped/.test(document.body.innerText)""",

@@ -522,10 +522,9 @@ _SELF_TEST_CASES = [
     # unreported.
     (2, "N = K = 256\nN = K = 512\n"),
     (0, "N = K = 256\nM = 512\n"),
-    (
-        0,
-        "X = X = 1\n",
-    ),  # one statement, one live binding Overload signatures reached through an import alias are still
+    (0, "X = X = 1\n"),  # one statement, one live binding
+    # Overload signatures reached through an import alias are still overloads. Reporting them is a FALSE POSITIVE that
+    # blocks CI on a conventional typing pattern.
     (
         0,
         "import typing as t\n@t.overload\ndef f(x: int) -> int: ...\n"
@@ -554,18 +553,21 @@ _SELF_TEST_CASES = [
     (0, "from a import x\nfrom b import x\nfrom c import x\n"),
     # An explicit alias collides with a name already bound implicitly, in either order.
     (1, "import urllib.parse as urllib\nimport urllib.request\n"),
+    # A typing alias bound INSIDE a function is not in effect at module level, so it may not exempt a module-level
+    # decorator. Widening the exemption is what hides merge damage.
     (
         1,
         "import types as t\n\n\ndef helper():\n    import typing as t\n    return t\n\n\n"
         "@t.overload\ndef f(x): ...\n@t.overload\ndef f(x): ...\n",
     ),
+    # ...but the conventional wrapped spellings are still found, since they are module level.
     (
         0,
         "try:\n    from typing import overload as ov\nexcept ImportError:\n"
         "    from typing_extensions import overload as ov\n"
         "@ov\ndef f(x: int) -> int: ...\n@ov\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n",
     ),
-    # A duplicated @property getter.
+    # ONE accessor of each kind is legitimate; a SECOND of the same kind replaces the first.
     (
         1,
         "class C:\n    @property\n    def v(self):\n        return 1\n"
@@ -578,6 +580,7 @@ _SELF_TEST_CASES = [
         "    @v.setter\n    def v(self, x):\n        pass\n"
         "    @v.deleter\n    def v(self):\n        pass\n",
     ),
+    # A class binds its own names, so a class-local typing alias resolves its own decorators.
     (
         0,
         "class C:\n    import typing as t\n"
@@ -593,29 +596,27 @@ _SELF_TEST_CASES = [
         "        @t.overload\n        def f(self, x: int): ...\n"
         "        @t.overload\n        def f(self, x: str): ...\n",
     ),
+    # A nested class binding the alias ITSELF still resolves its own decorators.
     (
         0,
         "import types as t\n\n\nclass Outer:\n    class Inner:\n        import typing as t\n"
         "        @t.overload\n        def f(self, x: int): ...\n"
         "        @t.overload\n        def f(self, x: str): ...\n",
     ),
+    # ...and a MODULE-level alias reaches every class body at every depth, so narrowing the inner class to its own
+    # bindings alone would be a false positive on correct code.
     (
         0,
         "import typing as t\n\n\nclass Outer:\n    class Inner:\n"
         "        @t.overload\n        def f(self, x: int): ...\n"
         "        @t.overload\n        def f(self, x: str): ...\n",
     ),
+    # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage, one per branch is the
+    # conditional idiom.
     (
         1,
         "import os\nif os.name:\n    def go():\n        return 1\n    def go():\n        return 2\n",
     ),
-    # A typing alias bound INSIDE a function is not in effect at module level, so it may not exempt a module-level
-    # ...but the conventional wrapped spellings are still found, since they are module level.
-    # ONE accessor of each kind is legitimate;
-    # A class binds its own names, so a class-local typing alias resolves its own decorators.
-    # A nested class binding the alias ITSELF still resolves its own decorators.
-    # ...and a MODULE-level alias reaches every class body at every depth, so narrowing the inner class to its own
-    # Each control-flow branch scanned on its own:
     (
         0,
         "import os\nif os.name:\n    def go():\n        return 1\nelse:\n"
@@ -640,12 +641,12 @@ if sys.version_info >= (3, 10):
             "match 1:\n    case 1:\n        import json\n        import json\n"
             "    case _:\n        pass\n",
         ),
+        # One definition per case is the conditional idiom, exactly as for if/else.
         (
             0,
             "match 1:\n    case 1:\n        def go():\n            return 1\n"
             "    case 2:\n        def go():\n            return 2\n",
         ),
-        # One definition per case is the conditional idiom, exactly as for if/else.
         # The alias walk reaches into a case too, so this stays an overload pair.
         (
             0,

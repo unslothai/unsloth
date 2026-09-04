@@ -391,6 +391,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             if nested or entry.get("bundled"):
                 pass
             elif entry.get("version"):
+                # Top-level entry without a resolved URL is suspicious.
                 findings.append(
                     Finding(
                         path = str(path),
@@ -404,7 +405,6 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
         else:
             if not any(resolved.startswith(p) for p in NPM_REGISTRY_PREFIXES_ALLOWED):
-                # Top-level entry without a resolved URL is suspicious.
                 findings.append(
                     Finding(
                         path = str(path),
@@ -480,6 +480,7 @@ _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
+        # See audit_npm_lockfile: missing lockfile is a finding.
         findings.append(
             Finding(
                 path = str(path),
@@ -529,7 +530,6 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
     try:
         lock = tomllib.loads(raw)
     except Exception as exc:
-        # See audit_npm_lockfile: missing lockfile is a finding.
         findings.append(
             Finding(
                 path = str(path),

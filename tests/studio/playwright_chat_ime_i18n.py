@@ -690,7 +690,7 @@ with sync_playwright() as p:
     clear()
     composer.click()
     set_value_via_setter("hello")
-    # watchdog never runs again and Send stays blocked forever.
+    # Switch TO Chinese: compositionstart fires but compositionend never arrives.
     composer.evaluate(
         """(el) => {
             el.focus();
