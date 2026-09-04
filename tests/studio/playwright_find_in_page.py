@@ -864,7 +864,6 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
-
     context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
