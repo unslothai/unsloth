@@ -25884,7 +25884,6 @@ def _reference_is_decisive(requested: str) -> bool:
         return True
     try:
         from core.inference.local_model_resolver import resolve_local_gguf
-
         return resolve_local_gguf(requested, allow_scan = False) is not None
     except Exception:  # noqa: BLE001 - a cold or broken index is not evidence
         return False
