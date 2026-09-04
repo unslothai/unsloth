@@ -23,6 +23,7 @@ from core.inference.studio_tool_loop import (
     ToolLoopRun,
     stream_with_studio_tools,
 )
+from core.inference.tool_loop_controller import _reject_json_constant
 
 
 def _sse(
@@ -1041,7 +1042,20 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     assert len(_events(lines, "tool_end")) == 2
 
 
-def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed):
+@pytest.mark.parametrize("heals", [False, True])
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '{"query": "b',
+        # Decoder limits rather than syntax: each one decodes past `json.loads` differently and used to raise out of
+        # prepare_call before the exhausted-call replay was built, aborting the turn (Codex review on #10274).
+        '{"query":' + "1" * 4301 + "}",
+        "[" * 100_000,
+        '{"query":NaN}',
+    ],
+    ids = ["cut-off", "digit-limit", "nesting-limit", "nan-constant"],
+)
+def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed, heals, fragment):
     """An exhausted call goes back through prepare_call, not hand-built replay.
 
     The refused call's streamed arguments never became valid JSON here, and
@@ -1049,7 +1063,7 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed)
     the template -- an unparseable fragment answers 500 for the whole next
     turn. The decision's replay shape already guarantees parseability for
     executed calls; the budget-exhausted path must give the provider the same
-    guarantee instead of the raw fragment.
+    guarantee instead of the raw fragment -- and must not raise while doing so.
     """
     transport = FakeTransport(
         [
@@ -1058,7 +1072,7 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed)
                     {
                         "tool_calls": [
                             _call_delta(0, "call_a", "web_search", '{"query":"a"}'),
-                            _call_delta(1, "call_b", "web_search", '{"query": "b'),
+                            _call_delta(1, "call_b", "web_search", fragment),
                         ]
                     }
                 ),
@@ -1067,11 +1081,13 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed)
             ],
             [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
         ],
-        heals = False,
+        heals = heals,
     )
     _run(transport, max_calls = 1)
 
     assert [call["name"] for call in executed] == ["web_search"]
+    # The loop went on to the follow-up provider request instead of aborting.
+    assert len(transport.requests) == 2
     replayed = transport.requests[1]["messages"]
     exhausted = [
         call
@@ -1080,7 +1096,8 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed)
         for call in message.get("tool_calls") or []
         if call["id"] == "call_b"
     ][0]
-    json.loads(exhausted["function"]["arguments"])
+    # Strict: `json.loads` alone takes NaN/Infinity, which is exactly what a provider's parser refuses.
+    json.loads(exhausted["function"]["arguments"], parse_constant = _reject_json_constant)
 
 
 def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):

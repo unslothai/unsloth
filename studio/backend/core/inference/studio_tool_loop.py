@@ -66,6 +66,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    _reject_json_constant,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
@@ -359,11 +360,6 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
-
-
-def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
-    raise ValueError(f"{name} is not JSON")
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
