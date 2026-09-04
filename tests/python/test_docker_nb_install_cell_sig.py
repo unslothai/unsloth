@@ -236,8 +236,8 @@ def test_whitespace_inside_a_string_is_data_too(sig, tmp_path: Path):
     )
 
 
-def test_a_shell_cell_still_has_every_line_treated_as_a_command(sig, tmp_path: Path):
-    """`%%bash` makes the whole cell shell, so the marker needs no `!` prefix there."""
+def test_a_shell_cell_needs_no_bang_prefix(sig, tmp_path: Path):
+    """`%%bash` makes the cell shell, so the marker needs no `!` prefix there."""
     cell = {"cell_type": "code", "source": ["%%bash\npip install unsloth\n"]}
     assert sig._is_install_code(cell)
     churned = "%%bash\npip install  unsloth\n# comment\n"
@@ -285,3 +285,58 @@ def test_pip3_is_deliberately_absent_from_the_markers(sig):
     rather than being tidied in."""
     assert not any("pip3 install" == m for m in sig._INSTALL_MARKERS)
     assert not sig._is_install_code({"cell_type": "code", "source": ["!pip3 install x\n"]})
+
+
+# `%%bash` used to qualify EVERY line of the cell, which is the same mistake as the
+# whole-cell substring search one level down: the marker only had to appear somewhere
+# on the line. `_normalize_install` then stripped the quoted `# ...` and collapsed the
+# spacing, both of which are data in shell, so an upstream edit to that string produced
+# SAME and the container kept running the old commands.
+
+_SHELL_MENTION = '%%bash\nmsg="pip install foo # bar"\necho "$msg"\n'
+
+
+def test_a_quoted_mention_in_a_shell_cell_is_not_a_command(sig, tmp_path: Path):
+    assert not sig._is_install_line('msg="pip install foo # bar"', True)
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", _SHELL_MENTION), ("code", "print(1)\n")],
+        [("code", _SHELL_MENTION.replace("# bar", "# baz")), ("code", "print(1)\n")],
+    ), "editing a quoted shell string changes what the cell runs"
+
+
+def test_an_operand_in_a_shell_cell_is_not_a_command(sig):
+    assert not sig._is_install_line("echo pip install foo", True)
+    assert not sig._is_install_line("grep -c 'x' pip install.log", True)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "pip install unsloth",
+        "  pip install unsloth",
+        "sudo apt-get install -y ffmpeg",
+        "uv pip install unsloth",
+        "cd /tmp && pip install unsloth",
+        "mkdir -p x; pip install unsloth",
+        "PIP_NO_CACHE_DIR=1 pip install unsloth",
+        "python3 -m pip install unsloth",
+        "!pip install unsloth",
+        'pip install "unsloth[all]"',
+    ],
+)
+def test_a_real_shell_invocation_still_counts(sig, line):
+    assert sig._is_install_line(line, True), line
+
+
+def test_the_whole_shipped_corpus_is_unaffected(sig):
+    """Blast radius, measured rather than asserted: all 1064 marker lines inside the
+    152 `%%bash` cells of the 561 shipped notebooks open a command, so the narrowing
+    changes no digest today. It only removes the tail this item found."""
+    for line in (
+        "pip install -q unsloth",
+        "apt install -y git",
+        "conda install -c conda-forge x",
+    ):
+        assert sig._is_install_line(line, True), line

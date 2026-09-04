@@ -194,6 +194,26 @@ def _write_state(state_path, lines):
     return True
 
 
+def _resume(path, rec):
+    """Finish a publish that was interrupted after its record landed. True if it did.
+
+    Recording before publishing closes the window that stranded the whole set at once,
+    but it leaves a one-notebook window of its own: a stop between os.replace on the
+    state file and os.replace on the notebook leaves `rec` describing the cleaned bytes
+    while the file still holds the pristine ones, and every later run reads that
+    mismatch as a user edit and carries the stale record forward forever. Cleaning what
+    is actually on disk tells the two apart, because only the interrupted case
+    reproduces `rec` byte for byte; a real edit cannot, so nothing else is touched."""
+    st = _stage_clean(path)
+    if st is None:
+        return False
+    tmp, before, after = st
+    if after != rec:
+        _unlink(tmp)
+        return False
+    return _publish(tmp, path, before)
+
+
 def strip_notebook(path, staged = None):
     """True if the notebook was modified and written back. `staged`, when given, gets
     {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
@@ -230,7 +250,8 @@ def migrate(state_path, dest):
 
     Ordering it the other way is safe in the direction that matters. If the state write
     fails, nothing has been published and the disk still matches the record, so the next
-    start simply tries again."""
+    start simply tries again. The narrow window that is left, a stop between the two
+    renames, is reconciled by _resume rather than mistaken for a user edit."""
     try:
         with open(state_path, "r", encoding = "utf-8") as f:
             lines = f.read().splitlines()
@@ -249,9 +270,12 @@ def migrate(state_path, dest):
         if not (rel.endswith(".ipynb") and os.path.isfile(path)):
             continue
         try:
-            if _sha256(path) != rec:  # not ours, or the user has edited it
-                continue
+            digest = _sha256(path)
         except OSError:
+            continue
+        if digest != rec:  # not ours, the user has edited it, or a publish was cut off
+            if _resume(path, rec):
+                changed += 1
             continue
         staged = _stage_clean(path)
         if staged is None:

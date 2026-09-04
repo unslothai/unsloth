@@ -51,17 +51,69 @@ def _is_shell_cell(text):
     return False
 
 
+def _unquoted(line):
+    """`line` with every quoted stretch blanked, so a marker inside a string literal
+    cannot be read as a command. Length is preserved; only the characters change."""
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            out.append(" ")
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# Shell command separators. A marker right after one of these begins a command; the
+# same words anywhere else on the segment are an argument or an operand.
+_SEG_RE = re.compile(r"\|\||&&|[;&|(){}`]")
+
+# Words that may stand in front of a command without changing what the command is.
+_CMD_PREFIXES = ("sudo", "env", "time", "nohup", "xargs", "then", "do", "else", "!")
+
+_PY_DASH_M = re.compile(r"^\S*python[0-9.]* -m ")
+
+
+def _starts_command(segment):
+    """True when `segment` invokes an install marker rather than merely naming one."""
+    s = " ".join(segment.split())
+    while True:
+        head = s.split(" ", 1)
+        if len(head) != 2:
+            break
+        # a leading `VAR=value` is a per-command environment, not the command
+        if head[0] in _CMD_PREFIXES or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", head[0]):
+            s = head[1]
+            continue
+        break
+    return _PY_DASH_M.sub("", s).startswith(_INSTALL_MARKERS)
+
+
 def _is_install_line(line, shell):
     """A real install invocation rather than a mention of one: `!`, a `%pip`-family
-    magic, or any line of a shell cell. On an ordinary Python line the same words are
-    prose or data, and treating the cell as an install cell on that basis put four
-    shipped notebooks through the flattening below over a comment (see
-    tests/python/test_docker_nb_install_cell_sig.py)."""
-    low = line.lower()
+    magic, or a command position inside a shell cell. On an ordinary Python line the
+    same words are prose or data, and treating the cell as an install cell on that
+    basis put four shipped notebooks through the flattening below over a comment (see
+    tests/python/test_docker_nb_install_cell_sig.py).
+
+    A `%%bash` cell used to qualify on the whole line, which is the same mistake one
+    level down: `msg="pip install foo # bar"` counted, and _normalize_install then
+    stripped the quoted `# bar` and collapsed the rest, so editing that string upstream
+    produced SAME and the refresh kept the old shell behaviour. Quoted stretches are
+    blanked and the marker has to open a command, which every one of the 1064 marker
+    lines in the 561 shipped notebooks already does."""
+    low = _unquoted(line.lower())
     if not any(m in low for m in _INSTALL_MARKERS):
         return False
     s = low.lstrip()
-    return shell or s.startswith("!") or s.startswith(_MAGIC_INSTALL)
+    if s.startswith("!") or s.startswith(_MAGIC_INSTALL):
+        return True
+    return shell and any(_starts_command(seg) for seg in _SEG_RE.split(low))
 
 
 def _is_install_code(cell):

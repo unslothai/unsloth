@@ -150,7 +150,30 @@ def requested_version():
 # back out. One implementation, so the headless path and the IPython hook cannot
 # disagree about what an install line is.
 
-_PIN_RE = re.compile(r"transformers\s*==\s*([0-9][0-9A-Za-z.\-]*)")
+# The requirement NAME is matched loosely and normalised afterwards, because pip
+# accepts every PEP 503 spelling of it and unsloth_pip_shim canonicalises before it
+# decides what to drop. `Transformers==5.5.0` and `transformers[torch]==5.5.0` install
+# exactly what the canonical spelling installs and the shim drops all three, so a
+# scanner that only knew the canonical form left the pin unseen while the install was
+# still suppressed. The cell then imported the base version, and that import freezes
+# the sidecar choice for the life of the kernel with nothing left to correct it.
+_PIN_RE = re.compile(
+    r"(?<![\w.\-])([A-Za-z0-9][A-Za-z0-9._\-]*)[ \t]*(?:\[[^\]]*\])?[ \t]*=="
+    r"[ \t]*([0-9][0-9A-Za-z.\-]*)"
+)
+
+
+def _norm_req(name):
+    """PEP 503 normalised distribution name, the rule unsloth_pip_shim._norm_name uses."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
+def pin_from(text):
+    """transformers version pinned by an install command in `text`, else None."""
+    for m in _PIN_RE.finditer(_install_lines(text)):
+        if _norm_req(m.group(1)) == "transformers":
+            return m.group(2)
+    return None
 
 # Only an actual install invocation may supply the pin: the pin outranks the model
 # tier, so a commented-out install line would pick the wrong sidecar with nothing
@@ -214,8 +237,7 @@ def pin_in_cell(source):
     while no guess merely leaves the base venv."""
     if not source:
         return None
-    m = _PIN_RE.search(_install_lines(_live_source(source)))
-    return m.group(1) if m else None
+    return pin_from(_live_source(source))
 
 
 def activate(version: str | None, *, quiet: bool = False):

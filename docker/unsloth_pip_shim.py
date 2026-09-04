@@ -264,7 +264,7 @@ def _canon(token):
     _barch = _sdist_name(token.rsplit("/", 1)[-1])
     if _barch:
         return _barch
-    name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
+    name = re.split(r"[<>=!~\[\s;@]", token, maxsplit = 1)[0].strip()
     return _norm_name(name)
 
 

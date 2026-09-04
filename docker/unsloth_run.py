@@ -35,13 +35,14 @@ if compat is not None:
     _strip_comment = compat._strip_comment
     _live_source = compat._live_source
     _install_lines = compat._install_lines
+    _pin_from = compat.pin_from
 else:
     # compat is also what turns a scan result into a sidecar, so with it gone there is
     # nothing either half of the scan could select (see main, where sidecar stays None
     # and the tier lookup is skipped). Degrade to no scan rather than keep a second
     # copy of the rules here, which is the drift this move exists to prevent.
     _PIN_RE = _INSTALL_RE = None
-    _strip_comment = _live_source = _install_lines = None
+    _strip_comment = _live_source = _install_lines = _pin_from = None
 
 
 DEFAULT_FETCH_TIMEOUT = int(os.environ.get("UNSLOTH_NOTEBOOK_FETCH_TIMEOUT", "60") or 60)
@@ -75,9 +76,10 @@ def _scan(nb):
             continue
         src = _live_source("".join(cell.get("source", [])))
         if pin is None:
-            m = _PIN_RE.search(_install_lines(src))
-            if m:
-                pin = m.group(1)
+            # the shared helper, not _PIN_RE directly: the pattern now matches any
+            # requirement name and the PEP 503 comparison that picks transformers out
+            # of it lives with it, so reading the match here would drop that half
+            pin = _pin_from(src)
         if model is None:
             m = _MODEL_RE.search(src) or _MODEL_NAME_RE.search(src)
             if m:

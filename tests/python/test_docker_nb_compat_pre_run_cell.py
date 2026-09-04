@@ -214,3 +214,63 @@ def test_unsloth_run_scans_with_the_very_same_functions(compat, monkeypatch):
     assert run.compat is compat
     for name in ("_PIN_RE", "_INSTALL_RE", "_strip_comment", "_live_source", "_install_lines"):
         assert getattr(run, name) is getattr(compat, name), name
+    assert run._pin_from is compat.pin_from
+
+
+# pip accepts every PEP 503 spelling of a requirement name, and unsloth_pip_shim
+# canonicalises before it decides what to drop. A scanner that only knew the canonical
+# form therefore left the pin unseen while the install was still suppressed, and the
+# import in that same cell froze the base transformers for the life of the kernel.
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "transformers==" + PIN,
+        "Transformers==" + PIN,
+        "TRANSFORMERS==" + PIN,
+        "transformers[torch]==" + PIN,
+        "transformers [torch] == " + PIN,
+        "  transformers  ==  " + PIN,
+    ],
+)
+def test_every_spelling_the_shim_drops_is_a_pin(compat, spec):
+    assert compat.pin_in_cell("%pip install " + spec + "\nimport transformers\n") == PIN
+    assert _fire(compat, "%pip install " + spec + "\nimport transformers\n") is not None
+
+
+def test_the_shim_and_the_scanner_agree_on_the_name(compat):
+    """The two halves this item found apart. Read the shim's own canonicaliser rather
+    than restating its rule here, so a change on that side fails this instead of
+    drifting silently."""
+    shim_path = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
+    spec = importlib.util.spec_from_file_location("unsloth_pip_shim_names", shim_path)
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    for spelling in ("transformers", "Transformers", "TRANSFORMERS", "transformers[torch]"):
+        assert shim._canon(spelling + "==" + PIN) == "transformers", spelling
+        assert compat.pin_in_cell("!pip install " + spelling + "==" + PIN) == PIN, spelling
+    # and where the shim says a spelling is somebody else, so does the scanner: PEP 503
+    # collapses a run of `-_.` to one `-`, it does not delete it
+    for other in ("trans_formers", "trans.formers", "sentence-transformers"):
+        assert shim._canon(other + "==" + PIN) != "transformers", other
+        assert compat._norm_req(other) == shim._canon(other + "==" + PIN), other
+        assert compat.pin_in_cell("!pip install " + other + "==" + PIN) is None, other
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "transformers-stream-generator==" + PIN,
+        "sentence-transformers==" + PIN,
+        "trans-formers==" + PIN,
+    ],
+)
+def test_a_different_distribution_is_not_the_pin(compat, spec):
+    """Non-vacuity and the blast radius: matching the name loosely must not start
+    reading somebody else's version as the transformers pin."""
+    assert compat.pin_in_cell("%pip install " + spec) is None
+
+
+def test_a_pin_still_has_to_come_from_an_install_line(compat):
+    assert compat.pin_in_cell("# %pip install Transformers==" + PIN) is None
+    assert compat.pin_in_cell('doc = """\n%pip install Transformers==' + PIN + '\n"""\n') is None

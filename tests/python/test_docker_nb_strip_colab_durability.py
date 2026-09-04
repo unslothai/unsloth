@@ -210,3 +210,71 @@ def test_malformed_and_unmanaged_lines_survive_verbatim(strip, tmp_path):
     assert lines[0] == "not-a-record"
     assert lines[2] == "deadbeef  nb/gone.ipynb"
     assert lines[1] == f"{_sha256(dest / 'nb/x.ipynb')}  nb/x.ipynb"
+
+
+def test_a_publish_cut_off_after_its_record_is_recovered(strip, tree, monkeypatch):
+    """The window the ordering leaves behind, and the reason it is not the old one.
+
+    Between os.replace on the state file and os.replace on the notebook the record
+    describes the cleaned bytes while the file still holds the pristine ones. Every
+    later run reads that as a user edit and carries the stale record forward, so the
+    notebook stops receiving upstream updates for good. It is one notebook rather than
+    the whole set, and unlike a real edit it can be told apart and finished.
+    """
+    dest, state, names = tree
+
+    def _killed(tmp, path, before):
+        strip._unlink(tmp)
+        raise KeyboardInterrupt          # docker stop, between the two renames
+
+    monkeypatch.setattr(strip, "_publish", _killed)
+    with pytest.raises(KeyboardInterrupt):
+        strip.migrate(str(state), str(dest))
+    monkeypatch.undo()
+
+    stranded = _orphans(dest, state, names)
+    assert stranded, "precondition: a record ran ahead of its notebook"
+    for rel in stranded:
+        assert MARK in (dest / rel).read_text(encoding = "utf-8"), rel
+
+    assert strip.migrate(str(state), str(dest)) == 0
+
+    assert _orphans(dest, state, names) == []
+    for rel in names:
+        assert MARK not in (dest / rel).read_text(encoding = "utf-8"), rel
+
+
+def test_a_real_user_edit_is_still_left_alone(strip, tree):
+    """The blast radius. Recovery must not become a licence to rewrite a notebook
+    whose hash stopped matching for the ordinary reason."""
+    dest, state, names = tree
+    rel = names[0]
+    path = dest / rel
+    nb = json.loads(path.read_text(encoding = "utf-8"))
+    nb["cells"].append(
+        {
+            "cell_type": "code",
+            "source": ["print('mine')\n"],
+            "metadata": {},
+            "outputs": [],
+            "execution_count": None,
+        }
+    )
+    path.write_text(json.dumps(nb), encoding = "utf-8")
+    mine = path.read_text(encoding = "utf-8")
+    recorded = _state(state)[rel]
+
+    assert strip.migrate(str(state), str(dest)) == 0
+
+    assert path.read_text(encoding = "utf-8") == mine, "the user's notebook was rewritten"
+    assert _state(state)[rel] == recorded
+
+
+def test_the_recovery_keys_on_reproducing_the_record(strip, tree):
+    """Non-vacuity: cleaning the file has to land on the recorded hash exactly, which
+    only the interrupted publish can do, so nothing else is touched."""
+    dest, state, names = tree
+    path = dest / names[0]
+
+    assert strip._resume(str(path), "0" * 64) is False
+    assert MARK in path.read_text(encoding = "utf-8")

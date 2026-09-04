@@ -185,3 +185,72 @@ def test_nothing_is_removed_when_upstream_removed_nothing(tmp_path: Path):
     for rel in FILES:
         assert (dest / rel).exists(), rel
     assert "0 removed upstream" in run.stdout, run.stdout
+
+
+def _refuse_rm(tmp_path: Path, target: Path) -> Path:
+    """A `rm` earlier on PATH that fails for one path, the way a writable single-FILE
+    bind mount fails with EBUSY. The publish above already works around that case for
+    rename, so it is not hypothetical here."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok = True)
+    stub = bindir / "rm"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        f'  [ "$a" = "{target}" ] && exit 1\n'
+        "done\n"
+        'exec /bin/rm "$@"\n',
+        encoding = "utf-8",
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
+@behavioural
+def test_a_removal_that_cannot_be_unlinked_keeps_its_record_and_retries(tmp_path: Path):
+    """Ignoring the failure dropped the record while leaving the file, which is the
+    exact state the removal exists to prevent: the next refresh reads the stale copy as
+    user-owned and never tries again. It also left `failed` at zero, so the sync marker
+    was stamped and the next start exited before it looked."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+    # upstream dropped this one too, but the user owns it now, so doomed is the only
+    # removal candidate and the counters below are about it alone
+    (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
+    doomed = dest / "nb" / "doomed.ipynb"
+    bindir = _refuse_rm(tmp_path, doomed)
+
+    run = _refresh(
+        tmp_path, remote, template, dest, PATH = f"{bindir}{os.pathsep}{os.environ['PATH']}"
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert doomed.exists(), "precondition: the stub refused the unlink"
+    assert _state(dest).get("nb/doomed.ipynb") == _sha256(doomed), (
+        "the file stayed but its record was dropped, so it is now unmanaged"
+    )
+    assert "0 removed upstream" in run.stdout, run.stdout
+    assert not (dest / ".unsloth_sync_commit").is_file(), (
+        "the commit was stamped over a failure, so the next start exits before retrying"
+    )
+
+    run2 = _refresh(tmp_path, remote, template, dest)
+    assert run2.returncode == 0, run2.stdout + run2.stderr
+    assert not doomed.exists()
+    assert "nb/doomed.ipynb" not in _state(dest)
+    assert "1 removed upstream" in run2.stdout, run2.stdout
+
+
+@behavioural
+def test_the_successful_removal_still_stamps_the_commit(tmp_path: Path):
+    """Non-vacuity for the assertion above: without the stub the same run records it,
+    so the marker check is testing the failure and not the environment."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+    (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
+
+    run = _refresh(tmp_path, remote, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert (dest / ".unsloth_sync_commit").is_file()
+    assert "1 removed upstream" in run.stdout, run.stdout

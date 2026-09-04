@@ -401,10 +401,21 @@ if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ];
         [ -f "$dst" ] || continue
         [ -n "${LAST[$rel]}" ] || continue
         [ "$(hash_of "$dst")" = "${LAST[$rel]}" ] || continue
-        rm -f "$dst" 2>/dev/null && removed=$((removed + 1))
-        # one level, and never $DEST itself: `rmdir -p` would climb out of it
-        d="$(dirname "$dst")"
-        [ "$d" != "$DEST" ] && rmdir "$d" 2>/dev/null
+        if rm -f "$dst" 2>/dev/null; then
+            removed=$((removed + 1))
+            # one level, and never $DEST itself: `rmdir -p` would climb out of it
+            d="$(dirname "$dst")"
+            [ "$d" != "$DEST" ] && rmdir "$d" 2>/dev/null
+        else
+            # A writable single-FILE bind mount cannot be unlinked (EBUSY), the same
+            # case the publish above has to work around. The file stays, so its record
+            # has to stay with it: dropping it here would leave the stale copy on disk
+            # with nothing claiming it, and the next refresh would read it as
+            # user-owned and never retry. Counting it failed also holds the sync
+            # marker back, which is what makes the retry happen at all.
+            printf '%s  %s\n' "${LAST[$rel]}" "$rel" >> "$TMPSTATE"
+            failed=$((failed + 1))
+        fi
     done
     unset CLONED_LOWER
 fi
