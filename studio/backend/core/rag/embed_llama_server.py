@@ -50,6 +50,10 @@ _TRANSPORT_ERRORS = (
 
 
 _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+# Ceiling for the embedding server's physical batch. It is allocated up front, so a
+# 32k-context embedder does not get a 32k batch it will never fill; inputs past this
+# are refused with a 400 that names the real limit.
+_MAX_EMBED_BATCH = 8192
 
 
 def _skip_gguf_value(f, vtype: int) -> None:
@@ -718,6 +722,15 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
+        # Embedding is non-causal, and llama.cpp aborts a non-causal prompt longer than the
+        # PHYSICAL batch ("input is too large to process. increase the physical batch size")
+        # rather than splitting it, so the default 512 would reject inputs well inside the
+        # model's context. Size the batch to the context that will actually be advertised.
+        # Capped: the batch is allocated up front, and a 32k-context embedder does not need
+        # a 32k batch to be useful.
+        batch = _gguf_context_length(model_path) or 0
+        batch = min(batch, _MAX_EMBED_BATCH) if batch > 0 else _MAX_EMBED_BATCH
+        cmd += ["-b", str(batch), "-ub", str(batch)]
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -1082,14 +1095,43 @@ class LlamaServerBackend:
             self._dim = width
             return width
 
-    def _server_context(self) -> int | None:
+    def _server_props(self) -> dict | None:
+        """``/props``, or None. Advisory only -- it refines a limit that already has a
+        value from the GGUF, so no failure here may reach the caller. That includes a
+        malformed base URL, which is what an un-started server has.
+        """
         try:
             data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
-        except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+        except Exception:  # noqa: BLE001 - see docstring
             return None
-        settings = data.get("default_generation_settings") if isinstance(data, dict) else None
-        n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
-        return n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _positive(data: dict | None, key: str) -> int | None:
+        """*key* from /props, whether the build reports it at the top level or under
+        ``default_generation_settings``."""
+        for scope in (data, (data or {}).get("default_generation_settings")):
+            if isinstance(scope, dict):
+                value = scope.get(key)
+                if isinstance(value, int) and value > 0:
+                    return value
+        return None
+
+    def _server_context(self) -> int | None:
+        return self._positive(self._server_props(), "n_ctx")
+
+    def _server_batch(self) -> int | None:
+        """The physical batch this server actually runs at.
+
+        A non-causal (embedding) prompt longer than it is refused outright, so it bounds
+        what may be advertised no matter how large the model's context is.
+        """
+        props = self._server_props()
+        for key in ("n_ubatch", "n_batch"):
+            found = self._positive(props, key)
+            if found:
+                return found
+        return None
 
     def max_tokens(self, *, model_name = None) -> int | None:
         with self._operation(), self._serve_lock:
@@ -1101,6 +1143,11 @@ class LlamaServerBackend:
                     limit = min(limit, running)
                 elif running:
                     limit = running
+                # Never advertise more than one batch: past it llama.cpp returns a 500
+                # the caller sees as a 502, instead of the 400 this limit exists to give.
+                batch = self._server_batch()
+                if batch:
+                    limit = min(limit, batch) if limit else batch
                 if limit:
                     data = self._post(
                         "/tokenize",

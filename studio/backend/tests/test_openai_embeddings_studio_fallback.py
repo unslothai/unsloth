@@ -909,3 +909,52 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
     )
     _call({"input": "alpha", "model": MODEL})
     assert seen == [MODEL]
+
+
+def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch):
+    # Embedding is non-causal: llama.cpp refuses a prompt longer than the physical batch
+    # instead of splitting it, so a limit read from an 8k context but served by a 512
+    # batch turned a legitimate 600-token input into a 502 rather than the 400 this
+    # limit exists to give.
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
+    )
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_server_context", lambda: 8192)
+    monkeypatch.setattr(backend, "_server_batch", lambda: 512)
+    monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
+    assert backend.max_tokens() == 510
+
+
+def test_the_embed_server_is_launched_with_a_batch_that_fits_the_context(tmp_path):
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    model = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 2048)]
+    )
+    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = False)
+    assert "-ub" in cmd and "-b" in cmd
+    assert cmd[cmd.index("-ub") + 1] == "2048"
+    assert cmd[cmd.index("-b") + 1] == "2048"
+
+
+def test_a_huge_context_does_not_allocate_a_huge_batch(tmp_path):
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    model = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 32768)]
+    )
+    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = False)
+    assert cmd[cmd.index("-ub") + 1] == str(embed_llama_server._MAX_EMBED_BATCH)
+
+
+def test_props_probe_never_raises_before_the_server_is_up():
+    from core.rag import embed_llama_server
+
+    # An un-started server has no port, so the URL itself is invalid.
+    assert embed_llama_server.LlamaServerBackend()._server_batch() is None
