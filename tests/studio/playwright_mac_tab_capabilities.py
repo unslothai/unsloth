@@ -611,9 +611,10 @@ def rotate_password(page) -> None:
     bootstrap password (this repo's macOS smoke does) always does. Handling it here
     means the script works under both instead of only the one it was written against.
 
-    The current-password box is rendered only when the page did NOT receive the
-    bootstrap password (auth-form.tsx:362), so fill it when present rather than
-    requiring it.
+    The served page never carries the bootstrap password any more, so the
+    current-password box always renders on this screen. The `count()` guard stays
+    because this script also runs against the staging harness, which rotates over the
+    API first and lands on the ordinary login form instead.
     """
     step("completing the forced password change")
     try:

@@ -2156,9 +2156,11 @@ def _terminal_password_gate(
     never changed, ask for a new one (masked, confirmed) before any public URL
     exists. The CLI normally does this before re-exec'ing the backend; this is
     the backstop for direct `python run.py` launches and older-CLI installs.
-    Must run BEFORE the uvicorn socket binds: on a wildcard bind the served HTML
-    injects the bootstrap credential, so a pre-gate listener would hand the
-    default password to anyone reaching the raw port while the operator types.
+    Must run BEFORE the uvicorn socket binds: a pre-gate listener would accept
+    logins on the seeded credential from anyone reaching the raw port while the
+    operator types. (It used to matter more: the served HTML embedded that
+    credential. It no longer does, but binding first would still publish a port
+    that the default password opens.)
 
     Returns (proceed, drop_bootstrap_injection):
       proceed False -> abort the launch (interactive refusal, or a headless
@@ -2223,14 +2225,16 @@ def _terminal_password_gate(
                 flush = True,
             )
             return False, False
-        # The public page won't auto-fill the bootstrap credential (suppressed
-        # below) and the seeded file may already be gone, so point recovery at a
-        # terminal-attached run / reset-password instead of reading it from disk.
+        # The seeded file may already be gone, so point recovery at a
+        # terminal-attached run / reset-password rather than at reading it from
+        # disk. No page ever carries the credential now, so the warning no longer
+        # claims that "this launch" withholds it -- saying so implied the normal
+        # case was to hand it over, which has not been true since the injection
+        # was removed.
         print(
             "  WARNING: the default admin password is still active while "
             "Unsloth is about to be published on a public Cloudflare URL, and "
-            "no terminal is attached to change it here. The public page will "
-            "NOT auto-fill the bootstrap credential. Set a new password by "
+            "no terminal is attached to change it here. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
             "`unsloth studio reset-password`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "

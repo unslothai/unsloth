@@ -20,6 +20,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     evaluate_fetch,
+    fill_bootstrap_current_password,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
@@ -259,6 +260,8 @@ with sync_playwright() as p:
                 pass
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            # Asserts the seed never reached the browser, then supplies it by hand.
+            fill_bootstrap_current_password(page, OLD)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             # Click submit AND wait for the POST response together so a server-side reject surfaces now.

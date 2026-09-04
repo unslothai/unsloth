@@ -827,3 +827,40 @@ def click_forced(
     # Callers pass their own `timeout` through: several of these clicks wait longer
     # than the default because the tab they open is doing work behind the overlay.
     locator.click(force = True, **click_kwargs)
+
+
+def fill_bootstrap_current_password(
+    page: Any,
+    old_password: str,
+    *,
+    timeout_ms: int = 60_000,
+) -> None:
+    """Assert the first-boot form does not autofill the seed, then supply it by hand.
+
+    The served page used to embed the seeded admin password as
+    `window.__UNSLOTH_BOOTSTRAP__`, and the change-password form hid the Current
+    password input whenever that object was present. A reverse proxy on the same host
+    is indistinguishable from a genuine local browser, so the injection was removed and
+    the operator now reads the seed from `.bootstrap_password` instead.
+
+    Guarding the fill with `if current.count():` would pass under either behaviour,
+    which would leave the browser smoke unable to detect the injection coming back.
+    Assert the new contract instead: no bootstrap object, and a Current password input
+    that is present, visible, and empty before anything types into it.
+    """
+    injected = page.evaluate("() => window.__UNSLOTH_BOOTSTRAP__ ?? null")
+    if injected is not None:
+        raise AssertionError(
+            "the served page still exposes window.__UNSLOTH_BOOTSTRAP__ "
+            f"({sorted(injected) if isinstance(injected, dict) else type(injected).__name__}); "
+            "the seeded admin password must never reach the browser"
+        )
+    current = page.locator("#current-password")
+    current.wait_for(state = "visible", timeout = timeout_ms)
+    existing = current.input_value(timeout = timeout_ms)
+    if existing:
+        raise AssertionError(
+            "the Current password input arrived pre-filled; the first-boot form "
+            "must not carry the seed, whether from injection or a restored session"
+        )
+    current.fill(old_password, timeout = timeout_ms)

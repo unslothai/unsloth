@@ -22,6 +22,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     evaluate_fetch,
+    fill_bootstrap_current_password,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_console_error,
@@ -811,6 +812,8 @@ with sync_playwright() as p:
                 pass  # best-effort -- proceed even if network never idles
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            # Asserts the seed never reached the browser, then supplies it by hand.
+            fill_bootstrap_current_password(page, OLD)
             # Do NOT shoot() between wait_for and fill -- the screenshot's
             # font-load wait can let a background poll detach the form.
             pw_field.fill(NEW, timeout = 60_000)
