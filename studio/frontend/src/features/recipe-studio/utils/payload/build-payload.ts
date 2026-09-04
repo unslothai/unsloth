@@ -199,6 +199,10 @@ export function buildRecipePayload(
     if (config.kind === "markdown_note") {
       continue;
     }
+    if (config.kind === "train") {
+      // Train is a launcher, not a dataset column; it round-trips via ui.nodes.
+      continue;
+    }
     if (config.kind === "model_provider") {
       modelProviderNames.add(config.name);
       if (config.is_local) {
@@ -272,6 +276,20 @@ export function buildRecipePayload(
           markdown: config.markdown,
           note_color: config.note_color,
           note_opacity: config.note_opacity,
+        },
+      ];
+    }
+    if (config.kind === "train") {
+      const { id: _id, kind: _kind, name: _name, ...trainFields } = config;
+      return [
+        {
+          id: config.name,
+          x: node.position.x,
+          y: node.position.y,
+          ...(width !== null ? { width } : {}),
+          node_type: "train" as const,
+          name: config.name,
+          train: trainFields,
         },
       ];
     }
