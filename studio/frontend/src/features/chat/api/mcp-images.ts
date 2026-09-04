@@ -71,6 +71,9 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
 ): T[] {
   const out = messages.slice();
   let budget = MAX_TOTAL_MCP_IMAGES;
+  // Shared, so at most MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE candidates
+  // ever leave here however many results there are.
+  let spare = DECODE_FAILURE_ALLOWANCE;
   // Newest first: those are the ones the backend would have kept.
   for (let i = out.length - 1; i >= 0; i--) {
     const message = out[i];
@@ -99,11 +102,18 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     // alone: counting spares against it strands valid PNGs sitting behind corrupt
     // entries whenever a newer result has already taken part of the allowance.
     const room = Math.min(budget, MAX_MODEL_IMAGES);
-    const keep = room > 0 ? images.slice(0, room + DECODE_FAILURE_ALLOWANCE) : [];
+    // The allowance is spent across the CONVERSATION, not reset per result. Per
+    // result it dies with the budget: four undecodable entries in the newest result
+    // charge the full room, and the next result down then sees room 0 and loses its
+    // envelope entirely -- so four valid PNGs are dropped while the allowance that
+    // exists for exactly that case is still untouched.
+    const keep = images.slice(0, room + spare);
     // Charged for what this result can actually contribute, never for room it did
     // not use, and never for the spares -- those exist only so the backend has
     // candidates to decode and must not evict an older result on their own account.
-    budget -= Math.min(keep.length, room);
+    const charged = Math.min(keep.length, room);
+    budget -= charged;
+    spare -= keep.length - charged;
     if (keep.length === images.length) continue;
     out[i] = {
       ...message,

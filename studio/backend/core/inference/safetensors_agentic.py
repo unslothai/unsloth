@@ -541,6 +541,7 @@ def run_safetensors_tool_loop(
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
+    caller_image_indexes: "tuple[int, ...]" = (),
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -565,10 +566,12 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
-    # What the caller attached, seeded into the sink before the loop ran. The MCP cap
-    # is about what the loop itself re-sends, so these are held out of it: trimming
-    # from the front would drop the picture the question was asked about.
-    caller_images = len(images_sink) if images_sink is not None else 0
+    # Where the caller's own attachment sits in the seeded sink. The cap is about what
+    # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
+    # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
+    # let the prompt carry a second full allowance. The route reserves the attachment's
+    # slot by trimming replay to limit - 1 before interleaving it.
+    caller_images = tuple(caller_image_indexes)
     # The branch this request is on, before the loop appends anything. A GGUF-compacted
     # thread keeps its archive across a switch to safetensors, so search_conversation is
     # advertised here too and needs the same filtering: the stored rows are the whole
@@ -1513,7 +1516,7 @@ def run_safetensors_tool_loop(
                 append_placeholder_turn(
                     conversation, len(encoded), sum(len(r) for r in batch_mcp_images)
                 )
-                trim_image_turns(conversation, images_sink, protected = caller_images)
+                trim_image_turns(conversation, images_sink, keep = caller_images)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
