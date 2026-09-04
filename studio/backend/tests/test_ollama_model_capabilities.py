@@ -57,7 +57,12 @@ def _stub_http(monkeypatch, *, v1_payload, tags_payload):
     return seen
 
 
-def _list_models(monkeypatch, *, v1_payload, tags_payload = TAGS):
+def _list_models(
+    monkeypatch,
+    *,
+    v1_payload,
+    tags_payload = TAGS,
+):
     seen = _stub_http(monkeypatch, v1_payload = v1_payload, tags_payload = tags_payload)
     client = ExternalProviderClient(
         provider_type = "ollama",
@@ -146,9 +151,7 @@ def test_the_models_route_surfaces_capabilities(monkeypatch):
             return None
 
     monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
-    monkeypatch.setattr(
-        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: None
-    )
+    monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: None)
     payload = ProviderModelsRequest(
         provider_type = "ollama",
         base_url = "http://127.0.0.1:11434/v1",

@@ -6707,10 +6707,7 @@ class ExternalProviderClient:
             models.append(model)
         return models
 
-    async def _with_ollama_capabilities(
-        self,
-        models: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    async def _with_ollama_capabilities(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Layer /api/tags capabilities onto an OpenAI-compat /v1/models catalog.
 
         /v1/models answers first for a populated Ollama host but carries no
