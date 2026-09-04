@@ -411,6 +411,12 @@ class ChatInferenceSettings(BaseModel):
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
     seed: SamplingSeed = None
+    # Why (#9500): the UI's default inference params always carry `checkpoint`
+    # (the selected model id) and preset saves spread those defaults in, so a
+    # body without this key 400s the whole PUT and no preset change persists —
+    # same family as fastMode (#5862/#6109). The value names a model; it is not
+    # an inference knob, so persist it without validating it as one.
+    checkpoint: Optional[str] = None
 
 
 class ChatPresetLoadConfig(BaseModel):
