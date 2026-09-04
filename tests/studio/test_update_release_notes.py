@@ -39,6 +39,9 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+_IMPORTANT = re.compile(r"^!|!$")
+
+
 def _split_variants(token: str) -> tuple[tuple[str, ...], str]:
     """A Tailwind class token as (variants, utility), split on top-level colons.
 
@@ -59,7 +62,11 @@ def _split_variants(token: str) -> tuple[tuple[str, ...], str]:
         else:
             current.append(char)
     parts.append("".join(current))
-    return tuple(parts[:-1]), parts[-1]
+    # `!min-h-0` and `min-h-0!` are `min-h-0`, at a weight that beats the floor.
+    # Left as written, an important rule would slip past a prohibition on the
+    # plain one while overriding it. The frontend already writes them, in
+    # `app/routes/__root.tsx` among others.
+    return tuple(parts[:-1]), _IMPORTANT.sub("", parts[-1])
 
 
 def _tokens(source: str) -> list[tuple[tuple[str, ...], str]]:
@@ -80,7 +87,7 @@ def _applies(source: str, utility: str, *variants: str) -> bool:
 
     Name no variants and this asks whether the utility is there under any gate
     or none, which is what a check for a rule's *absence* wants. A check that a
-    rule is in force needs `_unconditional`.
+    rule is in force needs `_only_under`.
     """
     for token_variants, token_utility in _tokens(source):
         if token_utility == utility and set(variants) <= set(token_variants):
@@ -88,18 +95,30 @@ def _applies(source: str, utility: str, *variants: str) -> bool:
     return False
 
 
-def _unconditional(source: str, utility: str) -> bool:
-    """Is `utility` written with no variant at all?
+def _only_under(source: str, utility: str, *variants: str) -> bool:
+    """Is `utility` written at least once, and every time under exactly these?
 
-    Not `_applies` with an empty variant list: that is a subset test, and the
-    empty set is a subset of every token's variants, so `max-[383px]:shrink-0`
-    would have answered a question about an ungated `shrink-0` and the card
-    would have been squeezable at every width but one.
+    What a positive layout guarantee needs, and neither half of it is a subset
+    test. An extra gate narrows when the rule is in force, so a floor written
+    `md:has-[...]:min-h-[...]` leaves every width from 384px to the `md`
+    breakpoint with none, the narrow override having stopped at 383px. A
+    second, ungated copy widens it the other way, back to the reserved empty
+    height the gate was added to stop. Both leave the utility present, so both
+    pass an existence check.
+
+    Named with no variants, this is "written, and never gated": an ungated
+    `shrink-0` is the whole guarantee when there are no notes, and
+    `max-[383px]:shrink-0` would satisfy an existence check while leaving the
+    card squeezable at every width but one.
     """
-    return any(
-        token_utility == utility and not token_variants
-        for token_variants, token_utility in _tokens(source)
-    )
+    found = False
+    for token_variants, token_utility in _tokens(source):
+        if token_utility != utility:
+            continue
+        if set(token_variants) != set(variants):
+            return False
+        found = True
+    return found
 
 
 def _class_const(source: str, name: str) -> str:
@@ -123,19 +142,20 @@ def _skip_literal(source: str, at: int) -> int:
     raise AssertionError(f"unterminated {quote} literal")
 
 
-def _opening_tag(source: str, at: int) -> tuple[int, int]:
-    """The bounds of the JSX opening tag containing the attribute at `at`.
+def _tag_end(source: str, start: int, at: int) -> int | None:
+    """The end of the tag opening at `start`, if `at` is one of its attributes.
 
-    Both ends, scanned with the brackets and string literals tracked, so the
-    `>` of an inline arrow (`onClick={() => ...}`) does not end the tag early.
-    Attributes are then searched over the whole tag rather than the part before
-    some other attribute, which is an order dependency of exactly the kind this
-    file is being fixed for.
+    `None` when it is not, which is how a `<` that opens no tag is rejected.
+    Brackets and string literals are tracked, so the `>` of an inline arrow
+    (`onClick={() => go()}`) does not end the tag early and a comparison inside
+    an attribute expression (`disabled={count < limit}`) runs out of depth.
     """
-    start = source.rindex("<", 0, at)
     depth = 0
-    index = start
+    index = start + 1
+    reached = False
     while index < len(source):
+        if index == at:
+            reached = depth == 0
         char = source[index]
         if char in "\"'`":
             index = _skip_literal(source, index)
@@ -144,10 +164,36 @@ def _opening_tag(source: str, at: int) -> tuple[int, int]:
             depth += 1
         elif char in ")]}":
             depth -= 1
-        elif char == ">" and depth == 0 and index > start:
-            return start, index
+            if depth < 0:
+                return None
+        elif char == ">" and depth == 0:
+            return index if reached else None
         index += 1
-    raise AssertionError("unterminated JSX opening tag")
+    return None
+
+
+def _opening_tag(source: str, at: int) -> tuple[int, int]:
+    """The bounds of the JSX opening tag whose attributes include index `at`.
+
+    Not simply the nearest `<` before it: an attribute expression may hold one
+    of its own, as `disabled={count < limit}` does, and starting the scan there
+    runs into an unmatched brace. Candidates are tried from the nearest
+    outwards and one is accepted only if the tag it opens actually reaches `at`
+    with the tag still open and at depth zero.
+
+    Both ends are returned so that attributes can be searched over the whole
+    tag rather than the part before some other attribute, which is an order
+    dependency of exactly the kind this file is being fixed for.
+    """
+    start = at
+    while True:
+        try:
+            start = source.rindex("<", 0, start)
+        except ValueError:
+            raise AssertionError("no JSX opening tag encloses this attribute") from None
+        end = _tag_end(source, start, at)
+        if end is not None:
+            return start, end
 
 
 def _class_on_testid(source: str, testid: str) -> str:
@@ -1507,10 +1553,12 @@ def _card_slot(source: str) -> str:
     """
     match = _BANNER_ROOT.search(source)
     assert match, "the update card has lost its data-testid"
-    start, _ = _opening_tag(source, match.start())
+    start, end = _opening_tag(source, match.start())
     key = "className={cn("
-    at = source.index(key, start)
-    return _unpositioned_branch(_COMMENT.sub("", source[at : match.start()]))
+    tag = source[start:end]
+    assert key in tag, "the card's root no longer builds its classes with cn()"
+    at = start + tag.index(key)
+    return _unpositioned_branch(_COMMENT.sub("", source[at:end]))
 
 
 def _card_surface(source: str) -> str:
@@ -1528,17 +1576,18 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
     # Read off the rail-facing root, so a floor written on some inner box, or
     # on the standalone `positioned` banner, does not answer for this one.
     root = _card_slot(source)
-    assert _applies(
+    # `_only_under` and not an existence check, in all four: a floor that gains
+    # a gate stops applying over part of its range, and one that gains an
+    # ungated twin reserves the empty height the gate was added to stop.
+    assert _only_under(
         root, scaled, _NOTES_GATE
-    ), f"the {card} card's floor is fixed or ungated, so it is wrong at other type sizes"
-    assert _applies(
+    ), f"the {card} card's floor is fixed, ungated, or gated more than its notes"
+    assert _only_under(
         root, narrow, _NOTES_GATE, _NARROW
     ), f"the {card} card's floor misses the narrow card's extra button row"
     # With no notes rendered there is no floor, so this is what holds the row.
-    assert _unconditional(
-        root, "shrink-0"
-    ), f"the rail can squeeze the {card} card with no notes open"
-    assert _applies(
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _only_under(
         root, "shrink", _NOTES_GATE
     ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
     assert not _applies(
@@ -1583,8 +1632,20 @@ def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
     assert _applies("min-h-0", "h-0") is False
     # And a gate cannot answer for a rule that has to hold everywhere.
     assert _applies("md:shrink-0", "shrink-0"), "the absence check must see a gated rule"
-    assert _unconditional("md:shrink-0", "shrink-0") is False
-    assert _unconditional("flex shrink-0 flex-col", "shrink-0")
+    assert _only_under("md:shrink-0", "shrink-0") is False
+    assert _only_under("flex shrink-0 flex-col", "shrink-0")
+    # A positive guarantee takes the gates it names and no others, in either
+    # direction: one more narrows where the rule holds, and an ungated twin
+    # widens it back over the state the gate exists to exclude.
+    assert _only_under("has-[x]:min-h-4", "min-h-4", "has-[x]")
+    assert _only_under("md:has-[x]:min-h-4", "min-h-4", "has-[x]") is False
+    assert _only_under("has-[x]:min-h-4 min-h-4", "min-h-4", "has-[x]") is False
+    assert _only_under("flex", "min-h-4", "has-[x]") is False, "absent is not satisfied"
+    # An important rule is the same rule, at a weight that beats the floor, so
+    # it cannot slip past a prohibition on the plain one.
+    for important in ("!min-h-0", "min-h-0!"):
+        assert _split_variants(important)[1] == "min-h-0"
+        assert _applies(important, "min-h-0"), f"{important} escapes the prohibition"
 
 
 def test_the_class_anchors_do_not_depend_on_any_order():
@@ -1592,9 +1653,12 @@ def test_the_class_anchors_do_not_depend_on_any_order():
     same brittleness one level up, so both are read structurally."""
     # An arrow function's `>` does not end the opening tag, and the attribute
     # is found on either side of the one that names the element.
+    # A comparison inside an attribute expression is not the element's start.
     for tag in (
         '<ul className="a b" data-testid="x" onClick={() => go()}>',
         '<ul onClick={() => go()} data-testid="x" className="a b">',
+        '<ul disabled={count < limit} className="a b" data-testid="x">',
+        '<ul disabled={count < limit} data-testid="x" className="a b">',
     ):
         assert _class_on_testid(tag, "x") == "a b", tag
     # The two arms of the ternary are two different elements. A variant in the
