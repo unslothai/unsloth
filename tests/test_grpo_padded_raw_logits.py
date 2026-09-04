@@ -285,9 +285,7 @@ def _build_namespace(
         (
             data.input_ids[i : i + 1],
             data.attention_mask[i : i + 1],
-            torch.zeros(1, 3)
-            if is_vlm
-            else None,  # pixel_values_chunk (the stub ignores it)
+            torch.zeros(1, 3) if is_vlm else None,  # pixel_values_chunk (the stub ignores it)
             None,  # image_grid_thw_chunk
             None,  # pixel_attention_mask_chunk
             None,  # image_sizes_chunk
