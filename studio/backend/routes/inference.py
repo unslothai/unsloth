@@ -25797,6 +25797,13 @@ def _embeddings_texts(body: dict) -> list[str]:
 
 
 def _public_embedding_name(model_name: str) -> str:
+    """A name for a local checkpoint that leaks no path but still identifies it.
+
+    The basename alone is not enough: /checkpoints/run-a/model and
+    /checkpoints/run-b/model are different embedding spaces, and reporting both as
+    "model" lets a client file vectors from either under one identity -- the exact
+    confusion this route reports the identity to prevent.
+    """
     from utils.paths import is_local_path
 
     if not is_local_path(model_name):
@@ -25860,6 +25867,27 @@ async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
     if not _resident_serves_embeddings(llama_backend):
         return False
     return await asyncio.to_thread(_loaded_satisfies, requested)
+
+
+def _reference_is_decisive(requested: str) -> bool:
+    """Whether *requested* is evidence the caller meant a model held HERE.
+
+    The same positive-evidence rule `_reject_unservable_model` applies: an explicit
+    GGUF quant label, which no foreign id carries, or a repo actually on disk. A bare
+    vendor id like `text-embedding-3-small` is neither, and must keep falling through
+    rather than 404 -- that is what kept LiteLLM and OpenRouter style names working.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    _base, variant = split_model_ref(requested)
+    if looks_like_quant(variant):
+        return True
+    try:
+        from core.inference.local_model_resolver import resolve_local_gguf
+
+        return resolve_local_gguf(requested, allow_scan = False) is not None
+    except Exception:  # noqa: BLE001 - a cold or broken index is not evidence
+        return False
 
 
 async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
@@ -26050,14 +26078,27 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     ):
         return await _studio_embeddings(request, studio_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
-    if not llama_backend.is_loaded and not isinstance(body, dict):
-        _status, _detail = await _no_model_loaded_error(
-            "No GGUF model loaded. Load a GGUF model first.",
-            _raw_body_model(body),
-            request,
-            status = 503,
-        )
-        raise HTTPException(status_code = _status, detail = _detail)
+    if not llama_backend.is_loaded:
+        # With the slot empty, `_reject_unservable_model` returns without deciding
+        # (nothing is serving, so it defers to `_no_model_loaded_error`). The fallback
+        # below would then answer ANY name, including a decisive `repo:QUANT` this
+        # server does not hold, from the Settings embedder -- a different embedding
+        # space under the name the caller asked for, which is what #7454 forbids. Only
+        # a body that names nothing, or names the Settings embedder itself, may fall
+        # through here; anything else still gets the honest 503/404.
+        _named = _raw_body_model(body)
+        if _named and not await asyncio.to_thread(_names_studio_embedder, _named):
+            _decisive = await asyncio.to_thread(_reference_is_decisive, _named)
+        else:
+            _decisive = False
+        if _decisive or not isinstance(body, dict):
+            _status, _detail = await _no_model_loaded_error(
+                "No GGUF model loaded. Load a GGUF model first.",
+                _named,
+                request,
+                status = 503,
+            )
+            raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.

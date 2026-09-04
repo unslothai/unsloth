@@ -814,3 +814,39 @@ def test_batch_cap_applies_only_to_the_studio_fallback():
     with pytest.raises(HTTPException) as exc:
         inference_route._embeddings_texts(body)
     assert exc.value.status_code == 400
+
+
+def test_a_decisively_named_model_is_refused_when_nothing_is_loaded(studio_embedder):
+    # #7454's rule: a reference this server can tell was meant for it must 404 rather
+    # than be answered by different weights. With the slot empty _reject_unservable_model
+    # defers to _no_model_loaded_error, so the fallback has to make that call itself --
+    # otherwise an explicit `repo:QUANT` came back 200 from the Settings embedder, in a
+    # different embedding space, under the name the caller asked for.
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(inference_route, "_reference_is_decisive", lambda name: True)
+    error = _http_error({"input": "alpha", "model": "unsloth/embeddinggemma-300m-GGUF:Q8_0"})
+    assert error.status_code in (404, 503)
+
+
+def test_a_foreign_model_name_still_reaches_the_studio_embedder(studio_embedder):
+    # The other half of the same rule: a vendor id carries no evidence it was meant for
+    # this server, so it must keep falling through instead of 404ing.
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    assert _call({"input": "alpha", "model": "text-embedding-3-small"})["model"] == IDENTITY
+
+
+def test_reference_is_decisive_only_on_positive_evidence(monkeypatch):
+    from core.inference import local_model_resolver as _resolver
+
+    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
+    # An explicit quant label is evidence no foreign id carries.
+    assert inference_route._reference_is_decisive("unsloth/gemma-3-270m-it-GGUF:Q8_0") is True
+    # A vendor id is not, so LiteLLM/OpenRouter style names keep working.
+    assert inference_route._reference_is_decisive("text-embedding-3-small") is False
+    assert inference_route._reference_is_decisive("openai/text-embedding-3-large") is False
