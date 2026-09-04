@@ -3,7 +3,7 @@
 # No GPU runner needed: cu128 wheels are fat binaries, the build-time check uses
 # torch._C._cuda_getArchFlags(), and UNSLOTH_COMPILE_DISABLE=1 blocks GPU-keyed JIT.
 #
-# Required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+# Required secret: DOCKER_API_KEY, the Docker Hub token for REGISTRY_USERNAME.
 # Optional variable HAS_GPU_RUNNER='true' gates the smoke-test job.
 
 name: Publish Blackwell Docker image
@@ -13,7 +13,11 @@ on:
     branches: [main]
     tags: ['v*']
   schedule:
-    - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC (off-the-hour on purpose)
+    # Daily. Actions cron is UTC with no DST handling, so this is 11:17 in San
+    # Francisco under PDT and drifts to 10:17 under PST; no expression holds
+    # 11:00 local all year. Minute is off-the-hour on purpose: runs scheduled on
+    # the hour queue behind the platform-wide peak and can be dropped.
+    - cron: '17 18 * * *'
   workflow_dispatch:
     inputs:
       unsloth_ref:
@@ -38,6 +42,9 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: unsloth/unsloth
+  # The account DOCKER_API_KEY belongs to. Not a secret, and named once so the
+  # four login steps cannot drift apart.
+  REGISTRY_USERNAME: danielhanc
 
 # Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
 # shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
@@ -209,8 +216,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
@@ -275,8 +282,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
@@ -355,8 +362,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
@@ -417,8 +424,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
