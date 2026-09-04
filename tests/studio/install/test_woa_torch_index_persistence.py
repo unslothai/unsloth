@@ -815,18 +815,26 @@ class TestTheCudaWheelProbeIsNotFooled:
     """
 
     @staticmethod
-    def _probe(body: str, project: str = "torch", minor: str = "3.13") -> str:
-        script = "\n".join([
-            "function Join-UrlPath { param([string]$Base,[string]$Path)",
-            "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
-            f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
-            _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
-            f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '{minor}' -Project '{project}'",
-            "Write-Output \"[$v]\"",
-        ])
+    def _probe(
+        body: str,
+        project: str = "torch",
+        minor: str = "3.13",
+    ) -> str:
+        script = "\n".join(
+            [
+                "function Join-UrlPath { param([string]$Base,[string]$Path)",
+                "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
+                f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
+                f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '{minor}' -Project '{project}'",
+                'Write-Output "[$v]"',
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1][1:-1]
@@ -909,13 +917,17 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
 
     @staticmethod
     def _match(torch_v: str, audio_v: str) -> bool:
-        script = "\n".join([
-            _ps_function(INSTALL_PS1, "Test-WoaAudioMatchesTorch"),
-            f"Write-Output (Test-WoaAudioMatchesTorch -TorchVersion '{torch_v}' -AudioVersion '{audio_v}')",
-        ])
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaAudioMatchesTorch"),
+                f"Write-Output (Test-WoaAudioMatchesTorch -TorchVersion '{torch_v}' -AudioVersion '{audio_v}')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1] == "True"
@@ -942,7 +954,7 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         # rindex, not index: the first occurrence is the reset at the top of the probe,
         # which must stay a plain $false so a re-probe cannot inherit an earlier answer.
-        block = text[text.rindex("$script:WoaTorchAudio = "):][:400]
+        block = text[text.rindex("$script:WoaTorchAudio = ") :][:400]
         assert "Test-WoaAudioMatchesTorch" in block, (
             "torchaudio was enabled on existence alone, which is how the mismatched "
             "GA pair became installable"
@@ -970,15 +982,20 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$WinArm64IndexArgs = if (")
         end = text.index("} else { @() }", start) + len("} else { @() }")
-        script = "\n".join([
-            "$WinArm64Venv = $true", "$UseUv = $true",
-            f"$WinArm64TorchIndexUrl = '{index}'",
-            text[start:end],
-            "Write-Output ($WinArm64IndexArgs -join ' ')",
-        ])
+        script = "\n".join(
+            [
+                "$WinArm64Venv = $true",
+                "$UseUv = $true",
+                f"$WinArm64TorchIndexUrl = '{index}'",
+                text[start:end],
+                "Write-Output ($WinArm64IndexArgs -join ' ')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         out = done.stdout.strip().splitlines()[-1]
@@ -990,15 +1007,20 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$WinArm64IndexArgs = if (")
         end = text.index("} else { @() }", start) + len("} else { @() }")
-        script = "\n".join([
-            "$WinArm64Venv = $false", "$UseUv = $true",
-            "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot_nightly'",
-            text[start:end],
-            "Write-Output \"[$($WinArm64IndexArgs -join ' ')]\"",
-        ])
+        script = "\n".join(
+            [
+                "$WinArm64Venv = $false",
+                "$UseUv = $true",
+                "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot_nightly'",
+                text[start:end],
+                "Write-Output \"[$($WinArm64IndexArgs -join ' ')]\"",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "[]"
