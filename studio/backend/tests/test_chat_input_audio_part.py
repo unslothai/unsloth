@@ -9,12 +9,20 @@ model ran -- though llama-server takes the part and `_inject_audio_part` builds 
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+from unittest import mock
+
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 from models.inference import ChatCompletionRequest, InputAudioContentPart, UnknownContentPart
-from routes.inference import _normalise_chat_content_parts, _reject_unsupported_content_parts
+import routes.inference as inference_route
+from routes.inference import (
+    _normalise_chat_content_parts,
+    _reject_unsupported_content_parts,
+)
 
 
 AUDIO_B64 = "UklGRiQAAABXQVZF"
@@ -74,12 +82,18 @@ def test_two_recordings_are_refused_rather_than_reduced_to_one():
     assert "one audio recording" in str(exc.value.detail)
 
 
-def test_an_assistant_audio_part_is_not_treated_as_an_attachment():
+def test_an_audio_part_on_a_non_user_role_is_refused():
+    """Only a user turn carries a recording into the model, and the lift strips every role.
+
+    Dropping it in silence let a later question about an assistant-history clip be answered from
+    text alone, where this shape used to fail validation outright.
+    """
     payload = _request(_audio_message(role = "assistant"))
 
-    _normalise_chat_content_parts(payload)
-
-    assert payload.audio_base64 is None
+    with pytest.raises(HTTPException) as exc:
+        _normalise_chat_content_parts(payload)
+    assert exc.value.status_code == 400
+    assert "'assistant'" in str(exc.value.detail)
 
 
 def test_an_unmodelled_part_type_names_itself_in_a_typed_400():
@@ -394,3 +408,48 @@ def test_a_plain_durable_run_is_still_queued():
 
     assert sanitized["stream"] is True
     assert sanitized["thread_id"] == "thread-1"
+
+
+def test_the_tts_route_refuses_a_recording_that_was_already_lifted():
+    """/chat/completions routes a loaded TTS model into generate_audio after normalisation.
+
+    By then the part is gone and only ``audio_base64`` is set, so a parts-only guard would let
+    the route speak the text and drop the recording.
+    """
+    payload = _request(_audio_message(text = "read this out"))
+    _normalise_chat_content_parts(payload)
+    assert payload.audio_base64 == AUDIO_B64
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.generate_audio(payload, None))
+    assert exc.value.status_code == 400
+    assert "not supported here" in str(exc.value.detail)
+
+
+def test_the_preview_route_refuses_before_it_loads_a_checkpoint():
+    """_serve_chat holds the preview lock and loads the checkpoint before delegating.
+
+    The delegate refuses the part, but by then an invalid request has evicted the resident model.
+    """
+    import routes.preview as preview_route
+
+    payload = _request(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "file", "file": {"file_id": "file_abc"}},
+            ],
+        }
+    )
+    loads: list[int] = []
+    with mock.patch.object(preview_route, "_resolve_or_4xx", lambda run, cp: Path("/tmp")):
+        with mock.patch.object(
+            preview_route, "load_model_for_preview", lambda *a, **k: loads.append(1)
+        ):
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(preview_route._serve_chat("run-1", None, payload, None))
+
+    assert exc.value.status_code == 400
+    assert "'file'" in str(exc.value.detail)
+    assert loads == []

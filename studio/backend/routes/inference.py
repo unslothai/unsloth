@@ -16778,7 +16778,9 @@ async def generate_audio(
     # _extract_content_parts keeps only text, so a part this cannot voice would be spoken past
     # in silence. Refuse it the way the completion does rather than voicing the text alone.
     _reject_unsupported_content_parts(payload)
-    if _messages_have_input_audio(payload.messages):
+    # Also the field: /chat/completions routes a TTS model here after the lift has already
+    # replaced the part with audio_base64, so a parts-only guard would not see the attachment.
+    if _messages_have_input_audio(payload.messages) or getattr(payload, "audio_base64", None):
         _raise_unsupported_openai_parameter(
             "messages",
             "Audio input is not supported here; this route speaks the message text.",
@@ -18655,9 +18657,19 @@ def _normalise_chat_content_parts(payload) -> None:
     with their turns is a larger change than this, so two of them are refused rather than silently
     reduced to one. An explicit ``audio_base64`` still wins over a part.
     """
+    # Only a user turn can carry a recording into the model, and the strip below clears the part
+    # from every role. Say so rather than deleting an assistant-history clip in silence.
+    for msg in payload.messages:
+        if msg.role == "user" or not isinstance(msg.content, list):
+            continue
+        if any(isinstance(part, InputAudioContentPart) for part in msg.content):
+            _raise_unsupported_openai_parameter(
+                "messages",
+                f"Audio input is supported on a user message, not on a '{msg.role}' one.",
+            )
     parts = [
-        (index, part)
-        for index, msg in enumerate(payload.messages)
+        part
+        for msg in payload.messages
         if isinstance(msg.content, list) and msg.role == "user"
         for part in msg.content
         if isinstance(part, InputAudioContentPart)
@@ -18668,7 +18680,7 @@ def _normalise_chat_content_parts(payload) -> None:
             "Only one audio recording per request is supported, and this one carries "
             f"{len(parts)}.",
         )
-    lifted = parts[0][1].input_audio.data if parts else None
+    lifted = parts[0].input_audio.data if parts else None
     for msg in payload.messages:
         if not isinstance(msg.content, list):
             continue
