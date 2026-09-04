@@ -3271,6 +3271,17 @@ else
 
             substep "$_BUILD_DESC..."
 
+            # A CPU-only build on a host with a working GPU driver is a
+            # capability regression, not a success: GGUF inference silently
+            # loses the GPU (llama-server reports "Available devices: (none)"
+            # on working hardware). Surfaced at the footer instead of only in
+            # this mid-log parenthetical (#9255).
+            case "$_BUILD_DESC" in
+                *"CUDA driver found but nvcc missing"*|*"ROCm driver found but hipcc missing"*)
+                    _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+                    ;;
+            esac
+
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
             CMAKE_GENERATOR_ARGS=""
@@ -3576,6 +3587,10 @@ else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback had no CUDA toolkit (nvcc) to build with. GGUF inference will run on the CPU."
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "to restore the GPU: install the CUDA toolkit (or fix the prebuilt download failure above), then re-run this installer."
+    fi
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else
