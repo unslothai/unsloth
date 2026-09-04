@@ -47,8 +47,9 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers: these set the env vars torch reads when it sizes its OpenMP/BLAS pools. Imports stdlib only.
-_PRE_STUB = frozenset({"utils.cpu_threads"})
+# Must run BEFORE the installers: these set env vars torch reads, the OpenMP/BLAS pool sizes and the ROCm AOTriton
+# gate. Both import stdlib only.
+_PRE_STUB = frozenset({"utils.cpu_threads", "utils.rocm_attention"})
 
 
 def _import_roots(node) -> set[str]:
