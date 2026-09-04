@@ -7213,10 +7213,11 @@ def _limited_preexec() -> None:
     nproc, memory, cpu_time, nofile = _limited_resource_limits()
     apply_limit("RLIMIT_NPROC", nproc)
     apply_limit("RLIMIT_FSIZE", 100 * 1024 * 1024)
-    # Darwin exposes RLIMIT_AS and RLIMIT_DATA through Python, but current
-    # macOS rejects both here. Use its physical-memory limit; Linux keeps
-    # RLIMIT_AS so mmap-backed allocations remain bounded.
-    apply_limit("RLIMIT_RSS" if sys.platform == "darwin" else "RLIMIT_AS", memory)
+    # Darwin exposes AS, DATA, and RSS constants through Python, but rejects
+    # setting each one in this launch context. Its other four limits are still
+    # mandatory; Linux additionally enforces this address-space bound.
+    if sys.platform != "darwin":
+        apply_limit("RLIMIT_AS", memory)
     apply_limit("RLIMIT_CPU", cpu_time)
     apply_limit("RLIMIT_NOFILE", nofile)
 
