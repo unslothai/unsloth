@@ -25823,9 +25823,23 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
             prompt = _flatten_monitor_prompt(body.get("input", "")),
             subject = current_subject,
         )
+    # Hold the permit for the worker's real lifetime, not the awaiting task's. Cancelling
+    # (client disconnect, timeout, shutdown) does NOT stop the thread behind to_thread, so
+    # releasing on cancellation would admit the next request while this one is still
+    # embedding and the limit above would stop meaning anything. Same reason as
+    # _drain_pending_worker on the blocking-generation path.
+    semaphore = _studio_embed_semaphore()
+    await semaphore.acquire()
+    worker = asyncio.ensure_future(asyncio.to_thread(_embed))
+
+    def _release_embed_permit(finished) -> None:
+        if not finished.cancelled():
+            finished.exception()  # retrieved so a cancelled request logs no "never retrieved"
+        semaphore.release()
+
+    worker.add_done_callback(_release_embed_permit)
     try:
-        async with _studio_embed_semaphore():
-            vectors, prompt_tokens, limit = await asyncio.to_thread(_embed)
+        vectors, prompt_tokens, limit = await asyncio.shield(worker)
     except HTTPException as exc:
         api_monitor.fail(monitor_id, str(exc.detail))
         raise

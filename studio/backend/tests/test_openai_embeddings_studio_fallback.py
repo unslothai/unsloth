@@ -296,3 +296,56 @@ def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
     request.state.skip_api_monitor = False
     asyncio.run(inference_route.openai_embeddings(request, "tester"))
     assert seen == [8]
+
+
+def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
+    # to_thread cannot cancel the worker thread. If the permit were released when the awaiting
+    # task is cancelled, a client that disconnects (or a shutdown) would let the next batch in
+    # while the old threads are still embedding, so the concurrency cap would stop holding.
+    lock = threading.Lock()
+    gate = threading.Event()
+    active = {"now": 0, "peak": 0}
+
+    def encode(texts, **_kwargs):
+        with lock:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        gate.wait(timeout = 5)
+        with lock:
+            active["now"] -= 1
+        return _vectors(texts)
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", encode)
+    cap = inference_route._STUDIO_EMBED_CONCURRENCY
+
+    async def run():
+        first = [
+            asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "x"}), "t"))
+            for _ in range(cap)
+        ]
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if active["now"] == cap:
+                break
+        assert active["now"] == cap
+
+        # Every in-flight request goes away, but its thread is still inside encode().
+        for task in first:
+            task.cancel()
+        await asyncio.gather(*first, return_exceptions = True)
+
+        second = [
+            asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "y"}), "t"))
+            for _ in range(cap)
+        ]
+        await asyncio.sleep(0.3)
+        # The permits are still held by the running threads, so nothing new started.
+        assert active["peak"] == cap, f"admission cap exceeded: peak={active['peak']}"
+        gate.set()
+        await asyncio.gather(*second, return_exceptions = True)
+
+    asyncio.run(run())
+    assert active["peak"] == cap
