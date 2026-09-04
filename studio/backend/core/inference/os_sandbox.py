@@ -20,7 +20,7 @@ import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass, field, replace
-from typing import BinaryIO, Callable, Literal, Protocol
+from typing import Any, BinaryIO, Callable, Literal, Protocol
 
 from loggers import get_logger
 
@@ -68,10 +68,12 @@ class SandboxCapability:
     backend: str
     qualified: bool
     reason: str
+    available: bool | None = None
     transient: bool = False
     environment: str = "unknown"
     protection_state: str = "unavailable"
     profile_id: str = "none"
+    limitations: tuple[str, ...] = ()
     probe_generation: str = ""
     environment_fingerprint: str = ""
     remediation: str = "Use Limited mode only for a trusted task, or install a qualified backend."
@@ -91,6 +93,7 @@ class ToolExecutionRecord:
     probe_generation: str
     os_isolation: bool
     retained_safeguards: tuple[str, ...]
+    limitations: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -102,6 +105,7 @@ class ToolExecutionRecord:
             "probe_generation": self.probe_generation,
             "os_isolation": self.os_isolation,
             "retained_safeguards": list(self.retained_safeguards),
+            "limitations": list(self.limitations),
         }
 
 
@@ -144,16 +148,43 @@ class PreparedSandboxLaunch:
     timeout_seconds: int | None = None
     close_fds: bool = True
     terminate_descendants: bool = True
+    spawn_callback: Callable[["PreparedSandboxLaunch", dict[str, Any]], object] | None = None
+    cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
+    cleanup_diagnostics: list[str] = field(default_factory = list)
 
     def cleanup(self) -> None:
+        while self.cleanup_callbacks:
+            callback = self.cleanup_callbacks.pop()
+            try:
+                callback()
+            except Exception as exc:  # noqa: BLE001 - cleanup continues in LIFO order
+                diagnostic = f"{type(exc).__name__}: {exc}"
+                self.cleanup_diagnostics.append(diagnostic)
+                logger.warning("Sandbox cleanup failed: %s", diagnostic, exc_info = True)
         while self.owned_files:
-            self.owned_files.pop().close()
+            try:
+                self.owned_files.pop().close()
+            except Exception as exc:  # noqa: BLE001 - cleanup must continue
+                diagnostic = f"{type(exc).__name__}: {exc}"
+                self.cleanup_diagnostics.append(diagnostic)
+                logger.warning("Could not close sandbox-owned file: %s", diagnostic, exc_info = True)
         while self.cleanup_paths:
             path = self.cleanup_paths.pop()
             try:
                 shutil.rmtree(path)
             except OSError:
+                self.cleanup_diagnostics.append(f"could not remove private sandbox path: {path}")
                 logger.warning("Could not remove private sandbox path %s", path, exc_info = True)
+
+
+def spawn_prepared_launch(
+    prepared: PreparedSandboxLaunch,
+    **popen_kwargs: Any,
+) -> object:
+    """Spawn exactly one prepared launch, using its backend-owned launcher when set."""
+    if prepared.spawn_callback is not None:
+        return prepared.spawn_callback(prepared, popen_kwargs)
+    return subprocess.Popen(prepared.argv, **popen_kwargs)
 
 
 class SandboxBackend(Protocol):
@@ -696,6 +727,12 @@ def _environment_fingerprint(backend: "SandboxBackend | None") -> str:
                 data["backend_stat"] = None
     elif backend is not None:
         data["backend"] = backend.identity
+        fingerprint_data = getattr(backend, "fingerprint_data", None)
+        if callable(fingerprint_data):
+            try:
+                data["backend_fingerprint"] = fingerprint_data()
+            except Exception as exc:  # noqa: BLE001 - inability to inspect must change identity
+                data["backend_fingerprint_error"] = f"{type(exc).__name__}: {exc}"
     encoded = json.dumps(data, sort_keys = True, separators = (",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -792,6 +829,7 @@ def _sanitize_linux_environment(env: dict[str, str], environment: str) -> dict[s
 
 class LinuxBubblewrapBackend:
     identity = "linux-bubblewrap"
+    profile_id = "linux-bubblewrap-v2"
 
     def __init__(self) -> None:
         self._bwrap: str | None = None
@@ -834,7 +872,14 @@ class LinuxBubblewrapBackend:
                 f"a read-only Linux system root is unsafe to expose: {exc}",
             )
         self._bwrap = candidate
-        return _live_probe(self)
+        result = _live_probe(self)
+        if result.qualified:
+            return replace(
+                result,
+                available = True,
+                profile_id = self.profile_id,
+            )
+        return replace(result, available = False)
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if self._bwrap is None:
@@ -964,17 +1009,478 @@ class LinuxBubblewrapBackend:
 
 class MacOSSeatbeltBackend:
     identity = "macos-seatbelt"
+    profile_id = "macos-seatbelt-preview-v1"
+    limitations = (
+        "deprecated_undocumented_sbpl",
+        "detached_descendant_cleanup_unverified",
+    )
+
+    def __init__(self) -> None:
+        self._sandbox_exec: str | None = None
 
     def probe(self) -> SandboxCapability:
-        return SandboxCapability(
-            self.identity,
-            False,
-            "macOS Seatbelt is not qualified because detached sandbox descendants cannot yet "
-            "be reliably terminated",
-        )
+        candidate = "/usr/bin/sandbox-exec"
+        try:
+            info = os.stat(candidate, follow_symlinks = False)
+        except OSError as exc:
+            return SandboxCapability(
+                self.identity,
+                False,
+                f"the system Seatbelt launcher is unavailable: {exc}",
+                available = False,
+                limitations = self.limitations,
+            )
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return SandboxCapability(
+                self.identity,
+                False,
+                "/usr/bin/sandbox-exec is not a root-owned, non-user-writable regular file",
+                available = False,
+                limitations = self.limitations,
+            )
+        self._sandbox_exec = candidate
+        result = _live_macos_probe(self)
+        if result.available:
+            return replace(
+                result,
+                qualified = False,
+                protection_state = "preview",
+                profile_id = self.profile_id,
+                limitations = self.limitations,
+                reason = (
+                    "Seatbelt filesystem and network enforcement passed its live probe; "
+                    "SBPL is deprecated and undocumented for third-party products, and "
+                    "cleanup of detached setsid/double-fork descendants remains unverified"
+                ),
+            )
+        return replace(result, limitations = self.limitations)
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
-        raise SandboxUnavailableError("macOS Seatbelt is not qualified for Studio tool execution")
+        if self._sandbox_exec is None:
+            raise SandboxUnavailableError("Seatbelt was not proven available in this process")
+        workdir = _validate_workdir(spec.workdir)
+        runtime_paths = _runtime_read_paths()
+        _validate_runtime_paths(runtime_paths, workdir)
+        private_tmp = tempfile.mkdtemp(prefix = "unsloth-seatbelt-")
+        try:
+            profile = _macos_seatbelt_profile(
+                workdir = workdir,
+                private_tmp = private_tmp,
+                runtime_paths = runtime_paths,
+            )
+            env = _sanitize_macos_environment(spec.env, workdir, private_tmp)
+            return PreparedSandboxLaunch(
+                argv = (self._sandbox_exec, "-p", profile, "--", *spec.argv),
+                workdir = workdir,
+                env = env,
+                preexec_fn = spec.preexec_fn,
+                backend = self.identity,
+                cleanup_paths = [private_tmp],
+                timeout_seconds = spec.timeout_seconds,
+                close_fds = spec.close_fds,
+                terminate_descendants = spec.terminate_descendants,
+            )
+        except Exception:
+            shutil.rmtree(private_tmp, ignore_errors = True)
+            raise
+
+
+_MACOS_READ_ROOTS = (
+    "/Library/Apple/System/Library/Frameworks",
+    "/Library/Apple/System/Library/PrivateFrameworks",
+    "/Library/Apple/usr/lib",
+    "/System/Library/Frameworks",
+    "/System/Library/PrivateFrameworks",
+    "/System/Library/SubFrameworks",
+    "/System/iOSSupport/System/Library/Frameworks",
+    "/System/iOSSupport/System/Library/PrivateFrameworks",
+    "/System/iOSSupport/System/Library/SubFrameworks",
+    "/usr/lib",
+    "/usr/share",
+    "/bin",
+    "/usr/bin",
+    "/private/var/db/timezone",
+    "/private/etc/localtime",
+    "/private/etc/master.passwd",
+    "/private/etc/passwd",
+    "/private/etc/protocols",
+    "/private/etc/services",
+    "/System/Library/CoreServices/.SystemVersionPlatform.plist",
+    "/System/Library/CoreServices/SystemVersion.plist",
+)
+_MACOS_DENIED_EXECUTABLES = (
+    "/usr/bin/open",
+    "/usr/bin/osascript",
+    "/usr/bin/security",
+    "/bin/launchctl",
+    "/usr/bin/sandbox-exec",
+)
+_MACOS_DEVICES = ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom")
+_MACOS_SYSCTL_NAMES = (
+    "hw.activecpu",
+    "hw.busfrequency_compat",
+    "hw.byteorder",
+    "hw.cacheconfig",
+    "hw.cachelinesize_compat",
+    "hw.cpufamily",
+    "hw.cpufrequency_compat",
+    "hw.cputype",
+    "hw.l1dcachesize_compat",
+    "hw.l1icachesize_compat",
+    "hw.l2cachesize_compat",
+    "hw.l3cachesize_compat",
+    "hw.logicalcpu",
+    "hw.logicalcpu_max",
+    "hw.machine",
+    "hw.memsize",
+    "hw.model",
+    "hw.ncpu",
+    "hw.nperflevels",
+    "hw.packages",
+    "hw.pagesize",
+    "hw.pagesize_compat",
+    "hw.physicalcpu",
+    "hw.physicalcpu_max",
+    "hw.tbfrequency_compat",
+    "hw.vectorunit",
+    "kern.argmax",
+    "kern.hostname",
+    "kern.maxfilesperproc",
+    "kern.maxproc",
+    "kern.osproductversion",
+    "kern.osrelease",
+    "kern.ostype",
+    "kern.osvariant_status",
+    "kern.osversion",
+    "kern.secure_kernel",
+    "kern.sysv.semmns",
+    "kern.usrstack64",
+    "kern.version",
+    "machdep.cpu.brand_string",
+    "sysctl.proc_cputype",
+    "vm.loadavg",
+)
+_MACOS_SYSCTL_PREFIXES = (
+    "hw.optional.arm.",
+    "hw.optional.armv8_",
+    "hw.perflevel",
+    "kern.proc.pgrp.",
+    "kern.proc.pid.",
+)
+
+
+def _sbpl_path(path: str) -> tuple[str, bool]:
+    """Return an encoded canonical SBPL path plus whether it is a directory."""
+    if not path or "\0" in path or "\n" in path or "\r" in path or not os.path.isabs(path):
+        raise SandboxUnavailableError("Seatbelt paths must be absolute and contain no NUL/newline")
+    canonical = os.path.realpath(path)
+    if not os.path.isabs(canonical) or "\0" in canonical or "\n" in canonical or "\r" in canonical:
+        raise SandboxUnavailableError("a Seatbelt path did not canonicalize safely")
+    if not os.path.exists(canonical):
+        raise SandboxUnavailableError(f"a required Seatbelt path does not exist: {canonical}")
+    return json.dumps(canonical), os.path.isdir(canonical)
+
+
+def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
+    filters: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        encoded, is_directory = _sbpl_path(path)
+        if encoded in seen:
+            continue
+        seen.add(encoded)
+        filters.append(f"(literal {encoded})")
+        if is_directory:
+            filters.append(f"(subpath {encoded})")
+    return filters
+
+
+def _macos_seatbelt_profile(
+    *,
+    workdir: str,
+    private_tmp: str,
+    runtime_paths: tuple[str, ...],
+) -> str:
+    read_filters = ["(literal \"/\")", *_sbpl_path_filters(
+        (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
+    )]
+    write_filters = _sbpl_path_filters((workdir, private_tmp))
+    temp_encoded, _ = _sbpl_path(private_tmp)
+    device_filters = _sbpl_path_filters(_MACOS_DEVICES)
+    denied_exec = _sbpl_path_filters(
+        tuple(path for path in _MACOS_DENIED_EXECUTABLES if os.path.exists(path))
+    )
+    sysctl_filters = [
+        *(f'(sysctl-name {json.dumps(name)})' for name in _MACOS_SYSCTL_NAMES),
+        *(f'(sysctl-name-prefix {json.dumps(name)})' for name in _MACOS_SYSCTL_PREFIXES),
+    ]
+    lines = [
+        "(version 1)",
+        "(deny default)",
+        # Codex scopes signals and process inspection to descendants in the
+        # same Seatbelt instance; Studio keeps the same narrow process surface.
+        "(allow process-fork)",
+        "(allow process-exec)",
+        "(allow signal (target same-sandbox))",
+        "(allow process-info* (target same-sandbox))",
+        "(deny process-exec " + " ".join(denied_exec) + ")",
+        "(allow file-read* file-test-existence " + " ".join(read_filters) + ")",
+        "(allow file-map-executable " + " ".join(read_filters) + ")",
+        "(allow file-write* " + " ".join(write_filters) + ")",
+        "(allow file-read* file-test-existence file-write-data "
+        + " ".join(device_filters[:4])
+        + ")",
+        '(allow file-read* (regex #"^/dev/fd/(0|1|2)$"))',
+        '(allow file-write* (regex #"^/dev/fd/(1|2)$"))',
+        "(allow file-ioctl " + " ".join(device_filters) + ")",
+        "(allow ipc-posix-sem)",
+        "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
+        "ipc-posix-shm-write-unlink "
+        '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))',
+        "(allow system-socket (socket-domain AF_UNIX))",
+        f"(allow network-bind (local unix-socket (subpath {temp_encoded})))",
+        f"(allow network-outbound (remote unix-socket (subpath {temp_encoded})))",
+        "(allow sysctl-read " + " ".join(sysctl_filters) + ")",
+        "(allow iokit-open (iokit-registry-entry-class \"RootDomainUserClient\"))",
+        "(allow mach-lookup",
+        '  (global-name "com.apple.system.opendirectoryd.libinfo")',
+        '  (global-name "com.apple.PowerManagement.control"))',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _sanitize_macos_environment(
+    env: dict[str, str],
+    workdir: str,
+    private_tmp: str,
+) -> dict[str, str]:
+    sanitized = {
+        key: value
+        for key, value in env.items()
+        if not key.startswith("DYLD_")
+        and key
+        not in {
+            "DISPLAY",
+            "SSH_AUTH_SOCK",
+            "XPC_SERVICE_NAME",
+            "WAYLAND_DISPLAY",
+            "PULSE_SERVER",
+        }
+    }
+    sanitized.update(
+        {
+            "HOME": workdir,
+            "TMPDIR": private_tmp,
+            "TMP": private_tmp,
+            "TEMP": private_tmp,
+            "XDG_RUNTIME_DIR": private_tmp,
+        }
+    )
+    return sanitized
+
+
+def _macos_probe_payload(
+    *,
+    workdir: str,
+    external_file: str,
+    host_socket: str,
+    ipv4_address: tuple[str, int],
+    ipv6_address: tuple[str, int, int, int],
+    inherited_fd: int,
+) -> str:
+    return f"""import os, socket
+wd = {workdir!r}
+assert open(os.path.join(wd, 'probe-read'), encoding='utf-8').read() == 'readable'
+open(os.path.join(wd, 'probe-write'), 'w', encoding='utf-8').write('ok')
+for path in ({external_file!r}, os.path.join(wd, 'escape')):
+    try:
+        open(path, encoding='utf-8').read()
+        raise AssertionError('read outside workdir: ' + path)
+    except OSError:
+        pass
+try:
+    open(os.path.join(os.path.dirname(wd), 'outside-write'), 'w').close()
+    raise AssertionError('wrote outside workdir')
+except OSError:
+    pass
+try:
+    os.fstat({inherited_fd})
+    raise AssertionError('inherited host descriptor remained open')
+except OSError:
+    pass
+for family, sock_type, address in (
+    (socket.AF_INET, socket.SOCK_STREAM, {ipv4_address!r}),
+    (socket.AF_INET6, socket.SOCK_STREAM, {ipv6_address!r}),
+    (socket.AF_INET, socket.SOCK_DGRAM, {ipv4_address!r}),
+):
+    try:
+        sock = socket.socket(family, sock_type)
+    except OSError:
+        continue
+    sock.settimeout(0.2)
+    try:
+        if sock_type == socket.SOCK_DGRAM:
+            sock.sendto(b'unsloth-seatbelt-probe', address)
+        else:
+            sock.connect(address)
+        raise AssertionError('IP network was reachable')
+    except OSError:
+        pass
+    finally:
+        sock.close()
+try:
+    socket.getaddrinfo('unsloth-probe.invalid', 443)
+    raise AssertionError('DNS was reachable')
+except socket.gaierror:
+    pass
+for path in ('/dev/tty', '/dev/disk0', '/var/run', '/private/var/run'):
+    try:
+        open(path, 'rb').close()
+        raise AssertionError('restricted host path was readable: ' + path)
+    except OSError:
+        pass
+try:
+    with open(os.path.realpath(os.__file__), 'ab') as stream:
+        stream.write(b'x')
+    raise AssertionError('modified the interpreter runtime')
+except OSError:
+    pass
+host = socket.socket(socket.AF_UNIX)
+try:
+    host.connect({host_socket!r})
+    raise AssertionError('host Unix socket was reachable')
+except OSError:
+    pass
+finally:
+    host.close()
+path = os.path.join(os.environ['TMPDIR'], 'private.sock')
+server = socket.socket(socket.AF_UNIX)
+client = socket.socket(socket.AF_UNIX)
+try:
+    server.bind(path)
+    server.listen(1)
+    client.connect(path)
+    accepted, _ = server.accept()
+    accepted.close()
+finally:
+    client.close()
+    server.close()
+print({_PROBE_TOKEN!r})
+"""
+
+
+def _live_macos_probe(backend: MacOSSeatbeltBackend) -> SandboxCapability:
+    host_socket: socket.socket | None = None
+    ipv4_socket: socket.socket | None = None
+    ipv6_socket: socket.socket | None = None
+    inherited_fd: int | None = None
+    prepared: PreparedSandboxLaunch | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix = "unsloth-seatbelt-probe-") as base:
+            workdir = os.path.join(base, "work")
+            os.mkdir(workdir)
+            with open(os.path.join(workdir, "probe-read"), "w", encoding = "utf-8") as stream:
+                stream.write("readable")
+            external = os.path.join(base, "host-secret")
+            with open(external, "w", encoding = "utf-8") as stream:
+                stream.write("secret")
+            os.symlink(external, os.path.join(workdir, "escape"))
+            host_socket_path = os.path.join(base, "host.sock")
+            host_socket = socket.socket(socket.AF_UNIX)
+            host_socket.bind(host_socket_path)
+            host_socket.listen(1)
+            ipv4_socket = socket.socket(socket.AF_INET)
+            ipv4_socket.bind(("127.0.0.1", 0))
+            ipv4_socket.listen(1)
+            ipv6_socket = socket.socket(socket.AF_INET6)
+            ipv6_socket.bind(("::1", 0))
+            ipv6_socket.listen(1)
+            read_fd, write_fd = os.pipe()
+            os.close(write_fd)
+            inherited_fd = os.dup(read_fd)
+            os.close(read_fd)
+            os.set_inheritable(inherited_fd, True)
+            prepared = backend.prepare(
+                ToolLaunchPlan(
+                    argv = (
+                        sys.executable,
+                        "-I",
+                        "-S",
+                        "-c",
+                        _macos_probe_payload(
+                            workdir = workdir,
+                            external_file = external,
+                            host_socket = host_socket_path,
+                            ipv4_address = ipv4_socket.getsockname(),
+                            ipv6_address = ipv6_socket.getsockname(),
+                            inherited_fd = inherited_fd,
+                        ),
+                    ),
+                    workdir = workdir,
+                    env = {"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"},
+                )
+            )
+            completed = subprocess.run(
+                prepared.argv,
+                cwd = prepared.workdir,
+                env = prepared.env,
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.PIPE,
+                text = True,
+                timeout = _PROBE_TIMEOUT_SECONDS,
+                close_fds = True,
+                preexec_fn = prepared.preexec_fn,
+            )
+            if completed.returncode != 0 or _PROBE_TOKEN not in completed.stdout:
+                detail = completed.stderr.strip()[-300:] or completed.stdout.strip()[-300:]
+                return SandboxCapability(
+                    backend.identity,
+                    False,
+                    f"the Seatbelt live probe failed ({completed.returncode}): {detail}",
+                    available = False,
+                )
+    except subprocess.TimeoutExpired:
+        return SandboxCapability(
+            backend.identity,
+            False,
+            "the Seatbelt live probe timed out",
+            available = False,
+            transient = True,
+        )
+    except Exception as exc:  # noqa: BLE001 - capability failure blocks execution
+        return SandboxCapability(
+            backend.identity,
+            False,
+            f"the Seatbelt live probe could not run: {exc}",
+            available = False,
+        )
+    finally:
+        if prepared is not None:
+            prepared.cleanup()
+        for stream in (host_socket, ipv4_socket, ipv6_socket):
+            if stream is not None:
+                stream.close()
+        if inherited_fd is not None:
+            try:
+                os.close(inherited_fd)
+            except OSError:
+                pass
+    return SandboxCapability(
+        backend.identity,
+        False,
+        "Seatbelt live enforcement probe passed",
+        available = True,
+        protection_state = "preview",
+        profile_id = backend.profile_id,
+        limitations = backend.limitations,
+    )
 
 
 def _probe_payload(
@@ -1274,15 +1780,23 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
 
 _LINUX_BACKEND = LinuxBubblewrapBackend()
 _MACOS_BACKEND = MacOSSeatbeltBackend()
+_WINDOWS_BACKEND: SandboxBackend | None = None
 _capability_cache: dict[str, SandboxCapability] = {}
 _probe_lock = threading.Lock()
 
 
 def _platform_backend() -> SandboxBackend | None:
+    global _WINDOWS_BACKEND
     if sys.platform == "linux":
         return _LINUX_BACKEND
     if sys.platform == "darwin":
         return _MACOS_BACKEND
+    if sys.platform == "win32":
+        if _WINDOWS_BACKEND is None:
+            from .windows_lpac import WindowsLpacBackend
+
+            _WINDOWS_BACKEND = WindowsLpacBackend()
+        return _WINDOWS_BACKEND
     return None
 
 
@@ -1292,28 +1806,32 @@ def _capability_with_identity(
     environment: str,
     fingerprint: str,
 ) -> SandboxCapability:
-    protection_state = "unavailable"
-    if capability.qualified:
+    available = capability.qualified if capability.available is None else capability.available
+    protection_state = capability.protection_state if available else "unavailable"
+    if available and protection_state == "unavailable":
         protection_state = "protected" if environment == "native_linux" else "preview"
-    profile_id = "linux-bubblewrap-v2" if capability.qualified else "none"
+    profile_id = capability.profile_id if available else "none"
     generation_payload = "\0".join(
         (
             fingerprint,
             capability.backend,
+            str(available),
             str(capability.qualified),
             capability.reason,
             protection_state,
             profile_id,
+            *capability.limitations,
         )
     ).encode()
     generation = hashlib.sha256(generation_payload).hexdigest()
     remediation = (
         "No remediation required."
-        if capability.qualified
+        if available
         else "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
     )
     return replace(
         capability,
+        available = available,
         environment = environment,
         protection_state = protection_state,
         profile_id = profile_id,
@@ -1395,6 +1913,10 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
     capability = capability_snapshot()
 
     if canonical.requested_mode == "limited":
+        if capability.available:
+            raise SandboxUnavailableError(
+                "OS isolation is available; Limited mode is not authorized for this capability generation"
+            )
         if not canonical.current_subject or not canonical.tool_ui_session_id:
             raise SandboxUnavailableError("Limited mode requires an authenticated Studio UI session")
         try:
@@ -1456,7 +1978,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             terminate_descendants = canonical.terminate_descendants,
         )
 
-    if backend is None or not capability.qualified:
+    if backend is None or not capability.available:
         raise SandboxUnavailableError(
             f"OS_ISOLATION_UNAVAILABLE: {capability.reason}. {capability.remediation}"
         )
@@ -1477,5 +1999,6 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         probe_generation = capability.probe_generation,
         os_isolation = True,
         retained_safeguards = (*_LIMITED_SAFEGUARDS, "os_isolation"),
+        limitations = capability.limitations,
     )
     return prepared

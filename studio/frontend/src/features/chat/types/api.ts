@@ -614,6 +614,7 @@ export interface ToolExecutionRecord {
   probe_generation: string;
   os_isolation: boolean;
   retained_safeguards: string[];
+  limitations?: string[];
 }
 
 /** Internal card metadata. It is stripped from replayed tool arguments. */
@@ -639,7 +640,10 @@ export function parseToolExecutionRecord(
     typeof record.probe_generation !== "string" ||
     typeof record.os_isolation !== "boolean" ||
     !Array.isArray(record.retained_safeguards) ||
-    !record.retained_safeguards.every((item) => typeof item === "string")
+    !record.retained_safeguards.every((item) => typeof item === "string") ||
+    (record.limitations !== undefined &&
+      (!Array.isArray(record.limitations) ||
+        !record.limitations.every((item) => typeof item === "string")))
   ) {
     return null;
   }
@@ -652,6 +656,9 @@ export function parseToolExecutionRecord(
     probe_generation: record.probe_generation,
     os_isolation: record.os_isolation,
     retained_safeguards: [...record.retained_safeguards] as string[],
+    limitations: Array.isArray(record.limitations)
+      ? ([...record.limitations] as string[])
+      : [],
   };
 }
 
@@ -685,6 +692,12 @@ export function toolExecutionRecordLabel(
     return "Limited · no OS isolation";
   }
   if (!record.os_isolation) return null;
+  if (record.backend === "windows-lpac") {
+    return "Preview OS isolation · LPAC (Windows)";
+  }
+  if (record.backend === "macos-seatbelt") {
+    return "Preview OS isolation · Seatbelt (lifecycle unverified)";
+  }
   const environment = record.environment.toLowerCase();
   const usesBubblewrap = record.backend.toLowerCase().includes("bubblewrap");
   const backend = usesBubblewrap ? "Bubblewrap" : record.backend;

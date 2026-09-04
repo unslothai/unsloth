@@ -15953,7 +15953,7 @@ def create_tool_isolation_limited_grant(
                 "retryable": True,
             },
         )
-    if snapshot.qualified:
+    if snapshot.available:
         raise HTTPException(
             status_code = 409,
             detail = {

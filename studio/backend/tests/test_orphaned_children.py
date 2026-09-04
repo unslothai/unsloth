@@ -1132,7 +1132,7 @@ def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
     tools._python_exec(
         "print('hi')",
         session_id = "__LOCALID_adopt01",
-        disable_sandbox = not sandbox_capability().qualified,
+        disable_sandbox = not sandbox_capability().available,
     )
     assert seen, "the tool subprocess was never recorded"
     # And it is not left on the record once it has exited.

@@ -24,6 +24,7 @@ const record = (
   probe_generation: "generation-1",
   os_isolation: true,
   retained_safeguards: ["process_guard", "sanitized_environment"],
+  limitations: [],
   ...overrides,
 });
 
@@ -48,6 +49,22 @@ test("cards use exact labels from the backend execution record", () => {
   assert.equal(
     toolExecutionRecordLabel(record({ environment: "linux_unknown" })),
     "Preview OS isolation · Bubblewrap (linux_unknown)",
+  );
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({ backend: "windows-lpac", environment: "windows" }),
+    ),
+    "Preview OS isolation · LPAC (Windows)",
+  );
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({
+        backend: "macos-seatbelt",
+        environment: "macos",
+        limitations: ["detached_descendant_cleanup_unverified"],
+      }),
+    ),
+    "Preview OS isolation · Seatbelt (lifecycle unverified)",
   );
   assert.equal(
     toolExecutionRecordLabel(

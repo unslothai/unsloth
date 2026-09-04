@@ -2731,7 +2731,9 @@ class ToolIsolationCapabilityResponse(BaseModel):
     reason: str
     remediation: str
     retryable: bool
+    available: bool
     qualified: bool
+    limitations: list[str] = Field(default_factory = list)
 
 
 class ToolIsolationLimitedGrantRequest(BaseModel):

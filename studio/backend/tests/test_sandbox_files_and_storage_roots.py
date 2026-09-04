@@ -34,7 +34,7 @@ _FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
 @pytest.fixture(autouse = True)
 def _portable_tool_lifecycle(monkeypatch):
-    if os_sandbox.sandbox_capability().qualified:
+    if os_sandbox.sandbox_capability().available:
         return
     monkeypatch.setattr(
         tools_module,

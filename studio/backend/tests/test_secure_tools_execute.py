@@ -134,7 +134,7 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
 @pytest.fixture(autouse = True)
 def _reset_policy(monkeypatch):
     reset_tool_policy()
-    if not os_sandbox.sandbox_capability().qualified:
+    if not os_sandbox.sandbox_capability().available:
         monkeypatch.setattr(
             tools_module,
             "prepare_tool_launch",

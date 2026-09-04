@@ -19,7 +19,11 @@ from models.inference import (
 from routes import inference as inference_route
 
 
-def _capability(*, generation: str = "probe-1", qualified: bool = False):
+def _capability(
+    *, generation: str = "probe-1", qualified: bool = False, available: bool | None = None
+):
+    if available is None:
+        available = qualified
     return isolation.ToolIsolationCapability(
         environment="wsl2",
         backend="bubblewrap",
@@ -31,6 +35,7 @@ def _capability(*, generation: str = "probe-1", qualified: bool = False):
         remediation="Use Limited mode for this session" if not qualified else "",
         retryable=True,
         qualified=qualified,
+        available=available,
     )
 
 
@@ -250,7 +255,9 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     with _client(via_api_key=False) as client:
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 200
-    assert response.json() == asdict(_capability())
+    expected = asdict(_capability())
+    expected["limitations"] = []
+    assert response.json() == expected
     assert calls == [True]
 
     with _client(via_api_key=True) as client:
@@ -277,11 +284,11 @@ def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
     assert calls == [True]
 
 
-def test_grant_endpoint_does_not_downgrade_a_qualified_backend(monkeypatch):
+def test_grant_endpoint_does_not_downgrade_an_available_preview_backend(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "tool_isolation_capability_snapshot",
-        lambda *, force: _capability(qualified = True),
+        lambda *, force: _capability(qualified = False, available = True),
     )
 
     with _client(via_api_key = False) as client:

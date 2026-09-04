@@ -21,6 +21,9 @@ export type ToolIsolationCapability = {
   reason: string | null;
   remediation: string | null;
   retryable: boolean;
+  available: boolean;
+  qualified: boolean;
+  limitations: string[];
 };
 
 /** Opaque, backend-issued consent proof. Never persist this value. */
@@ -37,6 +40,12 @@ export type ToolIsolationPresentation = {
 };
 
 function backendLabel(backend: string | null, environment: string): string {
+  if (backend === "windows-lpac") {
+    return "LPAC (Windows)";
+  }
+  if (backend === "macos-seatbelt") {
+    return "Seatbelt (lifecycle unverified)";
+  }
   if (!backend?.toLowerCase().includes("bubblewrap")) {
     return backend || "OS sandbox";
   }
@@ -112,7 +121,7 @@ export function toolIsolationPresentation(
       state: "preview",
       label: `Preview OS isolation · ${backendLabel(capability.backend, capability.environment)}`,
       description:
-        "Python and Terminal use an environment-qualified preview sandbox.",
+        "Python and Terminal use a preview sandbox whose live enforcement probe passed.",
     };
   }
   return {
@@ -177,6 +186,13 @@ function parseCapability(body: unknown): ToolIsolationCapability {
     remediation:
       typeof value.remediation === "string" ? value.remediation : null,
     retryable: value.retryable === true,
+    available: value.available === true,
+    qualified: value.qualified === true,
+    limitations: Array.isArray(value.limitations)
+      ? value.limitations.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [],
   };
 }
 

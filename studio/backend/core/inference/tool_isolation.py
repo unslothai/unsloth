@@ -30,6 +30,8 @@ class ToolIsolationCapability:
     remediation: str
     retryable: bool
     qualified: bool
+    available: bool = False
+    limitations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -222,7 +224,9 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
         reason=str(_snapshot_value(snapshot, "reason")),
         remediation=str(_snapshot_value(snapshot, "remediation")),
         retryable=bool(_snapshot_value(snapshot, "retryable")),
+        available=bool(_snapshot_value(snapshot, "available")),
         qualified=bool(_snapshot_value(snapshot, "qualified")),
+        limitations=tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
     )
 
 

@@ -54,7 +54,7 @@ def _tool_lifecycle_backend_on_unqualified_hosts(monkeypatch):
     WSL, containers, or a host lacking the native primitive it substitutes only
     the backend preparation step and still runs the real child lifecycle.
     """
-    if os_sandbox.sandbox_capability().qualified:
+    if os_sandbox.sandbox_capability().available:
         return
 
     def prepare(spec):

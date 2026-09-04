@@ -54,10 +54,13 @@ def isolated_capability_cache():
 
 class _RecordingBackend:
     identity = "test-recording-backend"
+    profile_id = "test-recording-profile-v1"
 
     def __init__(self, capabilities: list[os_sandbox.SandboxCapability] | None = None):
         self.capabilities = capabilities or [
-            os_sandbox.SandboxCapability(self.identity, True, "qualified")
+            os_sandbox.SandboxCapability(
+                self.identity, True, "qualified", profile_id = self.profile_id
+            )
         ]
         self.probe_calls = 0
         self.prepared_specs: list[os_sandbox.ToolLaunchPlan] = []
@@ -127,6 +130,60 @@ def test_unsupported_platform_fails_closed(monkeypatch, tmp_path, isolated_capab
     assert "Limited mode" in capability.remediation
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unsupported on win32"):
         os_sandbox.prepare_tool_launch(_spec(tmp_path))
+
+
+def test_available_preview_backend_serves_required_mode_and_records_limitations(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    backend = _RecordingBackend(
+        [
+            os_sandbox.SandboxCapability(
+                _RecordingBackend.identity,
+                False,
+                "preview policy passed",
+                available = True,
+                protection_state = "preview",
+                profile_id = _RecordingBackend.profile_id,
+                limitations = ("lifecycle_unverified",),
+            )
+        ]
+    )
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+
+    prepared = os_sandbox.prepare_tool_launch(_spec(tmp_path))
+
+    assert prepared.execution_record is not None
+    assert prepared.execution_record.os_isolation is True
+    assert prepared.execution_record.profile_id == backend.profile_id
+    assert prepared.execution_record.limitations == ("lifecycle_unverified",)
+
+
+def test_spawn_and_cleanup_are_backend_owned_and_lifo(tmp_path):
+    events: list[str] = []
+
+    def spawn(_prepared, kwargs):
+        events.append(f"spawn:{kwargs['text']}")
+        return "process-adapter"
+
+    def failed_cleanup():
+        events.append("cleanup-second")
+        raise OSError("cleanup failed")
+
+    prepared = os_sandbox.PreparedSandboxLaunch(
+        argv = ("opaque",),
+        workdir = str(tmp_path),
+        env = {},
+        preexec_fn = None,
+        backend = "custom",
+        spawn_callback = spawn,
+        cleanup_callbacks = [lambda: events.append("cleanup-first"), failed_cleanup],
+    )
+
+    assert os_sandbox.spawn_prepared_launch(prepared, text = True) == "process-adapter"
+    prepared.cleanup()
+
+    assert events == ["spawn:True", "cleanup-second", "cleanup-first"]
+    assert prepared.cleanup_diagnostics == ["OSError: cleanup failed"]
 
 
 def test_full_mode_keeps_lifecycle_plan_without_claiming_os_isolation(
@@ -230,7 +287,7 @@ def test_qualified_capability_label_depends_on_environment(
 
     assert capability.protection_state == expected
     assert capability.environment == environment
-    assert capability.profile_id == "linux-bubblewrap-v2"
+    assert capability.profile_id == backend.profile_id
     assert capability.probe_generation
 
 
@@ -695,15 +752,16 @@ def test_workdir_validation_fails_closed_on_unreadable_subtree(tmp_path, hidden_
         shutil.rmtree(short_root, ignore_errors = True)
 
 
-def test_macos_backend_is_fail_closed_until_detached_descendants_are_owned(tmp_path):
+def test_macos_backend_is_fail_closed_when_seatbelt_is_unavailable(tmp_path):
     backend = os_sandbox.MacOSSeatbeltBackend()
 
     capability = backend.probe()
 
     assert not capability.qualified
+    assert capability.available is False
     assert capability.backend == "macos-seatbelt"
-    assert "detached sandbox descendants" in capability.reason
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not qualified"):
+    assert "deprecated_undocumented_sbpl" in capability.limitations
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not proven available"):
         backend.prepare(_spec(tmp_path))
 
 
@@ -878,7 +936,8 @@ def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(
     workdir.mkdir()
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
     capability = os_sandbox.capability_snapshot(force = True)
-    assert not capability.qualified
+    if capability.available:
+        pytest.skip(f"{capability.backend} is available; Limited grants are correctly disabled")
     grant = tool_isolation.issue_limited_grant(
         current_subject = "test:limited-user",
         tool_ui_session_id = "test-page",
@@ -962,8 +1021,8 @@ def test_posix_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp
 @pytest.fixture(scope = "module")
 def qualified_native_capability():
     capability = os_sandbox.sandbox_capability()
-    if not capability.qualified:
-        pytest.skip(f"native OS sandbox is unqualified: {capability.backend}: {capability.reason}")
+    if capability.backend != "linux-bubblewrap" or not capability.qualified:
+        pytest.skip(f"qualified Bubblewrap is unavailable: {capability.backend}: {capability.reason}")
     return capability
 
 

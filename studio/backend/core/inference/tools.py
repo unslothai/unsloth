@@ -36,7 +36,12 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
 from .context_window import _RESULT_NOTICE_RESERVE
-from .os_sandbox import SandboxUnavailableError, ToolLaunchPlan, prepare_tool_launch
+from .os_sandbox import (
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+    prepare_tool_launch,
+    spawn_prepared_launch,
+)
 
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
@@ -14481,6 +14486,9 @@ def _capture_process_group(proc, *, require_windows_resource_limits: bool = Fals
     there left a payload that outlived its wrapper unsignalled.
     """
     if os.name == "nt":
+        owned_job = getattr(proc, "_unsloth_job", None)
+        if owned_job is not None:
+            return ("windows-job", owned_job)
         job = _windows_job_capture(
             proc,
             apply_resource_limits = require_windows_resource_limits,
@@ -16408,11 +16416,14 @@ def _python_exec(
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen(launch_argv, **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
-        if sys.platform == "win32" and effective_execution_mode == "limited":
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited"
+            or prepared_launch.backend == "windows-lpac"
+        ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:
                 _kill_process_tree(proc)
@@ -16640,11 +16651,14 @@ def _bash_exec(
                     subprocess, "CREATE_SUSPENDED", 0x00000004
                 )
 
-        proc = subprocess.Popen(launch_argv, **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
-        if sys.platform == "win32" and effective_execution_mode == "limited":
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited"
+            or prepared_launch.backend == "windows-lpac"
+        ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:
                 _kill_process_tree(proc)
