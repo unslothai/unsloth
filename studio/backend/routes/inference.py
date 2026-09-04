@@ -2078,8 +2078,8 @@ def _openai_llama_admission_tokens(
     # can clamp the reservation to the whole KV budget and serialise every other
     # request) and the images that are really sent are charged nothing. The caller
     # hands over the OpenAI-shaped list it will actually generate from.
-    messages = messages_override if messages_override is not None else getattr(
-        payload, "messages", None
+    messages = (
+        messages_override if messages_override is not None else getattr(payload, "messages", None)
     )
     if isinstance(messages, list) and messages:
         try:
