@@ -1251,14 +1251,18 @@ class TestTheProbeAsksForTheInterpretersAbi:
         [("3.13", False, "cp313"), ("3.13", True, "cp313t"), ("3.11", True, "cp311t")],
     )
     def test_the_abi_tag_follows_the_build(self, minor: str, free_threaded: bool, expected: str):
-        script = "\n".join([
-            _ps_function(INSTALL_PS1, "Get-WoaAbiTag"),
-            f"Write-Output (Get-WoaAbiTag -PythonMinor '{minor}' "
-            f"-FreeThreaded ${str(free_threaded).lower()})",
-        ])
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Get-WoaAbiTag"),
+                f"Write-Output (Get-WoaAbiTag -PythonMinor '{minor}' "
+                f"-FreeThreaded ${str(free_threaded).lower()})",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected
@@ -1267,24 +1271,28 @@ class TestTheProbeAsksForTheInterpretersAbi:
     @pytest.mark.parametrize(
         "abi, wheel_abi, found",
         [
-            ("", "cp313", True),        # a GIL interpreter, unchanged
+            ("", "cp313", True),  # a GIL interpreter, unchanged
             ("cp313t", "cp313", False),  # free-threaded must not take a GIL wheel
             ("cp313t", "cp313t", True),  # and does take its own
         ],
     )
     def test_only_wheels_of_that_abi_are_found(self, abi: str, wheel_abi: str, found: bool):
         body = f'<a href="torch-2.14.0%2Bcu134-cp313-{wheel_abi}-win_arm64.whl">t</a>'
-        script = "\n".join([
-            "function Join-UrlPath { param([string]$Base,[string]$Path)",
-            "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
-            f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
-            _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
-            f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '3.13' -AbiTag '{abi}'",
-            "Write-Output \"[$v]\"",
-        ])
+        script = "\n".join(
+            [
+                "function Join-UrlPath { param([string]$Base,[string]$Path)",
+                "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
+                f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
+                f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '3.13' -AbiTag '{abi}'",
+                'Write-Output "[$v]"',
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1][1:-1]
@@ -1292,9 +1300,15 @@ class TestTheProbeAsksForTheInterpretersAbi:
 
     def test_the_probe_takes_the_flag_and_the_call_sites_supply_it(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "function Initialize-WoaNativeCudaTorch {\n        param([string]$PythonMinor, [bool]$FreeThreaded = $false)" in text
+        assert (
+            "function Initialize-WoaNativeCudaTorch {\n        param([string]$PythonMinor, [bool]$FreeThreaded = $false)"
+            in text
+        )
         # Both re-probes know which interpreter was chosen, so both must answer for it.
-        assert text.count("-FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)") == 2
+        assert (
+            text.count("-FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)")
+            == 2
+        )
 
     def test_the_staging_scan_uses_the_venv_abi(self):
         """
@@ -1304,22 +1318,28 @@ class TestTheProbeAsksForTheInterpretersAbi:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "$WoaWheelAbi = Get-WoaAbiTag -PythonMinor $WoaVenvMinor" in text
         assert "($abiTags -contains $WoaWheelAbi)" in text
-        assert "($WoaWheelStable -and ($abiTags -contains 'abi3'))" in text, (
-            "free-threaded builds do not implement the stable ABI"
+        assert (
+            "($WoaWheelStable -and ($abiTags -contains 'abi3'))" in text
+        ), "free-threaded builds do not implement the stable ABI"
+        assert (
+            "$script:WoaVenvFreeThreaded = Test-PythonFreeThreaded -PythonExe $VenvPython" in text
         )
-        assert "$script:WoaVenvFreeThreaded = Test-PythonFreeThreaded -PythonExe $VenvPython" in text
 
     @requires_pwsh
     def test_an_unknown_interpreter_answers_gil(self):
         """The historical assumption: unknown must not turn a working GIL host free-threaded."""
-        script = "\n".join([
-            _ps_function(INSTALL_PS1, "Test-PythonFreeThreaded"),
-            "Write-Output (Test-PythonFreeThreaded -PythonExe 'C:\\nope\\python.exe')",
-            "Write-Output (Test-PythonFreeThreaded -PythonExe '')",
-        ])
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-PythonFreeThreaded"),
+                "Write-Output (Test-PythonFreeThreaded -PythonExe 'C:\\nope\\python.exe')",
+                "Write-Output (Test-PythonFreeThreaded -PythonExe '')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.split() == ["False", "False"]
@@ -1328,14 +1348,19 @@ class TestTheProbeAsksForTheInterpretersAbi:
     def test_it_reads_the_real_interpreter_correctly(self):
         """Executed against the interpreter running this suite, whichever build that is."""
         import sysconfig
+
         expected = "True" if sysconfig.get_config_var("Py_GIL_DISABLED") else "False"
-        script = "\n".join([
-            _ps_function(INSTALL_PS1, "Test-PythonFreeThreaded"),
-            f"Write-Output (Test-PythonFreeThreaded -PythonExe '{sys.executable}')",
-        ])
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-PythonFreeThreaded"),
+                f"Write-Output (Test-PythonFreeThreaded -PythonExe '{sys.executable}')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected
