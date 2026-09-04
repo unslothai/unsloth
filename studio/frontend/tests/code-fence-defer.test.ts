@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 /**
@@ -227,9 +227,20 @@ test("the mode is decided in one place, and `off` still means the pre-default be
     "no copy of the decision table may live here as well",
   );
   assert.ok(
-    /useFenceReached\(\s*host,\s*mode !== "off",\s*Boolean\(isIncomplete\),/.test(MARKDOWN_TEXT),
+    /useFenceReached\(\s*host,\s*mode !== "off" && !plainCode,\s*Boolean\(isIncomplete\),/.test(
+      MARKDOWN_TEXT,
+    ),
     "with the mode off every fence must render immediately, exactly as it did before the default " +
-      "moved",
+      "moved. `plainCode` is the ONE other thing allowed in this condition, and it is not a second " +
+      "opinion about the mode: a plain subtree is never highlighted at all, so there is nothing " +
+      "for the latch to wait for. Every fence outside one still reads the mode alone.",
+  );
+  // A plain subtree renders the shell whatever the mode says, so the render gate has to carry the
+  // same condition. Pinned because a `plainCode` that reached only the hook would leave a
+  // reasoning fence tokenized and then thrown away, which is the cost this exists to remove.
+  assert.ok(
+    /\{reached && !plainCode \? \(/.test(MARKDOWN_TEXT),
+    "the render gate must honour the plain subtree as well as the latch",
   );
 });
 
@@ -462,6 +473,54 @@ test("token coalescing was measured at zero and is not carried as code", () => {
   assert.ok(
     existsSync(new URL("../scripts/coal-span-census.mjs", import.meta.url)),
     "the cited reproducer must exist in this repository",
+  );
+});
+
+/**
+ * THE PLAIN SUBTREE IS THE REASONING PANE AND NOTHING ELSE.
+ *
+ * Rendering a fence without colours is a deliberate trade, taken for the one place a reader skims
+ * a wall of code rather than reads it. It is only defensible while it is contained: a reply body
+ * that lost its highlighting would be a rendering regression smuggled in by a performance change,
+ * which is the one thing this file exists to catch. Source-level, for the reason at the top of
+ * this file -- the containment is structural, and a DOM test could only sample one thread.
+ */
+test("only the reasoning pane renders its fences plain", () => {
+  const REASONING = readFileSync(
+    new URL("../src/components/assistant-ui/reasoning.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    /<MarkdownCodeHighlightingContext\.Provider value="plain">/.test(REASONING),
+    "the reasoning pane is what asks for plain fences",
+  );
+  // The DEFAULT is the highlighted one, so anything not wrapped -- every reply body -- is
+  // untouched by this change. React resolves a context read against the closest provider ABOVE
+  // it, so a sibling subtree cannot see this one.
+  assert.ok(
+    /createContext<MarkdownCodeHighlighting>\("syntax"\)/.test(MARKDOWN_TEXT),
+    "an unwrapped subtree must keep its syntax highlighting",
+  );
+  // And there is exactly one provider in the app. A second one is how "reasoning only" quietly
+  // becomes "reasoning and whatever else somebody wrapped".
+  const providers: string[] = [];
+  const walk = (dir: URL) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, dir);
+      if (entry.isDirectory()) walk(child);
+      else if (/\.tsx?$/.test(entry.name)) {
+        const text = readFileSync(child, "utf8");
+        if (text.includes("MarkdownCodeHighlightingContext.Provider")) {
+          providers.push(entry.name);
+        }
+      }
+    }
+  };
+  walk(new URL("../src/", import.meta.url));
+  assert.deepEqual(
+    providers,
+    ["reasoning.tsx"],
+    "the plain subtree must stay the reasoning pane alone",
   );
 });
 

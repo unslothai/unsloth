@@ -564,11 +564,17 @@ function FenceBlock({
     [source, languageToken],
   );
 
+  // A fence in a plain subtree is never highlighted, so there is nothing for the deferral
+  // machinery to wait for: passing `enabled = false` also skips this fence's IntersectionObserver,
+  // its nested-scroller ResizeObserver, its pre-paint scroller resolution and rect read, its entry
+  // in the module-global unreached set, and its share of the jump path's two flushSync renders.
+  const plainCode = useContext(MarkdownCodeHighlightingContext) === "plain";
+
   // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
   // it so that finishing the stream cannot hand it back the plain shell.
   const reached = useFenceReached(
     host,
-    mode !== "off",
+    mode !== "off" && !plainCode,
     Boolean(isIncomplete),
     languageToken,
     trimmedLength(source),
@@ -579,7 +585,7 @@ function FenceBlock({
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
   // on the source string, so the work happens exactly once and the discarded result is the same
   // object the real path would have used.
-  const pretokenize = mode === "tokenize" && !reached;
+  const pretokenize = mode === "tokenize" && !reached && !plainCode;
   useEffect(() => {
     if (!pretokenize) return;
     code.highlight(
@@ -608,7 +614,7 @@ function FenceBlock({
           <DeferredFenceShell language={languageToken} source={source} />
         }
       >
-        {reached ? (
+        {reached && !plainCode ? (
           <Block {...blockProps} />
         ) : (
           <DeferredFenceShell language={languageToken} source={source} />
@@ -702,6 +708,29 @@ function useCoalescedStreamingText(
 }
 
 /** False inside the reasoning block, which renders through this same component. */
+/**
+ * Whether fenced code inside this subtree is syntax highlighted.
+ *
+ * Reasoning panes set this to "plain". A long thinking trace is a wall of code the reader skims
+ * rather than reads, and highlighting it is the single most expensive thing the pane does:
+ * measured on a 100K-character thread in WebKitGTK on a gfx1151, opening every reasoning pane
+ * runs at 5.4 effective frames per second with the main thread 92% busy, and 25.5 fps at 61% busy
+ * once the reasoning fences stop being highlighted.
+ *
+ * A plain fence renders through `DeferredFenceShell`, the SAME shell an unreached fence already
+ * shows, so the code itself is fully present: selection, copy, download, find-in-page and screen
+ * readers all get the exact source. Only the colours are gone.
+ *
+ * It also suppresses the per-fence deferral bookkeeping, because a fence that will never be
+ * highlighted has nothing to wait for. That part matters: leaving the bookkeeping in place while
+ * removing the deferral was measured at 0.27 fps, so the deferral is load-bearing and this must
+ * not be read as "the observers are overhead".
+ */
+export type MarkdownCodeHighlighting = "syntax" | "plain";
+
+export const MarkdownCodeHighlightingContext =
+  createContext<MarkdownCodeHighlighting>("syntax");
+
 export const SearchImagesEnabledContext = createContext(true);
 
 const MarkdownTextImpl = () => {
