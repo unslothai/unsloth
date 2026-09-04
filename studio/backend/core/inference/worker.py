@@ -143,6 +143,7 @@ def narrow_load_reason(cmd: dict) -> Optional[str]:
         return f"the load decodes {width} replies at once, and this asks for {rows}"
     return None
 
+
 activate_native_tls()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
@@ -756,7 +757,6 @@ class _Stops:
 
 
 class _StopWhileItRuns:
-
     def __init__(self, cancel_event, stops, request_id: str):
         self._cancel_event = cancel_event
         self._stops = stops
@@ -858,7 +858,6 @@ def _backend_declares(
 
 
 def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-
     if cmd.get("rows"):
         _handle_generate_rows(backend, cmd, resp_queue, cancel_event)
     else:
@@ -866,7 +865,6 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
-
     image = None
     image_b64 = cmd.get("image_base64")
     if image_b64:

@@ -2293,14 +2293,18 @@ def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> 
     )
 
 
-def _openai_admission_timeout_error(reservation: LlamaAdmissionReservation) -> LlamaAdmissionTimeout:
+def _openai_admission_timeout_error(
+    reservation: LlamaAdmissionReservation,
+) -> LlamaAdmissionTimeout:
     return LlamaAdmissionTimeout(
         "Timed out waiting for an available local llama-server generation slot",
         snapshot = reservation.snapshot_now(),
     )
 
 
-def _openai_admission_cancelled_error(reservation: LlamaAdmissionReservation) -> LlamaAdmissionCancelled:
+def _openai_admission_cancelled_error(
+    reservation: LlamaAdmissionReservation,
+) -> LlamaAdmissionCancelled:
     return LlamaAdmissionCancelled(
         "Client disconnected before an upstream llama-server generation slot was available",
         snapshot = reservation.snapshot_now(),
@@ -6110,7 +6114,9 @@ def _monitor_queue_state() -> Optional[dict]:
     ):
         return None
     direct = _direct_llama_inflight
-    snapshot = peek_llama_admission_snapshot(str(getattr(llama_backend, "base_url", "llama-server")))
+    snapshot = peek_llama_admission_snapshot(
+        str(getattr(llama_backend, "base_url", "llama-server"))
+    )
     if snapshot is not None:
         busy = snapshot.active + direct
         active = min(snapshot.capacity, busy)

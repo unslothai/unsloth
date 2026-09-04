@@ -1478,7 +1478,6 @@ _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_uni
 
 
 class _RowStream:
-
     def __init__(
         self,
         *,
@@ -1591,7 +1590,6 @@ def _row_processor_gap(engine, requests):
 
 
 def _batched_vision_engine_gap(engine):
-
     def fields(name):
         return _engine_fields(engine, name)
 
@@ -1607,7 +1605,6 @@ def _batched_vision_engine_gap(engine):
 
 
 class _TextRowPlan:
-
     __slots__ = (
         "prompt",
         "think_prefix",
@@ -1891,7 +1888,6 @@ class _TextBatchSession:
 
 
 class _VLMRowPlan:
-
     __slots__ = (
         "prompt",
         "images",
@@ -1926,7 +1922,6 @@ class _VLMRowPlan:
 
 
 class _VisionBatchRow:
-
     __slots__ = (
         "handle",
         "plan",
@@ -1952,7 +1947,6 @@ class _VisionBatchRow:
 
 
 class _VisionBatchSession:
-
     def __init__(
         self,
         backend,

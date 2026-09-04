@@ -55,6 +55,7 @@ class _Session:
     def _retire(self, handle):
         self.rows.remove(handle)
         self.settled[handle] = self.stats_at_retire.get(handle, {})
+
     def step(self):
         for handle in list(self.rows):
             events = self.script.get(handle) or []
@@ -75,7 +76,11 @@ class _Session:
 
 
 class _Backend:
-    def __init__(self, reason = None, script = None):
+    def __init__(
+        self,
+        reason = None,
+        script = None,
+    ):
         self.reason = reason
         self.script = script or {}
         self.sessions = []
@@ -92,7 +97,12 @@ class _Backend:
             self.on_reason()
         return self.reason
 
-    def open_resident_batch(self, *, width, adapter_state = None):
+    def open_resident_batch(
+        self,
+        *,
+        width,
+        adapter_state = None,
+    ):
         session = _Session(width = width)
         session.script.update(self.script)
         if self.on_open is not None:
@@ -140,11 +150,15 @@ def _run_loop(monkeypatch, backend, cmds):
     import core.inference.mlx_inference as mlx_mod
 
     monkeypatch.setenv("ENVIRONMENT_TYPE", "development")
-    inert = lambda *a, **k: None                                        # noqa: E731
-    for name, value in (("is_apple_silicon", lambda: True), ("apply_gpu_ids", inert),
-                        ("_recorded_local_base", lambda m: (None, False)),
-                        ("_hub_targets_are_local", lambda *a, **k: True),
-                        ("_activate_transformers_version", inert), ("_handle_load", inert)):
+    inert = lambda *a, **k: None  # noqa: E731
+    for name, value in (
+        ("is_apple_silicon", lambda: True),
+        ("apply_gpu_ids", inert),
+        ("_recorded_local_base", lambda m: (None, False)),
+        ("_hub_targets_are_local", lambda *a, **k: True),
+        ("_activate_transformers_version", inert),
+        ("_handle_load", inert),
+    ):
         monkeypatch.setattr(worker, name, value)
     monkeypatch.setattr(_hw, "detect_hardware", inert)
     monkeypatch.setattr(_hw, "DEVICE", _hw.DeviceType.MLX)
@@ -163,8 +177,11 @@ def _run_loop(monkeypatch, backend, cmds):
     resp = _RespQueue()
     never = SimpleNamespace(is_set = lambda: False, clear = lambda: None, set = lambda: None)
     worker.run_inference_process(
-        cmd_queue = _Script([*cmds, {"type": "shutdown"}]), resp_queue = resp,
-        cancel_event = never, config = {"model_name": "unsloth/orpheus-3b-0.1-ft"})
+        cmd_queue = _Script([*cmds, {"type": "shutdown"}]),
+        resp_queue = resp,
+        cancel_event = never,
+        config = {"model_name": "unsloth/orpheus-3b-0.1-ft"},
+    )
     return resp
 
 
@@ -191,8 +208,12 @@ _HOLD_CASES = [
     pytest.param(
         dict(
             cmds = [("r1", 4), ("r2", 2), ("r3", 2), ("r4", 2)],
-            script = {"r1": ["a"] * 4 + [None], "r2": ["b", "b", "b", None],
-                      "r3": ["c", "c", None], "r4": ["d", None]},
+            script = {
+                "r1": ["a"] * 4 + [None],
+                "r2": ["b", "b", "b", None],
+                "r3": ["c", "c", None],
+                "r4": ["d", None],
+            },
             idle = 12,
             widths = [4, 2],
             order = ["r1", "r2", "r3", "r4"],
@@ -213,8 +234,12 @@ _HOLD_CASES = [
     pytest.param(
         dict(
             cmds = [("r1", 4), ("r0", 2), ("r2", 2), ("r3", 2)],
-            script = {"r1": ["a"] * 5 + [None], "r0": ["x", "x", "x", None],
-                      "r2": ["b", None], "r3": ["c", None]},
+            script = {
+                "r1": ["a"] * 5 + [None],
+                "r0": ["x", "x", "x", None],
+                "r2": ["b", None],
+                "r3": ["c", None],
+            },
             refuse = ("r2", 1),
             idle = 16,
             refusals = (1, "r2"),
@@ -256,7 +281,9 @@ def test_the_hold_releases_its_head_and_keeps_its_order(monkeypatch, case):
         index, name = case["refusals"]
         assert backend.sessions[index].refusals == [(name, None)]
     if case.get("idle"):
-        terminal = [m["request_id"] for m in resp.sent if m.get("type") in ("gen_done", "gen_error")]
+        terminal = [
+            m["request_id"] for m in resp.sent if m.get("type") in ("gen_done", "gen_error")
+        ]
         assert sorted(terminal) == sorted(case["order"]), f"a held reply was lost: {resp.sent}"
 
 
@@ -286,9 +313,14 @@ def _run(reason, cancelled = False):
         cancel.set()
     worker._handle_generate_rows(
         backend,
-        {"request_id": "r1", "messages": [{"role": "user", "content": "hi"}],
-         "rows": [{"seed": 1}, {"seed": 2}], "parallel_slots": 2},
-        SimpleNamespace(put = sent.append), cancel,
+        {
+            "request_id": "r1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "rows": [{"seed": 1}, {"seed": 2}],
+            "parallel_slots": 2,
+        },
+        SimpleNamespace(put = sent.append),
+        cancel,
     )
     return backend, sent
 
@@ -302,25 +334,36 @@ def test_a_declined_request_set_is_decoded_one_reply_at_a_time():
     assert backend.batched == 0
     assert kinds == ["token", "token", "row_done", "token", "token", "row_done", "gen_done"]
     assert [(event["row"], event["text"]) for event in tokens] == [
-        (0, "seed 1"), (0, "seed 1 done"), (1, "seed 2"), (1, "seed 2 done"),
+        (0, "seed 1"),
+        (0, "seed 1 done"),
+        (1, "seed 2"),
+        (1, "seed 2 done"),
     ], "each row decodes with the request it was given, not with row zero's"
     assert [event["row"] for event in sent if event["type"] == "row_done"] == [0, 1]
     assert all(event["request_id"] == "r1" for event in sent)
-    assert all(event["stats"] == backend.last_generation_stats
-               for event in sent if event["type"] == "row_done")
+    assert all(
+        event["stats"] == backend.last_generation_stats
+        for event in sent
+        if event["type"] == "row_done"
+    )
 
 
 def test_a_cancelled_fallback_still_reports_every_row_done():
     """A row nobody decoded is still a row somebody is waiting on."""
     _backend, sent = _run("a reply asks for stop sequences", cancelled = True)
 
-    assert [event["type"] for event in sent if event["type"] != "batch_state"] == ["row_done", "row_done", "gen_done"]
+    assert [event["type"] for event in sent if event["type"] != "batch_state"] == [
+        "row_done",
+        "row_done",
+        "gen_done",
+    ]
     assert [event["row"] for event in sent if event["type"] == "row_done"] == [0, 1]
     assert all(event["stats"] is None for event in sent if event["type"] == "row_done")
 
 
 def test_a_batch_that_will_not_open_still_answers_the_reply(monkeypatch):
     """Building the batch is what fails, and the reply predates any batch existing."""
+
     def refuse(**_kwargs):
         raise RuntimeError("BatchGenerator.insert missing")
 

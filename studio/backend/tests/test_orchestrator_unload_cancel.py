@@ -2723,11 +2723,17 @@ def test_a_cancelled_row_stream_shows_no_token_a_single_reply_would_have_dropped
         {"type": "gen_done", "request_id": "r1"},
     ]
 
-    seen = list(o._consume_token_stream(
-        lambda timeout: events.pop(0) if events else None, lambda: None,
-        crash_context = "generation", request_id = "r1", cancel_event = cancel,
-        mark_started = False, rows = 2,
-    ))
+    seen = list(
+        o._consume_token_stream(
+            lambda timeout: events.pop(0) if events else None,
+            lambda: None,
+            crash_context = "generation",
+            request_id = "r1",
+            cancel_event = cancel,
+            mark_started = False,
+            rows = 2,
+        )
+    )
 
     assert seen == [(0, None), (1, None)]
 

@@ -191,4 +191,3 @@ def _direct_reader_calls(
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
     o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
     return o._direct_reader(request_id, cancel_event)
-

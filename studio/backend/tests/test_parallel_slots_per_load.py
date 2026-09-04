@@ -588,21 +588,29 @@ def test_a_load_reply_carries_the_two_window_facts_and_the_width_that_selects_th
     from models.inference import LoadResponse, _InferenceRuntimeFields
     from routes.inference import _unsloth_serving_fields
 
-    info = {"context_length_enforced": True, "context_unbounded_when_batched": True,
-            "parallel_slots": 4, "can_batch": True}
+    info = {
+        "context_length_enforced": True,
+        "context_unbounded_when_batched": True,
+        "parallel_slots": 4,
+        "can_batch": True,
+    }
 
     def reply(**overrides):
         return LoadResponse(
-            status = "loaded", model = "m", display_name = "m", inference = {},
+            status = "loaded",
+            model = "m",
+            display_name = "m",
+            inference = {},
             **_unsloth_serving_fields({**info, **overrides}),
         ).model_dump()
 
     body = reply()
-    assert (body["context_length_enforced"], body["context_unbounded_when_batched"],
-            body["parallel_slots"]) == (True, True, 4)
+    assert (
+        body["context_length_enforced"],
+        body["context_unbounded_when_batched"],
+        body["parallel_slots"],
+    ) == (True, True, 4)
     # A load that cannot batch serves one reply at a time, so the width says so.
     assert reply(can_batch = False, context_unbounded_when_batched = False)["parallel_slots"] == 1
     # llama.cpp decodes each slot against its own window, however many slots it runs.
     assert _InferenceRuntimeFields.model_fields["context_unbounded_when_batched"].default is False
-
-

@@ -2529,29 +2529,51 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
             backend._render_template_probe(False)
 
 
-def _vlm_backend(monkeypatch, *, markers, prompt_tail = ""):
+def _vlm_backend(
+    monkeypatch,
+    *,
+    markers,
+    prompt_tail = "",
+):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *a, **k: "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" + prompt_tail)
-    monkeypatch.setattr(mlx_inference, "detect_reasoning_channel_markers",
-                        lambda target, tools = None: markers)
+        lambda *a, **k: "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n"
+        + prompt_tail,
+    )
+    monkeypatch.setattr(
+        mlx_inference, "detect_reasoning_channel_markers", lambda target, tools = None: markers
+    )
     backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
     backend._tokenizer = SimpleNamespace(chat_template = "t", all_special_tokens = [])
-    backend._processor = SimpleNamespace(chat_template = "t", tokenizer = backend._tokenizer,
-                                         apply_chat_template = lambda *a, **k: "")
+    backend._processor = SimpleNamespace(
+        chat_template = "t", tokenizer = backend._tokenizer, apply_chat_template = lambda *a, **k: ""
+    )
     backend._model = object()
     monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
     return backend
 
 
-def _vlm_row(backend, *, stop = None, messages = None, continue_final_message = False):
+def _vlm_row(
+    backend,
+    *,
+    stop = None,
+    messages = None,
+    continue_final_message = False,
+):
     """One vision reply resolved by that backend."""
     return backend._plan_vlm_row(
-        messages or [{"role": "user", "content": "hi"}], None,
-        temperature = 0.7, top_p = 0.9, top_k = 0, min_p = 0.0, max_new_tokens = 16,
-        repetition_penalty = 1.0, continue_final_message = continue_final_message, stop = stop,
+        messages or [{"role": "user", "content": "hi"}],
+        None,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 0,
+        min_p = 0.0,
+        max_new_tokens = 16,
+        repetition_penalty = 1.0,
+        continue_final_message = continue_final_message,
+        stop = stop,
     ).stream
 
 
@@ -4132,7 +4154,11 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
 class _TwoRowStream:
     """A vision batch reporting two rows, recording whatever is taken back."""
 
-    def __init__(self, events, retired = ()):
+    def __init__(
+        self,
+        events,
+        retired = (),
+    ):
         self._events, self._retired, self.withdrawn = events, set(retired), []
 
     def step(self):
@@ -4163,21 +4189,27 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
 
     backend = _vlm_backend(monkeypatch, markers = None)
     handles = ("a", "b")
-    session = _open_vision_session([
-        mlx_inference._VisionBatchRow(
-            handle = handle,
-            plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"])),
-            row = number,
-        )
-        for number, handle in enumerate(handles)
-    ])
+    session = _open_vision_session(
+        [
+            mlx_inference._VisionBatchRow(
+                handle = handle,
+                plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"])),
+                row = number,
+            )
+            for number, handle in enumerate(handles)
+        ]
+    )
     other = 1 - stopping
     result = SimpleNamespace(finish_reason = "length", prompt_token_count = 3, token_ids = [1, 2])
-    session.stream = _TwoRowStream([
-        SimpleNamespace(index = stopping, delta = "one HALT two",
-                        result = result if terminal else None),
-        SimpleNamespace(index = other, delta = "still going", result = None),
-    ], retired = (stopping,) if terminal else ())
+    session.stream = _TwoRowStream(
+        [
+            SimpleNamespace(
+                index = stopping, delta = "one HALT two", result = result if terminal else None
+            ),
+            SimpleNamespace(index = other, delta = "still going", result = None),
+        ],
+        retired = (stopping,) if terminal else (),
+    )
 
     reported = list(session.step())
 
@@ -4186,10 +4218,9 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     assert handles[stopping] not in session._rows, "and it has left the batch"
     assert handles[other] in session._rows, "its neighbour is still in the batch"
     assert (handles[other], "still going") in reported
-    assert session.stream.withdrawn == ([] if terminal else [stopping]), (
-        "a row the engine has already retired is not handed back again")
-
-
+    assert session.stream.withdrawn == (
+        [] if terminal else [stopping]
+    ), "a row the engine has already retired is not handed back again"
 
 
 def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeypatch):
@@ -4210,7 +4241,6 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
 
 try:
     import mlx.core as _mx
-
     _METAL = _mx.metal.is_available()
 except Exception:
     _METAL = False
@@ -4279,8 +4309,9 @@ def test_a_batch_costs_one_forward_per_token_not_one_per_reply(batch_backend):
 
     generated = sum(entry["usage"]["completion_tokens"] for entry in stats)
     assert generated >= 4 * 20
-    assert calls["n"] < generated / 2, (
-        f"{calls['n']} forwards for {generated} tokens across 4 replies")
+    assert (
+        calls["n"] < generated / 2
+    ), f"{calls['n']} forwards for {generated} tokens across 4 replies"
 
 
 @metal_only
@@ -4329,9 +4360,15 @@ def test_a_vision_reply_stopped_partway_reports_the_tokens_it_actually_used(batc
     from PIL import Image
 
     def rows():
-        return [dict(messages = [{"role": "user", "content": "Describe this in detail."}],
-                     image = Image.new("RGB", (64, 64), (12, 200, 60)),
-                     max_new_tokens = 64, temperature = 0.0) for _ in range(2)]
+        return [
+            dict(
+                messages = [{"role": "user", "content": "Describe this in detail."}],
+                image = Image.new("RGB", (64, 64), (12, 200, 60)),
+                max_new_tokens = 64,
+                temperature = 0.0,
+            )
+            for _ in range(2)
+        ]
 
     _replies, whole = _drain_batch(batch_vlm_backend, rows())
 
@@ -4347,9 +4384,11 @@ def test_a_vision_reply_stopped_partway_reports_the_tokens_it_actually_used(batc
     assert all(delivered.values()), "nothing was delivered before the batch was cancelled"
     for row, seen in delivered.items():
         usage, entire = cut_short[row]["usage"], whole[row]["usage"]
-        assert usage["prompt_tokens"] == entire["prompt_tokens"], (
-            "a stopped row read a different prompt than the same row read whole")
+        assert (
+            usage["prompt_tokens"] == entire["prompt_tokens"]
+        ), "a stopped row read a different prompt than the same row read whole"
         # The count follows the row: a fixed report would answer any stop the same way.
         assert len(seen) <= usage["completion_tokens"] < entire["completion_tokens"], (
             f"row {row} delivered {len(seen)} snapshots and reported "
-            f"{usage['completion_tokens']} of {entire['completion_tokens']} tokens")
+            f"{usage['completion_tokens']} of {entire['completion_tokens']} tokens"
+        )
