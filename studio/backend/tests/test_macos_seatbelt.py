@@ -14,6 +14,7 @@ import stat
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -385,10 +386,11 @@ def test_live_ip_dns_and_host_unix_are_denied_but_private_unix_works(
     ipv4, ipv4_address = _listen(socket.AF_INET, ("127.0.0.1", 0))
     ipv6, ipv6_address = _listen(socket.AF_INET6, ("::1", 0))
     host_unix = socket.socket(socket.AF_UNIX)
-    host_socket_path = str(tmp_path / "host.sock")
-    host_unix.bind(host_socket_path)
-    host_unix.listen(1)
-    code = f"""
+    with tempfile.TemporaryDirectory(prefix = "us-host-", dir = "/tmp") as host_root:
+        host_socket_path = os.path.join(host_root, "host.sock")
+        host_unix.bind(host_socket_path)
+        host_unix.listen(1)
+        code = f"""
 import os, socket
 
 def denied(family, address):
@@ -427,12 +429,12 @@ finally:
     server.close()
 print('SEATBELT_NETWORK_OK')
 """
-    try:
-        completed = _run_native(live_seatbelt_backend, workdir, code)
-    finally:
-        ipv4.close()
-        ipv6.close()
-        host_unix.close()
+        try:
+            completed = _run_native(live_seatbelt_backend, workdir, code)
+        finally:
+            ipv4.close()
+            ipv6.close()
+            host_unix.close()
 
     assert "SEATBELT_NETWORK_OK" in completed.stdout
 

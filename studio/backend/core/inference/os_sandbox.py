@@ -1061,7 +1061,9 @@ class MacOSSeatbeltBackend:
         workdir = _validate_workdir(spec.workdir)
         runtime_paths = _runtime_read_paths()
         _validate_runtime_paths(runtime_paths, workdir)
-        private_tmp = tempfile.mkdtemp(prefix = "unsloth-seatbelt-")
+        private_tmp = tempfile.mkdtemp(
+            prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
+        )
         try:
             profile = _macos_seatbelt_profile(
                 workdir = workdir,

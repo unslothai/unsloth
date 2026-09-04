@@ -747,8 +747,13 @@ def test_workdir_validation_fails_closed_on_unreadable_subtree(tmp_path, hidden_
         shutil.rmtree(short_root, ignore_errors = True)
 
 
-def test_macos_backend_is_fail_closed_when_seatbelt_is_unavailable(tmp_path):
+def test_macos_backend_is_fail_closed_when_seatbelt_is_unavailable(monkeypatch, tmp_path):
     backend = os_sandbox.MacOSSeatbeltBackend()
+    monkeypatch.setattr(
+        os_sandbox.os,
+        "stat",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("unavailable")),
+    )
 
     capability = backend.probe()
 
