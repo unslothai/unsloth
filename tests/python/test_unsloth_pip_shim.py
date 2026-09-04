@@ -445,7 +445,7 @@ def _fake_distributions(monkeypatch, *pairs):
     it at its source."""
     monkeypatch.setattr(
         "importlib.metadata.distributions",
-        lambda: [_FakeDist(n, v) for n, v in pairs],
+        lambda **kw: [_FakeDist(n, v) for n, v in pairs],
     )
 
 
@@ -573,7 +573,7 @@ def test_protected_constraints_write_failure_refuses_install(shim, monkeypatch):
 
 
 def test_protected_metadata_enumeration_failure_refuses_install(shim, monkeypatch):
-    def denied():
+    def denied(**kw):
         raise OSError(5, "Input/output error")
 
     monkeypatch.setattr("importlib.metadata.distributions", denied)
@@ -595,7 +595,7 @@ def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
 
     monkeypatch.setattr(
         "importlib.metadata.distributions",
-        lambda: [_BrokenDist(), _FakeDist("torch", "2.11.0"), _FakeDist("snac", "1.2.1")],
+        lambda **kw: [_BrokenDist(), _FakeDist("torch", "2.11.0"), _FakeDist("snac", "1.2.1")],
     )
     execd = _raw_execd(shim, "pip", ["snac"])
     assert execd is not None and execd[-2] == "--constraint", execd
@@ -1045,3 +1045,46 @@ def test_transformers_extras_are_dropped_when_transformers_is_not_installed(shim
     execd, marker = _run(shim, "pip", ["transformers[deepspeed]==5.5.0"])
     assert execd is None, execd
     assert marker == "5.5.0", marker
+
+
+# unsloth_nb_compat and unsloth_run PREPEND an activated transformers sidecar to
+# PYTHONPATH, and each sidecar is built with `uv pip install --target`, so it carries
+# a real transformers-X.dist-info. A bare distributions() walks sys.path in order and
+# would report the sidecar's transformers first, pinning the SIDECAR version into the
+# protected constraints. The pin is what stops the resolver moving the shared base
+# install, so pinning the sidecar version defeats it for every later kernel.
+def _sidecar_dir(tmp_path, version):
+    d = tmp_path / f"t_{version.replace('.', '_')}"
+    info = d / f"transformers-{version}.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: transformers\nVersion: {version}\n",
+        encoding = "utf-8",
+    )
+    (info / "RECORD").write_text("", encoding = "utf-8")
+    return d
+
+
+def test_protected_pins_ignore_a_sidecar_on_pythonpath(shim, tmp_path, monkeypatch):
+    """The pin must name the BAKED transformers, not the activated sidecar."""
+    baked = _sidecar_dir(tmp_path / "base", "4.57.6")
+    sidecar = _sidecar_dir(tmp_path / "sc", "5.5.0")
+    # the real thing: sidecar first on the search path, venv second
+    monkeypatch.setattr(shim, "_base_site_packages", lambda: [str(baked)])
+    monkeypatch.syspath_prepend(str(sidecar))
+
+    path = shim._protected_constraints_file()
+    assert path is not None
+    pins = Path(path).read_text(encoding = "utf-8").split()
+    tf = [p for p in pins if p.lower().startswith("transformers==")]
+    assert tf == ["transformers==4.57.6"], f"sidecar version leaked into the pins: {tf}"
+
+
+def test_base_site_packages_never_returns_a_pythonpath_entry(shim, tmp_path, monkeypatch):
+    """sys.prefix cannot be influenced by PYTHONPATH, which is the property the pin
+    scoping relies on. A sidecar on sys.path must not appear in the scope."""
+    sidecar = _sidecar_dir(tmp_path / "sc", "5.5.0")
+    monkeypatch.syspath_prepend(str(sidecar))
+    scope = shim._base_site_packages()
+    assert scope, "the base site-packages must be locatable"
+    assert str(sidecar) not in scope, scope

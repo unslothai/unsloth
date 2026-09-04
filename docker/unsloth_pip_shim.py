@@ -155,6 +155,37 @@ def _norm_name(name):
     return re.sub(r"[-_.]+", "-", name.strip()).lower() or None
 
 
+def _base_site_packages():
+    """site-packages of the venv that owns the REAL pip/uv, or [] if it cannot be
+    located.
+
+    Every scan below MUST be scoped to this rather than to sys.path. When a notebook
+    activates a transformers sidecar, unsloth_nb_compat and unsloth_run PREPEND that
+    sidecar to PYTHONPATH, and the sidecars are built with `uv pip install --target`,
+    so each one ships a real transformers-X.dist-info. A bare distributions() walks
+    sys.path in order and therefore reports the SIDECAR's transformers first, which
+    would pin the sidecar version into the protected constraints and let the resolver
+    move the shared base install to it.
+
+    The venv that owns the REAL pip is the authoritative answer. purelib is the
+    fallback and is safe for the same reason: it derives from sys.prefix, which
+    PYTHONPATH cannot influence, so it can never name a sidecar."""
+    import glob
+
+    venv = os.path.dirname(os.path.dirname(REAL["pip"]))
+    found = [
+        p
+        for p in sorted(glob.glob(os.path.join(venv, "lib", "python*", "site-packages")))
+        if os.path.isdir(p)
+    ]
+    if found:
+        return found
+    import sysconfig
+
+    purelib = sysconfig.get_paths().get("purelib") or ""
+    return [purelib] if purelib and os.path.isdir(purelib) else []
+
+
 _INSTALLED_NAMES = []
 
 
@@ -165,8 +196,13 @@ def _installed_names():
         try:
             from importlib.metadata import distributions
 
+            scope = _base_site_packages()
+            if not scope:
+                # unknown base: None makes _is_installed answer "assume baked", which
+                # is the stricter of the two answers
+                raise RuntimeError("base site-packages not found")
             found = set()
-            for dist in distributions():
+            for dist in distributions(path = scope):
                 try:
                     n = _norm_name(dist.metadata["Name"] or "")
                 except Exception:
@@ -542,7 +578,14 @@ def _protected_constraints_file():
     interrupted install is ordinary and must not block every later install."""
     try:
         from importlib.metadata import distributions
-        dists = list(distributions())
+
+        scope = _base_site_packages()
+        if not scope:
+            raise RuntimeError(f"could not locate the site-packages of {REAL['pip']}")
+        # scoped, NOT a bare distributions(): see _base_site_packages. An activated
+        # sidecar sits ahead of the venv on PYTHONPATH and would otherwise be pinned
+        # here in place of the baked version.
+        dists = list(distributions(path = scope))
     except Exception as exc:
         raise SystemExit(
             f"[unsloth-nb] could not enumerate installed packages ({exc}); refusing to "
