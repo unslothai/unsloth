@@ -11326,18 +11326,20 @@ def _mlx_estimate_available() -> bool:
 
 
 def _the_revision_that_loads(snapshots: list) -> list:
-    """Ordered so the revision `main` names is weighed first."""
+    """Just the revision `main` names, where it names one that is here.
+
+    A load resolves the repository through that ref and either completes it or fails, so no other
+    revision beside it may stand in: pricing one during an interrupted download would quote
+    weights, an architecture and a cache the load never opens. Where the ref names nothing on this
+    disk, the snapshots that are here are all there is to weigh.
+    """
     from hub.utils.hf_cache_state import ref_snapshot_dir
 
     paths = [Path(snapshot) for snapshot in snapshots]
     if not paths:
         return paths
     pinned = ref_snapshot_dir(paths[0].parent.parent)
-    return (
-        [pinned, *(path for path in paths if path.name != pinned.name)]
-        if pinned is not None
-        else paths
-    )
+    return [pinned] if pinned is not None else paths
 
 
 def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:

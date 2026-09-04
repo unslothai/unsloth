@@ -1079,9 +1079,12 @@ class TestEstimateMemoryRoute:
             str(snaps / "old"),
         )
         config = SimpleNamespace(path = None, is_local = False, is_lora = False, identifier = "org/model")
+        # A load resolves through the ref and completes that revision or fails, so an incomplete
+        # one is not priced from an older snapshot beside it -- that quotes weights the load never
+        # opens. Where the ref names nothing here, the snapshots that are here are all there is.
         for named, expected in (
             ("old", old),
-            ("stub", new_),
+            ("stub", None),
             ("collected", new_),
             ("../snapshots/old", new_),
             (None, new_),
@@ -4278,6 +4281,23 @@ class TestShardsTheLoaderReads:
             json.dumps({"weight_map": {"a.weight": "model-00001.safetensors"}})
         )
         assert self._spread(tmp_path, self._VISION) == ["model-00001.safetensors"]
+
+    @_NEEDS_MLX
+    @pytest.mark.parametrize("declared", [0, 1 << 40])
+    def test_a_shard_is_not_read_past_the_header_it_declares(self, tmp_path, declared):
+        # The read is otherwise bounded only by the shard itself, so a corrupt length pulls the
+        # weights into memory to be parsed as JSON. The panel prices whatever finished caching,
+        # and a slider drag is enough to reach it.
+        import mlx.core as mx
+
+        shard = tmp_path / "model.safetensors"
+        body = json.dumps({"a.weight": {"dtype": "F16", "shape": [2], "data_offsets": [0, 4]}})
+        shard.write_bytes(declared.to_bytes(8, "little") + body.encode() + b"\0" * 4)
+        with pytest.raises(ValueError, match = "safetensors header"):
+            mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16)
+        # The honest length still reads, so the guard is not just refusing everything.
+        shard.write_bytes(len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4)
+        assert list(mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16))
 
     @pytest.mark.parametrize(
         "weight_map", [["model-00001.safetensors"], "model-00001.safetensors", 7, True, None]

@@ -192,6 +192,11 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
     for shard in mlx_shard_files(model_dir, config):
         with open(shard, "rb") as handle:
             length = int.from_bytes(handle.read(8), "little")
+            # A header has to fit in the file that declares it. Without this the read is bounded
+            # only by the shard's own size, so a corrupt length pulls gigabytes of weights into
+            # memory to be parsed as JSON.
+            if not 0 < length <= os.fstat(handle.fileno()).st_size - 8:
+                raise ValueError(f"{shard} declares a {length}-byte safetensors header")
             header = json.loads(handle.read(length))
         for name, meta in header.items():
             if name == "__metadata__":
