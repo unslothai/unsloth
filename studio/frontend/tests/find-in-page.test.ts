@@ -2256,8 +2256,11 @@ test("every navigation waits for the query to settle, buttons included", async (
   // The helper queues the step and forces the settle rather than dropping it.
   assert.match(
     bar,
-    /if \(queryPending\) \{\s*queuedStepRef\.current = delta;\s*settleQuery\(\);/,
+    /if \(queryPending\) \{\s*queuedStepRef\.current = delta;[\s\S]*?settleQuery\(\);/,
   );
+
+  assert.match(bar, /queuedStepQueryRef\.current = query;/);
+  assert.match(bar, /queuedStepQueryRef\.current === query/);
 });
 
 test("the seam between the workspace and the surfaces in front of it is recorded", () => {

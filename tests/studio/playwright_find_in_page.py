@@ -839,6 +839,32 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
+
+    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    page = new_page(context)
+    page.locator('textarea[placeholder="Message"]').focus()
+    page.keyboard.press("Control+f")
+    loading = page.get_by_test_id("find-in-page-loading")
+    loading.wait_for(state = "visible", timeout = 5000)
+    field = loading.locator("input")
+    field.fill("definitely-no-such-match")
+    field.press("Enter")
+    loading.wait_for(
+        state = "detached",
+        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    loaded = page.locator('[role="search"] input')
+    loaded.fill("unsloth")
+    page.wait_for_timeout(500)
+    check(
+        engine,
+        mode,
+        "a queued step for an empty result does not advance a later query",
+        "1/28" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+    context.close()
+
     context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()

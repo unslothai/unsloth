@@ -77,15 +77,26 @@ export default function FindBar({
   );
   const inputRef = useRef<HTMLInputElement>(null);
   const queuedStepRef = useRef<-1 | 0 | 1>(pendingStep);
+  const queuedStepQueryRef = useRef(query);
   const stepWhenSettled = (delta: -1 | 1) => {
     if (queryPending) {
       queuedStepRef.current = delta;
+
+      queuedStepQueryRef.current = query;
       settleQuery();
       return;
     }
     if (delta < 0) previous();
     else next();
   };
+  useEffect(() => {
+    if (queuedStepRef.current === 0 || queuedStepQueryRef.current === query) {
+      return;
+    }
+    queuedStepRef.current = 0;
+    clearPendingStep();
+  }, [clearPendingStep, query]);
+
   useEffect(() => {
     if (queryPending || count === 0 || queuedStepRef.current === 0) return;
     const delta = queuedStepRef.current;
