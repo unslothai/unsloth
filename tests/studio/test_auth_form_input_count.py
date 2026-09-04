@@ -173,7 +173,19 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
     assert "<SettingsDialogMount active={active && ready} />" in root
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
-    assert "if (!active || !mounted) return null;" in mount
+    # SettingsDialogMount must refuse to render whenever it is inactive, whatever else it also
+    # checks. The spelling has already changed once: `mounted` became `settingsMounted ||
+    # monitorMounted` when the resource monitor moved in (#10237), and pinning the old literal left
+    # this red on main. Lock the `!active` guard, not the rest of the condition.
+    #
+    # Scoped to the exported component on purpose. SettingsDialogLoading above it carries its own
+    # `if (!active) return null;`, so searching the whole file passes even with the guard under
+    # test deleted outright, which is how the first attempt at this assertion was vacuous.
+    mount_body = mount.split("export function SettingsDialogMount", 1)
+    assert len(mount_body) == 2, "SettingsDialogMount is no longer declared here"
+    assert re.search(
+        r"if \(!active\b[^\n]*\) return null;", mount_body[1]
+    ), "SettingsDialogMount must bail out while inactive"
     assert "useSettingsDialogStore.getState().closeDialog();" in root
     # The settings chord must stay inert on the auth routes. That used to be an
     # early return inside a hand-rolled keydown handler; once the chords became
