@@ -40,6 +40,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { ggufVariantsMatch } from "../lib/model-identity";
@@ -82,6 +83,7 @@ interface LocalOnDeviceCardProps {
   adapterType?: string | null;
   trainingMethod?: string | null;
   isActive: boolean;
+  activeGgufVariant?: string | null;
   isLoading: boolean;
   preferredFile?: string | null;
   preferredFileIntent?: number;
@@ -203,6 +205,7 @@ export function LocalOnDeviceCard({
   adapterType,
   trainingMethod,
   isActive,
+  activeGgufVariant = null,
   isLoading,
   preferredFile = null,
   preferredFileIntent = 0,
@@ -360,21 +363,12 @@ export function LocalOnDeviceCard({
     )
       ? selectedVariantState.quant
       : preferredQuant;
-  const selectedQuant =
-    selectedVariantOverride &&
-    sortedVariants?.some((variant) =>
-      ggufVariantsMatch(variant.quant, selectedVariantOverride),
-    )
-      ? selectedVariantOverride
-      : (sortedVariants?.find((variant) =>
-          ggufVariantsMatch(variant.quant, currentVariantState.defaultVariant),
-        )?.quant ??
-        sortedVariants?.[0]?.quant ??
-        null);
-  const selectedVariant =
-    sortedVariants?.find((variant) =>
-      ggufVariantsMatch(variant.quant, selectedQuant),
-    ) ?? null;
+  const selectedVariant = resolveLocalGgufVariant(sortedVariants, {
+    selectedVariant: selectedVariantOverride,
+    activeVariant: isActive ? activeGgufVariant : null,
+    defaultVariant: currentVariantState.defaultVariant,
+  });
+  const selectedQuant = selectedVariant?.quant ?? null;
   // True while a managed download/update for this repo+variant is in flight.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId

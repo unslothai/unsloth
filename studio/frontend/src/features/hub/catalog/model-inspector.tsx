@@ -558,7 +558,7 @@ export const ModelInspector = memo(function ModelInspector({
       model,
       isDataset,
       mediaRuntime: runsOnMediaRuntime,
-      safetensorsRuntimeAvailable:
+      nonGgufRuntimeAvailable:
         !chatOnlyMeasured && unslothSupport.status !== "unsupported",
     })
       ? onOpenRunConfig
@@ -678,6 +678,7 @@ export const ModelInspector = memo(function ModelInspector({
               adapterType={model.adapterType}
               trainingMethod={model.trainingMethod}
               isActive={isActive}
+              activeGgufVariant={activeGgufVariant}
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}

@@ -3,6 +3,7 @@
 
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import type { SelectedModelView } from "../types";
+import { EMBEDDING_TAGS } from "./hf-model-meta.ts";
 
 export interface HubModelRunSelection {
   ggufVariant?: string;
@@ -18,7 +19,36 @@ function hasSupportedFormat(model: SelectedModelView): boolean {
   if (model.modelFormat === "gguf") {
     return model.isGguf;
   }
-  return model.modelFormat === "safetensors" && !model.isGguf;
+  return (
+    (model.modelFormat === "safetensors" ||
+      model.modelFormat === "checkpoint") &&
+    !model.isGguf
+  );
+}
+
+const GENERATIVE_CAPABILITIES = new Set([
+  "conversational",
+  "tools",
+  "reasoning",
+  "code",
+  "vision",
+  "audio",
+  "diffusion",
+]);
+
+function isEmbeddingOnly(model: SelectedModelView): boolean {
+  if (
+    model.isGguf ||
+    !model.capabilities.some((capability) => capability.key === "embedding")
+  ) {
+    return false;
+  }
+  if (EMBEDDING_TAGS.has(model.pipelineTag?.trim().toLowerCase() ?? "")) {
+    return true;
+  }
+  return !model.capabilities.some((capability) =>
+    GENERATIVE_CAPABILITIES.has(capability.key),
+  );
 }
 
 function hasRunnableInventoryModel(model: SelectedModelView): boolean {
@@ -26,6 +56,7 @@ function hasRunnableInventoryModel(model: SelectedModelView): boolean {
     model.runtimeCanChat &&
     model.isDownloaded &&
     !model.isPartial &&
+    !isEmbeddingOnly(model) &&
     isPresent(model.loadId) &&
     hasSupportedFormat(model)
   );
@@ -37,7 +68,7 @@ function hasValidSelection(
 ): boolean {
   const hasGgufVariant = isPresent(selection.ggufVariant);
   const hasGgufFilename = isPresent(selection.ggufFilename);
-  if (model.modelFormat === "safetensors") {
+  if (model.modelFormat !== "gguf") {
     return !(hasGgufVariant || hasGgufFilename);
   }
   return !model.requiresVariant || hasGgufVariant;
@@ -76,12 +107,12 @@ export function isHubModelRunEligible({
   model,
   isDataset,
   mediaRuntime,
-  safetensorsRuntimeAvailable,
+  nonGgufRuntimeAvailable,
 }: {
   model: SelectedModelView | null;
   isDataset: boolean;
   mediaRuntime: boolean;
-  safetensorsRuntimeAvailable: boolean;
+  nonGgufRuntimeAvailable: boolean;
 }): boolean {
   if (
     !model ||
@@ -94,7 +125,9 @@ export function isHubModelRunEligible({
 
   return (
     model.modelFormat === "gguf" ||
-    (model.modelFormat === "safetensors" && safetensorsRuntimeAvailable)
+    ((model.modelFormat === "safetensors" ||
+      model.modelFormat === "checkpoint") &&
+      nonGgufRuntimeAvailable)
   );
 }
 

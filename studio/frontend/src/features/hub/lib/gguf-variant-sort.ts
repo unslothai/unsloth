@@ -113,3 +113,29 @@ export function sortLocalGgufVariants(
     return compareGgufVariantFitAndSize(a, b, options);
   });
 }
+
+export function resolveLocalGgufVariant<T extends { quant: string }>(
+  variants: readonly T[] | null | undefined,
+  options: {
+    selectedVariant?: string | null;
+    activeVariant?: string | null;
+    defaultVariant?: string | null;
+  },
+): T | null {
+  if (!variants || variants.length === 0) {
+    return null;
+  }
+  for (const candidate of [
+    options.selectedVariant,
+    options.activeVariant,
+    options.defaultVariant,
+  ]) {
+    const match = variants.find((variant) =>
+      ggufVariantsMatch(variant.quant, candidate),
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return variants[0] ?? null;
+}

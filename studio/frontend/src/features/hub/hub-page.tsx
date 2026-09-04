@@ -35,6 +35,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
@@ -1441,7 +1442,13 @@ export function ModelsPage() {
           model: selectedModel,
           selection,
         });
-        if (!request) return;
+        if (!request) {
+          toast.error("Couldn't open run settings.", {
+            description:
+              "The model or selected quantization is no longer available to run.",
+          });
+          return;
+        }
         clearNewChatDraft();
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);

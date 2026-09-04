@@ -239,7 +239,7 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
   );
   assert.match(
     modelInspector,
-    /safetensorsRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
+    /nonGgufRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
   );
   assert.match(
     modelInspector,

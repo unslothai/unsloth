@@ -4,11 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createHubModelConfigHandoff,
-  isHubModelRunEligible,
-} from "../src/features/hub/lib/model-run-selection.ts";
 import type { SelectedModelView } from "../src/features/hub/types.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { createHubModelConfigHandoff, isHubModelRunEligible } = await import(
+  "../src/features/hub/lib/model-run-selection.ts"
+);
 
 function selectedModel(
   overrides: Partial<SelectedModelView> = {},
@@ -57,19 +60,19 @@ function eligible(
   overrides: Partial<{
     isDataset: boolean;
     mediaRuntime: boolean;
-    safetensorsRuntimeAvailable: boolean;
+    nonGgufRuntimeAvailable: boolean;
   }> = {},
 ): boolean {
   return isHubModelRunEligible({
     model,
     isDataset: false,
     mediaRuntime: false,
-    safetensorsRuntimeAvailable: true,
+    nonGgufRuntimeAvailable: true,
     ...overrides,
   });
 }
 
-test("only complete chat-loadable safetensors and GGUF models are eligible", () => {
+test("only complete chat-loadable whole models in supported formats are eligible", () => {
   assert.equal(eligible(selectedModel()), true);
   assert.equal(
     eligible(
@@ -78,14 +81,14 @@ test("only complete chat-loadable safetensors and GGUF models are eligible", () 
         modelFormat: "gguf",
         requiresVariant: true,
       }),
-      { safetensorsRuntimeAvailable: false },
+      { nonGgufRuntimeAvailable: false },
     ),
     true,
   );
   assert.equal(eligible(selectedModel(), { isDataset: true }), false);
   assert.equal(eligible(selectedModel(), { mediaRuntime: true }), false);
   assert.equal(
-    eligible(selectedModel(), { safetensorsRuntimeAvailable: false }),
+    eligible(selectedModel(), { nonGgufRuntimeAvailable: false }),
     false,
   );
   assert.equal(eligible(selectedModel({ runtimeCanChat: false })), false);
@@ -93,9 +96,76 @@ test("only complete chat-loadable safetensors and GGUF models are eligible", () 
   assert.equal(eligible(selectedModel({ isPartial: true })), false);
   assert.equal(eligible(selectedModel({ loadId: null })), false);
 
-  for (const modelFormat of ["adapter", "checkpoint", "unknown"] as const) {
+  assert.equal(eligible(selectedModel({ modelFormat: "checkpoint" })), true);
+  assert.equal(
+    eligible(selectedModel({ modelFormat: "checkpoint" }), {
+      nonGgufRuntimeAvailable: false,
+    }),
+    false,
+  );
+
+  for (const modelFormat of ["adapter", "unknown"] as const) {
     assert.equal(eligible(selectedModel({ modelFormat })), false, modelFormat);
   }
+});
+
+test("embedding-only non-GGUF models never enter the Chat run flow", () => {
+  const embedding = { key: "embedding" as const, label: "Embeddings" };
+
+  for (const pipelineTag of [
+    "feature-extraction",
+    "sentence-similarity",
+    " text-embeddings-inference ",
+  ]) {
+    assert.equal(
+      eligible(selectedModel({ pipelineTag, capabilities: [embedding] })),
+      false,
+      pipelineTag,
+    );
+  }
+  assert.equal(eligible(selectedModel({ capabilities: [embedding] })), false);
+  assert.equal(
+    eligible(
+      selectedModel({
+        capabilities: [
+          embedding,
+          { key: "conversational", label: "Conversational" },
+        ],
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    eligible(
+      selectedModel({
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "feature-extraction",
+        capabilities: [embedding],
+      }),
+    ),
+    true,
+  );
+});
+
+test("checkpoint handoffs use the whole-model Chat identity", () => {
+  const request = createHubModelConfigHandoff({
+    requestId: "request-checkpoint",
+    model: selectedModel({ modelFormat: "checkpoint" }),
+    selection: {},
+  });
+
+  assert.equal(request?.id, "Org/Model");
+  assert.equal(request?.meta.isLora, false);
+  assert.equal(request?.meta.isGguf, false);
+  assert.equal(
+    createHubModelConfigHandoff({
+      requestId: "request-checkpoint-variant",
+      model: selectedModel({ modelFormat: "checkpoint" }),
+      selection: { ggufVariant: "Q4_K_M" },
+    }),
+    null,
+  );
 });
 
 test("MLX safetensors follow runtime availability", () => {
@@ -115,10 +185,7 @@ test("MLX safetensors follow runtime availability", () => {
 
   for (const model of models) {
     assert.equal(eligible(model), true);
-    assert.equal(
-      eligible(model, { safetensorsRuntimeAvailable: false }),
-      false,
-    );
+    assert.equal(eligible(model, { nonGgufRuntimeAvailable: false }), false);
     assert.notEqual(
       createHubModelConfigHandoff({
         requestId: "request-mlx",
