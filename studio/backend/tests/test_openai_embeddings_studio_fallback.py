@@ -56,11 +56,15 @@ def studio_embedder(monkeypatch):
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: MODEL)
     monkeypatch.setattr(rag_embeddings, "encode", _vectors)
 
-    def _encode_with_identity(texts, *, model_name = None, normalize = True):
+    def _encode_with_identity(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         # Delegates to whatever encode the test installed, so a test that makes encode
         # blow up or block still drives the real route.
-        return rag_embeddings.encode(texts, model_name = model_name,
-                                     normalize = normalize), IDENTITY
+        return rag_embeddings.encode(texts, model_name = model_name, normalize = normalize), IDENTITY
 
     monkeypatch.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
     monkeypatch.setattr(rag_embeddings, "token_counter", lambda model_name = None: len)
@@ -385,25 +389,34 @@ def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
     studio_embedder.setattr(
-        rag_embeddings, "max_tokens",
+        rag_embeddings,
+        "max_tokens",
         lambda model_name = None: (seen["max_tokens"].append(model_name), None)[1],
     )
     studio_embedder.setattr(
-        rag_embeddings, "token_counter",
+        rag_embeddings,
+        "token_counter",
         lambda model_name = None: (seen["token_counter"].append(model_name), len)[1],
     )
     studio_embedder.setattr(
-        rag_embeddings, "dim",
+        rag_embeddings,
+        "dim",
         lambda model_name = None: (seen["dim"].append(model_name), 2)[1],
     )
     studio_embedder.setattr(
-        rag_embeddings, "encode_with_identity",
-        lambda texts, **kw: (seen["encode"].append(kw.get("model_name")),
-                             (_vectors(texts), IDENTITY))[1],
+        rag_embeddings,
+        "encode_with_identity",
+        lambda texts, **kw: (
+            seen["encode"].append(kw.get("model_name")),
+            (_vectors(texts), IDENTITY),
+        )[1],
     )
     _call({"input": "alpha", "dimensions": 2})
     assert seen == {
-        "max_tokens": [MODEL], "token_counter": [MODEL], "dim": [MODEL], "encode": [MODEL],
+        "max_tokens": [MODEL],
+        "token_counter": [MODEL],
+        "dim": [MODEL],
+        "encode": [MODEL],
     }
 
 
