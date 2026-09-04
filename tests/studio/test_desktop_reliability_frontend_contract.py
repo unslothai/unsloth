@@ -903,9 +903,9 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
-    header = opening + after.split(
-        '      {pageMode === "train" ? (\n        <DiffusionTrainPanel', 1
-    )[0]
+    header = (
+        opening + after.split('      {pageMode === "train" ? (\n        <DiffusionTrainPanel', 1)[0]
+    )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
     assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
