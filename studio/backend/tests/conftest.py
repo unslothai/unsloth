@@ -56,6 +56,10 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 # Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+# Two-Spark serving is gated on the hardware, so on a paired DGX Spark the load-path
+# hooks would otherwise reach for ssh from unrelated load tests. The spark tests stub
+# the cluster module and override this themselves.
+os.environ.setdefault("UNSLOTH_SPARK_SERVING", "0")
 # settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
 # transient tenant on a live card has time to clear. Under test the snapshots are stubs
 # whose answers do not change with time, so the wait buys nothing and the max() over the

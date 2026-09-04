@@ -11764,6 +11764,16 @@ def _wait_for_native_audio_gpu_free_gb(
         time.sleep(min(interval, remaining))
 
 
+def _spark_topology() -> Optional[str]:
+    """The two-Spark serving topology for the status poll; None off a paired Spark."""
+    try:
+        from core.inference.spark_serving import current_topology
+
+        return current_topology()
+    except Exception:
+        return None
+
+
 async def _unload_llama_before_standard_load(llama_backend) -> None:
     """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
     if not llama_backend.is_loaded:
@@ -13171,7 +13181,15 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
+        # Two-Spark serving (paired DGX Spark only; a no-op everywhere else). Before the
+        # load it may turn the request into a layer split by starting the peer's
+        # rpc-server and adding --rpc to the extra args; after it, it may attach a
+        # replica on the peer behind the in-process router.
+        from core.inference import spark_serving
+
+        _spark_slots = _resolve_parallel_slots(request, fastapi_request)
+        request = await spark_serving.before_load(request, _spark_slots)
+        response = await _load_model_impl(
             request,
             fastapi_request,
             current_subject,
@@ -13179,6 +13197,8 @@ async def _run_tracked_load_model_impl(
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = attempt.cancel_event,
         )
+        await spark_serving.after_load(get_llama_cpp_backend(), _spark_slots)
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -16364,6 +16384,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                spark_topology = _spark_topology(),
             )
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
