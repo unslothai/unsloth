@@ -287,9 +287,7 @@ def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monk
     assert selected == []
 
 
-def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(
-    isolated_skills, monkeypatch
-):
+def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(isolated_skills, monkeypatch):
     from core.inference import tools as tools_module
 
     home, _ = isolated_skills

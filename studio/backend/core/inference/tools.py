@@ -10484,7 +10484,6 @@ def execute_tool(
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "read_skill":
         from .skills import MAX_SKILL_PAGE_CHARS, SkillError, read_skill_resource
-
         try:
             page_chars = MAX_SKILL_PAGE_CHARS
             while True:
