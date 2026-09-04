@@ -373,9 +373,16 @@ $f
         root_p=$(CDPATH= cd -P -- "$root" 2>/dev/null && pwd -P) || root_p="$root"
         home_p=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || home_p="$HOME"
 
+        # EVERY entry, no -type filter. Filtering to f/d skipped symlinks, which is
+        # the one shape an interpreter/launcher leak actually takes: an unpinned
+        # UV_PYTHON_BIN_DIR drops managed-Python links into ~/.local/bin, and a uv
+        # tool install drops ~/.local/bin/unsloth. Such a link is invisible whenever
+        # its parent is one of the allowed directory NODES below, so the leak this
+        # mode exists to catch read as OK. Sockets and fifos are leaks too.
+        # find defaults to -P on GNU and BSD alike, so -newer reads the link's own
+        # lstat mtime and a dangling link is still reported rather than erroring.
         # Allowances below are paths the OS or the shell writes.
-        strays=$(find "$home_p" -newer "$stamp" \
-            \( -type f -o -type d \) -print 2>/dev/null |
+        strays=$(find "$home_p" -newer "$stamp" -print 2>/dev/null |
           while IFS= read -r p; do
             pp=$(CDPATH= cd -P -- "$(dirname "$p")" 2>/dev/null && pwd -P) || continue
             pp="$pp/$(basename "$p")"
@@ -388,8 +395,12 @@ $f
               ("$home_p"/.bash_history|"$home_p"/.zsh_history) continue ;;
               ("$home_p"/.sudo_as_admin_successful) continue ;;
               ("$home_p"/.wget-hsts|"$home_p"/.lesshst) continue ;;
-              # The directory NODES only; children are still reported.
-              ("$home_p"/.local|"$home_p"/.cache|"$home_p"/.config) continue ;;
+              # The directory NODES only; children are still reported. Allowed
+              # because the OS bumps their mtime, which a real directory is all
+              # this can be: the same name as a SYMLINK is a redirect of the whole
+              # subtree out of $HOME, and it would take its children with it.
+              ("$home_p"/.local|"$home_p"/.cache|"$home_p"/.config)
+                if [ -d "$pp" ] && [ ! -L "$pp" ]; then continue; fi ;;
               ("$home_p"/.docker/*|"$home_p"/.gitconfig) continue ;;
             esac
             printf ' %s\n' "$pp"
