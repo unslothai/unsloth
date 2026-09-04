@@ -291,3 +291,19 @@ test("another quant of the resident repo is not itself resident", () => {
     "keyless",
   );
 });
+
+// `org/Foo` and `Org/Foo` are one repo to sameBaseModelId and to the server's alias
+// index. Two rows meant two picker entries, and choosing the second selected the first.
+test("case variants of one repo are a single option", () => {
+  const catalog = [
+    { id: "org/Foo", loaded: false, quant: "BF16", quants: ["BF16"] },
+    { id: "Org/Foo", loaded: true, quant: "Q2_K", quants: ["Q2_K"] },
+  ];
+  const options = exampleModelOptions(catalog);
+  assert.equal(options.length, 1);
+  // The first spelling is the one the resolver reaches, so it keeps the id and quants.
+  assert.equal(options[0].id, "org/Foo");
+  assert.deepEqual(options[0].quants, ["BF16"]);
+  // Residency belongs to the repo, not to one spelling of it.
+  assert.equal(options[0].loaded, true);
+});

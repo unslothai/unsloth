@@ -53,11 +53,26 @@ export function exampleModelOptions(
   catalog: OpenAIModel[] | null,
 ): ExampleModelOption[] {
   if (catalog === null) return [];
-  const options = catalog.map((m) => ({
-    id: m.id,
-    loaded: m.loaded === true,
-    quants: m.quants?.length ? m.quants : m.quant ? [m.quant] : [],
-  }));
+  // Two rows can spell one repo differently (`org/Foo` from the Hub cache, `Org/Foo`
+  // from LM Studio). Ids resolve case-insensitively here and in the server's alias
+  // index, so a second spelling is not a second choice: offering it would show a row
+  // that selects the first one, and name quants only the first copy can serve.
+  const byIdentity = new Map<string, ExampleModelOption>();
+  for (const m of catalog) {
+    const identity = m.id.trim().toLowerCase();
+    const existing = byIdentity.get(identity);
+    if (existing) {
+      // Residency belongs to the repo, so keep it wherever the rows disagree.
+      existing.loaded = existing.loaded || m.loaded === true;
+      continue;
+    }
+    byIdentity.set(identity, {
+      id: m.id,
+      loaded: m.loaded === true,
+      quants: m.quants?.length ? m.quants : m.quant ? [m.quant] : [],
+    });
+  }
+  const options = [...byIdentity.values()];
   return [
     ...options.filter((o) => o.loaded),
     ...options.filter((o) => !o.loaded),
