@@ -96,7 +96,13 @@ if ! "$PY" -c "import studio.backend.main" >/dev/null 2>&1; then
     echo "[studio-update] ERROR: 'import studio.backend.main' failed after update." >&2
     echo "[studio-update] A new dependency may be missing. Re-run with --with-deps:" >&2
     echo "[studio-update]   unsloth-studio-update --with-deps" >&2
-    echo "[studio-update] NOT restarting Studio: the running process keeps serving." >&2
+    echo "[studio-update] NOT restarting Studio, so the process already running keeps" >&2
+    echo "[studio-update] serving whatever it has already imported. That is the only" >&2
+    echo "[studio-update] thing still working: the venv on disk is ALREADY replaced." >&2
+    echo "[studio-update] Anything it imports lazily from here on fails the same way," >&2
+    echo "[studio-update] any restart parks Studio in FATAL, and because the venv lives" >&2
+    echo "[studio-update] under \$UNSLOTH_STUDIO_HOME, a persisted home keeps it broken" >&2
+    echo "[studio-update] across docker rm + docker run. Fix it before restarting." >&2
     echo "[studio-update] Once fixed:  supervisorctl restart studio" >&2
     exit 1
 fi

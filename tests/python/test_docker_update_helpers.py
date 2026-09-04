@@ -353,3 +353,24 @@ def _fetcher_module():
 def test_fetcher_normalizes_the_base_build_for_the_marker_tag(release_tag, expected):
     # the same split install_llama_prebuilt.py writes, or the two installers disagree
     assert _fetcher_module().base_build_tag(release_tag) == expected
+
+
+def test_a_failed_studio_update_says_the_venv_on_disk_is_already_replaced(tmp_path: Path):
+    """Not restarting protects the running process, and only the code it has already
+    imported: the backend defers thousands of imports, so a lazy one fails the same
+    way. The venv itself is under $UNSLOTH_STUDIO_HOME, which the header recommends
+    putting on a named volume, so the replacement also survives docker rm + docker run.
+    The message used to stop at "the running process keeps serving", which reads as
+    though nothing is wrong until the operator chooses to restart."""
+    env = _studio_env(tmp_path, import_ok = False)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode != 0, "a broken update must not report success"
+    err = res.stderr.lower()
+    assert "already replaced" in err, (
+        "the failure never says the on-disk environment has been overwritten:\n" + res.stderr
+    )
+    assert "fatal" in err, "the failure never says a restart parks Studio in FATAL:\n" + res.stderr
+    assert "unsloth_studio_home" in err or "persisted home" in err, (
+        "the failure never says a persisted Studio home keeps it broken across a "
+        "container recreate:\n" + res.stderr
+    )
