@@ -75,9 +75,9 @@ def test_conf_paths_under_a_non_utf8_root_stay_inside_it(tmp_path: Path) -> None
     assert env["UV_CACHE_DIR"] == str(root / "cache" / "uv")
     assert env["PIP_CACHE_DIR"] == str(root / "cache" / "pip")
     for name in _ROOTED:
-        assert os.fsencode(env[name]).startswith(root_bytes + b"/"), (
-            f"{name} escaped the root: {os.fsencode(env[name])!r}"
-        )
+        assert os.fsencode(env[name]).startswith(
+            root_bytes + b"/"
+        ), f"{name} escaped the root: {os.fsencode(env[name])!r}"
     # And specifically not the U+FFFD sibling, which exists as a distinct
     # directory name and would silently be created by the update.
     assert b"\xef\xbf\xbd" not in os.fsencode(env["UV_CACHE_DIR"])

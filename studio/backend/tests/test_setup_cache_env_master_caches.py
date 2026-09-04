@@ -272,8 +272,7 @@ def test_all_four_launcher_sites_really_do_use_the_master_root(monkeypatch, tmp_
         ), f"_export_portable_roots no longer exports {var} as $UNSLOTH_ROOT/cache/{leaf}"
         # share/studio.conf, written by the printf block in _create_studio_shortcuts.
         assert (
-            f"""printf '%s\\n' "export {var}='$_css_quoted_root/cache/{leaf}'\""""
-            in install_text
+            f"""printf '%s\\n' "export {var}='$_css_quoted_root/cache/{leaf}'\"""" in install_text
         ), f"share/studio.conf no longer records {var} as <root>/cache/{leaf}"
         # The generated bin/unsloth wrapper.
         assert (
