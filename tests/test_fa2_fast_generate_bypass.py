@@ -4,11 +4,21 @@ import ast
 import inspect
 import os
 from contextlib import nullcontext
+from importlib.metadata import version as installed_version
 from pathlib import Path
 from types import SimpleNamespace
 
+from packaging.version import Version
+
 
 VISION_PATH = Path(__file__).parents[1] / "unsloth" / "models" / "vision.py"
+
+# The exec'd copy below needs the same two module globals vision.py imports at its
+# top. packaging and importlib.metadata rather than unsloth_zoo.utils.Version and
+# transformers.__version__, because importing unsloth_zoo pulls in bitsandbytes and
+# CUDA -- the whole reason this file rebuilds the function from source. Only the names
+# have to resolve: NUM_LOGITS_TO_KEEP is seeded below, so neither branch touches kwargs.
+TRANSFORMERS_VERSION = installed_version("transformers")
 
 
 def _load_function(name, namespace):
@@ -204,6 +214,8 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {architecture: None},
         "DEVICE_TYPE_TORCH": "cuda",
+        "Version": Version,
+        "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
     }
@@ -287,6 +299,8 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {"Qwen3VLForConditionalGeneration": None},
         "DEVICE_TYPE_TORCH": "cuda",
+        "Version": Version,
+        "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
     }
