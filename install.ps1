@@ -533,27 +533,74 @@ function Install-UnslothStudio {
         return $null
     }
 
-    # Does $IndexUrl publish a win_arm64 CUDA wheel of $Project for CPython $PythonMinor?
-    # Reads the PEP 503 page and looks for a matching wheel; a "+cpu" local version is
-    # rejected so a CPU-only index cannot masquerade as CUDA.
-    function Test-WoaCudaWheel {
+    # The version of the newest win_arm64 CUDA wheel of $Project on $IndexUrl for CPython
+    # $PythonMinor, or $null when the index publishes none.
+    #
+    # Two things this has to get right. A PEP 503 page encodes "+" as %2B in the href and
+    # usually renders the raw filename as the link text, so both spellings occur and a
+    # match on either alone is chance; unescape before testing. And CUDA is established
+    # POSITIVELY, by requiring a +cuNNN local version, rather than by rejecting "+cpu":
+    # PyPI's own win_arm64 torch wheels carry no local version at all, so a mirror serving
+    # those passed a "not +cpu" test and the host went native on CPU-only torch, which is
+    # the one outcome worse than staying emulated. The cost is that a private index whose
+    # CUDA wheels carry no +cu tag now reads as unknown and takes the x64 path -- the safe
+    # direction, since that path works.
+    function Get-WoaCudaWheelVersion {
         param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
-        if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $false }
+        if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $null }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         $projectUrl = Join-UrlPath $IndexUrl "$Project/"
         try {
             $body = [string](Invoke-RestMethod -Uri $projectUrl -UseBasicParsing -TimeoutSec 20)
         } catch {
-            return $false
+            return $null
         }
-        if ([string]::IsNullOrWhiteSpace($body)) { return $false }
+        if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+        $best = $null
+        $bestKey = $null
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
+            try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
             if ($name -notlike "*$tag-$tag*") { continue }
-            if ($name -match '\+cpu') { continue }
-            return $true
+            if ($name -notmatch '\+cu[0-9]+') { continue }
+            $version = ($name -split '-')[1]
+            # Order on the numeric release only: "2.15.0.dev20260819+cu134" and
+            # "2.14.0+cu134" differ where it matters in the first three fields, and a
+            # .dev suffix must not make a newer line look older.
+            $release = ($version -split '\+', 2)[0]
+            $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
+            $key = $null
+            try { $key = [version]$numeric } catch { continue }
+            if ($null -eq $bestKey -or $key -gt $bestKey) {
+                $bestKey = $key; $best = $version
+            } elseif ($key -eq $bestKey -and $version -gt $best) {
+                # Same release, different .dev stamp: the stamps sort correctly as text.
+                $best = $version
+            }
         }
-        return $false
+        return $best
+    }
+
+    # Does $IndexUrl publish such a wheel at all? The probe's original question, kept as
+    # the name every call site and simulation already asks by.
+    function Test-WoaCudaWheel {
+        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
+        return [bool](Get-WoaCudaWheelVersion -IndexUrl $IndexUrl -PythonMinor $PythonMinor -Project $Project)
+    }
+
+    # torch and torchaudio agree on major.minor when they are built for each other
+    # (torchaudio 2.10.0 pinned torch==2.10.0). Compared on that alone: the local version
+    # and any .dev stamp are not part of the pairing.
+    function Test-WoaAudioMatchesTorch {
+        param([string]$TorchVersion, [string]$AudioVersion)
+        if (-not $TorchVersion -or -not $AudioVersion) { return $false }
+        $shorten = {
+            param($v)
+            [regex]::Match((($v -split '\+', 2)[0]), '^\d+\.\d+').Value
+        }
+        $a = & $shorten $TorchVersion
+        $b = & $shorten $AudioVersion
+        return ($a -and $b -and $a -eq $b)
     }
 
     # Sets $script:WoaNativeCudaTorch / $script:WoaTorchIndexUrl when this is a
@@ -618,7 +665,20 @@ function Install-UnslothStudio {
         $script:WoaNativeCudaTorch = $true
         $script:WoaTorchIndexUrl = $torchIndex
         $script:WoaPyarrowSource = $pyarrowSource
-        $script:WoaTorchAudio = Test-WoaCudaWheel -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio"
+        # torchaudio only when the channel's audio wheel pairs with its torch wheel.
+        # Existence alone is not enough: the GA channel publishes torch 2.14.0+cu134
+        # beside torchaudio 2.11.0+cu134, torchaudio 2.11 dropped the exact torch pin
+        # that used to make such a pair unresolvable, and the native specs below are
+        # open-ended -- so the resolver would happily install that pair and torchaudio's
+        # extension would fail to load against a libtorch three minors newer. When no
+        # matching pair exists the host installs without audio, which is what every
+        # Windows-on-ARM install did before this index published one at all.
+        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor
+        $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio"
+        $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
+        if ($_woaAudioVersion -and -not $script:WoaTorchAudio) {
+            substep "windows on arm: this index has torchaudio $_woaAudioVersion but torch $_woaTorchVersion; skipping torchaudio."
+        }
     }
 
     function Get-TauriTorchIndexFamily {

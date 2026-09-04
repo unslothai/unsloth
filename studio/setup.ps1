@@ -5156,14 +5156,24 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 # torch/vision/audio, so PyPI has to stay reachable for their shared dependencies
 # (filelock, sympy, ...); best-match is required alongside it because torch exists on
 # both and uv's first-index default would take PyPI's build, which has no win_arm64
-# wheel; and the wheels are nightlies, hence prereleases. Empty on every other host,
-# where it splats to nothing and the commands are unchanged.
+# wheel. Empty on every other host, where it splats to nothing and the commands are
+# unchanged.
 # Gated on $UseUv as well as the platform: these are uv spellings, and Fast-Install
 # falls back to `pip install` with the same argument list, which would reject them.
 # Without uv this host cannot install anyway (pip has no equivalent of the requirement
 # overrides install.ps1 sets up), so there is nothing to preserve in that case.
+#
+# --prerelease=allow only for the nightly channel, as install.ps1 already does. The GA
+# channel publishes ordinary releases (2.14.0+cu134) that resolve without it, and
+# "allow" means all prereleases everywhere: alongside unsafe-best-match and public PyPI
+# on the same command, a prerelease of torch or of any shared dependency could outrank
+# the GA build this host is here to install.
 $WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
-    @("--prerelease=allow", "--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
+    $_woaIndexArgs = @("--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
+    if ($WinArm64TorchIndexUrl -match 'nightly') {
+        $_woaIndexArgs = @("--prerelease=allow") + $_woaIndexArgs
+    }
+    $_woaIndexArgs
 } else { @() }
 # $WinArm64TorchIndexUrl is the index those arguments are FOR; it is recovered and
 # re-exported above the no-torch guard, since the manifest rewrite needs it in every mode.

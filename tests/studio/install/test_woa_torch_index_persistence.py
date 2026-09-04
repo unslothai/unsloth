@@ -797,3 +797,217 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         ps_line = ps_block[ps_block.index("$_arm64CudaOptOut =") :].split("\n")[0]
         ps_set = set(re.findall(r'"(0|false|no|off)"', ps_line))
         assert python_set == ps_set == {"0", "false", "no", "off"}
+
+
+INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
+
+
+def _ps_function(path: pathlib.Path, name: str) -> str:
+    return _function_source(path.read_text(encoding = "utf-8"), name)
+
+
+class TestTheCudaWheelProbeIsNotFooled:
+    """install.ps1: what the probe accepts as proof of a win_arm64 CUDA wheel.
+
+    Driven against synthetic PEP 503 pages with Invoke-RestMethod stubbed, so these are
+    offline and deterministic. The live NVIDIA channels are exercised separately in
+    temp/sim10282/probe_test.ps1.
+    """
+
+    @staticmethod
+    def _probe(body: str, project: str = "torch", minor: str = "3.13") -> str:
+        script = "\n".join([
+            "function Join-UrlPath { param([string]$Base,[string]$Path)",
+            "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
+            f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+            _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
+            f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '{minor}' -Project '{project}'",
+            "Write-Output \"[$v]\"",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1][1:-1]
+
+    @requires_pwsh
+    def test_a_percent_encoded_cpu_wheel_is_rejected(self):
+        """
+        PEP 503 hrefs encode `+` as %2B. Matching a literal `\\+cpu` never fired on the
+        encoded spelling, so a CPU-only mirror read as CUDA and the host went native on
+        CPU torch -- worse than staying emulated, because the GPU then goes unused with
+        no fallback.
+        """
+        body = '<a href="torch-2.14.0%2Bcpu-cp313-cp313-win_arm64.whl">t</a>'
+        assert self._probe(body) == ""
+
+    @requires_pwsh
+    def test_an_untagged_wheel_is_rejected(self):
+        """
+        PyPI's own win_arm64 torch wheels carry no local version at all. `not +cpu`
+        accepted them; CUDA has to be established positively.
+        """
+        assert self._probe('<a href="torch-2.14.0-cp313-cp313-win_arm64.whl">t</a>') == ""
+
+    @requires_pwsh
+    @pytest.mark.parametrize("spelling", ["2.14.0%2Bcu134", "2.14.0+cu134"])
+    def test_both_spellings_of_a_cuda_wheel_are_accepted(self, spelling: str):
+        body = f'<a href="torch-{spelling}-cp313-cp313-win_arm64.whl">t</a>'
+        assert self._probe(body) == "2.14.0+cu134"
+
+    @requires_pwsh
+    def test_the_interpreter_tag_still_has_to_match(self):
+        body = '<a href="torch-2.14.0%2Bcu134-cp311-cp311-win_arm64.whl">t</a>'
+        assert self._probe(body, minor = "3.13") == ""
+        assert self._probe(body, minor = "3.11") == "2.14.0+cu134"
+
+    @requires_pwsh
+    def test_the_platform_still_has_to_match(self):
+        body = '<a href="torch-2.14.0%2Bcu134-cp313-cp313-win_amd64.whl">t</a>'
+        assert self._probe(body) == ""
+
+    @requires_pwsh
+    def test_the_newest_release_wins(self):
+        body = " ".join(
+            f'<a href="torch-{v}-cp313-cp313-win_arm64.whl">t</a>'
+            for v in ("2.9.0%2Bcu134", "2.14.0%2Bcu134", "2.11.0%2Bcu134")
+        )
+        assert self._probe(body) == "2.14.0+cu134"
+
+    @requires_pwsh
+    def test_a_dev_stamp_does_not_look_older_than_a_release(self):
+        """2.15.0.dev... is newer than 2.14.0; a plain string sort would disagree."""
+        body = " ".join(
+            f'<a href="torch-{v}-cp313-cp313-win_arm64.whl">t</a>'
+            for v in ("2.14.0%2Bcu134", "2.15.0.dev20260819%2Bcu134")
+        )
+        assert self._probe(body) == "2.15.0.dev20260819+cu134"
+
+    @requires_pwsh
+    def test_the_newest_dev_stamp_of_one_release_wins(self):
+        body = " ".join(
+            f'<a href="torch-{v}-cp313-cp313-win_arm64.whl">t</a>'
+            for v in ("2.15.0.dev20260819%2Bcu134", "2.15.0.dev20260728%2Bcu134")
+        )
+        assert self._probe(body) == "2.15.0.dev20260819+cu134"
+
+    @requires_pwsh
+    def test_an_empty_or_broken_page_is_not_a_wheel(self):
+        assert self._probe("") == ""
+        assert self._probe("<html><body>nothing here</body></html>") == ""
+
+
+class TestTorchaudioIsOnlyTakenAsAMatchedPair:
+    """The GA channel publishes torch 2.14.0+cu134 beside torchaudio 2.11.0+cu134.
+
+    torchaudio 2.11 dropped the exact `torch==` pin that used to make such a pair
+    unresolvable (2.10.0 still had it), and the native specs are open-ended, so nothing
+    else stops the resolver from installing them together and leaving torchaudio's
+    extension to fail against a libtorch three minors newer.
+    """
+
+    @staticmethod
+    def _match(torch_v: str, audio_v: str) -> bool:
+        script = "\n".join([
+            _ps_function(INSTALL_PS1, "Test-WoaAudioMatchesTorch"),
+            f"Write-Output (Test-WoaAudioMatchesTorch -TorchVersion '{torch_v}' -AudioVersion '{audio_v}')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1] == "True"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "torch_v, audio_v, expected, why",
+        [
+            ("2.14.0+cu134", "2.11.0+cu134", False, "the pair the GA channel serves today"),
+            ("2.14.0+cu134", "2.14.0+cu134", True, "what a matched channel would serve"),
+            ("2.14.0+cu134", "2.14.1+cu134", True, "patch releases pair"),
+            ("2.15.0.dev20260819+cu134", "2.11.0.dev20260819+cu134", False, "nightly, mismatched"),
+            ("2.15.0.dev20260819+cu134", "2.15.0.dev20260728+cu134", True, "nightly, same minor"),
+            ("2.14.0+cu134", "", False, "no audio wheel at all"),
+            ("", "2.14.0+cu134", False, "no torch wheel at all"),
+        ],
+    )
+    def test_only_a_matching_major_minor_enables_audio(
+        self, torch_v: str, audio_v: str, expected: bool, why: str
+    ):
+        assert self._match(torch_v, audio_v) is expected, why
+
+    def test_the_probe_compares_versions_rather_than_existence(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        # rindex, not index: the first occurrence is the reset at the top of the probe,
+        # which must stay a plain $false so a re-probe cannot inherit an earlier answer.
+        block = text[text.rindex("$script:WoaTorchAudio = "):][:400]
+        assert "Test-WoaAudioMatchesTorch" in block, (
+            "torchaudio was enabled on existence alone, which is how the mismatched "
+            "GA pair became installable"
+        )
+
+
+class TestPrereleasesAreOnlyForTheNightlyChannel:
+    """setup.ps1 must gate --prerelease=allow the way install.ps1 already does.
+
+    `allow` means every prerelease, and it rides on a command that also carries
+    unsafe-best-match and public PyPI, so on the GA channel a prerelease of torch or of
+    any shared dependency could outrank the stable build this host exists to install.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "index, expect_pre",
+        [
+            ("https://pypi.nvidia.com/nvtorch_oot", False),
+            ("https://pypi.nvidia.com/nvtorch_oot_nightly", True),
+            ("", False),
+        ],
+    )
+    def test_the_flag_follows_the_channel(self, index: str, expect_pre: bool):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WinArm64IndexArgs = if (")
+        end = text.index("} else { @() }", start) + len("} else { @() }")
+        script = "\n".join([
+            "$WinArm64Venv = $true", "$UseUv = $true",
+            f"$WinArm64TorchIndexUrl = '{index}'",
+            text[start:end],
+            "Write-Output ($WinArm64IndexArgs -join ' ')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        out = done.stdout.strip().splitlines()[-1]
+        assert ("--prerelease=allow" in out) is expect_pre, out
+        assert "unsafe-best-match" in out, "the other flags are unconditional"
+
+    @requires_pwsh
+    def test_every_other_host_gets_no_flags_at_all(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WinArm64IndexArgs = if (")
+        end = text.index("} else { @() }", start) + len("} else { @() }")
+        script = "\n".join([
+            "$WinArm64Venv = $false", "$UseUv = $true",
+            "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot_nightly'",
+            text[start:end],
+            "Write-Output \"[$($WinArm64IndexArgs -join ' ')]\"",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "[]"
+
+    def test_both_scripts_gate_on_the_same_thing(self):
+        """One rule; two files. Drift here is invisible until a resolve goes wrong."""
+        for path in (INSTALL_PS1, SETUP_PS1):
+            text = path.read_text(encoding = "utf-8")
+            assert re.search(r"-match 'nightly'", text), f"{path.name} lost the gate"
+            for line in text.splitlines():
+                if "--prerelease=allow" in line and "#" not in line.split("--prerelease")[0]:
+                    assert "@(" in line, f"{path.name}: unexpected shape: {line.strip()}"
