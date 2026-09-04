@@ -494,6 +494,8 @@ def failures_for(result: dict, args) -> list[str]:
             f"text either way."
         )
     elif update["verdict"] != "applied":
+        # Not `== "unverifiable"`: any verdict this file has not been taught about is a failure rather than a silent
+        # pass.
         failures.append(
             f"whether the optimizer applied anything could not be established: "
             f"{update['detail']}. Every other number this leg reports is produced "

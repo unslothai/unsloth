@@ -176,6 +176,8 @@ def test_a_redirect_body_is_bounded_too(monkeypatch):
                 raise AssertionError("the probe kept reading a redirect body past its cap")
             yield b"x" * 65_536
 
+    # A redirect body must not be read at all, so `served` should stay empty.
+
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
     module.get = lambda url, timeout = None, stream = False, allow_redirects = True: (
@@ -197,7 +199,6 @@ def test_a_redirect_loop_ends(monkeypatch):
     """A peer that redirects forever must not keep the probe going forever."""
     hops = []
 
-    # A redirect body must not be read at all, so `served` should stay empty.
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
 

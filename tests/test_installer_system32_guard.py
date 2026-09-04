@@ -1188,6 +1188,7 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
     assert syspath == [
         r"C:\Python\Lib",
         r"C:\Windows\System32\lib",
+        # An empty entry means the working directory, which is about to change.
         r"C:\Windows\System32",
         # join, not normpath: the same spelling the environment pinning uses.
         r"C:\Windows\System32\.\plugins",
@@ -1206,7 +1207,6 @@ def test_cli_guard_writes_back_only_an_expansion_the_reader_agrees_with():
     with the value silently following it."""
     environ_out: dict[str, str] = {}
     _message, colour, _chdir_calls = _guard_outcome(
-        # An empty entry means the working directory, which is about to change.
         r"C:\Windows\System32",
         ["unsloth", "studio", "--api-only"],
         environ_extra = {

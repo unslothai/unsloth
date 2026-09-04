@@ -1392,6 +1392,8 @@ def test_the_probe_output_is_decoded_lossily():
 
 
 def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
+    # The decode is the parent's job, so this drives the extractor with the mangled text the lossy decode produces: the
+    # record is ASCII and has to survive whatever precedes it.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1432,8 +1434,6 @@ def test_the_probe_adds_the_callers_host_profile_beside_the_current_host_one(mon
     every VS Code integrated terminal, so substitution robbed a plain pwsh terminal there of the
     only profile it has. Named hosts only, since a directory-wide sweep of
     Microsoft.*_profile.ps1 ran profiles for hosts nobody was using."""
-    # The decode is the parent's job, so this drives the extractor with the mangled text the lossy decode produces: the
-    # record is ASCII and has to survive whatever precedes it.
     from unsloth_cli.commands import studio as studio_cmd
 
     probe = studio_cmd._PS_PROXY_PROBE
@@ -1493,6 +1493,7 @@ def test_the_probe_clears_profile_defaults_before_it_serializes():
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     assert "$PSDefaultParameterValues = @{}" in probe
+    # After the table has been read, and before anything is written.
     assert (
         probe.find("$out = @{}")
         < probe.find("$PSDefaultParameterValues = @{}")
@@ -1527,7 +1528,6 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
         installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :
     ]
     handoff = handoff[: handoff.index("try {")]
-    # After the table has been read, and before anything is written.
     assert (
         "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
     ), "the installer must publish an explicit empty handoff, not remove the variable"

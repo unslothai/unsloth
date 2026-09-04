@@ -632,6 +632,9 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
 
 
 def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
+    # The listing is the only view of the target's draft state: /releases/tags/{tag} answers 404 for a draft, which has
+    # no git tag until it is published. A target absent from that single page has an unverifiable state, so the
+    # draft/prerelease refusal above would degrade into no check. Fail closed instead.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
@@ -646,8 +649,6 @@ def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
 
 def test_a_pointer_that_moved_on_is_left_alone(tmp_path):
     """Between the dispatch and the PATCH someone else fixed or replaced Latest."""
-    # The listing is the only view of the target's draft state: /releases/tags/{tag} answers 404 for a draft, which has
-    # no git tag until it is published.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",

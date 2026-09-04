@@ -736,6 +736,7 @@ def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
         'rm -f "$_css_id_tmp"'
     ), "the value baked into the launcher must be read back after the publish step"
 
+    # Behavioural: a directory at the id path must not yield a launcher.
     studio_home = tmp_path / "studio"
     (studio_home / "share" / "studio_install_id").mkdir(parents = True)
     probe = (
@@ -755,7 +756,6 @@ def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
 
 def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
     """A second writer must adopt the id already on disk, never replace it."""
-    # Behavioural: a directory at the id path must not yield a launcher.
     studio_home = tmp_path / "studio"
     (studio_home / "share").mkdir(parents = True)
     id_file = studio_home / "share" / "studio_install_id"

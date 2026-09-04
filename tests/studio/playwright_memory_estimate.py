@@ -838,6 +838,9 @@ with sync_playwright() as p:
     else:
         info("OK row: Estimated Memory Usage rendered for the GGUF target")
         if "role=button" not in _match_note:
+            # Only the structural locator found it, so the toggle is not reachable by role -- an ancestor is hiding it
+            # from the accessibility tree, or its accessible name is not what it reads as. Reported rather than gated
+            # while it is unproven which; the line above names the strategy that won.
             runtime_warn(
                 "the row was found only by markup, not by role=button: a screen "
                 "reader would not announce this toggle"
@@ -878,9 +881,6 @@ with sync_playwright() as p:
             and GGUF_VARIANT
             and str(variant).strip().lower() != (GGUF_VARIANT.strip().lower())
         ):
-            # Only the structural locator found it, so the toggle is not reachable by role -- an ancestor is hiding it
-            # from the accessibility tree, or its accessible name is not what it reads as. Reported rather than gated
-            # while it is unproven which; the line above names the strategy that won.
             runtime_warn(
                 f"the estimate priced quant {variant!r}, not {GGUF_VARIANT!r}; the picker row "
                 f"may have collapsed onto a different variant"

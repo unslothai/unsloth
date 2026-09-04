@@ -1268,6 +1268,7 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert mock_pip.call_count == 1
 
     def test_a_cpu_backend_under_a_gpu_expectation_is_still_left_alone(self):
+        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = "cu124",
@@ -1368,7 +1369,6 @@ class TestAnUntaggedGpuWheelIsNotACpuMatch:
     """
 
     def test_an_untagged_cuda_wheel_under_a_cpu_pin_is_repaired(self):
-        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0",
             repaired = "2.11.0+cpu",

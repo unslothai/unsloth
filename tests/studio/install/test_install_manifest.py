@@ -406,6 +406,8 @@ def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
 
 
 def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
+    # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
+    # fall back to their own detection instead of silently switching an install out of no-torch mode.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
     assert "no_torch" not in payload
@@ -416,8 +418,6 @@ def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_ro
 
 
 def test_recorded_no_torch_tolerates_a_hand_edited_manifest(install_root, req_root):
-    # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
-    # fall back to their own detection instead of silently switching an install out of no-torch mode.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = install_root / im.MANIFEST_NAME
     payload = json.loads(path.read_text(encoding = "utf-8"))

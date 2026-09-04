@@ -724,6 +724,8 @@ def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypa
 
 
 def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monkeypatch):
+    # Codex P2: an unpinned version already on disk must still fail closed without the opt-in, not be kept by the
+    # version-only short-circuit.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "26.3.1", asset = "a", sha256 = "s")
@@ -746,8 +748,6 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     host = _host("linux", "x64")
     version = M.pinned_default_version(M.load_pins())
     asset = M.node_asset_name(version, host)
-    # Codex P2: an unpinned version already on disk must still fail closed without the opt-in, not be kept by the
-    # version-only short-circuit.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)  # not the pin

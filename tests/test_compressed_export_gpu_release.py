@@ -254,8 +254,8 @@ def test_restore_failure_warns_instead_of_raising(_fake_accelerate):
 
 
 def test_lora_merge_budgets_per_device():
-    # A merged tensor W lives on the GPU of its source layer, so budget against W's own device, not GPU0, else a sharded
-    # own device, not GPU0, else a sharded model OOMs GPU1+ (#7053).
+    # A merged tensor W lives on the GPU of its source layer, so budget against W's own device, not GPU0, else a
+    # sharded model OOMs GPU1+ (#7053).
     src = _SAVE_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
@@ -285,6 +285,7 @@ def _fake_torch_xpu():
 
 
 def test_dispatched_xpu_model_is_released(_fake_accelerate):
+    # torchao runs on Intel GPUs too, so an XPU-dispatched shard must release exactly like a CUDA one.
     ns = _load_helpers(_fake_torch_xpu(), _FakeLogger())
     device_map = {"model.embed": "xpu:0", "model.layers.0": "xpu:1"}
     model = _FakeModel(device_map = device_map, devices = ("xpu:0", "xpu:1"))
@@ -300,7 +301,6 @@ def test_dispatched_xpu_model_is_released(_fake_accelerate):
 
 
 def test_single_device_xpu_model_is_released():
-    # torchao runs on Intel GPUs too, so an XPU-dispatched shard must release exactly like a CUDA one.
     ns = _load_helpers(_fake_torch_xpu(), _FakeLogger())
     model = _FakeModel(devices = ("xpu:0",))
     token = ns["_offload_model_for_quantize_subprocess"](model)
