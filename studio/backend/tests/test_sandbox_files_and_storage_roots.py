@@ -151,10 +151,15 @@ def test_images_stay_inline_and_everything_else_downloads():
 
     The allowlist is deliberately NOT just widened: the model picks these
     filenames, so an inline text/html would be same-origin script execution.
+
+    `.avif` joined because it is a raster codec, not a document type -- `nosniff`
+    pins the type either way, and a model that writes `photo.avif` should get an
+    image rather than an attachment it cannot see. `.svg` stays out for exactly
+    that document-type reason: inline SVG is same-origin script execution.
     """
     from routes.inference import _SANDBOX_MEDIA_TYPES
 
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"):
         assert ext in _SANDBOX_MEDIA_TYPES
     for ext in (".csv", ".txt", ".py", ".json", ".pdf", ".zip", ".html", ".svg"):
         assert ext not in _SANDBOX_MEDIA_TYPES, ext
