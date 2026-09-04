@@ -23393,10 +23393,7 @@ async def produce_openai_chat_completions(
         # the client's tools silently gone. Studio's own chat names tools through
         # enabled_tools rather than sending schemas, so the picture still reaches the
         # loop there -- which is the request this whole path exists for.
-        and (
-            image is None
-            or (bool(_sf_model_info.get("is_vision")) and not payload.tools)
-        )
+        and (image is None or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )

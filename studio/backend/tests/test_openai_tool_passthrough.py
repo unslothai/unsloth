@@ -4071,9 +4071,9 @@ class TestGgufVisionMessages:
             # The shape the regression had: one flag answering both questions.
             # The image is gone and the lone text part collapses back to a string.
             conflated = _build_external_messages(attached, gate, provider_type = provider)
-            assert conflated[0]["content"] == "what colour is this", (
-                f"{provider}: the two decisions must stay separate"
-            )
+            assert (
+                conflated[0]["content"] == "what colour is this"
+            ), f"{provider}: the two decisions must stay separate"
 
     def test_the_mcp_gate_still_keeps_an_envelope_off_a_mixed_catalog_provider(self):
         from core.inference.providers import get_provider_info

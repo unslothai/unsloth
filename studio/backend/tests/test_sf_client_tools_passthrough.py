@@ -1323,16 +1323,14 @@ def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
     )
 
     async def _run():
-        return await openai_chat_completions(
-            payload, request = _Request(), current_subject = "u"
-        )
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
 
     asyncio.run(_run())
 
     assert backend.calls, "generation never ran"
-    assert not any(call.get("tools") for call in backend.calls), (
-        "the tool loop was driven from a template the image render never selects"
-    )
+    assert not any(
+        call.get("tools") for call in backend.calls
+    ), "the tool loop was driven from a template the image render never selects"
 
 
 def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):

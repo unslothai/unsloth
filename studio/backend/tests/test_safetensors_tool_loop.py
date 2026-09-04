@@ -5491,9 +5491,7 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
         return base64.b64encode(buffer.getvalue()).decode()
 
     attachment = _png((255, 0, 0))
-    envelope = json.dumps(
-        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
-    )
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
     result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
 
     def _call(n):
@@ -5526,9 +5524,9 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
     )
 
     assert sink[0] == attachment, "the caller's attachment was trimmed away"
-    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1, (
-        "the MCP cap still bounds what the loop itself re-sends"
-    )
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES + 1
+    ), "the MCP cap still bounds what the loop itself re-sends"
     final = seen[-1]
     assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
     markers = sum(
