@@ -1355,6 +1355,7 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     if not slots:
         return None
     resident = 0
+    idle_tokens = 0
     idle = []
     for slot in slots:
         try:
@@ -1383,12 +1384,31 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
         # `n_decoded` on top would count the generated half twice.
         if slot.get("is_processing"):
             tokens += _slot_decoded(slot)
-        resident += max(0, tokens)
-        if not slot.get("is_processing") and tokens > 0:
+            # LIVE pressure is decoding slots only. An idle slot's cache is cells
+            # llama.cpp will recycle by itself the moment it needs them
+            # (`try_clear_idle_slots`, gated on kv_unified alone), so counting it as
+            # occupancy evicts live conversations to make room that was already free.
+            #
+            # Summing both was measured 2026-09-03 to be not merely pessimistic but
+            # meaningless: it reported 27115 and 28745 cells in a 16384 cache, which is
+            # physically impossible, and two of the three runs that spent hundreds of
+            # samples "over the ceiling" on that figure finished perfectly cleanly. A
+            # watermark that cannot be exceeded in a way that predicts anything is not a
+            # watermark.
+            resident += max(0, tokens)
+        elif tokens > 0:
+            idle_tokens += max(0, tokens)
             idle.append((slot.get("id"), max(0, tokens)))
     # Largest first: the fewest erases free the most.
     idle.sort(key = lambda pair: -pair[1])
-    return {"resident": resident, "idle": idle, "slots": len(slots)}
+    return {
+        "resident": resident,
+        # Reclaimable, not occupied: reported separately so the caller can free it
+        # BEFORE pausing anybody, which is what reclaim_idle_slots is for.
+        "idle_tokens": idle_tokens,
+        "idle": idle,
+        "slots": len(slots),
+    }
 
 
 def reclaim_idle_slots(
