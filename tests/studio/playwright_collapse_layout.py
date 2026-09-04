@@ -472,7 +472,9 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
         if options.throttle > 1:
             cdp.send("Emulation.setCPUThrottlingRate", {"rate": options.throttle})
 
-        # One discarded cycle. The first open mounts the pane's content and resolves its styles for the first time
+        # One discarded cycle. The first open mounts the pane's content and resolves its styles for the first time,
+        # which is real work that has nothing to do with the toggle and would otherwise dominate the first
+        # measured cycle.
         page.evaluate(TOGGLE_CYCLES_JS, [1, SETTLE_MS])
 
         collected = start_tracing(cdp)

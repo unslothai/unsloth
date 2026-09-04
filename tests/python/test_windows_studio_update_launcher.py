@@ -981,16 +981,17 @@ def bare_probe_venv(real_venv):
 @pytest.mark.parametrize(
     "shape, files",
     [
-        # An emptied directory:
         # An emptied directory. find_spec calls this a namespace package and returns a spec for it, so a spec lookup
+        # answers yes to a venv the trampoline's `from unsloth_cli import app` cannot start. This is the shape
+        # antivirus leaves when it takes the module files out from under a package it decided it disliked.
         ("an emptied package directory", {}),
+        # An interrupted install: the package landed, its dependencies did not.
         (
             "a package whose imports are missing",
             {"__init__.py": "import unsloth_cli_missing_dep\n"},
         ),
         # A partially written __init__ that imports but has no app to hand back.
         ("a package with no app attribute", {"__init__.py": "VERSION = '1'\n"}),
-        # An interrupted install: the package landed, its dependencies did not.
         # An __init__ that raises on import, which no spec lookup ever executes.
         (
             "a package whose import raises",

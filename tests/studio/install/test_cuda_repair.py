@@ -246,8 +246,6 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_url_pin_repairs(self):
-        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed to match the pin, so the pin
-        # is enforced with a reinstall.
         mock_pip = _run_cuda_repair(
             torch_state = "cpu",
             torch_rc = 1,
@@ -456,7 +454,6 @@ class TestCudaIndexResolution:
 # bundle, so such hosts get cu126 (#7765).
 
 
-# pre-Turing GPU its llama.cpp GGUF bundle, so such hosts get cu126 (#7765).
 class TestPreTuringWheelFamily:
     def test_volta_host_selects_cu126_over_the_driver_family(self):
         assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",)))

@@ -295,6 +295,7 @@ class TestFailedSwapIsNotSurvivable:
 
     def test_a_failed_install_propagates(self, monkeypatch, tmp_path):
         # The uninstall already took the shared files, so a warning would commit a venv with a broken torch.compile
+        # that the next update fast-paths past (generic triton is gone, so nothing is left to trigger on).
         with pytest.raises(SystemExit):
             _run(
                 monkeypatch,

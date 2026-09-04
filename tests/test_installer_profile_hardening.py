@@ -1128,6 +1128,8 @@ def test_two_spellings_of_one_key_are_one_key(monkeypatch):
 
 
 def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
+    # Same collision inside a single host's answer: the first spelling wins and the second
+    # never reaches the child.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1142,8 +1144,6 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
     monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(_framed(payload)))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]))
 
-    # The first host owns Invoke-WebRequest whole, so the second host's credential flag for that same cmdlet is
-    # dropped...
     assert merged == {
         "Invoke-WebRequest:Proxy": "http://first.corp:8080",
         "Invoke-RestMethod:Proxy": "http://rest.corp:8080",
@@ -1172,8 +1172,11 @@ def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
     monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
 
+    # The wildcard from the first host owns the whole Invoke-Web* family, so the second host's credential flag for
+    # Invoke-WebRequest is dropped.
     assert merged == {
         "Invoke-Web*:Proxy": "http://seven.corp:8080",
+        # An unrelated family from the second host is still merged.
         "Invoke-RestMethod:Proxy": "http://five.corp:8080",
     }
 
@@ -1183,8 +1186,6 @@ def test_two_wildcards_that_share_a_cmdlet_are_one_family(monkeypatch):
     match sets overlap: Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest and neither
     matches the other. Overlap between two patterns is assumed, so the lower-priority profile
     cannot slip ProxyUseDefaultCredentials in beside the other's proxy."""
-    # Same collision inside a single host's answer: the first spelling wins and the second
-    # never reaches the child.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:

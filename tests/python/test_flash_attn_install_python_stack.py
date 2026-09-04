@@ -77,7 +77,8 @@ class TestFlashAttnWheelSelection:
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
 
     def test_selected_version_is_never_a_post_release(self):
-        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at torch2.9, whose .so will not load on torch
+        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at torch2.9, whose .so will not load on
+        # torch 2.10+. A future "just take the newest release" bump must fail here instead of shipping that.
         for torch_mm in ("2.4", "2.7", "2.9", "2.10"):
             version = ips._select_flash_attn_version(torch_mm)
             assert version is not None

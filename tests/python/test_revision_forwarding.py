@@ -588,6 +588,7 @@ def _simulate_loader():
         ),
         # The adapter's ref is not the base repo's, and the tokenizer follows the base.
         ("PEFT, remote adapter", "org/ad", "org/base", True, None, "v2", False, None, None),
+        # ... unless the tokenizer is the adapter itself, which the caller did pin.
         (
             "PEFT, adapter-hosted tokenizer",
             "org/ad",
@@ -599,7 +600,6 @@ def _simulate_loader():
             None,
             "v2",
         ),
-        # ... unless the tokenizer is the adapter itself, which the caller did pin.
         (
             "plain load, third-party tokenizer",
             "org/m",
@@ -611,7 +611,7 @@ def _simulate_loader():
             "v2",
             None,
         ),
-        # Naming the requested repo back does not survive the remap:
+        # Naming the requested repo back does not survive the remap: the weights moved.
         (
             "remapped, tokenizer named as the requested repo",
             "org/m",

@@ -365,12 +365,13 @@ def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
         True,
     ) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, ["embed_tokens", "lm_head"], True) == ["embed_tokens"]
+    # Untouched when tying does not apply.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head"],
         False,
     ) == ["model.embed_tokens", "lm_head"]
-    # Untouched when tying does not apply, and non-embedding names keep their full path.
+    # Non-embedding names keep their full path.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head", "custom.score"],

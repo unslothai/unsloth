@@ -342,7 +342,9 @@ def main():
         )
 
         step("seed two saved chats")
-        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key
+        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key,
+        # imported and older rows do not. Seeding only uuids is what let this run miss the prefix being read as
+        # "no row yet".
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)

@@ -300,10 +300,7 @@ def test_the_mlx_call_cannot_break_the_import():
     "version,affected",
     [
         ("0.18.0", True),
-        (
-            "0.18.0+cu130",
-            True,
-        ),  # wheels carry a local version a dev build of a later release still has it future
+        ("0.18.0+cu130", True),  # wheels carry a local version
         ("0.19.0.dev20260801", True),  # a dev build of a later release still has it
         ("1.0.0", True),  # future majors, until upstream fixes it
         ("0.17.0", False),  # guards its own import
