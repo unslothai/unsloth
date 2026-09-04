@@ -128,8 +128,14 @@ SECRETS = [
     # Python raw and unicode literals, an env dump as tuples, and a logged argv list.
     ('password = r"opaqueCredential123456"', "opaqueCredential123456"),
     ("password = u'opaqueCredential123456'", "opaqueCredential123456"),
-    ("env=[('OPENAI_API_KEY', 'opaqueCredential123456'), ('HOME', '/home/dan')]", "opaqueCredential123456"),
-    ("['llama-server', '--api-key', 'opaqueCredential123456', '--port', '8080']", "opaqueCredential123456"),
+    (
+        "env=[('OPENAI_API_KEY', 'opaqueCredential123456'), ('HOME', '/home/dan')]",
+        "opaqueCredential123456",
+    ),
+    (
+        "['llama-server', '--api-key', 'opaqueCredential123456', '--port', '8080']",
+        "opaqueCredential123456",
+    ),
     ('["provider-cli", "--token", "opaqueCredential123456"]', "opaqueCredential123456"),
 ]
 
