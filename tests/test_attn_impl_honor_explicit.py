@@ -57,8 +57,9 @@ def test_explicit_flex_falls_back_when_not_supported():
 
 
 def test_synthesized_config_sdpa_is_not_treated_as_explicit():
+    # The language loader seeds the config with attn_implementation="sdpa"; when the
     # caller passes nothing, that synthesized value must not override the flex fallback
-    # The language loader seeds the config with attn_implementation="sdpa";
+    # for a model that supports flex but not sdpa.
     config = {"attn_implementation": "sdpa"}
     result = _disable_flash_attention_if_needed(
         config,
@@ -105,8 +106,8 @@ def test_resolver_honors_explicit_sdpa_when_not_supported_and_flash_disabled():
 
 
 def test_resolver_downgrades_non_explicit_sdpa_when_not_supported():
+    # No explicit request: the model resolution seeds sdpa/eager and the guard must
     # still downgrade a synthesized sdpa to eager for a model that cannot run it.
-    # No explicit request: the model resolution seeds sdpa/eager and the guard must still downgrade a synthesized sdpa
     config = {"model_type": "test", "attn_implementation": "sdpa"}
     result = resolve_attention_implementation(
         model_class = None,
@@ -118,8 +119,11 @@ def test_resolver_downgrades_non_explicit_sdpa_when_not_supported():
 
 
 def test_resolver_downgrades_explicit_sdpa_for_sdpa_excluded_model():
+    # gpt_oss is in _SDPA_EXCLUDED_MODELS (sdpa is known-broken) and _FLASH_EXCLUDED_MODELS
     # (flash disabled). Honoring an explicit sdpa request must not re-enable that broken
-    # gpt_oss is in _SDPA_EXCLUDED_MODELS (sdpa is known-broken) and _FLASH_EXCLUDED_MODELS (flash disabled).
+    # backend: it downgrades to eager, mirroring how an explicit flex request falls back
+    # for _FLEX_EXCLUDED_MODELS. supports_sdpa=True proves the exclusion overrides even a
+    # model that otherwise advertises SDPA support.
     config = {"model_type": "gpt_oss"}
     result = resolve_attention_implementation(
         model_class = None,
@@ -133,10 +137,11 @@ def test_resolver_downgrades_explicit_sdpa_for_sdpa_excluded_model():
 
 @pytest.mark.parametrize("model_type", ["gemma3", "gemma3_text"])
 def test_resolver_downgrades_explicit_sdpa_for_disable_sdpa_model(model_type):
+    # gemma3 / gemma3_text are in DISABLE_SDPA_MODEL_NAMES: the loader forces
     # supports_sdpa=False because their bundled SDPA modules are wrong. An explicit
     # sdpa request with flash disabled must NOT re-enable that known-wrong path - it
-    # gemma3 / gemma3_text are in DISABLE_SDPA_MODEL_NAMES:
-    # head_dim > 256 disables flash
+    # downgrades to eager, exactly like _SDPA_EXCLUDED_MODELS (gpt_oss). head_dim>256
+    # disables flash to mirror the real flash-disabled scenario.
     config = {"model_type": model_type, "head_dim": 512}
     result = resolve_attention_implementation(
         model_class = None,
@@ -164,8 +169,8 @@ def test_resolver_does_not_overmatch_gemma3n_for_explicit_sdpa():
 
 
 def test_resolver_downgrades_synthesized_sdpa_for_disable_sdpa_model():
+    # A synthesized/default sdpa (requested is None; the value came from config) on a
     # DISABLE_SDPA_MODEL_NAMES model must still downgrade to eager.
-    # A synthesized/default sdpa (requested is None;
     config = {"model_type": "gemma3", "attn_implementation": "sdpa"}
     result = resolve_attention_implementation(
         model_class = None,

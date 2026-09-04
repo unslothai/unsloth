@@ -34,8 +34,9 @@ CONSTRUCTS = {
     "img_alt_empty": f'<p>{IMG}alt=""></p>',
     "img_no_alt": f"<p>{IMG}></p>",
     "img_alt_inline": f'<p>before{IMG}alt="Tool result 1">after</p>',
+    # An image the native iterator SKIPS. Raised in review and confirmed against the real
     # clipboard: inserting alt text for one of these ADDS text the clipboard never carried.
-    # An image the native iterator SKIPS.
+    # The `invisible` case is Unsloth's own ImagePreview before the image has loaded.
     "img_alt_display_none": f'<p>before {IMG}alt="SVG preview" style="display:none"> after</p>',
     "img_alt_hidden": f'<p>before {IMG}alt="SVG preview" style="visibility:hidden"> after</p>',
     "img_alt_unselectable": f'<p>before {IMG}alt="SVG preview" style="user-select:none"> after</p>',

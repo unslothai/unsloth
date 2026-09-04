@@ -138,8 +138,8 @@ $result = Remove-SkippedPython (@{{ Version = "3.13"; Path = "{missing}" }})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
+    # This case asserts the screen KEEPS an interpreter it could not probe, so an
     # interpreter that dies would masquerade as the screen wrongly rejecting it.
-    # This case asserts the screen KEEPS an interpreter it could not probe, so an interpreter that dies would
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -163,8 +163,12 @@ def test_the_resolver_is_screened_at_every_entry_point():
     assert not bare, f"unscreened resolver calls in the install flow: {bare}"
 
 
-# The screen inside the resolver ── The window above starts at the install step, so it never sees the recovery paths:
 # ── The screen inside the resolver ──
+# The window above starts at the install step, so it never sees the recovery
+# paths: Install-PythonFromPythonOrg and Install-X64Python both end in a bare
+# `return (Find-CompatiblePython)`. Screening every candidate as it is
+# enumerated is what makes those safe, and is also what lets the resolver carry
+# on to its next minor instead of giving up on the machine.
 def _every_version_match_screens_the_patch() -> list[str]:
     body = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
     lines = body.splitlines()
@@ -284,8 +288,9 @@ def test_a_good_preferred_minor_still_wins(tmp_path):
 
 @_POSIX_LAUNCHER_ONLY
 def test_nothing_usable_is_still_nothing(tmp_path):
+    # Paired with a positive control over the same tree, because "none" is also
     # what a harness that cannot run the launcher at all reports: without the
-    # Paired with a positive control over the same tree, because "none" is also what a harness that cannot run the
+    # control this case would pass on a machine where it proves nothing.
     assert _resolve(tmp_path / "good", {"3.13": "3.13.13"}) == "3.13"
     assert _resolve(tmp_path / "bad", {"3.13": "3.13.8"}) == "none"
 

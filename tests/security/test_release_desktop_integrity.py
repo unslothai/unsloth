@@ -323,8 +323,8 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     # The release already exists, so nothing is created and no tag is reserved.
     assert not [line for line in commands if line.startswith("gh release create")]
     assert not [line for line in commands if "git/refs" in line]
+    # The body is the maintainer's changelog. Assets are uploaded beside it and
     # the notes are never edited, so nothing this workflow does can clobber it.
-    # The body is the maintainer's changelog.
     assert not [line for line in commands if line.startswith("gh release edit")]
     assert not (tmp_path / "desktop-release-body.md").exists()
 
@@ -379,8 +379,8 @@ def test_a_validation_only_run_touches_nothing_public():
         step = steps[names.index(name)]
         assert step.get("if") == "${{ !inputs.draft }}", name
 
+    # Promotion last, so latest only moves once the assets are actually on the
     # release and a partial upload cannot leave latest pointing at an empty one.
-    # Promotion last, so latest only moves once the assets are actually on the release and a partial upload cannot
     for upload in mutating[:2]:
         assert names.index(upload) < names.index(mutating[2])
 
@@ -538,8 +538,8 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "cmdlet would discard the other cmdlet's readable result"
     )
 
+    # The only remaining skip: a control that will not fire, the one signal that
     # MpCmdRun cannot scan either.
-    # The only remaining skip: a control that will not fire, the one signal that MpCmdRun cannot scan either.
     skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
     assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
     assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]

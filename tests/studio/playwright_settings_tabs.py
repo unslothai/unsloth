@@ -236,8 +236,11 @@ def run_abandoned_deep_open(page) -> None:
     dialog, so the Data module is still cold and the hold is what decides when it arrives.
     """
 
+    # Matched on the Data module alone rather than on everything. The sleep below runs on
+    # the driver thread, so a handler that sees every request makes the whole page's module
+    # load queue behind it, and the panel that arrives next has to be rendered by a main
+    # thread that got the lot at once. On a busy two-core runner that pushed the reopen
     # below past its timeout even though nothing was wrong with the dialog.
-    # Matched on the Data module alone rather than on everything.
     def hold_data(route):
         time.sleep(DEEP_OPEN_HOLD_MS / 1000)
         return route.continue_()
@@ -445,9 +448,8 @@ def run(page) -> None:
         page.wait_for_timeout(200)
     report["steps"].append("deep-open")
 
-    # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
-    # search, then jump to a result and confirm the scroll target flashed ------ A real setting well down a long panel
     # --- 5. search, then jump to a result and confirm the scroll target flashed ------
+    # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]

@@ -1394,8 +1394,8 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_name(0) == stats.name
     assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
+    # current (non-max) APIs report live active memory, not the peak high-water
     # mark, and never exceed it.
-    # current (non-max) APIs report live active memory, not the peak high-water mark, and never exceed it.
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
     assert torch.cuda.device_count() == 1

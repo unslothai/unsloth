@@ -302,8 +302,10 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
 # Both waits bound work by ELAPSED time.
 
 
-# the timeout is a deadline, not a number of laps ---------------------- Both waits bound work by ELAPSED time.
 # --- the timeout is a deadline, not a number of laps ----------------------
+# Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
+# only agree with that when each attempt is instant, which is exactly what the
+# failing cases below are not.
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 

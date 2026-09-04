@@ -76,9 +76,14 @@ LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
-# From GGUF_REPO rather than a bare family name, and not cosmetically:
-# suite reported the feature missing. The repo's own name cannot collide that way.
 # Substring of the picker row for the model whose run settings this drives.
+#
+# From GGUF_REPO rather than a bare family name, and not cosmetically: the row lookup
+# takes `.first`, so a hint matching a NON-GGUF sibling opens whichever the picker orders
+# first. On a cache holding both `gemma-3-270m-it-GGUF` and
+# `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the bnb-4bit safetensors
+# panel -- no Context Length control, no memory row, the row being GGUF-only -- and the
+# suite reported the feature missing. The repo's own name cannot collide that way.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
 # Context Lengths for the four re-prices. Each must be valid (>=128, a multiple of 128, under the model's ceiling) and
 # DIFFERENT from what the control is showing at the time. That last part is a property of the control, not a precaution:
@@ -102,8 +107,8 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
+# The hook debounces at 250ms and the fetch is intercepted in-process, so a re-price
 # lands in well under a second; this is the "it is never coming" bound.
-# The hook debounces at 250ms and the fetch is intercepted in-process, so a re-price lands in well under a second;
 ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
 
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
@@ -193,7 +198,10 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
         return json.loads(r.read().decode())["access_token"]
 
 
-# The stubbed endpoint. `_mode` decides what the NEXT call answers;
+# ─────────────────────────────────────────────────────
+# The stubbed endpoint. `_mode` decides what the NEXT call answers; every call is
+# recorded, request and response, and the whole transcript is written to the artifact
+# directory so a failure can be read after the fact.
 # ─────────────────────────────────────────────────────
 _mode = ["available"]
 exchanges: list[dict] = []
@@ -488,6 +496,8 @@ with sync_playwright() as p:
     shoot("01-chat-loaded")
 
     # ─────────────────────────────────────────────────────
+    # Picker helpers (same proven selectors as playwright_model_config.py).
+    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
     SOLE_QUANT_SETTLE_MS = 30_000
@@ -546,8 +556,9 @@ with sync_playwright() as p:
         quant = None,
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
+        # The gear is a sibling of the row, not inside [data-model-picker-option]. The
+        # quant is anchored to the end: every label is "<repo> <quant>", so an unanchored
         # match lets F16 find BF16 and `.first` then opens a variant this test never named.
-        # The gear is a sibling of the row, not inside [data-model-picker-option].
         pattern = f"^Inference settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
@@ -607,6 +618,10 @@ with sync_playwright() as p:
         loc = popover.locator('input[aria-label="Context Length"]').first
         return loc if _count(loc) else None
 
+    # ─────────────────────────────────────────────────────
+    # Row helpers. The toggle button is the anchor for everything: the header row is its
+    # parent, and the breakdown is whatever its aria-controls names -- both stated by the
+    # component itself, so neither depends on a class name that a restyle can move.
     # ─────────────────────────────────────────────────────
     ESTIMATE_LABEL = re.compile(r"Estimated Memory Usage", re.I)
     # The run-settings panel exists more than once in this document -- the picker keeps its own copy mounted behind the
@@ -795,6 +810,8 @@ with sync_playwright() as p:
         return None, None
 
     # ─────────────────────────────────────────────────────
+    # 1. Open the run-settings panel for the GGUF and prove the row is there (HARD).
+    # ─────────────────────────────────────────────────────
     step("open run-settings for the GGUF target")
     popover = open_picker()
     shoot("02-picker-open")
@@ -831,6 +848,8 @@ with sync_playwright() as p:
         )
 
     # ─────────────────────────────────────────────────────
+    # 2. The request carries the load settings, and a changed control re-prices (HARD).
+    # ─────────────────────────────────────────────────────
     step("the Context Length on screen reaches the estimate request")
     priced_ctx, priced = reprice(popover, "context reaches the request")
     if priced is not None:
@@ -865,6 +884,8 @@ with sync_playwright() as p:
                 f"may have collapsed onto a different variant"
             )
 
+    # ─────────────────────────────────────────────────────
+    # 3. The stubbed numbers are the ones on screen (HARD).
     # ─────────────────────────────────────────────────────
     step("the row displays the numbers the endpoint returned")
     if not wait_for_row(True):
@@ -950,6 +971,8 @@ with sync_playwright() as p:
         shoot("05-row-expanded")
 
     # ─────────────────────────────────────────────────────
+    # 4. An unavailable estimate HIDES the row (HARD).
+    # ─────────────────────────────────────────────────────
     step("available:false hides the row")
     _mode[0] = "unavailable"
     _unavailable_ctx, unavailable_record = reprice(popover, "available:false hides the row")
@@ -967,6 +990,9 @@ with sync_playwright() as p:
         )
     shoot("06-unavailable")
 
+    # ─────────────────────────────────────────────────────
+    # 5. Restoring the available response brings the row BACK (HARD).
+    #    Without this the hide gate above is satisfied by a panel that simply died.
     # ─────────────────────────────────────────────────────
     step("restoring an available estimate brings the row back")
     _mode[0] = "available"
@@ -996,11 +1022,20 @@ with sync_playwright() as p:
         )
     shoot("07-restored")
 
-    # ───────────────────────────────────────────────────── 5.
-    # Restoring the available response brings the row BACK (HARD).
-    # A 404 from a backend predating the route also HIDES it (HARD). LAST, and it has to be. 3072, 2048, 1536 and no
-    # further POST is ever made.
-    # An unavailable estimate HIDES the row (HARD).
+    # ─────────────────────────────────────────────────────
+    # 6. A 404 from a backend predating the route also HIDES it (HARD).
+    #
+    # LAST, and it has to be. A non-OK answer stops the panel re-pricing for the rest of
+    # its life: measured here, after one 404 the Context Length control keeps taking and
+    # committing values -- 3072, 2048, 1536 -- and no further POST is ever made.
+    # `available: false` does not do that, which is why the restore gate above sits with
+    # the unavailable case rather than this one.
+    #
+    # Harmless in the situation this gate is about, since a backend predating the route
+    # answers 404 to everything and the row is meant to stay hidden; it is only reachable
+    # by an endpoint that fails and then recovers. Ordered around rather than asserted:
+    # this suite is about the row, and pinning the freeze would pin behaviour nobody has
+    # decided on.
     # ─────────────────────────────────────────────────────
     step("HTTP 404 hides the row")
     _mode[0] = "http404"

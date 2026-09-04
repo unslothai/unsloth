@@ -2784,7 +2784,8 @@ class TestOpenAIPassthroughSSETerminalState:
 
 # =====================================================================
 
-# Passthrough reasoning kwargs - enable_thinking / reasoning_effort /
+# =====================================================================
+# Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
 # =====================================================================
@@ -10171,6 +10172,7 @@ class TestApiMonitorAudioInput:
 
 # =====================================================================
 
+# =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10332,6 +10334,7 @@ class TestResponsesChatTemplateKwargs:
 
 # =====================================================================
 
+# =====================================================================
 # GGUF chat-template role alternation: coalesce orphaned user turns left
 # behind when an empty assistant turn is dropped, so strict templates
 # (Gemma 3, ...) do not 400 on a role-parity break.

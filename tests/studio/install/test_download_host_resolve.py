@@ -161,8 +161,9 @@ def _manifest_bytes():
 
 
 def _sha_payload(*, manifest_sha256 = None):
+    # BINARY_ASSET is deliberately absent: real releases key its hash under an
     # upstream-tag alias, so the manifest name must still get a tag-pinned URL.
-    # BINARY_ASSET is deliberately absent:
+    # The source archive entry keeps _validate_checksums_against_bundle happy.
     artifacts = {"llama.cpp-source-b9964.tar.gz": {"sha256": "a" * 64}}
     if manifest_sha256 is not None:
         artifacts[MANIFEST_ASSET] = {"sha256": manifest_sha256}
@@ -224,8 +225,9 @@ def test_resolved_release_rejects_manifest_checksum_mismatch(monkeypatch):
 
 
 def test_resolved_release_rejects_release_tag_mismatch(monkeypatch):
+    # The checksum asset self-reports RELEASE_TAG, but the authoritative
     # /releases/latest redirect resolves a different tag: the fast path must not
-    # The checksum asset self-reports RELEASE_TAG, but the authoritative /releases/latest redirect resolves a different
+    # pin to the stale self-reported tag (it raises, so the router falls back).
     _stub_downloads(monkeypatch, _sha_payload(), _manifest_bytes(), latest_tag = "b9999-mix-other")
     with pytest.raises(RuntimeError, match = "did not match pinned release tag"):
         ILP._download_host_resolved_release(FORK_REPO)

@@ -54,8 +54,8 @@ def test_explicit_dotted_module_target_does_not_discover_moe_parameters():
 @pytest.mark.parametrize(
     "target_modules",
     [
+        # Attention-only auto-regex lists every projection leaf (incl. gate/up/down)
         # but its path segment is attention-only, so experts must NOT be targeted.
-        # Attention-only auto-regex lists every projection leaf (incl.
         r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn|attention|attn|mixer)\.(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))",
         ".*self_attn.*proj",
         # An mlp path alternative with attention-only leaves is still attention-only.
@@ -102,8 +102,9 @@ def test_explicit_attention_only_list_does_not_discover_moe_parameters():
     assert get_moe_target_parameters(_FakeMoeModel(), attn_only_list) is None
     assert get_moe_target_parameters(_FakeMoeModel(), tuple(attn_only_list)) is None
 
+    # The regex get_peft_regex emits for that same attention-only list under a
+    # vision-off family scope carries the mlp component block, so the string
     # path would wrongly enable experts -- hence detection must use the list.
-    # The regex get_peft_regex emits for that same attention-only list under a vision-off family scope carries the mlp
     scoped_regex = (
         r"(?:.*?(?:language|text).*?"
         r"(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer).*?"
@@ -174,8 +175,9 @@ def test_frozen_language_full_list_does_not_discover_moe_parameters():
 
 
 def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
-    # must not reach the language-model experts either.
-    # Vision-only request (finetune_language_layers=False) with a full leaf list must not reach the language-model
+    # With MLP and language both in scope, an explicit list that names MLP
+    # leaves SHOULD enable the experts (unchanged behavior): the original list
+    # is preferred and carries the gate/up/down intent.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,

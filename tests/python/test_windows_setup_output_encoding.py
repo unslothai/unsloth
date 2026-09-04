@@ -254,8 +254,8 @@ def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
     assert text.count("  " + RULE_CHAR * 52) == 3, "the 52-char rule did not survive intact"
 
 
+# Source contracts. These run everywhere, including the Linux backend CI job,
 # so a regression is caught without waiting for a Windows runner.
-# Source contracts. These run everywhere, including the Linux backend CI job, so a regression is caught without waiting
 def _strip_comments(source: str) -> str:
     return re.sub(r"(?m)#.*$", "", source)
 
@@ -659,9 +659,13 @@ def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
     )
 
 
-# A floor, not the exact byte counts:
+# A floor, not the 191 and 207 bytes these banners currently produce. The point
+# is only to outrun a dead script: without the sink the run aborts having
+# written 2 bytes, and every "nothing is wrong with this stream" assertion below
+# holds trivially over 2 bytes. Two of the three cases here are phrased that way
 # because that is the regression they guard, so they need this floor underneath
-# A floor, not the 191 and 207 bytes these banners currently produce.
+# them or they pass on the very code they exist to reject. Pinning the exact
+# count instead would make editing the banner wording a test failure.
 _MIN_BANNER_BYTES = 64
 
 

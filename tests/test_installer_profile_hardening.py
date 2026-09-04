@@ -279,8 +279,9 @@ def _profile_paths(env: dict[str, str]) -> dict[str, Path]:
     branch, which is only PowerShell's fallback when XDG_CONFIG_HOME is unset, so on a host that
     exports it the fixture wrote a file pwsh never opened and the profile silently did not apply.
     """
+    # This asks pwsh where its own profiles live, and every fixture below plants a file at
+    # the answer. An interpreter that dies here returns no paths at all, which would read as
     # pwsh reporting nothing rather than as pwsh never having started.
-    # This asks pwsh where its own profiles live, and every fixture below plants a file at the answer.
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -382,8 +383,9 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     script = tmp_path / "real.ps1"
     script.write_text(_STATE_PROBE, encoding = "utf-8")
 
+    # -NoProfile deliberately omitted; this is the one place the profile is really loaded.
+    # The anchor compares this run against the dot-sourced simulation, so a crashed interpreter
     # would be read as the two diverging rather than as one of them never having run.
-    # NoProfile deliberately omitted;
     real = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NonInteractive", "-File", str(script)],
         capture_output = True,
@@ -1173,8 +1175,8 @@ def test_two_wildcards_that_share_a_cmdlet_are_one_family(monkeypatch):
     match sets overlap: Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest and neither
     matches the other. Overlap between two patterns is assumed, so the lower-priority profile
     cannot slip ProxyUseDefaultCredentials in beside the other's proxy."""
+    # Same collision inside a single host's answer: the first spelling wins and the second
     # never reaches the child.
-    # Same collision inside a single host's answer:
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:

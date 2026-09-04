@@ -214,6 +214,8 @@ def test_model_families_stay_wired_to_shared_prepare_inputs():
 
 
 # --------------------------------------------------------------------------
+# Layer 2: behavioral guard (calls the real function, lazy unsloth import)
+# --------------------------------------------------------------------------
 
 PAST_LEN = 4
 
@@ -337,8 +339,8 @@ def test_cached_decode_position_ids_ignore_left_padding(pass_cache_position):
 
 
 def test_cached_decode_does_not_truncate_2d_attention_mask():
-    # NOT at cache_position == PAST_LEN. This is exactly issue #3699.
-    # Decode step: PAST_LEN tokens cached, current token is the mask's last column.
+    # Without a 4D mask builder the original 2D mask must survive untouched.
+    # The historical bug replaced it with attention_mask[:, [-1]].
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     result = _prepare(FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     mask_out = result["attention_mask"]

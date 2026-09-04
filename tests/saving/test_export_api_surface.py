@@ -113,8 +113,8 @@ def test_torchao_dispatches_both_ptq_and_qat():
 
 
 def test_export_subprocesses_are_shell_safe():
+    # The compressed-quantize and LoRA->GGUF subprocesses must run argv lists led by
     # sys.executable, never shell=True (a crafted save path must not inject a shell command).
-    # The compressed-quantize and LoRA->GGUF subprocesses must run argv lists led by sys.executable, never shell=True
     for fn in ("_unsloth_save_compressed_tensors", "_unsloth_save_lora_gguf"):
         node = _func(SAVE_TREE, fn)
         calls = _subprocess_calls(node)

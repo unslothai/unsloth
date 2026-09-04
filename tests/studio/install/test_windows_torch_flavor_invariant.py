@@ -114,8 +114,8 @@ class TestSetupPs1PublishesTheFlavor:
         assert export < handoff and index < handoff
 
     def test_the_rocm_index_decides_before_the_leaf(self):
+        # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still
         # points at /cpu, so the leaf alone would publish the wrong flavor.
-        # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still points at /cpu, so the leaf
         block = _SETUP_SRC[_SETUP_SRC.index("$_expectedTag = if ($ROCmIndexUrl)") :][:600]
         assert block.startswith('$_expectedTag = if ($ROCmIndexUrl) { "rocm" }')
         assert "Test-CudaFamilyLeaf $_expectedLeaf" in block

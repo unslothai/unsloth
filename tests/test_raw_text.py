@@ -294,7 +294,8 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
 
 def test_load_from_file_skips_non_object_json_lines():
     """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
-    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each would reach data[field] and raise
+    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
+    # would reach data[field] and raise TypeError without the isinstance guard.
     with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
         f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
         path = f.name

@@ -374,8 +374,7 @@ def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
 
 
 def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
-    # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm must follow the redirect, else
-    # the cache-copy fast path misses and #6890 is unfixed.
+    # The already-cached fast path must probe the live-env cache dir too.
     fn, stubs = _build_env(
         monkeypatch, tmp_path, cached = True, live_hub_cache = "/mnt/persistent/hf/hub"
     )
@@ -387,7 +386,8 @@ def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
 
 
 def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
-    # The already-cached fast path must probe the live-env cache dir too.
+    # A merged_16bit export of an FP8 base with a 16bit sibling merges onto the sibling,
+    # so the pre-warm must cache the sibling (what the merge downloads), not the FP8 repo.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -401,8 +401,7 @@ def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
 
 
 def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path):
-    # A merged_16bit export of an FP8 base with a 16bit sibling merges onto the sibling, so the pre-warm must cache the
-    # sibling (what the merge downloads), not the FP8 repo.
+    # No sibling: the merge dequants the FP8 base in place, so caching the FP8 repo helps.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -415,7 +414,9 @@ def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path)
 
 
 def test_prewarm_filters_shards_through_index(monkeypatch, tmp_path):
-    # No sibling: the merge dequants the FP8 base in place, so caching the FP8 repo helps.
+    # A repo with a leftover shard not referenced by the index: the merge keeps only the
+    # indexed shards, so the pre-warm must too (else the disk gate over-counts and
+    # snapshot_download fetches the unused leftover).
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -437,8 +438,7 @@ def test_prewarm_filters_shards_through_index(monkeypatch, tmp_path):
 
 
 def test_prewarm_keeps_all_shards_when_index_matches(monkeypatch, tmp_path):
-    # A repo with a leftover shard not referenced by the index: the merge keeps only the indexed shards, so the pre-warm
-    # must too (else the disk gate over-counts and snapshot_download fetches the unused leftover).
+    # No leftover: every listed shard is indexed, so none are dropped.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,

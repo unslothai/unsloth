@@ -464,6 +464,13 @@ def test_a_corrupt_registry_does_not_take_the_run_down(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# the signals
+# --------------------------------------------------------------------------
+# A launcher that has pushed its kernel and is now waiting on it, which is
+# where a cancelled workflow finds it: almost all of a run's wall clock is
+# spent here, with the kernel up and billing. main() installs the real
+# handlers over the real release(), so the signal is delivered to production
+# code and nothing about cleanup is re-implemented in the runner.
 def _waiting_launcher(outdir: Path) -> str:
     return "\n".join(
         [

@@ -726,7 +726,7 @@ _SELF_TESTS = {
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
     ),
-    # the __all__ re-export skip, and its scoping ---
+    # --- the __all__ re-export skip, and its scoping ---
     "reexport_in_package_init_is_allowed": (
         'from .a import A\n__all__ = ["A"]\n',
         'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',

@@ -152,8 +152,8 @@ def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
     ids = ["core_only", "all_present"],
 )
 def test_disable_broken_vllm_keeps_healthy_vllm_enabled(present):
+    # Healthy install: an absent sibling (ModuleNotFoundError) or an extra present
     # ext that loads cleanly must NOT be mistaken for an ABI break.
-    # Healthy install: an absent sibling (ModuleNotFoundError) or an extra present ext that loads cleanly must NOT be
     with _fake_vllm(present = present, broken = set()) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 

@@ -12,6 +12,8 @@ from unsloth.models import loader_utils as L
 
 
 # ---------------------------------------------------------------------------
+# _env_says_offline / _get_effective_local_files_only
+# ---------------------------------------------------------------------------
 
 _OFFLINE_TRUE = ("1", "true", "yes", "on", "ON", " 1 ", "\tyes\n")
 _OFFLINE_FALSE = ("0", "no", "false", "off", "", "  ", "maybe")
@@ -312,6 +314,8 @@ def test_reset_hf_sessions_is_safe():
 
 
 # ---------------------------------------------------------------------------
+# _has_local_tokenizer_files / _resolve_checkpoint_tokenizer_name
+# ---------------------------------------------------------------------------
 
 
 def _touch(path, name):
@@ -365,6 +369,8 @@ def test_resolve_tokenizer_nonexistent_dir_falls_back():
     assert L._resolve_checkpoint_tokenizer_name("/no/such/dir", {}) is None
 
 
+# ---------------------------------------------------------------------------
+# _offline_aware_load (the retry orchestrator)
 # ---------------------------------------------------------------------------
 
 
@@ -479,6 +485,8 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _force_hf_offline — constant restore (no stale offline pin)
+# ---------------------------------------------------------------------------
 
 
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
@@ -506,6 +514,8 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_checkpoint_tokenizer_name — VLM needs local processor files
+# ---------------------------------------------------------------------------
 
 
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
@@ -525,6 +535,8 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# what the retry reports when it fails too
 # ---------------------------------------------------------------------------
 
 
@@ -630,6 +642,7 @@ def test_a_successful_retry_is_unchanged(monkeypatch):
     assert L._force_offline_depth == 0
 
 
+# ---------------------------------------------------------------------------
 # what the retry must not hold, hide, or overwrite
 # ---------------------------------------------------------------------------
 

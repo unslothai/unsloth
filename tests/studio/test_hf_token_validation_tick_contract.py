@@ -544,8 +544,8 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1].split(
         "const resumeTrainingRunFromHistory", 1
     )[0]
+    # Only the pending-start branch may clear the latch, and only to keep that cancel
     # retryable; a failed job stop must still leave it set.
-    # Only the pending-start branch may clear the latch, and only to keep that cancel retryable;
     job_branch = stop.split("const message =", 1)[1].split("} else {", 1)[1]
     assert "setStopRequested(false)" not in job_branch
 

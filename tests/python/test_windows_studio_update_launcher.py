@@ -159,8 +159,8 @@ def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, t
 
 
 def test_a_recoverable_copy_exists_while_setup_runs(monkeypatch, studio, tmp_path):
+    # The canonical path is freed so the installer can publish a replacement,
     # but never without a copy to put back if it publishes nothing.
-    # The canonical path is freed so the installer can publish a replacement, but never without a copy to put back if
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
 
     def setup(**_kwargs):
@@ -523,7 +523,9 @@ def test_an_invalid_replacement_is_restored_but_still_fails(monkeypatch, studio,
 
 
 def test_a_backup_that_cannot_run_falls_back_to_the_moved_aside_copy(monkeypatch, studio, tmp_path):
-    # The point of freeing the canonical path.
+    # Backups are taken after only the two-byte header check, so an interrupted
+    # run can leave a PE-shaped but non-runnable one. Preferring it must not
+    # strand the working launcher that this run moved aside.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     bad_backup = b"MZ-unrunnable"
     (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
@@ -587,8 +589,9 @@ def test_a_non_runnable_backup_falls_through_to_the_legacy_copy(monkeypatch, stu
 
 
 def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio, tmp_path):
-    # __exit__ took the first PE-shaped candidate, so an interrupted run's non-runnable backup was installed over the
-    # working launcher this run had moved aside, and it could also undo a restore validate_launcher just made.
+    # setup.ps1 removes the whole $VenvDir to rebuild a stale torch, and Windows
+    # refuses a recursive delete while a handle inside it is open. A lock under
+    # Scripts/ therefore broke exactly the repair path it was meant to guard.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     seen = {}
 
@@ -644,9 +647,12 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 # Issue #8490:
 
 
-# ── Application Control (issue #8490) ───────────────────────────────── Windows can deny the generated, unsigned
-# unsloth.exe while the signed python.exe beside it still runs.
 # ── Application Control (issue #8490) ─────────────────────────────────
+#
+# Windows can deny the generated, unsigned unsloth.exe while the signed
+# python.exe beside it still runs. The launcher --version probe is then
+# impossible, and reading that as "the update broke" rolled a perfectly good
+# install back on every single update.
 def _blocked_exe_run(interpreter_result, calls = None):
     """subprocess.run where only the launcher is denied by policy."""
 
@@ -663,8 +669,10 @@ def _blocked_exe_run(interpreter_result, calls = None):
 
 
 def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):
+    # Aborting here would make an antivirus hold enough to render the
+    # environment unupdatable, which main did not do either. But the cost has to
     # be visible: uv cannot replace a launcher it could not move, and the pip
-    # Aborting here would make an antivirus hold enough to render the environment unupdatable, which main did not do
+    # fallback drops --upgrade-package, so unsloth stays at its old version.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     calls = []

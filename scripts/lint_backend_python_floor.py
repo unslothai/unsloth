@@ -99,8 +99,9 @@ def targets() -> list[str]:
 def main() -> int:
     floor = declared_floor()
     target = f"{floor[0]}.{floor[1]}"
+    # The console script, not `python -m vermin`: the package has no __main__, so that
     # form exits nonzero for the wrong reason and this lint would fail on every run while
-    # The console script, not `python -m vermin`:
+    # looking like it had found something.
     vermin = shutil.which("vermin")
     if vermin is None:
         raise SystemExit(

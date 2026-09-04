@@ -47,6 +47,7 @@ REPO = Path(__file__).resolve().parents[1]
 pytest.importorskip("dill")
 
 
+# --------------------------------------------------------------------------
 # The real thing, in a subprocess, on a real off-prefix tree
 # --------------------------------------------------------------------------
 
@@ -186,8 +187,8 @@ def _run_on_hostile_tree(
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_text(body, encoding = "utf-8")
     if omit_metadata:
+        # Both layers: leaving the second one's metadata would keep the patch
         # alive and the "no metadata anywhere" case would never be exercised.
-        # Both layers: leaving the second one's metadata would keep the patch alive and the "no metadata anywhere" case
         for layer in (overlay, second):
             for meta in layer.glob("*.dist-info"):
                 shutil.rmtree(meta)
@@ -303,6 +304,7 @@ def test_the_env_switch_turns_it_off(tmp_path):
     assert got["dumps"].startswith("PicklingError")
 
 
+# --------------------------------------------------------------------------
 # The gate: an ordinary install must be untouched
 # --------------------------------------------------------------------------
 
@@ -485,8 +487,8 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state(tmp_
     project.__spec__ = types.SimpleNamespace(
         name = "pretend_project", origin = str(elsewhere / "pretend_project.py")
     )
+    # The user's own module in the SAME directory as the dependencies. Root
     # containment cannot separate it from `library`; installed metadata can.
-    # The user's own module in the SAME directory as the dependencies.
     colocated = types.ModuleType("pretend_colocated")
     colocated.__spec__ = types.SimpleNamespace(
         name = "pretend_colocated", origin = str(layer / "pretend_colocated.py")
@@ -568,8 +570,9 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     assert "myproj.py" not in rel, "a file no distribution recorded is claimed"
     assert not any("dist-info" in r or ".data" in r or "__pycache__" in r for r in rel)
 
+    # The fallback is honoured only where the name resolves to ONE file: a
     # package name cannot say which of the directory's contents were installed,
-    # The fallback is honoured only where the name resolves to ONE file:
+    # so it is declined rather than guessed.
     assert "pkgone.py" in rel
     assert not any(r == "pkgone" or r.startswith("pkgone" + os.sep) for r in rel), (
         "a top_level.txt package name claimed the whole directory, so a "
@@ -740,8 +743,8 @@ def test_a_bytecode_only_package_still_finds_its_metadata(tmp_path):
     """
     from unsloth.import_fixes import _dill_install_root
 
+    # Built with the platform's own separators; a POSIX literal compares
     # against a drive-qualified path on Windows and fails for the wrong reason.
-    # Built with the platform's own separators;
     layer = tmp_path / "layer"
     expected = os.path.realpath(str(layer))
     assert _dill_install_root(str(layer / "pyarrow" / "__init__.pyc")) == expected

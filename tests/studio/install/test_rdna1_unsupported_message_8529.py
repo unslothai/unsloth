@@ -45,9 +45,12 @@ _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
-# PowerShell cannot parse a bare VAR=value:
-# what a PowerShell source must never print, and folding them together let a .ps1 emit
 # The setter each source has to teach, in the syntax of the shell that reads it.
+# PowerShell cannot parse a bare VAR=value: it resolves it as a command name, so a
+# Windows user who pastes it sets nothing and gets the same CPU bundle -- the #8458
+# failure mode, reintroduced by the fix for it. Two needles, not one: the bare form is
+# what a PowerShell source must never print, and folding them together let a .ps1 emit
+# it and still pass (an added-bare-setter mutant survived the whole file).
 _POSIX_ASSIGNMENT = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
 # `export`, not a bare assignment: a POSIX assignment without it is a shell variable, invisible to the installer the
 # next line tells the user to run, so they get the CPU bundle again and conclude the advice was wrong (the #8458
@@ -110,8 +113,8 @@ _NOT_RDNA1_NAMES = [
     "AMD Radeon RX 6800 XT",
     "AMD Radeon 8060S Graphics",
     "NVIDIA GeForce RTX 4090",
+    # The workstation boards that DO have wheels, now that this table names W-series
     # parts: "W5700" must not be read out of "W7500", nor "W5500" out of "W6500".
-    # The workstation boards that DO have wheels, now that this table names W-series parts:
     "AMD Radeon PRO W7500",
     "AMD Radeon PRO W7900",
     "AMD Radeon PRO W6500",
@@ -249,8 +252,8 @@ class TestExplicitIndexPinIsHonoured:
         ]
         assert hits, f"{path.name}: the CPU-only claim was not found"
         for i in hits:
+            # Backwards: the pin is read above the claim, which is what puts the claim
             # in a branch. Bounded so an unrelated mention further up cannot satisfy it.
-            # Backwards: the pin is read above the claim, which is what puts the claim in a branch.
             window = "\n".join(lines[max(i - 10, 0) : i])
             assert "UNSLOTH_TORCH_INDEX_URL" in window, (
                 f"{path.name}:{i + 1}: claims CPU-only unconditionally, which a pinned "
@@ -581,8 +584,10 @@ class TestAdviceIsNotEmittedForRdna1:
         src = _normalised(_INSTALL_SH)
         assert src.count("_infer_linux_unsupported_amd_gfx_arch 2>/dev/null") == 2
 
+    # Every arm that would otherwise outrank the unsupported one, with the guard it
     # must carry. An installed HIP SDK is the SYMPTOM here -- the #8529 reporters
-    # Every arm that would otherwise outrank the unsupported one, with the guard it must carry.
+    # installed it because the old advice said to -- so unguarded, the fix never
+    # prints for the exact users it was written for.
     _HIPSDK_ARMS = [
         (_INSTALL_PS1, "$HipSdkInstalled -and $ROCmGpuLabel", " -and -not $ROCmUnsupportedGfxArch"),
         (_INSTALL_PS1, "$HipSdkInstalled -and -not $HasROCm", " -and -not $ROCmUnsupportedGfxArch"),
@@ -612,11 +617,12 @@ class TestAdviceIsNotEmittedForRdna1:
             f"unsupported arm"
         )
 
-    # The claim the arms must NOT make, and the one they must.
-    # these arms say what studio/setup.sh already says.
-    # Scoped per ARM, not per file: install.ps1's pre-existing $ROCmGfxArch hint makes the same claim for a different
-    # With neither CUDA nor XPU visible unsloth raises NotImplementedError at import (unsloth/device_type.py), so
-    # "training runs on CPU" sends the user at an ImportError;
+    # The claim the arms must NOT make, and the one they must. With neither CUDA nor XPU
+    # visible unsloth raises NotImplementedError at import (unsloth/device_type.py), so
+    # "training runs on CPU" sends the user at an ImportError; these arms say what
+    # studio/setup.sh already says. Scoped per ARM, not per file: install.ps1's
+    # pre-existing $ROCmGfxArch hint makes the same claim for a different card, so a
+    # file-wide ban would fail on untouched code and end up deleted.
     _TRAINING_ARMS = [
         (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
         (
@@ -1075,8 +1081,9 @@ class TestVulkanAdvice:
       no advice, so a message naming the variable must also name the moment.
     """
 
+    # The four sources whose advice is a literal in an emitting statement. The Python
     # copy joins string fragments, so line-scoped source reading cannot see it; the
-    # The four sources whose advice is a literal in an emitting statement.
+    # (stronger) live-output tests below cover it instead.
     _SHELL_SOURCES = [_INSTALL_PS1, _SETUP_PS1, _INSTALL_SH, _SETUP_SH]
 
     # Everything the advice has to carry, asserted against EMITTED text only:
@@ -1360,8 +1367,8 @@ _POLARIS_NAMES = [
     ("AMD Radeon Pro WX 5100", "gfx803"),
 ]
 
+# Polaris 11/12. Deliberately NOT in the table: a different die, and this table
 # is only worth having while it never guesses an arch.
-# Polaris 11/12. Deliberately NOT in the table:
 _POLARIS_11_12_NAMES = [
     "AMD Radeon RX 560",
     "AMD Radeon RX 550",

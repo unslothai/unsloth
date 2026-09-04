@@ -236,8 +236,8 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
                     return True
         return False
 
+    # Locals bound before `arguments = dict(locals())`. Names bound only in a branch
     # that always returns/raises (the save_method="lora" early exit) never reach it.
-    # Locals bound before `arguments = dict(locals())`.
     bound: set[str] = set()
     saw_snapshot = False
     for stmt in fn.body:

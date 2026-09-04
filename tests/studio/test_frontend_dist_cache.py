@@ -346,6 +346,7 @@ def test_the_dist_cache_has_no_restore_keys() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
 # The touch, which is where a hit stops being a hit.
 # ---------------------------------------------------------------------------
 
@@ -536,6 +537,8 @@ def test_no_windows_job_reaches_the_posix_install_composite() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The save half, and the assertion that a hit was actually reused.
+# ---------------------------------------------------------------------------
 
 
 def test_the_dist_cache_is_saved_on_main_only() -> None:
@@ -619,6 +622,7 @@ def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, mar
     )
 
 
+# ---------------------------------------------------------------------------
 # One definition of the key, and where it may be referenced from.
 # ---------------------------------------------------------------------------
 

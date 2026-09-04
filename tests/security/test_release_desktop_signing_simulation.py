@@ -396,7 +396,8 @@ def test_verify_fails_when_the_binary_exits_non_zero(sandbox):
 
 @needs_pathext
 def test_verify_accepts_the_binary_it_installed(sandbox):
-    # Starts fine, exits non-zero: where.exe given an option it does not take.
+    # The running interpreter answers --version and exits 0, which is all the
+    # verify step asks of the tool.
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
     verified = _real_exe_on_path(directory, sys.executable)
 
@@ -407,8 +408,8 @@ def test_verify_accepts_the_binary_it_installed(sandbox):
 
 
 def test_an_unverified_copy_ahead_on_path_is_rejected(sandbox, tmp_path):
+    # Rejecting direction of the ordering proof: a copy resolving ahead of the
     # verified one must not be accepted. Prepending is what prevents it.
-    # Rejecting direction of the ordering proof:
     verified_dir = sandbox["runner_temp"] / "trusted-signing-cli"
     _fake_on_path(
         verified_dir, "trusted-signing-cli.exe", '#!/bin/sh\necho "trusted-signing-cli 0.10.0"\n'

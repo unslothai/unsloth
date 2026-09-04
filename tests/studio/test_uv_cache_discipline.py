@@ -42,8 +42,8 @@ COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
     "interrupted-install-ci.yml",
+    # Publishes the desktop app from a clean checkout; a restored dist would ship a
     # bundle this run never built.
-    # Publishes the desktop app from a clean checkout;
     "release-desktop.yml",
 )
 

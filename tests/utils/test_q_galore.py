@@ -278,6 +278,8 @@ class TestParamGroupHelper:
 
 
 # ======================================================================
+# Optimizer tests (CPU-only, no bitsandbytes dependency)
+# ======================================================================
 
 
 class TestQGaLoreIntegration:

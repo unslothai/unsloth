@@ -29,7 +29,6 @@ _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
 _GPU_CELL = os.environ.get("UNSLOTH_SIM_GPU", "cpu").lower()
 
 
-# GPU cell: applied before anything torch-touching -------------------------
 # -- GPU cell: applied before anything torch-touching -------------------------
 
 
@@ -65,7 +64,6 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
     _GPU_STATE = {"cell": _GPU_CELL, "error": str(exc)}
 
 
-# The helper under test, lifted without importing unsloth ------------------
 # -- The helper under test, lifted without importing unsloth ------------------
 
 

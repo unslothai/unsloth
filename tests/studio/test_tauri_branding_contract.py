@@ -147,7 +147,7 @@ def test_dmg_background_art_is_what_its_renderer_produces() -> None:
     pages = [page.convert("RGB") for page in ImageSequence.Iterator(tiff)]
     assert [page.size for page in pages] == [page.size for page in expected]
 
-    # a tolerance, not equality, so no one Pillow build is baked in.
+    # a tolerance, not equality, so no one Pillow build is baked in. a stale asset is far worse
     for page, reference in zip(pages, expected):
         drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
         assert drift.max() <= 2

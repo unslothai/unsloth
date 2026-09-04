@@ -111,8 +111,8 @@ def _extract_prepare_restore_block():
     start = next(
         i for i, l in enumerate(lines) if l.strip() == "_model = getattr(self, 'model', None)"
     )
+    # End at the fallback assignment rather than a fixed line count, so inserting
     # lines into the block can't silently truncate what gets exec'd.
-    # End at the fallback assignment rather than a fixed line count, so inserting lines into the block can't silently
     end = next(
         i
         for i, l in enumerate(lines)

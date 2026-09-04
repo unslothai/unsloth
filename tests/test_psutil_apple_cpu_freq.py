@@ -156,8 +156,8 @@ class TestPatchApplication:
         assert not hasattr(psutil, "cpu_freq")
 
     def test_caller_argument_mistakes_keep_their_error(self, monkeypatch, fake_m4):
+        # The wrapper stands in for psutil globally, so a TypeError from a bad
         # call must not be mistaken for psutil declining to read the clock.
-        # The wrapper stands in for psutil globally, so a TypeError from a bad call must not be mistaken for psutil
         import psutil
 
         def cpu_freq(percpu = False):

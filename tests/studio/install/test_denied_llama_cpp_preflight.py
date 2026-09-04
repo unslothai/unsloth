@@ -109,8 +109,8 @@ def test_the_probe_keeps_all_three_answers() -> None:
     # Listing catches denied directories whose missing marker appears absent.
     assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in probe
     assert "Test-AccessDeniedError" in probe
+    # A readable marker is not enough: replacement also needs directory listing.
     # Regex, not a literal: whitespace alone must not reintroduce the early return.
-    # A readable marker is not enough:
     assert not re.search(r'"Present"\s*\{\s*return\s+"Readable"', probe)
     assert probe.index("Get-ChildItem -LiteralPath") < probe.rindex('return "Readable"')
     # It runs before anything is installed, so it must not terminate.

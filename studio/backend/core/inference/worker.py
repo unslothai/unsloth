@@ -1463,10 +1463,9 @@ def run_inference_process(
         )
         return
 
-    # ── 4. Command loop - process commands until shutdown ──
+    # ── 4. Command loop — process commands until shutdown ──
     # cancel_event is an mp.Event the parent can set anytime to cancel
     # generation instantly (no queue polling needed).
-    # ── 4. Command loop — process commands until shutdown ──
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:

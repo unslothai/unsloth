@@ -438,6 +438,8 @@ with sync_playwright() as p:
     load_posts.clear()  # drop the setup load; keep only UI-driven loads below.
 
     # ─────────────────────────────────────────────────────
+    # Picker helpers (proven selectors).
+    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
     # Unfiltered, for diagnostics: which gears exist at all when the one being looked for did not.
@@ -558,8 +560,15 @@ with sync_playwright() as p:
     def open_config(popover, hint):
         if reveal_on_device_row(popover, hint) is None:
             return None
+        # A sole-quant repo is a collapsed row whose click selects the model and closes
+        # the picker, so click its gear without touching the row; a multi-quant repo
+        # shows gears only once the row is expanded.
+        #
+        # The quant first at each step: with "Expand quantizations" on, the expander
+        # is already mounted, so a repo-only lookup finds some gear straight away and
         # never reaches the expansion branch -- and which one it finds is then
-        # A sole-quant repo is a collapsed row whose click selects the model and closes the picker, so click its gear
+        # arbitrary. Repo-only stays as the fallback, for the collapsed single-quant
+        # row whose label carries its own quant and need not carry this one.
         gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
         if gear is None:
             gear = row_gear(popover, hint)
@@ -596,14 +605,18 @@ with sync_playwright() as p:
         return loc if _count(loc) else None
 
     def primary_button(popover):
+        # exact: get_by_role matches the accessible name as a substring by default, so
+        # "Load model" also matches "Reload model" -- and it is swept first, so the
         # reload case would be found under the wrong name. The panel shows exactly one
-        # exact: get_by_role matches the accessible name as a substring by default, so "Load model" also matches
+        # of these four.
         for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
             b = popover.get_by_role("button", name = name, exact = True).first
             if _count(b):
                 return b
         return None
 
+    # ─────────────────────────────────────────────────────
+    # 1. Hidden infra models absent from the picker (HARD).
     # ─────────────────────────────────────────────────────
     step("hidden infra models absent from picker")
     popover = open_picker()
@@ -661,6 +674,8 @@ with sync_playwright() as p:
     shoot("03-hidden-check")
     close_picker()
 
+    # ─────────────────────────────────────────────────────
+    # 2. Context Length persists (load + request + reload) (HARD).
     # ─────────────────────────────────────────────────────
     step(f"context length {DISTINCT_CTX} persists")
     popover = open_picker()
@@ -741,6 +756,7 @@ with sync_playwright() as p:
             fail(f"Context Length did not persist across reload (got {val!r})")
         shoot("07-after-reload")
 
+    # ─────────────────────────────────────────────────────
     # 3. Reset clears the override (never pins context) (HARD).
     # ─────────────────────────────────────────────────────
     step("reset clears the per-model override")
@@ -770,12 +786,18 @@ with sync_playwright() as p:
             info("OK reset: distinctive context cleared from unsloth_model_configs")
         shoot("08-after-reset")
 
+    # ─────────────────────────────────────────────────────
     # 3b. Re-typing the value already shown must not pin an override (HARD).
+    # Entering the currently displayed context commits no onChange (the value is
     # unchanged), so the cached blur value must not be replayed into a stored
+    # override on Load. Otherwise re-typing the shown number, or doing so before a
+    # Reset, recreates a phantom context pin. The box shows "Auto" while nothing is
+    # pinned, so the number it edits is read from the focused input below.
     # ─────────────────────────────────────────────────────
     step("re-typing the shown context does not pin an override")
+    # Own its state instead of inheriting the step above: the previous step commits a
+    # Reset, which can close the picker, and inheriting turned that into a silent skip
     # that let this regression go unchecked.
-    # Own its state instead of inheriting the step above:
     popover = open_picker()
     if open_config(popover, MODEL_HINT) is None:
         fail("could not open run-settings for the re-type-shown check")
@@ -786,15 +808,16 @@ with sync_playwright() as p:
         # stored override gone.
         # The regression we guard ("Reset PINS the override") lives in localStorage, asserted below.
         ctx_in = context_input(popover)
+        # With no override stored the box reads "Auto", and only reveals the number it
+        # would edit (the fitted context) once it has focus. Click first, or there is
         # nothing numeric to re-type and the step skips the regression it guards.
-        # With no override stored the box reads "Auto", and only reveals the number it would edit (the fitted context)
         if ctx_in is not None:
             ctx_in.click()
             page.wait_for_timeout(200)
         native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
+        # A skip here is not a pass: this step is the only guard on the phantom-pin
         # regression, so say so at the level STRICT gates rather than as prose.
-        # A skip here is not a pass:
         soft_fail("re-type-shown did not run: Context Length input has no numeric default")
     else:
         remember = popover.get_by_label("Remember for this model").first
@@ -816,14 +839,24 @@ with sync_playwright() as p:
         entries = entries_for_model(cfg)
         pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
 
-        # Not every stored context here is a phantom pin.
-        # model-config-page.tsx pins the active context ON PURPOSE when the placement is fixed: const
-        # pinFixedLayerContext = target.isGguf && loadableConfig.gpuMemoryMode === "manual" && loadableConfig.gpuLayers
-        # != null && loadableConfig.gpuLayers >= 0 && loadableConfig.customContextLength == null && activeLoadedContext
-        # != null;
-        # It went unnoticed because it inherited a closed popover from the Reset step and silently skipped until #7760
-        # made it own its state;
+        # Not every stored context here is a phantom pin. model-config-page.tsx pins the
+        # active context ON PURPOSE when the placement is fixed:
+        #
+        #   const pinFixedLayerContext =
         #     target.isGguf && loadableConfig.gpuMemoryMode === "manual" &&
+        #     loadableConfig.gpuLayers != null && loadableConfig.gpuLayers >= 0 &&
+        #     loadableConfig.customContextLength == null && activeLoadedContext != null;
+        #
+        # with the reason stated above it: "If the user fixes GPU Layers (Manual) and
+        # remembers, pin that shown context so a later fresh load keeps the fitted
+        # placement instead of sending native/0 and recreating the OOM." Storing the
+        # context is the feature; not storing it is the bug it was written to prevent.
+        #
+        # This step could not tell the two apart, so on a runner where the placement IS
+        # manual -- which is every CPU-only CI runner, gpuLayers 0 -- it reported the
+        # documented behaviour as a regression. It went unnoticed because it inherited a
+        # closed popover from the Reset step and silently skipped until #7760 made it own
+        # its state; the first time it actually ran, it failed.
         expected_pin = [
             e
             for e in pinned
@@ -847,6 +880,7 @@ with sync_playwright() as p:
         shoot("08b-after-retype-shown")
     close_picker()
 
+    # ─────────────────────────────────────────────────────
     # 4. Advanced settings persist (best-effort, never gates).
     # ─────────────────────────────────────────────────────
     step("advanced (KV cache dtype / tensor parallel) persists")
@@ -1030,10 +1064,15 @@ with sync_playwright() as p:
             )
             return
         remove_rows(stale)
-        # AND IT HAS TO STAY REMOVED.
-        # Breaking on the first empty sample confirms absence at one instant plus 250 ms, which is the same single-read
-        # weakness one step further along: a queued PUT arriving in the third interval still recreates the row before
-        # EVERY INTERVAL, not until the first empty one.
+        # AND IT HAS TO STAY REMOVED. `syncModelOverride` is fire-and-forget, so a mirror PUT
+        # from steps 2 to 4 can still be in flight when this runs and recreate the row moments
+        # after a single post-delete read found it gone -- which puts back exactly the
+        # contamination this cleanup exists to remove. So absence is confirmed over a short
+        # window rather than at one instant, and a row that comes back is removed again.
+        # EVERY INTERVAL, not until the first empty one. Breaking on the first empty sample
+        # confirms absence at one instant plus 250 ms, which is the same single-read weakness one
+        # step further along: a queued PUT arriving in the third interval still recreates the row
+        # before hydration reads it. The window is only a window if it is sampled to the end.
         left: list[str] | None = []
         for _ in range(4):
             page.wait_for_timeout(250)
@@ -1155,8 +1194,10 @@ with sync_playwright() as p:
             composer.wait_for(state = "visible", timeout = 60_000)
             popover = open_picker()
             open_config(popover, MODEL_HINT)
+            # The flag is already "1" here, so this waits on the store having been read
+            # by the reloaded page rather than on the import: `readMap` is what would
             # re-run the import if the flag were being ignored, which is the regression
-            # The flag is already "1" here, so this waits on the store having been read by the reloaded page rather
+            # this half exists to catch.
             wait_for_migration_settled()
             cfg_second = read_configs()
             keys_first = set(cfg_first.keys())

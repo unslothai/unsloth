@@ -106,8 +106,8 @@ def run() -> dict:
             page.wait_for_function("() => window.__stream && window.__stream.ready", timeout = 60_000)
 
             cdp = context.new_cdp_session(page)
+            # After load so the harness bundle is not itself throttled in, and recorded
             # below so a difference can never be an artefact of uneven throttling.
-            # After load so the harness bundle is not itself throttled in, and recorded below so a difference can never
             if THROTTLE > 1:
                 cdp.send("Emulation.setCPUThrottlingRate", {"rate": THROTTLE})
 
@@ -165,8 +165,10 @@ def main() -> int:
     info(f"wrote {out}")
 
     failures: list[str] = []
+    # A page that painted nothing scores a perfect zero on every budget below, so assert
+    # the workload first. Not an equality: Markdown syntax (fences, list markers, math
     # delimiters) never reaches textContent, so rendered length is a few per cent under the
-    # A page that painted nothing scores a perfect zero on every budget below, so assert the workload first.
+    # bytes sent. 90% is above that and far below "the render died early".
     floor = int(TOTAL_CHARS * 0.9)
     if results["paintedChars"] < floor:
         failures.append(

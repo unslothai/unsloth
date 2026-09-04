@@ -160,9 +160,9 @@ SCROLL_STEPS = int(os.environ.get("SMOKE_SCROLL_STEPS", "20"))
 SCROLL_STEP_PX = int(os.environ.get("SMOKE_SCROLL_STEP_PX", "400"))
 SEED_TIMEOUT_MS = int(os.environ.get("SMOKE_SEED_TIMEOUT_MS", "300000"))
 ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "120000"))
+# How long an in-page action waits for the DOM to reach the state it asked for. This bounds an
 # action that never happened and nothing else, so it has to stay well above the slowest honest
 # measurement or a very slow open is reported as "never opened".
-# How long an in-page action waits for the DOM to reach the state it asked for.
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "120000"))
 # How long the highlighter has to stay still before a re-open counts as finished.
 # Four polls of the 250ms interval wait_for_highlighting_settled() uses, because that is what was MEASURED to be needed:
@@ -392,9 +392,10 @@ def info(message: str) -> None:
     print(f"[heavy-thread] {message}", flush = True)
 
 
-# ── in-page actions ─────────────────────────────────────────────────── Each one brackets itself with
-# __hv.begin()/__hv.end(), so the recorder window is exactly the action rather than the action plus a CDP round trip.
 # ── in-page actions ───────────────────────────────────────────────────
+#
+# Each one brackets itself with __hv.begin()/__hv.end(), so the recorder window is exactly the
+# action rather than the action plus a CDP round trip.
 KEYSTROKE_JS = """
 async (count) => {
   const api = window.__heavyThread;
@@ -681,8 +682,10 @@ async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
 }
 """
 
+# The floor under every timing clocked across a double rAF: two rAFs resolve no sooner than two
 # vsync intervals. An action that never happened therefore still reports ~33ms, which reads as a
-# The floor under every timing clocked across a double rAF:
+# plausible measurement rather than as a failure, so the floor is recorded per cell and
+# subtracted before any growth ratio.
 PAINT_FLOOR_JS = """
 async (samples) => {
   const values = [];
@@ -874,8 +877,13 @@ def one_repetition(page, cdp) -> dict[str, dict]:
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
     rep["delete"] = run_action(page, cdp, "delete", DELETE_JS, SETTLE_TIMEOUT_MS)
 
+    # The delete is PERMANENT: it removes a message from the runtime's repository, not from the
+    # view. Left alone, repetition 2 re-opens and measures a thread one message shorter than the
+    # one the census at the top of this cell asserted, and repetition 3 one shorter again. At the
+    # smallest size the whole thread is a single ten-kind cycle, so those three deletions take the
+    # json fence, then both inline images, then the svg -- the exact "the fixture quietly lost a
+    # content kind" failure harness_failures() gates on, except that the gate reads a census taken
     # before any repetition ran and so never sees it. Restore, then rebuild, untimed.
-    # The delete is PERMANENT: it removes a message from the runtime's repository, not from the view.
     restored = page.evaluate("() => window.__heavyThread.restore()")
     page.wait_for_function(
         "(n) => window.__heavyThread.messageCount() >= n",
@@ -923,8 +931,10 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         numeric_keys = set()
         for row in rows:
             for key, value in row.items():
+                # `value is None` is deliberately a key too. A timing that came back null in every
+                # repetition would otherwise be absent from the merged row entirely, and the
+                # verdict's `menu["openMs"] is None` would raise KeyError instead of reporting the
                 # menu that never opened. Present-and-None is the readable form of that.
-                # `value is None` is deliberately a key too.
                 if value is None or (
                     isinstance(value, (int, float)) and not isinstance(value, bool)
                 ):
@@ -1298,8 +1308,9 @@ GROWTH_AXES = tuple(
         ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
         ("scroll gesture ms", _action("scroll", "gestureMs"), _floor_from("scroll", "paint_waits")),
         ("scroll settle ms", _action("scroll", "settleMs"), _floor_from("scroll", "paint_waits")),
+        # NOT paint_waits: paintedMs starts at a mark taken after begin() and spans one wait,
+        # while the jump's window holds two. Using the window count here would subtract a floor
         # the number never contained.
-        # NOT paint_waits: paintedMs starts at a mark taken after begin() and spans one wait, while the jump's window
         ("jump painted ms", _action("jump", "paintedMs"), 1),
         ("jump settle ms", _action("jump", "settleMs"), _floor_from("jump", "paint_waits")),
         # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from settle() reading the
@@ -1307,16 +1318,23 @@ GROWTH_AXES = tuple(
         # remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
+        # The OBSERVATION floor only, and deliberately a constant rather than the measured
         # `paintWaits`: see REOPEN_OBSERVATION_FLOOR above. Leaving it at 0 is still wrong, that
-        # The OBSERVATION floor only, and deliberately a constant rather than the measured `paintWaits`:
+        # left a full ~33ms vsync floor of constant baseline in both ends; subtracting all the
+        # waits was worse, because the count tracks the progressive mount and so removes the
+        # thing the axis exists to measure.
         ("reopen ms", _action("reopen", "ms"), REOPEN_OBSERVATION_FLOOR),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond to twelve times the
 # content. That is not a flat curve, it is an axis that is not measuring the thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
+# What a counter that starts at zero has to REACH before its rise counts as an answer. A ratio
 # cannot be formed against zero, so DISCRIMINATION_RATIO does not apply to these axes at all and
-# What a counter that starts at zero has to REACH before its rise counts as an answer.
+# something absolute has to. 5 because the counters this covers are dropped frames and long
+# tasks: at twelve times the content a real curve produces them in quantity, while one or two is
+# what an unloaded machine produces on its own, and the CI configuration runs a single repetition
+# so there is no median to average that away.
 ZERO_BASED_MIN_RISE = int(os.environ.get("SMOKE_ZERO_BASED_MIN_RISE", "5"))
 # Which axes are COUNTS.
 # an UNFLOORED timing such as `longest stall ms` or `worst frame ms` is zero at the smallest size whenever the action
@@ -1410,8 +1428,13 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                         "floored": floor_counts,
                     }
                     continue
+                # `large > small` is not enough. These are counts of missed frames and long
+                # tasks, and in the one-repetition Chromium configuration the CI workflow runs
+                # there is no median to smooth them: a single incidental dropped frame takes an
+                # axis from 0 to 1, which was marked as discriminating no matter what
                 # SMOKE_DISCRIMINATION_RATIO said, because a ratio was never computed for it.
-                # `large > small` is not enough.
+                # `harness_failures` accepts any ONE discriminating axis, so that stray frame
+                # could carry the whole verdict while every latency axis was flat or broken.
                 if name not in COUNTER_AXES:
                     # A timing that reads zero at the smallest size did not "grow from nothing", it resolved below what
                     # the recorder can see.
@@ -1534,8 +1557,11 @@ def floor_declaration_problems(results: dict) -> list[str]:
                         f"paint floor subtracted from '{axis_name}' is unverified"
                     )
                     continue
+                # Resolved against THIS row, so an axis whose floor is read from the row (see
+                # `_floor_from`) is verified as what it will actually subtract rather than
                 # compared as a callable and reported wrong every time. A hand-declared literal
-                # Resolved against THIS row, so an axis whose floor is read from the row (see `_floor_from`) is
+                # resolves to itself, so it is still caught the moment it exceeds the waits the
+                # action paid, which is the whole point of this check.
                 declared = resolve_floor(declared_floor(axis_name), row)
                 if observed >= declared:
                     continue
@@ -1733,8 +1759,8 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 "sizes; the columns are not measuring the same mechanism"
             )
 
+    # Discrimination. Not a budget: a harness where the largest thread costs what the smallest
     # does is not reporting a flat curve, it is reporting that it never drove the page.
-    # Discrimination. Not a budget:
     if len(results["sizes"]) >= 2:
         for engine, per_axis in report.items():
             if not any(row["discriminated"] for row in per_axis.values()):

@@ -23,8 +23,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
 
+# The shape install_python_stack._filter_requirements writes: a dot, the source stem,
+# "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
 # [A-Za-z0-9_]{8}, so this cannot swallow a checked-in file that merely starts with a dot.
-# The shape install_python_stack._filter_requirements writes:
 _GENERATED_FILTER = re.compile(r"\.[\w.-]+-filtered-\w{8}\.txt")
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
 INSTALL_SH = REPO_ROOT / "install.sh"

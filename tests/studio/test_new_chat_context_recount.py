@@ -642,8 +642,8 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
 @pytest.mark.parametrize(
     ("before_status", "expected_early_counts"),
     [
+        # Arriving on New Chat with the GGUF already resident. The second render repeats identical
         # store values (a deferred inventory refresh rewrites the checkpoint) and must not re-price.
-        # Arriving on New Chat with the GGUF already resident.
         pytest.param(
             LOADED_MODEL
             + """
@@ -657,8 +657,9 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
         ),
         # A page RELOAD of /chat?new=<uuid>:
         pytest.param("", 0, id = "reload_before_status_hydrates"),
+        # New Chat opened FROM a populated conversation left running: its runtime stays mounted and
+        # the live branch reader keeps returning its messages until switchToNewThread() settles.
         # The empty chat must still be priced as a bare template.
-        # New Chat opened FROM a populated conversation left running:
         pytest.param(
             LOADED_MODEL
             + """

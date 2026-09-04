@@ -40,8 +40,11 @@ if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; this test drives the real patch", allow_module_level = True)
 
 
-# TRL-shaped method sources ------------------------------------------------ `_init_vllm` and `sync_weights` are still
 # --- TRL-shaped method sources ------------------------------------------------
+#
+# `_init_vllm` and `sync_weights` are still rewritten from source, so their text
+# has to carry the anchors the regexes look for: an `self.llm = LLM(...)` block
+# and a bare `def sync_weights(self):` line.
 _INIT_VLLM = """
 def _init_vllm(self, model):
     if self.mode == "colocate":
@@ -441,16 +444,20 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     assert len(_lora_requests(log)) == 1, f"generate reached the engine twice: {log}"
 
 
-# --- vLLM signature fidelity -------------------------------------------------- The tests above use an engine whose
-# methods take `*args, **kwargs`, so they say nothing about how the injection behaves against vLLM's ACTUAL parameter
-# lists.
-# Those differ between the two entry points, and that difference matters: LLM.generate(self, prompts, sampling_params =
-# None, *, use_tqdm, lora_request, ...) LLM.chat(self, messages, sampling_params = None, use_tqdm = True, lora_request =
-# None, ...) `lora_request` is KEYWORD-ONLY on `generate` in every vLLM release from 0.11.0 to 0.27.1, so nothing can
-# reach it positionally there.
-# On `chat` it is an ordinary positional parameter, and its index has already moved once (`tokenization_kwargs` was
-# inserted in 0.18.0).
 # --- vLLM signature fidelity --------------------------------------------------
+#
+# The tests above use an engine whose methods take `*args, **kwargs`, so they say
+# nothing about how the injection behaves against vLLM's ACTUAL parameter lists.
+# Those differ between the two entry points, and that difference matters:
+#
+#   LLM.generate(self, prompts, sampling_params = None, *, use_tqdm, lora_request, ...)
+#   LLM.chat(self, messages, sampling_params = None, use_tqdm = True, lora_request = None, ...)
+#
+# `lora_request` is KEYWORD-ONLY on `generate` in every vLLM release from 0.11.0 to
+# 0.27.1, so nothing can reach it positionally there. On `chat` it is an ordinary
+# positional parameter, and its index has already moved once (`tokenization_kwargs`
+# was inserted in 0.18.0). A caller that fills it positionally and an injector that
+# then adds it as a keyword is `TypeError: got multiple values for argument`.
 class VLLMSignatureEngine(FakeEngine):
     """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
 

@@ -840,9 +840,11 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
+    # Anything the adapter imports and the sliced region uses has to exist in the
+    # preamble. Otherwise it is a bare ReferenceError at runtime, the retry loop
+    # catches it and scores it as a failed load, and the scenario fails as a
     # wrong-model assertion that says nothing about the real cause. That is what
     # #7699 did by adding a syncModelCapabilities call here.
-    # Anything the adapter imports and the sliced region uses has to exist in the preamble.
     imported = set()
     source = "\n".join(lines)
     for match in re.finditer(

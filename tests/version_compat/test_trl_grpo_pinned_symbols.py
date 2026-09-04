@@ -204,7 +204,7 @@ def test_trl_generation_vllm_generation_gated(tag: str):
         )
 
 
-# trl.generation.vllm_generation: gated import for the fast_inference server mode (rl_replacements.py:1846-1848).
+# TRL's __version__ must be parseable; rl.py:63 string-matches it.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_version_parseable(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
@@ -231,7 +231,9 @@ def test_trl_version_parseable(tag: str):
     )
 
 
-# TRL's __version__ must be parseable; rl.py:63 string-matches it.
+# Coverage extension (added 2026-05): symbols/source-string contracts
+# unsloth + unsloth-zoo touch that the original suite missed.
+# 1. trl.is_conversational — soft import in unsloth-zoo dataset_utils.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_is_conversational_export(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
@@ -267,7 +269,8 @@ def test_trl_dpo_trainer_module_exists(tag: str):
     assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
 
 
-# 2-4. trl.trainer.sft_trainer surface used by unsloth tokenizer utils + tests.
+# 7. trl.trainer.utils.ConstantLengthDataset — optional soft import in
+#    unsloth-zoo/dataset_utils.py:596 (TRL 0.20.0 removed it on some paths).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_constant_length_dataset_optional(tag: str):
     candidates = [
@@ -284,9 +287,9 @@ def test_trl_constant_length_dataset_optional(tag: str):
         )
 
 
-# 5-6.
-# trl.trainer.dpo_trainer + MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES, patched by
-# unsloth-zoo/temporary_patches/misc.py:1376-1379.
+# 8. trl.models.utils.disable_gradient_checkpointing — added in TRL 1.0.0+.
+#    rl.py:1976-1994 gates via hasattr(); assert the symbol exists from
+#    1.0.0 onwards so a future removal gets caught.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
     if tag == "main":
@@ -310,9 +313,8 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
         )
 
 
-# 8.
-# rl.py:1976-1994 gates via hasattr();
-# trl.models.utils.disable_gradient_checkpointing - added in TRL 1.0.0+.
+# 9. trl.import_utils `_*_available` cache pattern — import_fixes.py:508-516
+#    clears these cached booleans so vllm-ascend imports work.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_import_utils_available_pattern(tag: str):
     candidates = [
@@ -450,7 +452,7 @@ def test_trl_sft_trainer_class(tag: str):
     assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing"
 
 
-# KTOTrainer.get_batch_logps + the literal raise-message rewriter.
+# 19-21. DPOTrainer methods unsloth-zoo's rl_replacements rewrites.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_dpo_trainer_methods(tag: str):
     """DPOTrainer methods unsloth's rewriters key on (rl_replacements.py
@@ -490,9 +492,9 @@ def test_trl_grpo_internal_helpers_in_scope(tag: str):
     )
 
 
-# 18.
-# transformers 5.0 removed the kwarg;
-# SFTTrainer + the `dict_args.pop("push_to_hub_token")` shim.
+# 18. SFTTrainer + the `dict_args.pop("push_to_hub_token")` shim. transformers
+#     5.0 removed the kwarg; if TRL stops emitting the bare pop, our patch
+#     no-ops AND TRL itself crashes on transformers 5.0.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_truncate_with_protected_tokens_optional(tag: str):
     """Informational: track truncate_with_protected_tokens (shipped TRL

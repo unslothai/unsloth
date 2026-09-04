@@ -43,8 +43,8 @@ GOAL_PACKAGES = (
     "unsloth_zoo",
 )
 
+# Exactly one of the above has a distribution name differing from its import
 # name; getting it wrong records "not installed" for a package that is.
-# Exactly one of the above has a distribution name differing from its import name;
 _DISTRIBUTION = {"unsloth_zoo": "unsloth-zoo"}
 
 

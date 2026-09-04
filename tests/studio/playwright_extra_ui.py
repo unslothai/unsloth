@@ -378,11 +378,11 @@ with sync_playwright() as p:
 
     step("Compare tab: send to two panes")
     compare_opened = False
-    # Waited for, not counted.
-    # See wait_for_first().
-    # This is the first step after load, so it is the one that pays for anything slowing first paint: #9251's reload
-    # snapshot overlay opened a window where the composer is on screen but not yet in the accessibility tree, and
-    # `count()` answered 0 six milliseconds in and called it "Compare nav not found".
+    # Waited for, not counted. This is the first step after load, so it is the one
+    # that pays for anything slowing first paint: #9251's reload snapshot overlay
+    # opened a window where the composer is on screen but not yet in the
+    # accessibility tree, and `count()` answered 0 six milliseconds in and called
+    # it "Compare nav not found". See wait_for_first().
     plus_btn = wait_for_first(
         page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I))
     )
@@ -415,8 +415,8 @@ with sync_playwright() as p:
             click_forced(compare_item)
             compare_opened = True
     if not compare_opened:
+        # Which of the two was missing, because "Compare nav not found" sent the
         # last reader looking for a removed menu item that was never removed.
-        # Which of the two was missing, because "Compare nav not found" sent the last reader looking for a removed menu
         missing = (
             "the composer's Tools and attachments button"
             if plus_btn is None

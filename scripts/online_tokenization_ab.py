@@ -54,8 +54,8 @@ def main() -> int:
     parser.add_argument("--no-fresh-cache", dest = "fresh_cache", action = "store_false")
     args = parser.parse_args()
 
+    # Fresh cache per run, else the eager arm just reads the other arm's
     # tokenize map out of Arrow and measures a cache hit real users never get.
-    # Fresh cache per run, else the eager arm just reads the other arm's tokenize map out of Arrow and measures a cache
     if args.fresh_cache:
         cache = WORKSPACE / "unsloth_ab_cache" / f"{args.arm}_{int(time.time())}"
         cache.mkdir(parents = True, exist_ok = True)

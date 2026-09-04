@@ -313,8 +313,8 @@ def test_extended_rotary_reads_config_factor():
 
 
 def test_extended_rotary_reads_rope_parameters_v5():
+    # transformers v5 stores scaling under rope_parameters (rope_scaling is a
     # back-compat shim that may be removed); the factor must still be read.
-    # transformers v5 stores scaling under rope_parameters (rope_scaling is a back-compat shim that may be removed);
     from types import SimpleNamespace
 
     from unsloth.models.llama import LlamaExtendedRotaryEmbedding
@@ -455,8 +455,8 @@ def test_v5_blank_repair_roundtrip(build):
     # keeps scaling in a buffer (issue #2405 / PR #6907).
     from unsloth.models import loader
 
-    # on v4 _fix_rope_inv_freq is a no-op, so the round-trip cannot restore.
     # The repair only runs on transformers v5 (it is what blanks the buffers);
+    # on v4 _fix_rope_inv_freq is a no-op, so the round-trip cannot restore.
     if not loader._NEEDS_ROPE_FIX:
         pytest.skip("transformers < 5 does not blank rope buffers; repair is a no-op")
 

@@ -32,6 +32,8 @@ def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedPr
 
 
 # ---------------------------------------------------------------------------
+# Lockfile pass: structural-only fixtures (no network).
+# ---------------------------------------------------------------------------
 
 
 def test_malicious_lockfile_exits_1():
@@ -67,6 +69,8 @@ def test_clean_lockfile_exits_0():
     assert "0 hard error(s)" in proc.stdout
 
 
+# ---------------------------------------------------------------------------
+# BLOCKED_NPM_VERSIONS table -- gated on Fork 1.
 # ---------------------------------------------------------------------------
 
 _BLOCKED_AVAILABLE = hasattr(snp, "BLOCKED_NPM_VERSIONS")
@@ -148,6 +152,8 @@ def test_blocked_npm_versions_short_circuits_download():
 
 
 # ---------------------------------------------------------------------------
+# KNOWN_IOC_STRINGS coverage -- every IOC must trip the scanner.
+# ---------------------------------------------------------------------------
 
 
 def _extract_pkg_with_ioc(ioc: str, tmp_path: Path) -> Path:
@@ -190,6 +196,8 @@ def test_every_known_ioc_string_caught(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Sanity: lockfile parse pass surfaces the structural findings we expect.
+# ---------------------------------------------------------------------------
 
 
 def test_parse_lockfile_structural_findings():
@@ -201,6 +209,9 @@ def test_parse_lockfile_structural_findings():
     assert "missing-integrity-hash" in patterns
 
 
+# ---------------------------------------------------------------------------
+# Code-only scanning (_strip_js_noncode): blank comments WITHOUT touching
+# strings/regex/code, preserve geometry, fail open on lexer confusion.
 # ---------------------------------------------------------------------------
 
 
@@ -263,6 +274,8 @@ def test_strip_only_applies_to_js_family():
 
 
 # ---------------------------------------------------------------------------
+# Detection survives stripping; comment-only IOC is suppressed.
+# ---------------------------------------------------------------------------
 
 _PKG = snp.PackageEntry(
     name = "x",
@@ -300,6 +313,8 @@ def test_ioc_in_assigned_string_survives_stripping():
     assert "known-ioc-string" in pats
 
 
+# ---------------------------------------------------------------------------
+# Baseline allowlist -- suppress reviewed findings, fail on new kinds.
 # ---------------------------------------------------------------------------
 
 
@@ -684,8 +699,9 @@ def test_evidence_overflow_binds_context_and_counts_all_matches():
 
 
 def test_evidence_caps_match_count_with_digest_remainder():
+    # Past _MAX_EVIDENCE_MATCHES the evidence folds the remaining matches into one
     # digest so a huge/minified file cannot build an unbounded evidence string,
-    # Past _MAX_EVIDENCE_MATCHES the evidence folds the remaining matches into one digest so a huge/minified file
+    # while a changed match count past the cap still reopens.
     over = snp._MAX_EVIDENCE_MATCHES + 20
     base = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(over))
     ev = snp._evidence(base, snp._JS_ENV_TOKEN)
@@ -696,8 +712,10 @@ def test_evidence_caps_match_count_with_digest_remainder():
 
 
 def test_evidence_streams_overflow_count_is_exact():
+    # The overflow matches are streamed from finditer (not collected into a list
     # before the cap), so the "(+N more)" count must still equal the exact number of
-    # The overflow matches are streamed from finditer (not collected into a list before the cap), so the "(+N more)"
+    # matches past the display cap for a large input, and the shown spans stay
+    # bounded to the cap.
     extra = 1000
     total = snp._MAX_EVIDENCE_MATCHES + extra
     body = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(total))
@@ -797,8 +815,8 @@ def test_outbound_cred_surface_binds_context():
 
 
 def test_load_baseline_skips_non_dict_entries(tmp_path):
+    # A malformed current-schema baseline (non-dict entries, or a non-object root)
     # must not crash the loader; bad entries are skipped, valid ones still load.
-    # A malformed current-schema baseline (non-dict entries, or a non-object root) must not crash the loader;
     bl = tmp_path / "bad.json"
     bl.write_text(
         json.dumps(

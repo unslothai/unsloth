@@ -93,8 +93,8 @@ SETTLE_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_SETTLE_S", "300"))
 REPAIR_START_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_REPAIR_START_S", "600"))
 # How long the stub installer runs.
 UV_SLEEP_S = float(os.environ.get("STUDIO_MAC_VERDICT_UV_SLEEP_S", "75"))
+# Where "the grace has certainly expired" starts, measured from the installer's first
 # breath. Comfortably past the 30s grace so a slow scheduler cannot blur the two.
-# Where "the grace has certainly expired" starts, measured from the installer's first breath.
 WORKER_PROOF_MARGIN_S = float(os.environ.get("STUDIO_MAC_VERDICT_WORKER_PROOF_S", "45"))
 # Once the worker is gone nothing holds the verdict, so this is a settle, not a wait.
 SETTLE_AFTER_REPAIR_S = float(os.environ.get("STUDIO_MAC_VERDICT_POST_REPAIR_S", "120"))
@@ -666,8 +666,9 @@ def booted(port: int, log: Path, env: dict):
     try:
         pid = boot(port, log, env)
         poller.server_pid = pid
+        # Started only now: the boot script wipes the auth directory, so a login thread
+        # running before it would read the previous scenario's bootstrap password and
         # spend its retries on a credential this server has never heard of.
-        # Started only now: the boot script wipes the auth directory, so a login thread running before it would read
         getter.start()
         yield poller, getter
     finally:

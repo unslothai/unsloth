@@ -205,8 +205,9 @@ def test_parse_manifest_ok_and_basic_selection():
 
 
 def test_select_artifact_never_picks_fat_gpu_bundles():
+    # A pinned pre-slim release's fat GPU bundles are dead shapes: a cuda/rocm
     # backend selects nothing (the core then retries with cpu), never the fat
-    # A pinned pre-slim release's fat GPU bundles are dead shapes:
+    # per-accelerator artifact.
     manifest = M.parse_manifest(
         _manifest(
             [
@@ -512,8 +513,8 @@ def test_resolve_mode_reports_an_ordinary_fallback_as_unresolved(monkeypatch, ca
 
 # ── --rocm-gfx / --has-rocm overrides (llama parity) ──
 def test_rocm_gfx_override_implies_has_rocm():
+    # --rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the
     # host stays on its CUDA/CPU path and never picks the ROCm bundle.
-    # rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the host stays on its CUDA/CPU path and
     base = _host("linux", "x64", has_usable_nvidia = True)
     out = M.apply_host_overrides(base, rocm_gfx = "gfx1100")
     assert out.has_rocm is True
@@ -795,8 +796,8 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
     bin_dir.mkdir(parents = True)
     for name in {"ggml.dll", "ggml-base.dll", "ggml-hip.dll"} - {missing_name}:
         (bin_dir / name).write_bytes(b"ggml")
+    # The HIP DLLs every published ROCm bundle also ships: none of them is the
     # ggml backend module, so their presence must not stand in for it.
-    # The HIP DLLs every published ROCm bundle also ships:
     for name in ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll"):
         (bin_dir / name).write_bytes(b"runtime")
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
@@ -1187,8 +1188,8 @@ def test_pairing_does_not_infer_a_tree_for_non_fork_binaries(monkeypatch):
 
     monkeypatch.setattr(M, "_download_host_json_once", record)
     assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = None) is True
+    # Nothing at all is probed: the installed tag because there is no repo, and
     # the required tag because a lone required tree cannot decide the pairing.
-    # Nothing at all is probed:
     assert fetched == []
 
 

@@ -86,8 +86,10 @@ def _exec_search_roots_block(
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
     controlled studio_root() and resolve(), without importing the heavy module."""
     src = LLAMA_CPP.read_text(encoding = "utf-8")
-    # decorator can't truncate the helper mid-body and break exec().
     # Shared root classifier (holds the defensive try/except for studio_root()).
+    # End the slice at the next sibling def/decorator at the same indent rather
+    # than the literal "@staticmethod" string, so a future docstring mentioning a
+    # decorator can't truncate the helper mid-body and break exec().
     helper_start = src.index("def _resolved_studio_root_and_is_legacy")
     indent = " " * (helper_start - src.rfind("\n", 0, helper_start) - 1)
     nxt_def = src.find(f"\n{indent}def ", helper_start + 1)

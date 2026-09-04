@@ -94,12 +94,11 @@ def main(argv: list[str]) -> int:
         facts[k] = v
         print(f"[probe] {k:28} = {v}")
 
-    # ── the two probes Tauri preflight actually runs ───────────────────────── The DESKTOP's deadline, not a generous
-    # CI one: preflight allows each call 10s (managed.rs:337 for `-h`, :390 for desktop-capabilities) then reports Stale
-    # (managed.rs:471, :521).
-    # Longer would call a slow torn venv HEALTHY and skip the re-run assertion;
-    # run() reports a timeout as a non-zero rc, the same REPAIRABLE arm.
     # ── the two probes Tauri preflight actually runs ─────────────────────────
+    # The DESKTOP's deadline, not a generous CI one: preflight allows each call 10s
+    # (managed.rs:337 for `-h`, :390 for desktop-capabilities) then reports Stale
+    # (managed.rs:471, :521). Longer would call a slow torn venv HEALTHY and skip the re-run
+    # assertion; run() reports a timeout as a non-zero rc, the same REPAIRABLE arm.
     PREFLIGHT_TIMEOUT = 10
 
     t0 = time.time()
@@ -150,10 +149,10 @@ def main(argv: list[str]) -> int:
     caps_ready = caps_rc == 0 and install_ok is True
     say("desktop_would_call_install_ok", caps_ready)
 
-    # ── the deeper probes the fix PRs add ──────────────────────────────────── RECORDED, not repair evidence: preflight
-    # runs only `-h` and `studio desktop-capabilities --json` (managed.rs:357, :445), so counting these would pass a leg
-    # while the real app still reports ManagedReady over a torn install.
     # ── the deeper probes the fix PRs add ────────────────────────────────────
+    # RECORDED, not repair evidence: preflight runs only `-h` and
+    # `studio desktop-capabilities --json` (managed.rs:357, :445), so counting these would
+    # pass a leg while the real app still reports ManagedReady over a torn install.
     for label, args in (
         ("verify_install", ["studio", "verify-install"]),
         ("desktop_runtime_check", ["studio", "desktop-runtime-check"]),
@@ -269,14 +268,14 @@ def main(argv: list[str]) -> int:
     if missing:
         say("backend_error", missing)
 
-    # ── verdict ────────────────────────────────────────────────────────────── A booting backend is not enough.
-    # The manifest is written LAST (install_python_stack.py:3255), so the data-designer leg boots while
-    # desktop-capabilities still says studio_install_ok=false and preflight reports Stale (managed.rs:445);
-    # calling that HEALTHY skipped the re-run step.
-    # `-h` gates it for the same reason: probe_managed_bin runs it FIRST and returns Stale "cli_unusable" without
-    # reaching the capability probe (managed.rs:465-478), so consulting cli_h_ok only in the repairable arm called a
-    # help-less CLI HEALTHY.
     # ── verdict ──────────────────────────────────────────────────────────────
+    # A booting backend is not enough. The manifest is written LAST
+    # (install_python_stack.py:3255), so the data-designer leg boots while
+    # desktop-capabilities still says studio_install_ok=false and preflight reports Stale
+    # (managed.rs:445); calling that HEALTHY skipped the re-run step. `-h` gates it for the
+    # same reason: probe_managed_bin runs it FIRST and returns Stale "cli_unusable" without
+    # reaching the capability probe (managed.rs:465-478), so consulting cli_h_ok only in the
+    # repairable arm called a help-less CLI HEALTHY.
     if backend_ok and caps_ready and facts.get("cli_h_ok"):
         verdict = "HEALTHY"
     elif not caps_ready or not facts.get("cli_h_ok"):

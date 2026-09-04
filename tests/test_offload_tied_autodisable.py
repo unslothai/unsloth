@@ -50,8 +50,8 @@ def _load(*names):
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "").startswith(
             "_OFFLOAD_EMBEDDING_"
         ):
+            # The size thresholds the auto decision reads; taken from the source so the
             # tests below cannot drift from the shipped numbers.
-            # The size thresholds the auto decision reads;
             exec(ast.get_source_segment(_SRC, node), ns)
     if wanted:
         raise AssertionError(f"not found in vision.py: {sorted(wanted)}")
@@ -236,6 +236,8 @@ if __name__ == "__main__":
     print("all offload tied auto-disable tests passed")
 
 
+# --------------------------------------------------------------------------------------
+# `offload_embedding = "auto"`: the loader decides, and says nothing when it declines.
 # --------------------------------------------------------------------------------------
 
 worth_offloading = _NS["_embedding_is_worth_offloading"]

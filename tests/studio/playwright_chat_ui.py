@@ -48,8 +48,9 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
 # Per-turn assistant-bubble wait.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+# How long the rapid-submit step holds the first turn's response. Only needs to
+# outlast the 100 ms follow-up wait; kept well clear of it so a loaded runner
 # cannot close the gap, and paid once per run.
-# How long the rapid-submit step holds the first turn's response.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
@@ -126,8 +127,9 @@ def expected_default_model():
     if override:
         return override
 
+    # Parse DEFAULT_MODELS_GGUF as a literal out of defaults.py instead of
     # importing it: the --no-torch Playwright install can't import the
-    # Parse DEFAULT_MODELS_GGUF as a literal out of defaults.py instead of importing it:
+    # inference package or defaults.py's hardware deps.
     import ast
 
     defaults_path = (
@@ -218,8 +220,18 @@ def exercise_permission_mode_controls(page, shoot):
         else:
             route.continue_()
 
+    # Every reload in this block used to be followed by a bare
+    # `expect(pill).to_be_visible()` on the default 5s expect timeout.
+    # `domcontentloaded` fires long before React has mounted the composer, and on
+    # a 3-core macOS runner with a paravirtual GPU that gap is regularly wider
+    # than 5s. That is the failure that took studio-mac-ui-smoke red at 35672fc9b
+    # and again at bfcaea465, both times on this exact locator, with green runs on
     # either side -- a race, not a regression.
-    # Every reload in this block used to be followed by a bare `expect(pill).to_be_visible()` on the default 5s expect
+    #
+    # The composer-mount step already settles the network before waiting, for the
+    # same reason and with the same note about macOS. This does the same after
+    # each reload. It asserts exactly what it asserted before; it just stops
+    # asking before the answer can exist.
     def reload_and_wait_for_pill():
         page.reload(wait_until = "domcontentloaded")
         try:
@@ -369,7 +381,7 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
-    # The active row is a no-op and must not open the Full access dialog.
+    # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
@@ -734,6 +746,10 @@ with sync_playwright() as p:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
     # ─────────────────────────────────────────────────────
+    # 1. Change-password through the UI ("Setup your account").
+    # Bootstrap state pre-seeds the current password; we enter the
+    # new password twice and submit -- the user's first-run experience.
+    # ─────────────────────────────────────────────────────
     step("change-password through UI (Setup your account)")
     # Settle the network before touching the form:
     form_err: Exception | None = None
@@ -811,6 +827,8 @@ with sync_playwright() as p:
     if form_err is not None:
         raise form_err
 
+    # ─────────────────────────────────────────────────────
+    # 2. Chat surface mounts, default model surface is visible.
     # ─────────────────────────────────────────────────────
     step("wait for composer to mount")
     try:
@@ -960,6 +978,8 @@ with sync_playwright() as p:
         shoot("03b-default-model-button")
 
     # ─────────────────────────────────────────────────────
+    # 3. Trigger model load via the same endpoint the picker uses.
+    # ─────────────────────────────────────────────────────
     step("load GGUF via /api/inference/load (uses session cookie)")
     # AbortSignal-bounded: macos-14 has been seen wedging on this fetch.
     load_resp = evaluate_fetch(
@@ -989,6 +1009,9 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
+    # ─────────────────────────────────────────────────────
+    # 3b. Model picker search bar -- exercise the typeahead filter.
+    # We don't actually select a different model (multi-GB download);
     # this just catches picker-mount / debounced HF-search regressions.
     # ─────────────────────────────────────────────────────
     step("model picker: open + drive search bar")
@@ -1047,6 +1070,14 @@ with sync_playwright() as p:
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    # ─────────────────────────────────────────────────────
+    # 4. A follow-up submitted 100 ms after a normal send must queue behind it.
+    # This targets the interval before assistant-ui paints isRunning: without a
+    # synchronous per-thread reservation the second submit starts immediately,
+    # cancels the first turn, and leaves its assistant bubble empty.
+    # ─────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 4b. Five chat turns, all non-empty.
     # ─────────────────────────────────────────────────────
     prompts = [
         "Reply with exactly: hello",
@@ -1343,6 +1374,8 @@ with sync_playwright() as p:
         )
 
     # ─────────────────────────────────────────────────────
+    # 5. Regenerate the last assistant turn.
+    # ─────────────────────────────────────────────────────
     step("regenerate last assistant turn")
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
@@ -1377,6 +1410,8 @@ with sync_playwright() as p:
         info("WARN regenerate button not visible (known-fragile locator, skipped)")
 
     # ─────────────────────────────────────────────────────
+    # 6. Add two more turns AFTER regenerate.
+    # ─────────────────────────────────────────────────────
     extra = ["Reply with: yes", "Reply with: no"]
     for j, p_ in enumerate(extra, start = 1):
         step(f"extra turn {j}: {p_!r}")
@@ -1384,6 +1419,9 @@ with sync_playwright() as p:
         send_and_wait(p_, before_count + 1)
     shoot("06-after-extra-turns")
 
+    # ─────────────────────────────────────────────────────
+    # 7. Composer toggle buttons. Each aria-label flips between
+    # "Disable X" / "Enable X" with state (shared-composer.tsx).
     # ─────────────────────────────────────────────────────
     step("composer toggle buttons (Thinking / Web search / Code execution)")
     for feature in ("thinking", "web search", "code execution"):
@@ -1421,6 +1459,8 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
     shoot("07-toggles-cycled")
 
+    # ─────────────────────────────────────────────────────
+    # 8. Configuration sheet: open, drive Temperature slider, close.
     # ─────────────────────────────────────────────────────
     cfg_open = page.locator('button[aria-label="Open configuration"]').first
     if cfg_open.count() > 0:
@@ -1555,6 +1595,9 @@ with sync_playwright() as p:
                 )
 
     # ─────────────────────────────────────────────────────
+    # 9. Theme toggle -- multiple cycles + computed-bg-color check
+    # (light is near-white >240; dark is near-black <40).
+    # ─────────────────────────────────────────────────────
     acct = page.locator('button[aria-label$=" account menu"]').first
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
@@ -1656,8 +1699,10 @@ with sync_playwright() as p:
         dark_seen = any(max(r) < 60 for r in rgbs)
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
+        # Don't strict-fail on both polarities: the runner's
+        # prefers-color-scheme + Unsloth's "system" default can collapse
+        # to one polarity even when .dark toggles correctly. The 3-cycle
         # completion above is the real invariant.
-        # Don't strict-fail on both polarities:
         if light_seen and dark_seen:
             info("OK light + dark computed background colors observed")
         else:
@@ -1679,6 +1724,8 @@ with sync_playwright() as p:
     else:
         soft_fail("chat typography requires the account-menu theme control")
 
+    # ─────────────────────────────────────────────────────
+    # 10. Sidebar nav: New Chat, Compare, Search, Recipes.
     # ─────────────────────────────────────────────────────
     def click_nav(label, expected_url_pat = None):
         # Resolve the sidebar nav button.
@@ -1799,6 +1846,9 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
 
     # ─────────────────────────────────────────────────────
+    # 11b. Recipes tab: cards render + we can click one. A broken
+    # loader would render zero cards or crash the route.
+    # ─────────────────────────────────────────────────────
     step("Recipes tab: cards render + click first card")
     page.goto(f"{BASE}/data-recipes")
     page.wait_for_timeout(1500)
@@ -1820,11 +1870,16 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
+    # 11c. Recents: click the most-recent thread (we persisted one
+    # via the turns above). Guards the thread-history loader / route.
+    # ─────────────────────────────────────────────────────
     step("Recents: click previous chat in sidebar")
     # The persisted thread title is usually a snippet of the first user message, so accept any of our prompt keywords.
     PROMPT_KEYWORDS = ("hello", "world", "tree", "yes", "1+1", "2+2")
+    # Use the structural data-testid (thread-sidebar.tsx): the old
+    # text-filtered selector matched coalesced nav text and burned
+    # 13-23 min per platform. Also bound the whole step at 30s so a
     # misbehaving selector can't blow up wallclock.
-    # Use the structural data-testid (thread-sidebar.tsx):
     threads = page.locator('[data-testid="recent-thread"]')
     deadline = time.monotonic() + 30
     clicked_recent = False
@@ -1873,7 +1928,9 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # Image attachment UI reachable.
+    # ─────────────────────────────────────────────────────
+    # 12. Image attachment UI reachable. The current model is text-only,
+    # so just check the button exists (CI's gemma-4-E2B covers vision).
     # ─────────────────────────────────────────────────────
     step("attachment widget reachable")
     attach = page.locator('button[aria-label="Add Attachment"]').first
@@ -1884,6 +1941,8 @@ with sync_playwright() as p:
         shoot("16-attachment-hover")
 
     # ─────────────────────────────────────────────────────
+    # 13. Reload + verify session JWT survives.
+    # ─────────────────────────────────────────────────────
     step("reload + session survives")
     page.reload()
     composer.wait_for(state = "visible", timeout = 60_000)
@@ -1891,6 +1950,8 @@ with sync_playwright() as p:
         fail(f"unexpected redirect to /login after reload: {page.url}")
     shoot("17-after-reload")
 
+    # ─────────────────────────────────────────────────────
+    # 14. /api/health stays healthy throughout.
     # ─────────────────────────────────────────────────────
     health = evaluate_fetch(
         page,
@@ -1902,6 +1963,8 @@ with sync_playwright() as p:
     if health["status"] != 200:
         fail(f"/api/health returned {health['status']}")
 
+    # ─────────────────────────────────────────────────────
+    # 15. Negative-auth post-UI-rotation.
     # ─────────────────────────────────────────────────────
     step("post-rotation auth check (after UI change-password)")
     if (s_old := login_via_api(OLD)) != 401:
@@ -2012,7 +2075,9 @@ with sync_playwright() as p:
         "(refresh token revoked) -- old studio session can no longer renew"
     )
 
-    # Persisted monitor auth boundary, then shutdown.
+    # ─────────────────────────────────────────────────────
+    # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
+    # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     try:

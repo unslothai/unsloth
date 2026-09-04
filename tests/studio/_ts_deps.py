@@ -145,8 +145,8 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
                 or prev_significant in "_$`'\""
             )
         ):
+            # A regex literal: `/` after an operator, an opening bracket or one of the
             # keywords above cannot be division.
-            # A regex literal: `/` after an operator, an opening bracket or one of the keywords above cannot be
             j = i + 1
             in_class = False
             while j < n:
@@ -276,8 +276,8 @@ class _Module:
         self.path = path
         self.text = path.read_text(encoding = "utf-8")
         self.blanked = _blank_noise(self.text)
+        # Comments gone, quoted literals kept: the import parser has to read a specifier, but
         # must not read one out of a commented-out statement.
-        # Comments gone, quoted literals kept:
         self.uncommented = _blank_noise(self.text, keep_strings = True)
         self.declarations: dict[str, list[tuple[str, int]]] = {}
         for match in _DECL_RE.finditer(self.blanked):

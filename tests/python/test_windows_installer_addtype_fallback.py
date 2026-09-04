@@ -116,8 +116,8 @@ def _script(
     return "\n".join(
         [
             '$ErrorActionPreference = "Stop"',
+            # Write-StudioLine picks its sink from this; unset, it reaches Write-Host,
             # which the caller cannot capture.
-            # Write-StudioLine picks its sink from this;
             "$script:StudioStdoutRedirected = $true",
             _helpers(*names),
             SABOTAGE if sabotage else "",
@@ -262,8 +262,8 @@ Write-Output "MISSING:$(Get-StudioFinalPath -Path '{alias / "studio" / "not" / "
         )
     )
     assert result.returncode == 0, result.stderr
+    # A link on a PARENT component is the ordinary Windows shape, and the one
     # GetFullPath alone gets wrong.
-    # A link on a PARENT component is the ordinary Windows shape, and the one GetFullPath alone gets wrong.
     assert _lines(result, "PATH:") == [f"PATH:{physical}"]
     assert _lines(result, "EQUAL:") == ["EQUAL:True"]
     # Segments that do not exist yet are reattached, as the native resolver does.
@@ -978,9 +978,10 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
+    # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio"
     # and "temp" were conjured too and a run that gave up must not leave a data
     # directory tree on a machine Unsloth was never installed on.
-    # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio" and "temp" were conjured too and a run
+    # ~\.unsloth itself is shared and stays; everything the probe made under it goes.
     assert not (user_profile / ".unsloth" / ".cache").exists()
     assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
     assert keep.exists()

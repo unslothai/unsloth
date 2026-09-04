@@ -49,8 +49,9 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             check = True,
             capture_output = True,
             text = True,
+            # Decoded as utf-8 with replacement, not the console codepage: cp1252
             # cannot decode what PowerShell writes and the whole test then dies as
-            # Decoded as utf-8 with replacement, not the console codepage:
+            # a UnicodeDecodeError on a byte in an error message.
             encoding = "utf-8",
             errors = "replace",
             env = env,
@@ -105,9 +106,8 @@ def _mutex_helpers(source: str) -> str:
             # that reaches it fail for a reason that has nothing to do with what it measures.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher now:
+            # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
             # PowerShell resolver when the native helper did not compile (#9140).
-            # Get-StudioFinalPath is a dispatcher now:
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
             "Get-StudioPrivateTempRoots",
@@ -336,10 +336,10 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
 
-    # The same contract holds on every rung:
+    # The same contract has to hold on every rung of that helper's fallback: a
     # confirmed image, never a command line. Its Win32_Process rung exists because a
+    # host that cannot compile the native helper would otherwise find no running
     # processes and overwrite a venv Unsloth has open (issue #9140).
-    # The same contract has to hold on every rung of that helper's fallback:
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image

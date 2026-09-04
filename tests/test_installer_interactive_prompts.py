@@ -135,8 +135,8 @@ _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
 _ESCAPE = re.compile(r"\\[nrte]")
 
+# A conversion or variable becomes a placeholder rather than vanishing, so wording
 # spliced into the middle of an approved question cannot normalise back onto it.
-# A conversion or variable becomes a placeholder rather than vanishing, so wording spliced into the middle of an
 _SUBSTITUTION = re.compile(r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 _TRAILING_SUBSTITUTION = re.compile(r"(?:\s*<var>)+$")
 

@@ -474,8 +474,9 @@ def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos
     assert missing == ["/nonexistent/dup.mp4"]
 
 
+# ── Tests: real unsloth_zoo collator integration ─────────────────────────────
+# Exercise the real trainer.py subclass against the real zoo base (the fakes
 # above don't cover super()/formatting_func); skip when unsloth can't import.
-# Tests: real unsloth_zoo collator integration ───────────────────────────── Exercise the real trainer.py subclass
 @pytest.fixture(scope = "session")
 def real_collator_classes():
     try:

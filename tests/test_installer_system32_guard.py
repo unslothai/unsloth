@@ -148,8 +148,10 @@ def test_install_ps1_under_system_root(path: str, expected: str):
         f"{_extract_helper()}"
         f"\"RESULT=$(Test-UnderSystemRoot '{path}')\"\n"
     )
+    # run_pwsh, not subprocess.run: Test-UnderSystemRoot only reports a verdict if pwsh
+    # lived long enough to print one, and an interpreter that aborted at startup would
     # read here as the containment check answering wrongly for this path.
-    # run_pwsh, not subprocess.run:
+    # See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -508,9 +510,9 @@ def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_pa
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
     assert message is not None
     command = _cd_line(message, "PowerShell")
-    # run_pwsh, not subprocess.run:
+    # run_pwsh, not subprocess.run: this is the call whose stderr caught the crash in the
+    # first place ('Stack overflow.' from a bare cd), and blaming the advertised recovery
     # command for it is exactly the wrong reading. See tests/_shared/unsloth_pwsh_runner.py.
-    # run_pwsh, not subprocess.run:
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{command}; (Get-Location).Path"],
         capture_output = True,
@@ -569,10 +571,12 @@ def test_cli_guard_message_repeats_the_actual_command():
 
 # Issue #8510:
 
-# ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ── Windows registers login startup as
-# an HKCU Run value, which carries no working directory, so Unsloth Desktop and every CLI child it spawns start in
-# System32.
 # ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ──
+#
+# Windows registers login startup as an HKCU Run value, which carries no working
+# directory, so Unsloth Desktop and every CLI child it spawns start in System32.
+# The commands it runs take no path from the user, so they move out of the folder
+# instead of refusing and leaving the user with a tray icon and no server.
 _RELOCATED = r"C:\Users\me\.unsloth"
 
 
@@ -647,8 +651,8 @@ def test_cli_guard_marker_does_not_authorise_a_command_carrying_a_path(rest: lis
         ["unsloth", "export", "--output", "out"],
         ["unsloth", "studio", "setup"],
         ["unsloth", "start", "claude"],
+        # `studio run` declares its own --api-only and takes user paths, so it
         # must not be mistaken for the desktop's backend launch.
-        # `studio run` declares its own --api-only and takes user paths, so it must not be mistaken for the desktop's
         ["unsloth", "studio", "run", "--model", "./local.gguf", "--api-only"],
         ["unsloth", "studio", "run", "--api-only"],
         # The top-level alias for `studio run`, same reasoning.

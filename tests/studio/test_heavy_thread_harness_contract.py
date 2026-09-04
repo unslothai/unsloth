@@ -100,8 +100,8 @@ def test_chromium_only_rows_say_so_in_their_own_label() -> None:
 
 
 def test_the_longtask_api_is_recorded_as_supported_or_not() -> None:
-    # Off Chromium these print `-`, and a `-` that means "not supported here" must not be read as a zero. The label is
-    # the only thing carrying that.
+    # Without this flag an engine with no Long Tasks API reports zero long tasks in exactly the
+    # same shape as an engine that had none.
     text = source(HARNESS)
     assert "__longTaskSupported" in text
     assert '("longtask api supported", lambda r: r["long_task_supported"])' in text
@@ -130,15 +130,16 @@ def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
 
 
 def test_a_fence_may_be_deferred_or_highlighted_but_not_neither() -> None:
-    # A floor on the TOKEN count partly measures where the viewport is: the same unchanged fixture dropped from 3,216
-    # tokens per cycle to 1,322.
+    # The SETTLEMENT half of the old token floor, asked per block. One block stuck on streamdown's
+    # unhighlighted fallback used to pass as long as the others made the count up.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert "unhighlightedMountedFences" in page
     assert 'counts.get("unhighlightedMountedFences", 0)' in verdict()
 
 
 def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
-    # 300K characters of prose would produce a rising curve too, and would be measuring something nobody reported.
+    # The DOM value is what the harness itself wrote. A keystroke that reached nothing still
+    # reports the ~33ms paint floor, which reads as a plausible timing.
     decision = verdict()
     assert 'keystroke["runtimeText"] != keystroke["domText"]' in decision
 
@@ -158,8 +159,8 @@ def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
 
 
 def test_the_verdict_asserts_discrimination() -> None:
-    # The DOM value is what the harness itself wrote.
-    # A keystroke that reached nothing still reports the ~33ms paint floor, which reads as a plausible timing.
+    # A harness where the largest thread costs what the smallest does is not reporting a flat
+    # curve, it is reporting that it never drove the page.
     decision = verdict()
     assert 'row["discriminated"]' in decision
     assert "DISCRIMINATION_RATIO" in decision

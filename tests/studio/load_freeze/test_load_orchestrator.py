@@ -201,8 +201,11 @@ def _drive_concurrent_probe_and_health(
 # 1.719, 1.727 over five runs), so contention can only push that number further above the bound, never below it.
 _MAX_HEALTH_LATENCY_SEC = 0.25
 
+# Neither a latency budget nor a performance claim. Every wait it bounds is either
 # satisfied in milliseconds or never satisfied at all, so all it decides is how long a
-# Neither a latency budget nor a performance claim.
+# genuine deadlock takes to be reported instead of hanging the job. The work underneath
+# it is a handful of loopback requests against a local uvicorn, so no amount of CPU
+# contention brings a correct run near it.
 _DEADLOCK_GUARD_SEC = 30.0
 
 
@@ -406,7 +409,7 @@ def test_functional_equivalence_csm_match():
 
 
 def test_functional_equivalence_whisper_match():
-    # snac: both _detok(128258) and _detok(128259) start with "<custom_token_".
+    # whisper: snac/csm fail, then <|startoftranscript|> is 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
@@ -444,8 +447,7 @@ def test_functional_equivalence_audio_vlm_match():
 
 
 def test_functional_equivalence_bicodec_match():
-    # audio_vlm: snac/csm/whisper fail, then the Gemma 4 <|audio|> arm (#6000) tokenises to 1 token while
-    # <audio_soft_token> stays 2 to isolate it.
+    # bicodec: all prior branches fail, then bicodec_semantic_0/global_0 are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {

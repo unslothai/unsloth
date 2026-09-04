@@ -64,8 +64,9 @@ DELTA_GAP_MS = int(os.environ.get("SMOKE_DELTA_GAP_MS", "80"))
 # shape) sits exactly on that ceiling (310 callbacks in 5s).
 # The fixed tree spends 29/s over three repeats (592, 597, 597 in a 20.4s window) because chaining is conditional.
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
+# Idle measures 0 across the same repeats: a quiet list has nothing to follow. A couple of frames
 # of slack covers a settle check landing just inside the window; more means a loop that never let
-# Idle measures 0 across the same repeats:
+# go, which is what left the reporter's window unresponsive.
 MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
 # Longest the report work keeps the main thread from servicing a timer.
 # Measured 131.9ms on one box and 342-416ms on a loaded one, so 500 left just 1.2x;
@@ -318,8 +319,10 @@ def run() -> dict:
             "click_after_close": clicks_after_close > clicks_after_approve,
         }
 
+        # 5. Detaching from the bottom. The follow loop must keep the view pinned while the list
+        # grows and let go the moment the reader scrolls up, including a flick shorter than the
+        # bottom threshold: a still-pending follow step used to run anyway and reconcile
         # isAtBottom back to true, so "Latest" never appeared and nothing corrected it.
-        # Detaching from the bottom.
         page.evaluate("window.__research.openPanel()")
         page.wait_for_timeout(300)
         page.evaluate("() => { for (let i = 100; i < 130; i += 1) window.__research.step(i); }")

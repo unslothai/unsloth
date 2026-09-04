@@ -44,8 +44,8 @@ def _make(config_class, output_dir):
 
 
 def test_patched_config_answers_to_the_trl_name(patched):
+    # Without this the class pickles under a module that only ships inside a
     # compiled cache, so the checkpoint cannot be read anywhere else.
-    # Without this the class pickles under a module that only ships inside a compiled cache, so the checkpoint cannot
     assert patched.__module__ == "trl.trainer.sft_config"
     assert patched.__qualname__ == "SFTConfig"
 
@@ -271,7 +271,11 @@ def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
     assert _Unrelated not in copyreg.dispatch_table
 
 
+# ---------------------------------------------------------------------------
+# The reported ordering: a fresh interpreter that imports trl, builds a config,
 # and only then imports unsloth. The fixture above cannot reproduce it, because
+# by the time this module runs the session has already imported unsloth, so the
+# probe needs a subprocess of its own.
 # ---------------------------------------------------------------------------
 
 _PRISTINE_PROBE = r"""

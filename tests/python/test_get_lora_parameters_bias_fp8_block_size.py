@@ -68,8 +68,9 @@ def _make_decompressed_merged_proj():
 
 
 def test_bias_variant_keeps_none_quant_state_for_decompressed_layer():
+    # Such a layer has no quant state, and fast_linear_forward relies on getting
+    # W_quant None back so it can fall back to a plain matmul, so setting the block
     # size must not assume a quant state is present.
-    # Such a layer has no quant state, and fast_linear_forward relies on getting W_quant None back so it can fall back
     get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
 
     W, W_quant = get_lora_parameters_bias(_make_decompressed_merged_proj())[:2]

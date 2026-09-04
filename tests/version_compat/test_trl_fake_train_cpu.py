@@ -170,8 +170,8 @@ def _cpu_only_torch():
         yield mp
 
 
+# Dense (non-MoE) tiny model on purpose: MoE models route through Unsloth's
 # grouped_gemm Triton kernel, which is CUDA-only and cannot run on a CPU runner.
-# Dense (non-MoE) tiny model on purpose:
 _MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 

@@ -71,8 +71,9 @@ _CUDA_BUFFER_RE = re.compile(
 # Install kinds from studio/install_llama_prebuilt.py that mean the binaries on disk carry CUDA kernels.
 CUDA_INSTALL_KINDS = frozenset({"linux-cuda", "linux-arm64-cuda"})
 
+# "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime
+# line or an asset filename. Anchored on the digit so "cudart" or a repo name
 # containing "cuda" cannot match on its own.
-# "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime line or an asset filename.
 _CUDA_RUNTIME_RE = re.compile(r"cuda\d+")
 
 

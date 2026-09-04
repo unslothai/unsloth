@@ -218,8 +218,9 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
 # On Windows w/o a HIP SDK, amd-smi pops a UAC/DiskPart prompt RunAsInvoker can't suppress, so _amd_smi_allowed() skips
 
 
-# amd-smi gating (DiskPart UAC-prompt avoidance) ─────────────────────────── On Windows w/o a HIP SDK, amd-smi pops a
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
+# On Windows w/o a HIP SDK, amd-smi pops a UAC/DiskPart prompt RunAsInvoker
+# can't suppress, so _amd_smi_allowed() skips it unless HIP-SDK or opt-in.
 def _amd_smi_allowed_under(system, hipinfo_present, env):
     # Build a real (temp) PATH so _external_hipinfo_on_path scans it like prod;
     # an external hipinfo.exe outside the pinned venv models a real HIP SDK.
@@ -304,8 +305,8 @@ def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
     (venv_scripts / "hipinfo.exe").write_text("")
+    # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so
     # HIP-SDK Windows users keep amd-smi (no regression for the venv-exclusion).
-    # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so HIP-SDK Windows users keep amd-smi (no
     sdk_bin = tmp_path / "hipsdk" / "bin"
     sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
@@ -319,8 +320,8 @@ def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
 
 
 def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
-    # unset. A first-hit which/Get-Command stops at the venv copy and wrongly
-    # Venv hipInfo first on PATH (bnb fix), real SDK's later, HIP_PATH/ROCM_PATH unset.
+    # The venv exclusion must also cover the HIP_PATH/ROCM_PATH fallback: a hipinfo
+    # under <venv>/_rocm_sdk_core/bin is still not a real HIP SDK.
     venv_root = tmp_path / "venv"
     hip_root = venv_root / "_rocm_sdk_core"
     (hip_root / "bin").mkdir(parents = True)
@@ -560,8 +561,9 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
 
 
 def test_install_ps1_installs_rocm_torch_for_known_arch():
-    # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used the non-retrying helper; it must retry
-    # like every other torch install here.
+    # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm
+    # index directly, not a CPU base that setup.ps1 then force-reinstalls as ROCm.
+    # The repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
         ln
@@ -651,9 +653,9 @@ def test_ps_env_fallback_iterates_all_hip_roots(ps):
 
 
 def test_install_ps1_clears_rocm_index_after_cpu_fallback():
-    # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm index directly, not a CPU base that
-    # setup.ps1 then force-reinstalls as ROCm.
-    # The repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
+    # After the ROCm->CPU fallback, $ROCmIndexUrl must be cleared so the later
+    # flavor-repair block doesn't retry the just-failed index and Exit-InstallFailure
+    # (the fallback lets install complete; setup.ps1 retries ROCm).
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
@@ -767,8 +769,8 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         k == -1 or j > k
     ), "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
     window = text[i : i + 700]
+    # The trio is built just above the call now (win_arm64 drops torchaudio), but the
     # requirement is unchanged: the PINNED companions, never bare names.
-    # The trio is built just above the call now (win_arm64 drops torchaudio), but the requirement is unchanged:
     trio = text[max(0, i - 900) : i + 700]
     assert (
         "_torch_pkg" in trio and "_vision_pkg" in trio and "_audio_pkg" in trio

@@ -178,8 +178,8 @@ def test_force_xpu_on_hybrid_hides_cuda_for_workers(spoof_xpu):
 
 
 def test_force_xpu_without_working_xpu_leaves_cuda_untouched(spoof_xpu):
+    # Canary: FORCE_XPU on a CUDA host with no working XPU must fall
     # through to CUDA and must NOT hide it.
-    # Canary: FORCE_XPU on a CUDA host with no working XPU must fall through to CUDA and must NOT hide it.
     hw, _ = spoof_xpu(
         force_xpu = True,
         cuda_available = True,
@@ -277,7 +277,9 @@ def test_apply_gpu_ids_predetect_force_on_cuda_build_writes_cvd(spoof_xpu, monke
 
 
 def test_apply_gpu_ids_predetect_dual_build_honors_xpu_hint(spoof_xpu, monkeypatch):
-    # UNSLOTH_FORCE_XPU=1 on a CUDA build (no XPU compiled in):
+    # Dual CUDA+XPU build launched the documented XPU way (CUDA hidden + ZE
+    # mask): the mask must narrow ZE_AFFINITY_MASK, not re-expose the hidden
+    # CUDA via CUDA_VISIBLE_DEVICES. Mirrors detect_hardware's hint.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = "0,1", cuda_visible = "")
@@ -295,7 +297,8 @@ def test_apply_gpu_ids_predetect_dual_build_honors_xpu_hint(spoof_xpu, monkeypat
 
 
 def test_apply_gpu_ids_predetect_dual_build_cuda_active_writes_cvd(spoof_xpu, monkeypatch):
-    # Dual CUDA+XPU build launched the documented XPU way (CUDA hidden + ZE mask):
+    # Canary: dual build with CUDA active (no hint) keeps CUDA masking, same
+    # as detect_hardware picking CUDA on a hybrid host.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = "0,1", cuda_visible = None)
@@ -313,8 +316,9 @@ def test_apply_gpu_ids_predetect_dual_build_cuda_active_writes_cvd(spoof_xpu, mo
 
 
 def test_apply_gpu_ids_trusts_parent_backend_param(spoof_xpu, monkeypatch):
-    # Canary: dual build with CUDA active (no hint) keeps CUDA masking, same as detect_hardware picking CUDA on a hybrid
-    # host.
+    # Workers pass the parent's detected backend (config["device_backend"]):
+    # it must win over build heuristics in both directions, mirroring
+    # detect_hardware's availability check and CUDA fallback exactly.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None, force_xpu = True)

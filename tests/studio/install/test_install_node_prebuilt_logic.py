@@ -433,6 +433,9 @@ def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: P
 
 # ── Isolation invariant: the installer only writes inside its own install_dir ──
 def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
+    # Every node/npm call the installer makes redirects npm's global prefix into
+    # the isolated install_dir and drops an inherited NODE_PATH, so a stray `npm
+    # -g` can never write to the user's system Node/npm.
     install_dir = tmp_path / "node"
     monkeypatch.setenv("NPM_CONFIG_PREFIX", "/usr/local")
     monkeypatch.setenv("NODE_PATH", "/usr/lib/node_modules")
@@ -451,10 +454,8 @@ def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
 
 
 def test_ensure_npm_floor_scopes_upgrade_to_install_dir(tmp_path: Path, monkeypatch):
-    # -g` can never write to the user's system Node/npm.
+    # A pinned build shipping npm < 11 self-upgrades, but only inside the isolated
     # prefix: it goes through _run_node against install_dir, never the system.
-    # Every node/npm call the installer makes redirects npm's global prefix into the isolated install_dir and drops an
-    # A pinned build shipping npm < 11 self-upgrades, but only inside the isolated prefix:
     install_dir = tmp_path / "node"
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
     calls = []
@@ -476,8 +477,8 @@ def test_ensure_npm_floor_noop_when_npm_meets_bar(tmp_path: Path, monkeypatch):
     M._ensure_npm_floor(tmp_path / "node", _host("linux", "x64"))
 
 
-# Pinned digest manifest (trust anchor) ── Archives must be verified against committed pins, never a same-origin
 # ── Pinned digest manifest (trust anchor) ──
+# Archives must be verified against committed pins, never a same-origin re-fetch.
 ALL_SUPPORTED_HOSTS = [
     ("linux", "x64"),
     ("linux", "arm64"),
@@ -634,8 +635,8 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
 
 
 def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch, capsys):
-    # Regression: an unpinned refusal must fail closed even with a usable install on disk; the keep-existing fallback is
-    # for transient failures only.
+    # main() must surface the refusal as EXIT_FALLBACK (setup treats it as a failed
+    # install with guidance), not as a success masked by the keep-existing path.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")
@@ -701,8 +702,8 @@ def test_pins_manifest_ships_next_to_installer():
 
 
 def test_pins_manifest_is_declared_in_package_data():
+    # An unpackaged trust anchor is no trust anchor: a pip install must ship it.
     # tomllib is stdlib only on 3.11+; fall back to tomli, else skip on 3.9/3.10.
-    # An unpackaged trust anchor is no trust anchor:
     tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
     data = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
@@ -759,9 +760,9 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
 # Seen in CI:
 
 
-# ── _replace_with_retry: transient Windows sharing violations ────────────────── Seen in CI: WinError 5 renaming
-# extracted Node into place on a FRESH install, a scanner still holding handles inside the new files.
 # ── _replace_with_retry: transient Windows sharing violations ──────────────────
+# Seen in CI: WinError 5 renaming extracted Node into place on a FRESH install, a scanner
+# still holding handles inside the new files.
 def _oserror(winerror: int) -> OSError:
     exc = OSError(winerror, "mock")
     exc.winerror = winerror
@@ -825,7 +826,7 @@ def test_replace_is_a_plain_rename_on_posix(monkeypatch, tmp_path):
 
 
 def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
-    # A cross-device move or real permissions problem must fail immediately.
+    # End-to-end through the function the installer actually calls.
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     extracted = tmp_path / "extracted" / "node-v24"

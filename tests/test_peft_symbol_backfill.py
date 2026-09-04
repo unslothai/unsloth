@@ -129,9 +129,10 @@ def test_required_symbols_match_peft_import_list():
             assert hasattr(donor, s), f"{name} stub lacks {s}"
 
 
-# Inert donors are right wherever the symbol never existed, but not for a
-# saying so when the stand-in is not equivalent ----------------------- Inert donors are right wherever the symbol
 # ---- saying so when the stand-in is not equivalent -----------------------
+# Inert donors are right wherever the symbol never existed, but not for a
+# transformers 5 that merely renamed one, so warn rather than silently skip
+# work peft should have done.
 def test_a_missing_mapping_function_is_announced():
     _fake_real_module(
         CONV,

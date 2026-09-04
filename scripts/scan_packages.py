@@ -266,8 +266,9 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    # Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned the whole file and produced 9 of the 11 baselined
-    # Shell / REPL history FILES.
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
     r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
     # Undotted history files, with a boundary that finds them however the path was built.
     # fish writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a leading dot.
@@ -280,10 +281,14 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns.
-# Removing the dup2 branch here un-suppressed 11 entries on the studio and hf-stack shards,
-# multiprocess/tests/__init__.py among them.
-# LEFT EXACTLY AS IT WAS, dup2 included, because this pattern is what the evidence is extracted with.
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included,
+# because this pattern is what the evidence is extracted with. It is re.DOTALL,
+# so a match spans from the first signal to the last and the rendered evidence
+# for a long span is a digest of the whole thing; editing the alternation moves
+# the span, moves the digest, and silently reopens every reviewed baseline entry
+# taken against it. Removing the dup2 branch here un-suppressed 11 entries on
+# the studio and hf-stack shards, multiprocess/tests/__init__.py among them.
+# Whether dup2 alone is enough is decided below instead, where it costs nothing.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -353,8 +358,8 @@ RE_C2_POLLING = re.compile(
     re.DOTALL,
 )
 
-# Lightning 2.6.x planted SessionStart hooks into Claude Code / VS Code / Cursor so the payload re-attached on editor
-# Developer-tool persistence hooks.
+# Developer-tool persistence hooks. Lightning 2.6.x planted SessionStart hooks
+# into Claude Code / VS Code / Cursor so the payload re-attached on editor open.
 RE_DEV_TOOL_HIJACK = re.compile(
     r"\.claude/settings\.json"
     r"|\.cursor/.*hooks"
@@ -396,8 +401,8 @@ RE_JS_OBFUSCATION = re.compile(
     r"|String\.fromCharCode\s*\(\s*\d+\s*(?:,\s*\d+\s*){10,}\)",
 )
 
-# The Qix npm phish overrode fetch/XMLHttpRequest and swapped recipient addresses via a `window.ethereum` listener.
-# Web3 / wallet-hijack pattern.
+# Web3 / wallet-hijack pattern. The Qix npm phish overrode fetch/XMLHttpRequest
+# and swapped recipient addresses via a `window.ethereum` listener.
 RE_WEB3_HIJACK = re.compile(
     r"\bwindow\.ethereum\b"
     r"|\bweb3\.eth\.\w+\s*\("
@@ -506,8 +511,10 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
+    # Catch-all: any import line in .pth if nothing else triggered. Bind every
+    # line through a digest so an appended/swapped import reopens the key, but cap
     # the displayed text so a large .pth of benign-looking imports cannot dump up
-    # Catch-all: any import line in .pth if nothing else triggered.
+    # to the archive member cap into the logs or baseline JSON.
     if not findings and import_lines:
         evidence = _cap_line("\n".join(import_lines))
         findings.append(
@@ -666,8 +673,10 @@ def _hidden_payload_findings(
                     f"exec: {trigger}\n{label}: {_extract_evidence(removed, pat)}",
                 )
             )
+    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
+    # live in the blanked region. Search the removed span directly (not "absent
     # from real code") so a benign visible network/subprocess call cannot mask
-    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both live in the blanked region.
+    # the docstring payload.
     if RE_NETWORK.search(removed) and RE_SUBPROCESS.search(removed):
         out.append(
             Finding(
@@ -685,8 +694,9 @@ def _hidden_payload_findings(
 
 def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run all .py-specific checks."""
+    # Code-only scanning: strip comments/docstrings up front so prose, doctests
     # and usage examples cannot manufacture false positives. Aligns with the
-    # Code-only scanning: strip comments/docstrings up front so prose, doctests and usage examples cannot manufacture
+    # Hugging Face Hub model (ClamAV/picklescan: low-FP, signature/structural).
     original = content
     content = _strip_noncode(content)
     findings = _hidden_payload_findings(original, content, filename, package)
@@ -1132,8 +1142,10 @@ _MAX_CALL_HARD_LINES = 200
 # Cap a single rendered line.
 # a long (e.g.
 _MAX_LINE_CHARS = 200
+# Cap on recorded spans in one evidence string; beyond it the remaining spans are
 # folded into a digest so a file with thousands of matching lines cannot build a
-# Cap on recorded spans in one evidence string;
+# multi-megabyte evidence blob, while an added/removed span past the cap still
+# changes the key. Comfortably above the largest real baseline entry.
 _MAX_EVIDENCE_SPANS = 96
 
 
@@ -1188,8 +1200,13 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
                     in_triple = None
                 continue
             if in_string is not None:
+                # A single-/double-quoted string continued onto this line by a
+                # backslash-escaped newline. Resume blanking until its closing quote;
+                # if this line also ends on an odd trailing backslash the string
+                # continues again, otherwise it closes (or is unterminated) here. A
                 # per-line regex blanker cannot see this, so a `)` on the
-                # A single-/double-quoted string continued onto this line by a backslash-escaped newline.
+                # continuation line would otherwise be counted as code and close the
+                # call early -- dropping the URL/body lines that follow.
                 j, closed = i, False
                 while j < n:
                     if line[j] == "\\":
@@ -1373,8 +1390,14 @@ def _extract_evidence(
             span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
             if span in seen:
                 continue
+            # Only track spans while still filling the display list: past the cap
+            # every span is folded into the overflow digest, so growing `seen` with
+            # all of them would keep memory proportional to the match count (the
+            # behavior this cap exists to bound) on a generated file with millions
+            # of one-line matches. The per-line spans are unique by line number, so
             # dropping them from `seen` past the cap cannot cause a missed dedup
-            # Only track spans while still filling the display list:
+            # here; at worst the fallback re-folds an over-cap span into the same
+            # digest, which stays deterministic and still reopens on a change.
             if len(out) < _MAX_EVIDENCE_SPANS:
                 seen.add(span)
             _emit(_render(*span))
@@ -2284,12 +2307,15 @@ def download_packages(
 
     if with_deps:
         os.makedirs(dest, exist_ok = True)
-        # `--only-binary :all:` refuses sdists so we never build for metadata.
         # Fast path: resolve + download the whole transitive tree in one call.
+        # `--only-binary :all:` refuses sdists so we never build for metadata.
         rc, stderr = _pip_download_with_deps(specs, dest, env)
         if rc != 0:
+            # Atomic resolve failed -- a sdist-only package, or a cross-package
+            # version conflict (ResolutionImpossible). Degrade to per-spec
             # resolution so one bad spec can't blank the shard, then direct-fetch
-            # Atomic resolve failed -- a sdist-only package, or a cross-package version conflict (ResolutionImpossible).
+            # any sdist-only holdouts (no build). Genuine failures still record an
+            # error so the caller exits 2.
             print(
                 f"  [INFO] bulk --with-deps resolve failed "
                 f"({stderr.strip()[:160]}); falling back to per-spec resolution "
@@ -3130,8 +3156,15 @@ def main() -> int:
                     try:
                         captured, findings = results.next(timeout = 900)
                     except multiprocessing.TimeoutError:
-                        # Recorded rather than raised:
                         # A worker died (OOM or segfault on a hostile archive).
+                        # Without this the iterator blocks forever and the job
+                        # only ends at the workflow timeout, with no reason given.
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
                         scan_errors.append(
                             f"scan stalled after {i}/{len(tasks)} archive(s) with no "
                             f"result for 900s; a pool worker most likely died"

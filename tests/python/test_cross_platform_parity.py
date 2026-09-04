@@ -107,8 +107,8 @@ class TestPreTuringCapParity:
     a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
     """
 
+    # (file, call spelling, selection function that must invoke it, its end marker). The
     # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
-    # (file, call spelling, selection function that must invoke it, its end marker).
     _SITES = (
         (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
         (
@@ -360,8 +360,8 @@ class TestGfx211AllowlistParity:
         )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
+        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
         # the stale check and install spec can't disagree.
-        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so the stale check and install
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
             "function Test-RocmGfx211Leaf" in text

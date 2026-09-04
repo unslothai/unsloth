@@ -133,8 +133,8 @@ def test_fast_inference():
             args = training_args,
             train_dataset = dataset,
         )
+    # The trainer must actually route rollouts through vLLM, otherwise it would
     # fall back to HF generation and never exercise WorkerLoRAManager.
-    # The trainer must actually route rollouts through vLLM, otherwise it would fall back to HF generation and never
     assert trainer.args.use_vllm, "GRPO is not configured to use vLLM"
     assert getattr(trainer, "llm", None) is not None, "GRPO did not bind a vLLM engine"
 

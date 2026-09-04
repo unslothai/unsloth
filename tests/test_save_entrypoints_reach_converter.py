@@ -53,7 +53,6 @@ def _calls(node):
     return out
 
 
-# the property that broke -------------------------------------------
 # ---- the property that broke -------------------------------------------
 
 

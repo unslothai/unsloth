@@ -221,8 +221,8 @@ def test_per_token_logps_arity_gate_both_directions(monkeypatch):
         "return logprobs.detach(), entropies, aux_loss" in src_new
     ), "3-tuple return missing for TRL >= 1.7.0"
 
+    # < 1.7.0: aux_loss element dropped -> 2-tuple. A no-op downgrade must raise
     # (fail loud), never silently ship a 3-tuple to older TRL.
-    # < 1.7.0: aux_loss element dropped -> 2-tuple.
     monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising = False)
     src_old = gate("_get_per_token_logps_and_entropies", None)
     assert (

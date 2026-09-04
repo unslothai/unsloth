@@ -84,8 +84,9 @@ def test_rectangular_block_dequant_matches_reference():
 
 
 def test_e8m0_scale_preserves_non_default_block_size_attr():
+    # An e8m0 scale carrying a non-default block_size attribute must keep it across
+    # the float32 upcast in forward; otherwise the lookup falls back to [128, 128]
     # and a compatible layout is wrongly rejected as incompatible.
-    # An e8m0 scale carrying a non-default block_size attribute must keep it across the float32 upcast in forward;
     from unsloth.kernels.fp8 import FP8BlockQuantLinear
 
     if not hasattr(torch, "float8_e8m0fnu"):

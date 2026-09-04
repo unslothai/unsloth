@@ -65,8 +65,8 @@ EXEMPT_STEPS = {
     ("clean-machine-install-ci.yml", "Take the transport away again"),
     # Installs the built .deb to find out whether the package declares its own runtime dependencies.
     ("desktop-app-clean-machine-ci.yml", "Install with NO dev tooling, only runtime libs"),
+    # Greps the documentation for the apt line it tells users to run. It reads an
     # apt command as data; it never executes one.
-    # Greps the documentation for the apt line it tells users to run.
     ("release-desktop.yml", "Verify desktop updater and Linux package config"),
 }
 

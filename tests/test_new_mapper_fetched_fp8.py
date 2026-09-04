@@ -147,8 +147,8 @@ def _load_resolver(installed_source):
         "FLOAT_TO_FP8_BLOCK_MAPPER": mapper_ns["FLOAT_TO_FP8_BLOCK_MAPPER"],
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
         "build_mappers": build_mappers,
+        # Imported from loader_utils rather than rebuilt, so a new helper added there
         # cannot silently drop out of this stand-in and make the probe look broken.
-        # Imported from loader_utils rather than rebuilt, so a new helper added there cannot silently drop out of this
         "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),

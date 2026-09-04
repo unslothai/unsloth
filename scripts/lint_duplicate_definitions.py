@@ -336,11 +336,14 @@ def _import_duplicates(body, scope, out) -> None:
             source = module if module is not None else alias.name
             bound = alias.asname or (alias.name if module is not None else alias.name.split(".")[0])
             implicit = alias.asname is None
-            # Keyed on the BOUND NAME, because that is what gets shadowed, with one carve-out for the case where the
-            # name was never chosen: an IMPLICIT binding takes whatever the source happens to be called, so two of them
-            # from different sources are the ordinary `import urllib.parse` / `import urllib.request` and `from a import
-            # x` / `from b import x` shapes and stay legitimate.
-            # An EXPLICIT `as` alias is a name the author picked, so a second binding of it is always dead
+            # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first. Keeping one entry per
+            # bound name and skipping the legitimate different-source case left `seen` pointing
+            # at the first source forever, so in `from a import x` / `from b import x` /
+            # `from b import x` the third was compared with `a`, looked like the legitimate
+            # shape again, and the exact repeat of `b` went unreported.
+            #
+            # So an implicit binding collides with the SAME source, and an explicit one -- a name
+            # the author chose -- collides with any earlier binding of that name at all.
             first = seen_explicit.get(bound)
             if implicit:
                 first = seen_implicit.get((bound, source), first)

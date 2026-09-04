@@ -26,8 +26,9 @@ the leg reporting nothing at all.
 
 from __future__ import annotations
 
-# peft names them `...lora_A.default.weight` / `lora_B...`;
-# Substrings marking a LoRA parameter and, narrower, the B matrices.
+# Substrings marking a LoRA parameter and, narrower, the B matrices. peft names
+# them `...lora_A.default.weight` / `lora_B...`; matched lowercased so a future
+# capitalisation cannot silently empty the set.
 LORA_MARKER = "lora_"
 LORA_B_MARKER = "lora_b"
 

@@ -236,8 +236,9 @@ def main():
         except PWTimeout:
             fail(f"select viewport not scrollable: {page.evaluate(VIEWPORT_STATE_JS)}")
 
+        # Radix moves focus into the listbox after the content opens, so a fixed
+        # burst of presses can land on the trigger and scroll nothing. Press until
         # it moves instead; a real regression still fails, just after more tries.
-        # Radix moves focus into the listbox after the content opens, so a fixed burst of presses can land on the
         kb_top = 0
         for _ in range(40):
             page.keyboard.press("ArrowDown")
@@ -262,8 +263,8 @@ def main():
             vp_box["x"] + vp_box["width"] / 2,
             vp_box["y"] + min(40, vp_box["height"] / 2),
         )
+        # A single wheel event can be dropped, so retry a bounded number of times. A
         # viewport that truly refuses the wheel never moves and still fails.
-        # A single wheel event can be dropped, so retry a bounded number of times.
         wheel_top = kb_top
         for _ in range(5):
             page.mouse.wheel(0, -400)

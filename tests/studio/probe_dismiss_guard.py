@@ -524,8 +524,10 @@ async def one_case(
             await page.mouse.down()
             await page.mouse.move(4, 4)
             await page.mouse.up()
+        # INSIDE the release-anchored grace window on purpose. Waiting it out was the first
+        # version of this case and it passed on a tree that was still eating the click, because
+        # it only ever asked whether the bound existed, not whether the guard should have armed
         # for a gesture that cannot produce a click at all.
-        # INSIDE the release-anchored grace window on purpose.
         await page.wait_for_timeout(150)
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(600)

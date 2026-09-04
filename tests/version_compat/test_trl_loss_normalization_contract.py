@@ -172,7 +172,8 @@ def test_dataclass_field_default_is_nll_for_hfargumentparser():
         )
 
 
-# The normalisation predicates themselves --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 2. The normalisation predicates themselves
 # --------------------------------------------------------------------------
 def _divides_by_num_items(fn) -> bool:
     """True when the source contains a division by num_items_in_batch/n_items."""

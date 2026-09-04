@@ -78,7 +78,6 @@ def _reset(monkeypatch):
     dnp.reset_warning_state()
 
 
-# The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 # ── The zoo's threshold, duplicated in ZOO_MIN_ROWS_FOR_MULTIPROC ──
 
 

@@ -304,7 +304,7 @@ def test_macos_min_os_filters_to_compatible_bundle(component):
 
 
 def test_macos_min_os_unknown_host_version_keeps_artifact(component):
-    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
+    # Unknown host macOS version -> defer to runtime validation, don't reject.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [_metal_artifact("metal-new.tar.gz", "macos-15.0")]), label = "m"
     )

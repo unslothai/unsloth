@@ -43,8 +43,8 @@ HOSTS = [
     ("macos", "darwin", "posix", None),
 ]
 
+# (label, DEVICE_TYPE_TORCH). A ROCm torch build reports "cuda", so AMD is not a separate
 # branch in the resolver -- it is here so a future one cannot be added unnoticed.
-# (label, DEVICE_TYPE_TORCH).
 ACCELERATORS = [
     ("nvidia", "cuda"),
     ("amd", "cuda"),

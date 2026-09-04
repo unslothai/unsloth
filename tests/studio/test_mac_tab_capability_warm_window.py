@@ -121,9 +121,9 @@ class FakePage:
 
     def route(self, pattern, handler) -> None:
         self.routed.append(pattern)
+        # Prove the stub body is valid JSON and reaches the browser, rather than only
         # that route() was called: a body the frontend cannot parse would leave the row
         # in its pre-fetch state and the check would read the wrong thing.
-        # Prove the stub body is valid JSON and reaches the browser, rather than only that route() was called:
         handler(_RecordingRoute(self))
 
     def unroute(
@@ -191,8 +191,8 @@ def _health(mod, bodies):
     mod._get_json = fake
 
 
+# --------------------------------------------------------------------------------
 # The regression Codex found: the window shut before the browser got there.
-# The regression Codex found:
 # --------------------------------------------------------------------------------
 
 
@@ -283,6 +283,7 @@ def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypat
     assert any("provisional" in m for m in mod._failed), mod._failed
 
 
+# --------------------------------------------------------------------------------
 # The real-warm sampler still has to fail when it does catch a grey-out.
 # --------------------------------------------------------------------------------
 
@@ -322,6 +323,7 @@ def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     assert mod._failed == []
 
 
+# --------------------------------------------------------------------------------
 # The tab walk: a pinned row that is not there means the tab checked nothing.
 # --------------------------------------------------------------------------------
 
@@ -352,6 +354,7 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
     assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
 
 
+# --------------------------------------------------------------------------------
 # Drift guard: the row asserted on has to be one the sidebar actually pins.
 # --------------------------------------------------------------------------------
 
@@ -413,6 +416,7 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
 
+# --------------------------------------------------------------------------------
 # What the survival poller fails on, now that it no longer replays the watchdog.
 # --------------------------------------------------------------------------------
 
@@ -648,6 +652,7 @@ def test_the_watchdog_replay_is_gone():
         assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone
 
 
+# --------------------------------------------------------------------------------
 # The post-run watch, which is what stops the window boundary deciding the verdict.
 # --------------------------------------------------------------------------------
 
@@ -743,6 +748,7 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     assert {"final_kind", "final_wait_s"} <= passed, passed
 
 
+# --------------------------------------------------------------------------------
 # The watch has to be bounded, paced, and honest about what it saw.
 # --------------------------------------------------------------------------------
 

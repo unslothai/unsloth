@@ -109,8 +109,8 @@ def _force_cpus(monkeypatch, dnp, count):
 
 @pytest.mark.parametrize("method", ["spawn", "forkserver", None])
 def test_non_fork_start_method_disables_multiprocessing(monkeypatch, dnp, method):
+    # Under spawn/forkserver the child must re-import the dynamically generated
     # trainer module, which has no importable name, so workers cannot run.
-    # Under spawn/forkserver the child must re-import the dynamically generated trainer module, which has no importable
     _force_start_method(monkeypatch, dnp, method)
     assert dnp.get_dataset_num_proc(8) is None
     assert dnp.get_dataset_num_proc(None) is None
@@ -162,7 +162,7 @@ def test_config_layer_never_returns_none_while_forking_is_available(monkeypatch,
     psutil = pytest.importorskip("psutil")
     _force_cpus(monkeypatch, dnp, 64)
 
-    # `1` is a trap: callers mean "serial", datasets >= 4.0 gives a Pool(1).
+    # memory clamp all the way down to serial
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(
         psutil, "virtual_memory", lambda: type("m", (), {"available": 1 * 1024**3})()
@@ -276,7 +276,7 @@ def test_explicit_value_is_clamped_by_memory(monkeypatch, dnp, capsys):
 
 
 def test_explicit_value_is_not_capped_by_the_auto_cap(monkeypatch, dnp):
-    # Was min(max(cpu_count + 4, 2), 64) -- up to 64 forked workers.
+    # AUTO_NUM_PROC_CAP bounds auto-sizing only.
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(
@@ -533,8 +533,8 @@ def test_rl_codegen_keeps_serial_as_none_where_the_config_reaches_map(trainer_fi
 
 
 def test_rl_codegen_only_sft_gets_the_config_sentinel():
+    # Pin the discriminator itself: a rename of the trainer file would silently
     # give every trainer the None encoding, including the one that must not have it.
-    # Pin the discriminator itself:
     source = RL_PATH.read_text(encoding = "utf-8")
     assert '_serial_as_none = "False" if trainer_file == "sft_trainer" else "True"' in source
 
@@ -552,8 +552,8 @@ NARROW_ANCHOR_NAME = "_ZOO_MAP_NUM_PROC_ASSIGNMENT"
 
 
 def _zoo_dataset_utils_source():
+    # find_spec resolves the package path without executing its __init__, so these
     # canaries still run where torch/unsloth_zoo cannot import.
-    # find_spec resolves the package path without executing its __init__, so these canaries still run where
     spec = importlib.util.find_spec("unsloth_zoo")
     if spec is None or not spec.submodule_search_locations:
         pytest.skip("unsloth_zoo not installed")
@@ -658,6 +658,8 @@ def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
         f"num_proc anchor {pattern.pattern!r}, expected 1; update rl_replacements.py"
     )
 
+    # The block anchor and the narrow anchor have to describe the same site, or
+    # the fallback would rewrite something the primary edit never touched.
     block_anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
     assert pattern.search(block_anchor) is not None
 
@@ -726,9 +728,8 @@ def test_the_block_anchor_is_used_when_the_zoo_has_not_moved():
     result, warnings = _apply_num_proc_edit(source)
     assert "_unsloth_get_dataset_num_proc" in result
     assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
-    # the fallback would rewrite something the primary edit never touched.
-    # The block anchor and the narrow anchor have to describe the same site, or the fallback would rewrite something
-    # The block replacement takes the Zoo's own sizing with it;
+    # The block replacement takes the Zoo's own sizing with it; the fallback,
+    # which only rewrites the assignment, leaves it standing.
     block_anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
     assert block_anchor not in result
     assert warnings == [], f"a matching anchor must not warn: {warnings}"
@@ -912,10 +913,8 @@ def test_rl_codegen_snippet_is_valid_python_at_method_indent():
 
 
 def test_rl_codegen_snippet_survives_an_unimportable_helper():
+    # A generated file can outlive an unsloth downgrade: constructing a config
     # must still work, just leaving the caller's value alone.
-    # The snippet is spliced into generated source as text, so a rename would otherwise surface only at
-    # rl.py re-indents extra_args to 8 spaces and drops it into __init__.
-    # A generated file can outlive an unsloth downgrade:
     snippet = _rl_num_proc_snippet()
     namespace = {"dataset_num_proc": 7}
     import builtins

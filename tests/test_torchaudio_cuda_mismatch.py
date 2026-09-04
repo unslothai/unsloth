@@ -127,8 +127,9 @@ def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
 
     tf_iu = pytest.importorskip("transformers.utils.import_utils")
 
+    # Stand up the 5.x shape explicitly rather than asking whichever
+    # transformers happens to be installed: on 4.x both readers share one
     # module global, so the 4.x version of this test cannot fail.
-    # Stand up the 5.x shape explicitly rather than asking whichever transformers happens to be installed:
     monkeypatch.delattr(tf_iu, "_torchaudio_available", raising = False)
     monkeypatch.setattr(tf_iu, "is_torchaudio_available", lru_cache(lambda: True))
     monkeypatch.setattr(

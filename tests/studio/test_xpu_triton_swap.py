@@ -534,8 +534,8 @@ def test_the_swap_runs_after_every_torch_migration():
             "_ensure_cpu_torch",
         ):
             assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
+    # The final repair pass would otherwise silently undo the first. The third point is
     # step 13w, the Windows flavor invariant.
-    # The final repair pass would otherwise silently undo the first.
     src = STACK.read_text(encoding = "utf-8")
     windows = src[src.index("# 13w.") : src.index("# 14.")]
     assert windows.index("_ensure_expected_torch_flavor") < windows.index(
@@ -671,8 +671,8 @@ class TestCpuPinSurvivesAWedgedImport:
         guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", stalled)
         # A merely slow CPU-only host returns; a GPU label on disk falls through...
         assert "return" in body[guard : guard + 200]
+        # ...and the repair below must accept the probe-less path, or the one host that
         # needs the pin enforced is the one host that never gets it.
-        # ...and the repair below must accept the probe-less path, or the one host that needs the pin enforced is the
         repair = body.index("if not _ran or not _importable:")
         assert repair > guard
 

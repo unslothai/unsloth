@@ -145,8 +145,10 @@ EXPECTED_COMPUTED = {
     "lastmessage": {"contentVisibility": "auto"},
 }
 
+# The same guard WHILE THE STREAM IS RUNNING, on the block being streamed. The settled check
+# alone is not enough, and that is not hypothetical: the pre-override variant passed it while
+# losing the cascade during streaming (the tree only holds while the thread builds, and both agree
 # once quiet), then reported zero flickers, reading as "there was never anything to fix".
-# The same guard WHILE THE STREAM IS RUNNING, on the block being streamed.
 EXPECTED_COMPUTED_RUNNING = {
     "tree": {"contentVisibility": "visible"},
     "legacy": {"contentVisibility": "visible"},

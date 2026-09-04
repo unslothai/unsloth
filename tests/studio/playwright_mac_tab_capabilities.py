@@ -73,8 +73,9 @@ BASE = os.environ["BASE_URL"]
 # STUDIO_OLD_PW is what the repo's own macOS workflow exports;
 # STUDIO_PW is what the staging harness exports.
 OLD = os.environ.get("STUDIO_OLD_PW") or os.environ["STUDIO_PW"]
+# What to rotate the bootstrap password to, when the app forces a change on first
+# login. Only used on that path: a harness that already rotated over the API (the
 # staging one) never reaches it. Must differ from OLD, or the change is rejected.
-# What to rotate the bootstrap password to, when the app forces a change on first login.
 NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
@@ -129,10 +130,18 @@ TABS = [
 _SIGNED_OUT_PATHS = ("/login", "/change-password")
 
 # Rows the sidebar pins inline by default, per SIDEBAR_NAV_DEFAULT_PINNED in
-# studio/frontend/src/features/settings/stores/appearance-custom-store.ts.
-# test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to the store's pinned set, in both
-# but while Video sat under "More" (layout v5, #7863) its half could never observe anything, so that evidence was
-# structurally empty. 8932 pins Video under Images again as layout v7, so it renders a testid and is sampled once more.
+# studio/frontend/src/features/settings/stores/appearance-custom-store.ts. Only these
+# carry a data-testid: the overflow rows render as MoreMenuItem inside a dropdown that
+# mounts nothing until it is opened and passes no test id even when it is, so
+# `[data-testid="nav-row-video"]` returns null on every host, every time.
+#
+# That matters for what this file can claim. The field report named Train AND Video, and
+# the first version of this script sampled both -- but while Video sat under "More" (layout
+# v5, #7863) its half could never observe anything, so that evidence was structurally empty.
+# #8932 pins Video under Images again as layout v7, so it renders a testid and is sampled
+# once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
+# the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
+# assertion here silently observing nothing.
 INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
@@ -318,8 +327,11 @@ def await_recovery(
         # its own.
         probe_began = time.monotonic()
         status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
+        # Recorded in the same shape and on the same clock as the poller's samples, so
+        # the caller can lay them end to end. Without this a stall that starts after
+        # sampling stops is invisible: the verdict knows it waited, but nothing knows
         # for how long or that anything went wrong, and a recovered stall that goes
-        # Recorded in the same shape and on the same clock as the poller's samples, so the caller can lay them end to
+        # unreported is the one thing this window was added to avoid.
         probes.append(
             {
                 "t": round(time.monotonic(), 1),
@@ -338,8 +350,8 @@ def await_recovery(
         if elapsed >= window_s:
             # No time left to give a probe.
             break
+        # A probe that failed instantly did not spend its budget, so it was a reset
         # rather than silence. Pace the next one, and never past the end of the window.
-        # A probe that failed instantly did not spend its budget, so it was a reset rather than silence.
         idle = spacing_s - (time.monotonic() - probe_began)
         if idle > 0:
             time.sleep(min(idle, window_s - elapsed))
@@ -514,8 +526,9 @@ class BackendSurvivalPoller:
                     f"({LIVENESS_PATH} kept timing out), so it did not survive the window"
                 )
         elif spans:
+            # It came back, so the launcher would have kept it on any budget and this run
+            # is green. Say so anyway: a stall this long is a real backend defect even
             # when it is not a fatal one, and it must not vanish into a pass.
-            # It came back, so the launcher would have kept it on any budget and this run is green.
             worst_ms = max(s["ms"] for s in observed)
             # Where the longest stall sits relative to the end of sampling decides what can honestly be said about it.
             if widest is None or widest[1] <= sampling_ended:
@@ -598,15 +611,20 @@ def log_in(page) -> bool:
     if "/change-password" in page.url:
         rotate_password(page)
     try:
+        # #password is the login field; the change-password screen uses
         # #current-password / #new-password, which we never want to touch here.
-        # password is the login field;
+        # Only look for a login form when still on a signed-out route. After the
+        # bootstrap rotation above we are already authenticated, and waiting a full
+        # minute for a form that is correctly absent burns CI time and logs a
+        # misleading "no password field".
         pw_box = page.locator("#password") if signed_out(page.url) else None
         if pw_box is not None:
             try:
                 pw_box.wait_for(state = "visible", timeout = 60000)
             except Exception:
+                # No form after a full minute is either a genuinely password-less
                 # desktop build or a frontend that never rendered. The redirect check
-                # No form after a full minute is either a genuinely password-less desktop build or a frontend that
+                # below tells the two apart, so do not conclude anything here.
                 info("no password field appeared within 60s")
                 pw_box = None
         if pw_box is not None:
@@ -835,8 +853,9 @@ def drive_tabs(page) -> None:
             continue
 
         landed = page.url
+        # The chat-only route guard may legitimately bounce Train/Video on a host
         # without the capability. What it must not do is bounce while the verdict
-        # The chat-only route guard may legitimately bounce Train/Video on a host without the capability.
+        # is still unknown, which is the race this run is here to catch.
         if signed_out(landed):
             # Never legitimate here:
             # Never legitimate here: the session was proven signed in before the walk started.
@@ -933,8 +952,8 @@ def main() -> int:
 
     poller.finish()
 
+    # Watched after sampling stopped and handed to report(), which needs it to tell a
     # stall still in progress at the end of the run from a backend that never came back.
-    # Watched after sampling stopped and handed to report(), which needs it to tell a stall still in progress at the
     step(f"watching up to {RECOVERY_WINDOW_S:.0f}s more for the backend to answer")
     kind, status, waited, recovery = await_recovery()
     info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching, {len(recovery)} probe(s)")

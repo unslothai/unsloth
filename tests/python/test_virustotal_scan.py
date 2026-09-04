@@ -1061,8 +1061,11 @@ class TestWorkflowOrdering:
         for swallow in ("|| true", "|| :", "exit 0", "; true"):
             assert swallow not in invocation, swallow
 
+        # The script signals a detection by returning 1 from main() once
+        # `--fail-threshold` is met (see TestThreshold), so the workflow must not
         # pin the threshold to something the script treats as "never fail" while
-        # The script signals a detection by returning 1 from main() once `--fail-threshold` is met (see TestThreshold)
+        # claiming to gate. It passes no threshold at all today, which leaves the
+        # script's advisory default in force and the verdict in the annotations.
         assert "--fail-threshold" not in run
 
     def test_the_advisory_escape_hatch_is_confined_to_the_scan_job(self):
@@ -1073,8 +1076,8 @@ class TestWorkflowOrdering:
         tolerant_jobs = [name for name, job in jobs.items() if "continue-on-error" in job]
         assert tolerant_jobs == ["virustotal-scan"]
 
-        # every job that touches a bundle must not be.
         # free-capacity only asks CI to release runners and is allowed to fail;
+        # every job that touches a bundle must not be.
         tolerant_steps = [
             (name, step.get("name"))
             for name, job in jobs.items()

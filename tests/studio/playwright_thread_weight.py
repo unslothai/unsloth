@@ -666,8 +666,12 @@ def growth(results: dict, pick, floored: bool) -> tuple[float | None, float | No
         return None, None
 
 
-# `floored` marks a metric whose clock is a double rAF, so it carries the ~33ms vsync floor measured as paint_floor_ms.
-# Growth axes. The point of the harness is that at least one of these rises with N;
+# Growth axes. The point of the harness is that at least one of these rises with N; if none
+# does, the page is not being driven and every later comparison would be vacuous.
+#
+# `floored` marks a metric whose clock is a double rAF, so it carries the ~33ms vsync floor
+# measured as paint_floor_ms. The floor is subtracted before the ratio: left in, it compresses
+# every ratio towards 1 and would let a real regression sit under the discrimination threshold.
 GROWTH_AXES = (
     ("keystroke median ms", lambda r: r["keystroke"]["median_ms"], True),
     ("scroll worst frame ms", lambda r: r["scroll"]["worst_frame_ms"], True),
@@ -782,8 +786,8 @@ def harness_failures(results: dict) -> list[str]:
             "are not measuring the same mechanism"
         )
 
+    # Discrimination. Not a budget: a harness where the biggest thread costs exactly what the
     # smallest does is not reporting a flat curve, it is reporting that it never drove the page.
-    # Discrimination. Not a budget:
     if len(results["sizes"]) >= 2:
         rising = []
         for name, pick, floored in GROWTH_AXES:

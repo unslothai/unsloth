@@ -34,8 +34,9 @@ from pathlib import Path
 EVIDENCE_PREFIX = "STUDIO_GPU_EVIDENCE_B64 "
 _CHUNK_RE = re.compile(r"^(\d+)/(\d+)\s+(\S+)$")
 
-# Absolute paths and ``..`` are refused rather than sanitised:
-# A tar member is trusted only as far as its name.
+# A tar member is trusted only as far as its name. Absolute paths and ``..``
+# are refused rather than sanitised, because a bundle that contains one is not
+# a bundle this payload wrote.
 MAX_MEMBER_BYTES = 20_000_000
 
 

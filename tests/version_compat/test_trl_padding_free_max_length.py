@@ -1616,8 +1616,8 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
         max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap
     ), "skip_prepare_dataset + eval_packing let an overlength split through"
 
+    # The control, and the deferral this branch exists for: when TRL really does
     # prepare the split, the packer must still receive the FULL rows.
-    # The control, and the deferral this branch exists for:
     seen = _run(lambda s: s.evaluate(eval_dataset = s.eval_dataset), eval_packing = True)
     assert (
         max(len(r) for r in seen["prepared"]["input_ids"]) > cap
@@ -1980,8 +1980,9 @@ def _stub_with_stored_eval():
             **kw,
         ):
             seen["ds"] = self.eval_dataset if eval_dataset is None else eval_dataset
+            # What `get_eval_dataloader` resolves a string key to, read DURING
+            # the call. A named split is capped for the call and restored after,
             # so the stored dict alone cannot show whether the cap was applied.
-            # What `get_eval_dataloader` resolves a string key to, read DURING the call.
             stored = getattr(self, "eval_dataset", None)
             if isinstance(eval_dataset, str) and isinstance(stored, dict):
                 seen["resolved"] = stored.get(eval_dataset)

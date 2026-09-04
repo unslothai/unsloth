@@ -292,7 +292,7 @@ def test_configuration_utils_alias(tag: str):
     )
 
 
-# configuration_utils: PreTrainedConfig vs PretrainedConfig in 5.x.
+# tokenization: apply_chat_template return_dict default flip in v5.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_apply_chat_template_signature_present(tag: str):
     """unsloth-zoo#572: apply_chat_template `return_dict` default flipped False -> True in transformers 5.x."""
@@ -308,7 +308,7 @@ def test_apply_chat_template_signature_present(tag: str):
     ), f"{tag}: apply_chat_template missing in tokenization_utils_base.py"
 
 
-# tokenization: apply_chat_template return_dict default flip in v5.
+# Generic-importability sweep: every transformers symbol unsloth/zoo imports must stay reachable.
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_attn_mask_utils_symbols(tag: str):
     """_prepare_4d_attention_mask_for_sdpa is imported by unsloth/models/llama.py + sentence_transformer.py."""

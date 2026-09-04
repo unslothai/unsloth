@@ -70,8 +70,10 @@ POLL_THRESHOLD = 3
 # Sidebar sections to walk, so section-scoped timers get a chance to run.
 SECTIONS = ("Model hub", "Projects", "Images", "Train", "New chat")
 
+# The floor that stops this suite passing on a run that observed nothing at all. Measured,
+# not guessed: a walk over the sections above on a runner with no GPU and no model sees
+# exactly two paths repeat inside a dwell, /api/inference/monitor and /api/export/status.
 # Anything less means the listener never attached or the page never rendered.
-# The floor that stops this suite passing on a run that observed nothing at all.
 MIN_POLLED_PATHS = int(os.environ.get("PW_POLL_MIN_PATHS", "2"))
 
 
@@ -192,8 +194,8 @@ def main() -> int:
         browser.close()
 
     if current.startswith(("/login", "/change-password")):
-        # Without this the suite passes by observing an app it never entered.
         # Every counted request would be the login screen's, which polls almost nothing.
+        # Without this the suite passes by observing an app it never entered.
         info(f"FAIL still on {current} after seeding a token; the run proved nothing")
         return 1
 

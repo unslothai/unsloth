@@ -106,8 +106,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
     # Mini Shai-Hulud May-12 wave:
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
+    # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
     # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
-    # Mini Shai-Hulud May-12 wave:
     "@squawk/airport-data": {"0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8"},
     "@squawk/airports": {"0.6.2", "0.6.3", "0.6.4", "0.6.5", "0.6.6"},
     "@squawk/airspace": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
@@ -130,8 +130,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@squawk/types": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
     "@squawk/units": {"0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7"},
     "@squawk/weather": {"0.5.6", "0.5.7", "0.5.8", "0.5.9", "0.5.10"},
+    # Mini Shai-Hulud May-12 wave: @uipath/* (64 packages, single version each;
     # https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
-    # Mini Shai-Hulud May-12 wave:
     "@uipath/apollo-react": {"4.24.5"},
     "@uipath/apollo-wind": {"2.16.2"},
     "@uipath/cli": {"1.0.1"},
@@ -198,8 +198,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
+    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm) — separate from PyPI mistralai
     # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
-    # Mini Shai-Hulud May-12 wave:
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
@@ -612,9 +612,13 @@ BLOCKING_KINDS: frozenset[str] = frozenset(
         "missing-lockfile",
         "unreadable-lockfile",
         "missing-toml-parser",
-        # An unsupported lockfileVersion means the tree was never walked, so treating it as advisory would let a v1
+        # An unsupported lockfileVersion means the audit could not walk
+        # the dependency tree at all (the structural rules below only
+        # apply to npm v2/v3). Treating it as advisory would let a v1
+        # downgrade -- a known supply-chain attack shape -- silently
+        # pass CI: the scanner reports the kind, exits 0, and no
+        # blocking finding is raised. Keep this blocking so a checked-in
         # lockfile cannot be downgraded out of audit coverage.
-        # An unsupported lockfileVersion means the audit could not walk the dependency tree at all (the structural
         "unsupported-lockfile-version",
     }
 )

@@ -645,8 +645,8 @@ def test_hybrid_chunked_loss_stays_on_padded_path(monkeypatch):
 
 
 def test_string_hybrid_model_disables_packing(monkeypatch):
+    # A string model= is materialized after init; a hybrid string is blocked because the
     # shim cannot patch a not-yet-built model.
-    # A string model= is materialized after init;
     monkeypatch.setattr(
         trainer_module,
         "_resolve_string_model_config",
@@ -1354,10 +1354,9 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
 # mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift internally) call
 
 
-# --- packed-boundary guard on the fused-CE path --------------------------------------- mask_packed_sequence_boundaries
-# needs shifted labels, so fused-CE paths (which shift internally) call mask_packed_boundary_labels, the pre-shift
-# equivalent.
 # --- packed-boundary guard on the fused-CE path ---------------------------------------
+# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
+# internally) call mask_packed_boundary_labels, the pre-shift equivalent.
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
@@ -1424,9 +1423,9 @@ def test_mask_packed_boundary_labels_lengths_covering_whole_row():
     assert out.reshape(-1).tolist() == [-100, 1, -100, 3]
 
 
-# ========================================================================== Each test below fails when its production
-# hunk is reverted.
-# the fused-CE call sites (llama.py / mistral.py)
+# ==========================================================================
+# Each test below fails when its production hunk is reverted.
+# 1 + 2. the fused-CE call sites (llama.py / mistral.py)
 # ==========================================================================
 class _StubInner(torch.nn.Module):
     def __init__(self, hidden):

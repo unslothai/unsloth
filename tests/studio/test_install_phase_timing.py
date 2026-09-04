@@ -81,6 +81,8 @@ def test_the_installers_carry_no_timing_machinery(script):
 
 
 # --------------------------------------------------------------------------------------
+# Where the filter is, and what has to come before it
+# --------------------------------------------------------------------------------------
 
 
 def _run_bodies():
@@ -247,6 +249,8 @@ def test_the_posix_filter_does_not_swallow_the_last_line():
         )
 
 
+# --------------------------------------------------------------------------------------
+# Run the real filters, rather than only reading them
 # --------------------------------------------------------------------------------------
 
 

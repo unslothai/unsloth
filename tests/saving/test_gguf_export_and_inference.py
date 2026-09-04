@@ -210,9 +210,8 @@ def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
     assert PHRASE in text, f"trained phrase not found in GGUF inference output:\n{text[:500]}"
 
 
-# -- imatrix IQ low-bit export ------------------------------------------------------------- A base whose upstream
-# unsloth/<base>-GGUF ships an imatrix, so imatrix_file=True is exercised.
 # -- imatrix IQ low-bit export -------------------------------------------------------------
+# A base whose upstream unsloth/<base>-GGUF ships an imatrix, so imatrix_file=True is exercised.
 IMATRIX_MODEL = os.environ.get("UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-1B-Instruct")
 IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]
 

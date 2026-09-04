@@ -291,8 +291,11 @@ def check(engine: str, candidate: str) -> Tally:
                 tally.diverged += 1
             tally.record(engine, name, verdict, native)
 
-        # ENDPOINTS EXPRESSED AS ELEMENT/CHILD OFFSETS ---- The alt holders are inserted BEFORE their images, so a
         # ---- ENDPOINTS EXPRESSED AS ELEMENT/CHILD OFFSETS ----
+        # The alt holders are inserted BEFORE their images, so a child offset in the same parent
+        # points at a different child afterwards. Restoring from raw offsets silently dropped the
+        # trailing text: the clipboard carried `first catsecond cattail text` and we produced
+        # `first catsecond cat`, then took the copy because the result was non-empty.
         for label, selection_js in (
             ("element offsets forward", "s.setBaseAndExtent(p, 0, p, 3)"),
             ("element offsets backward", "s.setBaseAndExtent(p, 3, p, 0)"),

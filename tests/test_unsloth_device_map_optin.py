@@ -712,6 +712,7 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
 
 
+# --------------------------------------------------------------------------------------
 # Planning by default reaches paths the opt-in never did.
 # --------------------------------------------------------------------------------------
 
@@ -966,8 +967,8 @@ def test_an_unresolvable_explicit_model_class_declines_planning():
     assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
     assert "an explicit model class has no auto mapping" in vision
 
+    # Ahead of the class comparison it backstops, or that one returns None and the
     # caller-config branch below claims the slot with the wrong reason.
-    # Ahead of the class comparison it backstops, or that one returns None and the caller-config branch below claims
     veto = vision.index("an explicit model class has no auto mapping")
     caller = vision.index("a caller-supplied config may not describe the repo the planner")
     assert veto < caller, "the unresolvable-class veto never gets to run"

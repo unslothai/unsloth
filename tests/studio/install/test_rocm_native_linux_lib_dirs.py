@@ -318,8 +318,8 @@ class TestNativeLinuxRootResolution:
         (root / "lib" / "llvm").mkdir()
         (root / "lib" / "llvm" / "lib").write_text("not a directory")
         real_exists = os.path.exists
+        # Pin both device nodes: a WSL test host really has /dev/dxg, which would
         # take the WSL early-return and make this pass for the wrong reason.
-        # Pin both device nodes: a WSL test host really has /dev/dxg, which would take the WSL early-return and make
         pinned = {"/dev/kfd": True, "/dev/dxg": False}
 
         def _exists(p):

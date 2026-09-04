@@ -629,8 +629,8 @@ def _suppressed(
         target = functions.get(called.func.id)
         if target is None:
             continue
+        # Calling an `async def` builds a coroutine and runs none of its body, so the
         # prctl never happens. Only an awaited one has actually cleared dumpability.
-        # Calling an `async def` builds a coroutine and runs none of its body, so the prctl never happens.
         if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(called, scope):
             continue
         if _clears_dumpable_before(target, _AFTER_EVERYTHING, libc = libc):
@@ -815,8 +815,8 @@ def _snippet_state(
     """
     try:
         with warnings.catch_warnings():
+            # Snippets are other people's source. An unrelated escape-sequence warning
             # from one of them must not show up as noise in this suite's output.
-            # Snippets are other people's source.
             warnings.simplefilter("ignore")
             tree = ast.parse(snippet)
     except (SyntaxError, ValueError):

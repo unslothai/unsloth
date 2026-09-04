@@ -67,8 +67,9 @@ PREFERENCES_KEY = "unsloth_chat_preferences"
 # well clear of both.
 SETTLE_MS = 600
 
+# The tail of the command the approval card renders. Deliberately past the
 # 60-character slice the trigger shows, so "the user can read it" cannot be
-# The tail of the command the approval card renders.
+# satisfied by the trigger label alone.
 APPROVAL_TAIL = "--and-then-something-nobody-can-see"
 
 CARDS = ("controlled", "uncontrolled", "approval")
@@ -160,8 +161,8 @@ def run(base_url: str, pw) -> dict:
     p = results["problems"]
     s = results["scenes"]
 
+    # `msedge` is a chromium CHANNEL, not an engine: the branded build, which
     # trails Chromium by weeks, so a Chromium-first regression hides there.
-    # `msedge` is a chromium CHANNEL, not an engine:
     if ENGINE == "msedge":
         browser = pw.chromium.launch(channel = "msedge")
     else:
@@ -343,8 +344,9 @@ def run(base_url: str, pw) -> dict:
     if scene["uncontrolled"]["aria_expanded"] != "false":
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
-    # 12 storage denied ------------------------------------------------- Safari private browsing and a cookies-blocked
     # --- 12 storage denied -------------------------------------------------
+    # Safari private browsing and a cookies-blocked profile both surface as
+    # localStorage throwing rather than as an absent API.
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {

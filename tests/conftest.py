@@ -26,12 +26,12 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)
         break
 
-# --- shared test helpers on sys.path ----------------------------------------------- tests/_shared holds no package
-# marker and pytest only puts a *test file's* own directory on sys.path, so tests/python/, tests/studio/install/ and
-# tests/security/ cannot reach it by import.
-# see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
-# -----------------------------------------------------------------------------------
 # --- shared test helpers on sys.path -----------------------------------------------
+# tests/_shared holds no package marker and pytest only puts a *test file's* own
+# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
+# cannot reach it by import. Adding it here (this conftest is collected for anything
+# under tests/) is what lets all four levels share one module rather than each growing
+# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
 import sys as _sys  # noqa: E402
 
 _shared_dir = _iso.parent / "_shared"
@@ -204,6 +204,10 @@ if not _has_real_accelerator():
     _patch_torch_cuda_for_import()
 
 
+# ---------------------------------------------------------------------------
+# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import unsloth``
+# (they run at import time in unsloth/import_fixes.py). The harness above lets
+# the import survive CPU-only runners; the ImportError is swallowed otherwise.
 # ---------------------------------------------------------------------------
 
 

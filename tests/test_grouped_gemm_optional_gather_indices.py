@@ -52,7 +52,6 @@ def _operands(device, requires_grad = False):
     return X.requires_grad_(requires_grad), W.requires_grad_(requires_grad), m_sizes
 
 
-# the contract, without a GPU ----------------------------------------
 # ---- the contract, without a GPU ----------------------------------------
 
 
@@ -89,7 +88,7 @@ def test_permuting_without_indices_still_fails_with_the_explicit_message(permute
         )
 
 
-# the numerics, on a real device
+# ---- the numerics, on a real device --------------------------------------
 
 
 @requires_cuda

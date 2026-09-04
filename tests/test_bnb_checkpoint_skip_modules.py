@@ -76,8 +76,8 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """
     source = open(VISION, encoding = "utf-8").read()
     assert "merge_checkpoint_skip_modules" not in source
+    # It may still build its own runtime list (the next test pins that); what it must
     # never do is assign into the config that came off the checkpoint.
-    # It may still build its own runtime list (the next test pins that);
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Assign):
             continue

@@ -32,8 +32,8 @@ def _render(merged_prompt, columns, batch):
 
 
 def test_optional_block_missing_second_column_does_not_render_none():
+    # A [[...]] block may reference several columns; only the first gates the
     # block. A later column that is None must not render as the literal "None".
-    # A [[...]] block may reference several columns;
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,

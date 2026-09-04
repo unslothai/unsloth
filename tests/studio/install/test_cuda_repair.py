@@ -204,8 +204,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_cvd_hidden_but_explicit_cuda_pin_repairs(self):
+        # CVD=-1/"" hides the GPU, but an explicit cu* pin skips ALL host-GPU probing, so the
         # CVD hide gate must not suppress the repair (GPU-less CI: CVD=-1, FAMILY=cu128).
-        # CVD=-1/"" hides the GPU, but an explicit cu* pin skips ALL host-GPU probing, so the CVD hide gate must not
         for _cvd in ("-1", ""):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -227,7 +227,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_untagged_cuda_build_under_pin_repairs(self):
-        # A healthy CUDA torch whose +cuXXX differs from the pin is repaired.
+        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed
+        # to match the pin, so the pin is enforced with a reinstall.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
             torch_state = "cuda",
@@ -322,8 +323,8 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_custom_mirror_leaf_not_treated_as_cuda_pin(self):
+        # A mirror leaf starting with "cu" but not cuXXX (.../custom, .../current) must
         # NOT be treated as a CUDA pin, so it can't bypass the NVIDIA gate.
-        # A mirror leaf starting with "cu" but not cuXXX (.../custom, .../current) must NOT be treated as a CUDA pin
         for _leaf in ("custom", "current"):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -387,8 +388,8 @@ class TestTorchBackendDerivationFromPin:
         assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}) == "cuda"
 
     def test_current_leaf_not_cuda(self):
+        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still
         # repairs a CPU/wrong torch instead of short-circuiting.
-        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still repairs a CPU/wrong torch
         assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}) == ""
 
     def test_custom_leaf_not_cuda(self):
@@ -945,14 +946,13 @@ class TestExpectedTorchFlavorSkips:
 
     @pytest.mark.parametrize("tag", ["current", "custom", "simple", "cu"])
     def test_an_unenforceable_expectation_is_a_no_op(self, tag):
-        # "xpu" and "rocm" are NOT here:
+        # "xpu" and "rocm" are NOT here: both are published and both are enforced.
         ok, mock_pip = _run_flavor_invariant(expected_env = tag)
         assert ok is True
         mock_pip.assert_not_called()
 
     def test_an_empty_handover_tag_falls_through_rather_than_deciding(self):
-        # A stalled driver hangs `import torch`;
-        # version.py on disk still names the wheel.
+        # PowerShell 7.5+ keeps an entry assigned "", which must read as "nobody said".
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "",
             recorded = "cu128",
@@ -1293,8 +1293,8 @@ class TestWindowsOnArmKeepsTheNoTorchaudioException:
         assert _index_url(mock_pip).endswith("/cu124")
 
     def test_the_xpu_trio_drops_it_too(self):
+        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing; the healthy cu124
         # venv underneath must not be downgraded.
-        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing;
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.9.1+xpu",

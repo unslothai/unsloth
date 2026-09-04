@@ -258,21 +258,23 @@ def test_reopen_counts_no_frames_from_the_grace_window() -> None:
 
 
 def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
-    # The grace is a fixed cost every size pays equally, and a constant on both ends of a ratio drags it towards 1.
-    # The reported settle is the time of the LAST activity, so the 1000ms of watching that confirmed it is not in the
-    # number.
+    # Same reason, for wall ms, which is a growth axis in its own right.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["wallMs"] <= got["lastChangeAt"] + 120, got
 
 
-# ── no-regression guards: what the timed windows may scan ───────────── GUARDS, not evidence for a finding.
-# Both timed windows are measured in the browser and the harness-owned DOM scans inside them are a rounding error today:
-# on Chromium at 300000 characters the re-open window makes 2 selector passes costing 0.4ms of a 2292ms re-open (0.02%),
-# and the menu window makes 2 observer queries and 2 censuses costing 2.7ms of a 3208ms open+close (0.08%).
-# That holds because the count of scans is FIXED while their unit cost grows with the thread (messageCount 0.01ms at
-# 25000 chars, 0.105ms at 300000).
-# The menu content is portaled to the END of document.body, so a querySelector for it walks the whole message list
 # ── no-regression guards: what the timed windows may scan ─────────────
+#
+# GUARDS, not evidence for a finding. They pass on this tree and are here to keep it that way.
+#
+# Both timed windows are measured in the browser and the harness-owned DOM scans inside them are
+# a rounding error today: on Chromium at 300000 characters the re-open window makes 2 selector
+# passes costing 0.4ms of a 2292ms re-open (0.02%), and the menu window makes 2 observer queries
+# and 2 censuses costing 2.7ms of a 3208ms open+close (0.08%). That holds because the count of
+# scans is FIXED while their unit cost grows with the thread (messageCount 0.01ms at 25000 chars,
+# 0.105ms at 300000). Swap one of them for the full census, or move any of them inside the poll
+# loop, and the harness starts adding size-dependent work to the number it publishes. These pin
+# the count.
 SCAN_BUDGET_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -321,9 +323,10 @@ def test_the_reopen_window_scans_no_more_than_once_per_frame_of_the_rebuild() ->
 
 
 def test_the_highlight_probe_stays_on_its_interval_inside_the_settle_loop() -> None:
-    # GUARD.
-    # counts() is a dozen document-wide queries including getElementsByTagName("*"), and it is 25 times the cost of
-    # messageCount() at 25000 chars and 24 times at 300000 (measured 0.15ms/0.01ms and 2.51ms/0.105ms on Chromium).
+    # GUARD. quietUntilIdle()'s probe is `pre code span` over the whole document: 0.03ms at 25000
+    # chars and 0.465ms at 300000 on Chromium, 2.05ms on Firefox. Per frame that is an O(nodes)
+    # query inside the window being timed, growing like the signal; on the interval it is a few
+    # milliseconds across the whole settle.
     got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
     assert got["probes"] <= got["probeBudget"], got
 
@@ -432,8 +435,8 @@ def test_opening_the_menu_costs_a_whole_double_raf_even_when_it_is_free() -> Non
 
 
 def test_closing_the_menu_costs_a_second_double_raf() -> None:
-    # is wrong with that -- it is what makes the number a wall-clock one -- but it means the metric
-    # And this is the one the single-floor subtraction missed:
+    # And this is the one the single-floor subtraction missed: closing waits out its own
+    # __nextPaint() for exactly the same reason, independently of opening.
     got = run_node(MENU_BODY, MENU_SOURCES)
     assert got["closeMs"] >= 32, got
 
@@ -482,8 +485,8 @@ def test_one_repetition_that_never_opened_the_menu_poisons_the_median() -> None:
 
 
 def test_a_timing_that_was_null_in_every_repetition_is_still_reported() -> None:
+    # Present-and-None, not absent: a key that is missing entirely makes the verdict raise
     # KeyError instead of naming the action that never happened.
-    # Present-and-None, not absent:
     summary = HARNESS.summarise([menu_repetition(None), menu_repetition(None)])
     assert "openMs" in summary["menu"] and summary["menu"]["openMs"] is None, summary["menu"]
 
@@ -774,9 +777,13 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     assert "seeded.current = built.messages" in page
 
 
-# high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
-# the declared paint floor ────────────────────────────────────────── `growth()` subtracts `floored` double-rAF vsync
 # ── the declared paint floor ──────────────────────────────────────────
+#
+# `growth()` subtracts `floored` double-rAF vsync floors from both ends of every ratio, and
+# `floored` was a hand-declared integer per axis. Declaring it too low leaves a ~33ms constant in
+# both ends, which drags the ratio towards 1 and can report a real curve as flat; declaring it too
+# high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
+# the constant is checked against the run rather than trusted.
 def floor_row(
     observed,
     engine = "chromium",
@@ -902,7 +909,6 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
     assert len(problems) == 1 and "unverified" in problems[0], problems
 
 
-# the wall axes carry the floor they actually paid ──────────────────
 # ── the wall axes carry the floor they actually paid ──────────────────
 
 
@@ -1023,12 +1029,12 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
     )
 
 
-# ── a counter rising from zero has to say something ─────────────────── No ratio can be formed against zero, so
-# DISCRIMINATION_RATIO never applies to these axes and `large > small` was the whole test.
-# The CI workflow runs one repetition on Chromium, so there is no median to smooth a stray dropped frame, and
-# `harness_failures` accepts any ONE discriminating axis: 0 at 25K and 1 at 100K could carry the entire verdict while
-# every latency axis was flat.
 # ── a counter rising from zero has to say something ───────────────────
+#
+# No ratio can be formed against zero, so DISCRIMINATION_RATIO never applies to these axes and
+# `large > small` was the whole test. The CI workflow runs one repetition on Chromium, so there is
+# no median to smooth a stray dropped frame, and `harness_failures` accepts any ONE discriminating
+# axis: 0 at 25K and 1 at 100K could carry the entire verdict while every latency axis was flat.
 def counter_cells(
     small,
     large,
@@ -1098,12 +1104,12 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
 # The zero branch keyed on `floored`, which only identifies a timing that had a paint floor subtracted.
 
 
-# ── zero-based is not the same as counted ───────────────────────────── The zero branch keyed on `floored`, which only
-# identifies a timing that had a paint floor subtracted.
-# An UNFLOORED timing reads zero at the smallest size whenever the action resolves before the recorder produces a
-# sample, and was then treated as a dropped-frame counter, so a noisy 5ms at the largest size read as a rise of 5 and
-# discriminated.
 # ── zero-based is not the same as counted ─────────────────────────────
+#
+# The zero branch keyed on `floored`, which only identifies a timing that had a paint floor
+# subtracted. An UNFLOORED timing reads zero at the smallest size whenever the action resolves
+# before the recorder produces a sample, and was then treated as a dropped-frame counter, so a
+# noisy 5ms at the largest size read as a rise of 5 and discriminated.
 def timing_cells(
     small,
     large,
@@ -1155,8 +1161,9 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     assert (
         HARNESS.COUNTER_AXES <= names
     ), f"COUNTER_AXES names axes that do not exist: {HARNESS.COUNTER_AXES - names}"
+    # Stated exactly rather than pattern-matched. My first attempt keyed on the name not ending
     # in "ms", which is wrong: the counter axis is called "frames over 33ms" and legitimately
-    # Stated exactly rather than pattern-matched.
+    # does. Naming the whole set is the point of classifying it explicitly in the first place.
     assert HARNESS.COUNTER_AXES == frozenset(
         f"{action} frames over 33ms" for action in HARNESS.ACTIONS
     ), HARNESS.COUNTER_AXES
@@ -1169,11 +1176,12 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
 # Making the wall floor a callable put the lambda itself into the growth report.
 
 
-# ── the report has to survive being written out ─────────────────────── Making the wall floor a callable put the lambda
-# itself into the growth report.
-# main() attaches that report to `results` and json.dumps it, so every complete run raised "Object of type function is
-# not JSON serializable" AFTER taking all its measurements.
 # ── the report has to survive being written out ───────────────────────
+#
+# Making the wall floor a callable put the lambda itself into the growth report. main() attaches
+# that report to `results` and json.dumps it, so every complete run raised "Object of type
+# function is not JSON serializable" AFTER taking all its measurements. No unit test caught it
+# because none of them serialised the report, which is the gap this section closes.
 def test_the_growth_report_is_json_serializable() -> None:
     report = HARNESS.report_growth(counter_cells(0, 9))
     json.dumps(report)
@@ -1279,9 +1287,12 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
 # `quiet()` and `quietUntilIdle()` return `...
 
 
-# ── whole-window axes carry the whole window's floors ───────────────── `quiet()` and `quietUntilIdle()` return `...
-# - this.startedAt`, not the time they themselves took, and `gestureMs` is computed from `startedAt` too.
 # ── whole-window axes carry the whole window's floors ─────────────────
+#
+# `quiet()` and `quietUntilIdle()` return `... - this.startedAt`, not the time they themselves
+# took, and `gestureMs` is computed from `startedAt` too. All three therefore span the entire
+# recorder window and contain every double-rAF wait in it. They declared zero, which left roughly
+# twenty vsync floors in both ends of the scroll ratios.
 def axis_floor(name):
     for axis, _pick, floored in HARNESS.GROWTH_AXES:
         if axis == name:

@@ -29,7 +29,7 @@ def test_no_bos_tokenizer_does_not_crash():
 
 
 def test_double_bos_is_stripped():
-    # Tokenizers such as Qwen2 / Qwen2.5, GPT-2, Falcon and GPT-NeoX have no BOS token, so tokenizer.bos_token is None.
+    # A tokenizer with a BOS token still has a single leading BOS removed.
     remove_special_tokens = _load_remove_special_tokens()
     assert remove_special_tokens(_StubTokenizer("<s>"), "<s>Hello world") == "Hello world"
 

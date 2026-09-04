@@ -97,10 +97,9 @@ def install_view_transition_killer(ctx: Any) -> None:
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
 
 
-# The smoke pages are dev-server-only, so each harness owns its server.
-# Hence the process group, stdout drain and SIGKILL escalation.
-# A backgrounded `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child holding the port
-# and stdout.
+# The smoke pages are dev-server-only, so each harness owns its server. A backgrounded
+# `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child
+# holding the port and stdout. Hence the process group, stdout drain and SIGKILL escalation.
 
 
 # Server health pre-flight.
@@ -373,6 +372,8 @@ def recover_or_replace_page(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# POST-and-wait: surface server errors immediately, fall back cleanly.
+# ─────────────────────────────────────────────────────────────────────
 
 
 def click_and_wait_for_response(
@@ -609,10 +610,12 @@ def robust_evaluate(
 
 
 # Bounded in-page fetch.
-# evaluate_fetch wraps the fetch in an AbortController.signal so the JS side always resolves
+# `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until
+# the runner timeout (run 25696797934 / PR #5387 burned 27+ min). evaluate_fetch
+# wraps the fetch in an AbortController.signal so the JS side always resolves --
 # real response, or synthetic `{status: 0, error: "AbortError..."}` after timeout_ms.
-# `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until the runner timeout (run 25696797934 /
-# PR #5387 burned 27+ min).
+# It also retries the evaluate itself when a navigation destroys the execution
+# context mid-call (a transient Playwright race, not a real fetch failure).
 def evaluate_fetch(
     page: Any,
     url: str,

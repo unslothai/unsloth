@@ -66,8 +66,9 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # A dep list missing these never re-ran, so a finished load left the first fetch's name. Nor may it be gated on
-    # having no checkpoint: the store keeps one across an idle unload, which changes nothing React can see.
+    # The store keeps a checkpoint across an idle unload and across a deletion, so
+    # preferring it on the switch setting alone named a model /v1/models had proved
+    # absent, and the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
@@ -77,8 +78,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 
 
 def test_idle_unload_does_not_guess_the_stashed_checkpoint():
-    # The store keeps a checkpoint across an idle unload and across a deletion, so preferring it on the switch setting
-    # alone named a model /v1/models had proved absent, and the snippets 404d instead of falling back.
+    # the idle stash is process-wide, but the browser checkpoint is not.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "idleReload" not in hook

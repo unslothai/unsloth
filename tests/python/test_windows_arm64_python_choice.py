@@ -135,8 +135,8 @@ def _pwsh(script: str) -> str:
         ([("3.13", "arm64"), ("3.13", "x86_64")], False, "3.13|x86_64"),
         # Requested minor is ARM64-only:
         ([("3.13", "arm64")], True, "3.13|x86_64"),
+        # Offline, but an x64 build of a lower-priority minor is here. Use it: the native
         # 3.13 cannot resolve pyarrow or hf-transfer, and this one can.
-        # Offline, but an x64 build of a lower-priority minor is here.
         ([("3.13", "arm64"), ("3.11", "x86_64")], False, "3.11|x86_64"),
         # ARM64 everywhere: still returned, and the caller warns.
         ([("3.13", "arm64"), ("3.11", "arm64")], False, "3.13|arm64"),

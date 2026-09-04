@@ -331,8 +331,8 @@ class TestLooksLikeMacosLoaderFailure:
             "usage: llama-quantize [--help] model-f32.gguf",
             "error: failed to load model 'foo.gguf'",
             "main: build = 10639 (f6f92fe)",
+            # DYLD_PRINT_LIBRARIES narrates a perfectly healthy load under the
             # same prefix a failure uses, so the prefix alone cannot be the test.
-            # DYLD_PRINT_LIBRARIES narrates a perfectly healthy load under the same prefix a failure uses, so the
             "dyld[4711]: /usr/lib/libSystem.B.dylib\ndyld[4711]: /usr/lib/libc++.1.dylib",
         ],
     )

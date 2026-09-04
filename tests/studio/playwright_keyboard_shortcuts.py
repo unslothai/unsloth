@@ -472,6 +472,8 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         page.wait_for_function("document.getElementById('smoke-selection').textContent === '3'")
         reset(page)
 
+    # A selection chord clears the selection, so an immediate second press would
+    # otherwise land on the open chat, which was never selected.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -484,8 +486,8 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # otherwise land on the open chat, which was never selected.
-    # A selection chord clears the selection, so an immediate second press would otherwise land on the open chat, which
+    # A different command straight after is not the repeat this guards against,
+    # and swallowing it would trade one silent wrong action for another.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -498,9 +500,8 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # and swallowing it would trade one silent wrong action for another.
-    # A different command straight after is not the repeat this guards against, and swallowing it would trade one
-    # And a deliberate press afterwards still works, or the latch has traded one silent wrong action for a silent dead
+    # And a deliberate press afterwards still works, or the latch has traded one
+    # silent wrong action for a silent dead key.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")

@@ -158,8 +158,8 @@ def test_resolve_returns_none_when_nothing_available(monkeypatch, tmp_path):
 
 
 def test_negative_result_is_not_cached(monkeypatch, tmp_path):
+    # A Node that appears after the first (empty) probe must be picked up without
     # a restart, so None must not be memoized.
-    # A Node that appears after the first (empty) probe must be picked up without a restart, so None must not be
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)

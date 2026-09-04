@@ -434,8 +434,9 @@ def failures_for(result: dict, args) -> list[str]:
     elif any(r != r or r in (float("inf"), float("-inf")) for r in rewards):
         failures.append(f"non-finite reward: {rewards}")
     else:
+        # ON EVERY STEP, as this file's docstring claims. Any nonempty subset
         # used to satisfy it, so a step whose reward functions never ran was
-        # ON EVERY STEP, as this file's docstring claims.
+        # filtered out and the rest covered for it.
         missing = [e.get("step") for e in steps if e.get("reward") is None]
         if missing:
             failures.append(

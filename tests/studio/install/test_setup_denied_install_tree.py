@@ -80,16 +80,16 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$destState -eq "Denied"' in SETUP_PS1
     # Denied counts as surviving removal; collapsing it would junction over it.
     assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in SETUP_PS1
+    # Floor, not an exact count: losing a route is the bug, adding one is not.
     # Each route above is pinned by name, so a swap cannot hide under the floor.
-    # Floor, not an exact count:
     assert SETUP_PS1.count("Exit-PathAccessDenied -Path") >= 9
 
 
 def test_denied_install_reports_an_actionable_failure():
     body = _denial_reporter()
     assert "cannot be read: access is denied" in body
+    # The reporter reinstalled to a different drive and hit the same line; the
     # message has to say why that cannot help.
-    # The reporter reinstalled to a different drive and hit the same line;
     assert "reinstalling Unsloth Studio, to any drive, reuses it" in body
     assert "delete or rename $Path" in body
     assert "Controlled folder access" in body
@@ -237,8 +237,9 @@ def test_user_supplied_paths_are_never_told_to_delete_themselves():
     assert "delete or rename" not in user_branch
     assert "managed cache" not in user_branch
     assert "UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" in user_branch
+    # Every call site that reports a path the user pointed us at must pass the
+    # switch, including the canonical location: the override says that tree is
     # the user's build, so "delete it, we reinstall it" is wrong there too.
-    # Every call site that reports a path the user pointed us at must pass the switch, including the canonical location:
     for line in SETUP_PS1.splitlines():
         if "Exit-PathAccessDenied" in line and "UNSLOTH_LOCAL_LLAMA_CPP_DIR" in line:
             assert "-UserSupplied" in line, line

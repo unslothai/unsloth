@@ -70,8 +70,8 @@ TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
 # The follow window in the hook.
 FOLLOW_SETTLE_MS = 600
+# What the settle check trades away: unobservable growth is followed on a timer, not the next
 # frame. Generous against 115ms measured, tight enough to catch a regression.
-# What the settle check trades away:
 SILENT_GROWTH_REPIN_BUDGET_MS = int(os.environ.get("SMOKE_REPIN_BUDGET_MS", "250"))
 
 PUMP_INIT = """

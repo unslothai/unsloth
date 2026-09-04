@@ -515,8 +515,9 @@ MEASURE = """
 """
 
 
+# Scroll each box into the rail's view and report what is still hidden. The
+# rail is the last resort the cards fall back on, so "below the fold" is a pass
 # and "cannot be brought into view" is the failure.
-# Scroll each box into the rail's view and report what is still hidden.
 REACH = """
 (selectors) => {
   const q = (sel) => document.querySelector(sel);
@@ -974,7 +975,6 @@ def main() -> int:
         # rail, so it lands on the corner, and its arrival used to re-measure
         # the rail and move the whole stack. That is the case to check.
         # #8346 ships it off by default, so nothing above this point sees it.
-        # The loaded models indicator, switched on.
         for width, height in INDICATOR_VIEWPORTS:
             context = browser.new_context(
                 viewport = {"width": width, "height": height},

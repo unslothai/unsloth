@@ -720,8 +720,8 @@ def run_classify_unit_tests() -> int:
     return 0 if passed == len(CLASSIFY_CASES) else 1
 
 
+# Adversarial end-to-end cases: drop a synthetic file into src/, run the
 # checker, clean up. Catches regressions in the full grep+classify pipeline.
-# Adversarial end-to-end cases:
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
 
 

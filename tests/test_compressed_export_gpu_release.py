@@ -190,7 +190,7 @@ def test_disk_offloaded_map_is_left_alone(_fake_accelerate):
 
 
 def test_all_cpu_map_is_left_alone(_fake_accelerate):
-    # disk/meta entries are not on the model, so moving would materialize the whole checkpoint into RAM.
+    # Nothing on an accelerator: no GPU memory to reclaim, so do not churn the hooks.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(device_map = {"model.embed": "cpu", "model.layers.0": "cpu"})
     assert ns["_offload_model_for_quantize_subprocess"](model) is None

@@ -269,8 +269,8 @@ def test_the_module_entry_source_keeps_its_two_load_bearing_details():
         "argv[0] must be rewritten before the package is imported, or a direct "
         "`python path/to/__main__.py` run misses the console-script gate"
     )
+    # `-m` imports the package to locate this module, so __init__ has already run
     # with argv[0] == "-m" and its gate cannot fire; __main__ has to say so.
-    # `-m` imports the package to locate this module, so __init__ has already run with argv[0] == "-m" and its gate
     assert "_prepare_entry_point()" in source
     # click reads __main__.__package__ rather than argv[0] and would otherwise print `Usage: python -m unsloth_cli` in
     # every usage and error string.

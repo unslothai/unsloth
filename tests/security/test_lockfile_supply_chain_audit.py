@@ -83,6 +83,8 @@ def test_audit_npm_lockfile_direct_call_findings():
 
 
 # ---------------------------------------------------------------------------
+# IOC string table -- gated on Fork 1's NPM_IOC_STRINGS additions.
+# ---------------------------------------------------------------------------
 
 _MAY12_IOCS = (
     "git-tanstack.com",
@@ -305,6 +307,8 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         assert "missing-resolved-url" in line
 
 
+# ---------------------------------------------------------------------------
+# SF4: skip env var requires a justification value.
 # ---------------------------------------------------------------------------
 
 

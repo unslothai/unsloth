@@ -135,7 +135,6 @@ def test_the_taxonomy_is_shared_with_unsloth_zoo_not_restated():
     assert '"dense"' not in src.split("_repo_has_weighted_st_subfolders")[1][:2000]
 
 
-# the behaviour that actually changed ---------------------------------
 # ---- the behaviour that actually changed ---------------------------------
 
 
@@ -276,7 +275,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# mixed weight formats: root safetensors, subfolder .bin ---------------
 # ---- mixed weight formats: root safetensors, subfolder .bin ---------------
 
 BIN_DENSE_FILES = [

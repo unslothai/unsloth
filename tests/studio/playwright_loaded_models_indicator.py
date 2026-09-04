@@ -553,8 +553,11 @@ def run(page, state: Runtime) -> None:
     page.wait_for_timeout(SETTLE_MS // 2)
     check("the collapsed state survives a reload", page.locator(pill).count() > 0)
 
+    # ── Closed, then a load nobody announced ────────────────────────────
+    # "Back on the next model load" is what the close tooltip promises, and a
+    # load through the OpenAI-compatible API or auto-switch raises no lifecycle
+    # event at all: the poll is the only witness. Closing must also not be
     # undone by whatever is already resident, or the card could never be shut.
-    # Closed, then a load nobody announced ──────────────────────────── "Back on the next model load" is what the close
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     # ── Drag, and the pointer release the window never sees ─────────────
     boot(page, state)

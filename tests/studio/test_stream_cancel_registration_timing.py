@@ -460,8 +460,7 @@ def test_preset_cancel_event_exits_cleanly_with_done():
 
 
 def test_normal_path_streams_all_tokens():
-    # Pending-replay: a stashed cancel pre-set cancel_event.
-    # The loop must break cleanly with final_chunk + [DONE], not propagate GeneratorExit from the GGUF wrapper.
+    # Regression: the top-of-loop cancel_event check must not short-circuit when unset.
     ev = threading.Event()
     chunks = asyncio.run(_consume(_post_fix_gguf_loop(ev)))
     assert chunks == ["first_chunk", "cumulative-1", "cumulative-2", "final_chunk", "[DONE]"]
@@ -493,8 +492,8 @@ def test_cancel_during_streaming_stops_iteration_promptly():
 
 
 def _loop_has_cancel_event_check(fn) -> bool:
+    # An `if cancel_event.is_set():` inside a loop body is sufficient -- without it
     # a cancel POST can't interrupt, since Colab-style proxies drop request.is_disconnected().
-    # An `if cancel_event.is_set():` inside a loop body is sufficient -- without it a cancel POST can't interrupt
     for sub in ast.walk(fn):
         if not isinstance(sub, (ast.While, ast.For, ast.AsyncFor)):
             continue

@@ -110,6 +110,8 @@ def _build(
 
 
 # --------------------------------------------------------------------------------------
+# 1. An explicit "sequential" is a placement, not the default.
+# --------------------------------------------------------------------------------------
 
 
 def test_the_env_opt_in_leaves_an_explicitly_requested_sequential_alone(monkeypatch):
@@ -334,6 +336,7 @@ def test_the_callers_kwargs_dict_is_not_mutated():
     assert caller_kwargs == {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
 
 
+# --------------------------------------------------------------------------------------
 # 3. The legacy diffusion checkpoint the planner cannot rebuild.
 # --------------------------------------------------------------------------------------
 
@@ -364,6 +367,8 @@ def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
     raise AssertionError("no resolve_unsloth_device_map call in diffusion.py")
 
 
+# --------------------------------------------------------------------------------------
+# 4. Second round: the caller's device set, the marker, and the prequantized skip list.
 # --------------------------------------------------------------------------------------
 
 
@@ -479,6 +484,7 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
     )
 
 
+# --------------------------------------------------------------------------------------
 # 5. Probing is not free: a withheld card must not be touched.
 # --------------------------------------------------------------------------------------
 

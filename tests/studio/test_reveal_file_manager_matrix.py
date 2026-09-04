@@ -165,6 +165,8 @@ def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawn
 
 
 # ---------------------------------------------------------------------------
+# WSL and native Linux -- the fallback chain
+# ---------------------------------------------------------------------------
 def test_wsl_falls_back_to_xdg_open_when_wslpath_times_out(monkeypatch, spawned, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "name", "posix")

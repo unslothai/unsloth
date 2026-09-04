@@ -92,8 +92,10 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
     )
+    # publish-release deliberately does not `needs: build`, so the wait step is
+    # the whole of the gate. It must cover every matrix leg by name, refuse to
+    # publish on a leg that did not succeed, and refuse to publish a leg whose
     # job record never appeared, rather than defaulting to "finished".
-    # publish-release deliberately does not `needs:
     assert publish["needs"] == ["prepare-version"]
     wait = next(
         step for step in publish["steps"] if step.get("name") == "Wait for the build matrix"
@@ -132,16 +134,16 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert names.index("Wait for the build matrix") < download, names
 
+    # The guard refuses a release that already carries desktop assets, so a
     # version is never published twice.
-    # The guard refuses a release that already carries desktop assets, so a version is never published twice.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
     assert 'gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}"' in release_step["run"]
     assert "already carries desktop assets" in release_step["run"]
 
+    # The release is the maintainer's: assets are uploaded onto it, but the
     # release itself is never created and its notes are never rewritten.
-    # The release is the maintainer's:
     assert not any("gh release create" in step.get("run", "") for step in publish["steps"])
     assert not any("gh release edit" in step.get("run", "") for step in publish["steps"])
 

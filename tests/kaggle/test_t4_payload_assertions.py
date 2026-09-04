@@ -570,8 +570,8 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
         environment = {"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
     )
     assert verdict["status"] == "hardware_mismatch", verdict
+    # Refused BEFORE any number is compared: the metrics here are identical to
     # the reference, so a pass would look like a healthy run on the wrong card.
-    # Refused BEFORE any number is compared:
     assert verdict["deviations"] == []
     failures = reference_failures(verdict, 0.10)
     assert failures and "not for this run" in failures[0]

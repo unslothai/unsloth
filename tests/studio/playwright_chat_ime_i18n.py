@@ -429,8 +429,8 @@ with sync_playwright() as p:
     shoot("05-normal-composition")
     clear()
 
-    # Stuck IME repro (#5318):
     # 6. Stuck IME repro (#5318): duplicate compositionstart wedges
+    #    isComposing=true; PR #5327 clears it on non-composing input.
     step("BUG REPRO: stuck IME composition recovery (issue #5318)")
     clear()
     composer.click()
@@ -465,8 +465,8 @@ with sync_playwright() as p:
             "likely still stuck in isComposing=true (issue #5318 / before "
             "PR #5327)."
         )
+    # Cross-check isComposing via the Send button: it stays disabled while
     # isComposing is true (PR #5327).
-    # Cross-check isComposing via the Send button:
     send_btn = page.locator('button[aria-label="Send message"]')
     if send_btn.count() == 0:
         soft_fail("Send button not found after stuck-composition recovery")
@@ -482,8 +482,9 @@ with sync_playwright() as p:
     info("stuck-composition recovery PASS")
     clear()
 
-    # WSL+Chrome repro (#5546):
     # 6b. WSL+Chrome repro (#5546): Chrome never emits compositionend after the
+    #     IME commit, so the watchdog must release the composing flag once events
+    #     go silent.
     step("BUG REPRO: stuck compositionend recovery (issue #5546)")
     clear()
     composer.click()
@@ -527,8 +528,9 @@ with sync_playwright() as p:
     info("compositionend watchdog recovery PASS")
     clear()
 
-    # Watchdog-race repro:
-    # 6c. Watchdog-race repro:
+    # 6c. Watchdog-race repro: after the watchdog clears composingRef, a later
+    #     IME keydown (keyCode 229) must not slip preedit text through submit.
+    #     The onKeyDown gate re-pins composingRef so handleSubmit refuses.
     step("BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)")
     clear()
     composer.click()
@@ -678,9 +680,12 @@ with sync_playwright() as p:
     restore_idle_composer_after_probe("06d-keydown-rearm")
     clear()
 
-    # A Mac IME switch fires compositionstart but never compositionend; the
-    # NO follow-up input event, so onChange never fires.
     # 6e. Mac input-method switch - onKeyDown immediate recovery.
+    #     A Mac IME switch fires compositionstart but never compositionend; the
+    #     first English keydown (isComposing=false) must clear composingRef via
+    #     the onKeyDown else-if branch, before the 2500ms watchdog fires.
+    #     To isolate that path (not onChange) we dispatch a synthetic keydown with
+    #     NO follow-up input event, so onChange never fires.
     step("BUG REPRO: Mac IME switch - onKeyDown immediate recovery")
     clear()
     composer.click()

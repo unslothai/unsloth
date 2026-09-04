@@ -175,8 +175,7 @@ def test_a_family_pin_still_gets_the_direct_wheel_url():
     assert condition is not None, "the index branch must be gated on the full-URL override"
     assert "UNSLOTH_TORCH_INDEX_URL" in condition.group(0)
     assert "$TorchIndexPinned" not in condition.group(0)
-    # Unpinned, install the direct wheel URL: --default-index does not make an index exclusive, and cu126/cu128/cu130
-    # share a version string, so a machine with UV_INDEX set can satisfy the pin from the wrong CUDA family.
+    # ...and the family-pin side builds a URL rather than resolving a version.
     assert '$_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"' in block
 
 

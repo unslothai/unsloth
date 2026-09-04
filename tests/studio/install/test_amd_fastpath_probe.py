@@ -439,8 +439,10 @@ def test_a_malformed_probe_call_never_falls_through_to_the_installer(argv):
     assert result.returncode == 2, result.stdout.decode(errors = "replace")
 
 
+# Repair parity
+# Both directions are asserted, so every row must be one the two sides agree on. The
 # conservative divergences (unreadable torch, hidden mask, mixed arch, wrong ROCm
-# Repair parity Both directions are asserted, so every row must be one the two sides agree on.
+# family) are covered above and do not belong here.
 def _repair_installs(monkeypatch):
     """Torch index URLs _ensure_rocm_torch installs, under the same stubs."""
     installed = []

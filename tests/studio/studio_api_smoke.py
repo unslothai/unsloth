@@ -164,6 +164,8 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 2. /api/system + /api/system/hardware require auth
+# ─────────────────────────────────────────────────────────────────────────
 section("/api/system endpoints require auth")
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint)
@@ -240,9 +242,8 @@ else:
     fail(f"/api/auth/refresh without body returned {code} (expected 400/422)")
 
 
-# Wrong-password burst:
-# Bucket can't be reset between tests, so assert the invariant, not a fixed transition index.
 # Wrong-password burst: 401 until the per-IP bucket fills, then 429 with Retry-After.
+# Bucket can't be reset between tests, so assert the invariant, not a fixed transition index.
 def _login_with_headers(password: str) -> tuple[int, str | None]:
     """Like ``login`` but returns ``(status, retry_after_header)``."""
     url = f"{BASE}/api/auth/login"
@@ -401,6 +402,8 @@ else:
             fail(f"deleted API key still works: {code}")
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 6. Auth file-mode hardening (Linux only)
 # ─────────────────────────────────────────────────────────────────────────
 section("Auth file-mode hardening")
 import platform as _platform

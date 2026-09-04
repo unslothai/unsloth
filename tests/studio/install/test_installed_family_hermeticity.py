@@ -183,8 +183,8 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
     [
         (None, False, True),
         ("gfx110x-all", True, False),
+        # Family matches but torch does not own it: the orphan, so the running torch is the
         # generic build with no gfx1103 kernels and the skip must not fire.
-        # Family matches but torch does not own it:
         ("gfx110x-all", False, True),
         ("gfx120x-all", True, True),
     ],

@@ -49,7 +49,10 @@ PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 # The real unsloth_zoo helpers when importable, otherwise eager mirrors with identical semantics so a runner without
 
 
-# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors with identical semantics so a runner
+# ---------------------------------------------------------------------------
+# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors
+# with identical semantics so a runner without unsloth_zoo still exercises the
+# same arithmetic.
 # ---------------------------------------------------------------------------
 
 
@@ -204,6 +207,8 @@ class _Model(torch.nn.Module):
         return SimpleNamespace(logits = h if self.hidden_states else self.head(h))
 
 
+# ---------------------------------------------------------------------------
+# Structural extraction of the packed block
 # ---------------------------------------------------------------------------
 
 

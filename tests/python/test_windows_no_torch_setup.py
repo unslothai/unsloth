@@ -147,8 +147,9 @@ def test_no_torch_mode_survives_a_studio_update(tmp_path, env_value, manifest, m
     if env_value is not None:
         env["UNSLOTH_NO_TORCH"] = env_value
 
+    # run_pwsh, not subprocess.run: check = True turns a pwsh that aborted at startup into
+    # a CalledProcessError quoting the whole no-torch resolution block, which reads as that
     # block picking the wrong mode. See tests/_shared/unsloth_pwsh_runner.py.
-    # run_pwsh, not subprocess.run:
     result = run_pwsh(
         [
             "pwsh",

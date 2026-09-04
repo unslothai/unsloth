@@ -40,8 +40,15 @@ NOT_IN_CI = {
     # primitive, is covered without a browser by studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does
     # run.
     "playwright_thread_weight.py",
+    # The same shape as playwright_thread_weight.py: a measurement harness, not a
+    # gate. It prints what a collapsible toggle costs against document size, and it
+    # deliberately sets no budget, because the number is hardware-dependent and a
+    # threshold here would be flaky rather than informative. The cells that make the
+    # O(total layout objects) curve readable run 100k+ element documents and cost
+    # minutes. Run by hand when that curve needs re-measuring. What it asserts that
     # CANNOT go stale silently, the flag wiring and the absence of a measurement in
-    # The same shape as playwright_thread_weight.py:
+    # the unmeasured primitive, is covered without a browser by
+    # studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does run.
     "playwright_collapse_layout.py",
     # Half of what it asserts is about the engine Frontend CI does not install.
     # It proves the thread's fast copy path byte for byte against the real clipboard on BOTH engines: Chromium answers
@@ -221,11 +228,16 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
             and "run-studio-indicator-browser.sh" in str(step.get("run", ""))
         )
     )
-    # Matched as "the helper is invoked, and each engine is named as a bare argument to it", not as the literal `...sh
-    # 18899 <engine>` this once was.
-    # test_indicator_browsers_run_in_parallel.py asserts the ports are distinct, which is the property the number was
-    # The property being guarded is unchanged, and is the one that matters: the Mac and Windows UI workflows name the
-    # same helper, so dropping an engine HERE is invisible to the repo-wide scan above.
+    # Matched as "the helper is invoked, and each engine is named as a bare argument to
+    # it", not as the literal `...sh 18899 <engine>` this once was. The engines now run
+    # concurrently from a loop over "<port> <engine>" pairs, each with its own port, so the
+    # old form no longer appears anywhere even though all three still run.
+    #
+    # The property being guarded is unchanged, and is the one that matters: the Mac and
+    # Windows UI workflows name the same helper, so dropping an engine HERE is invisible to
+    # the repo-wide scan above. What the relaxation gives up is the port literal, which
+    # this check was never really about; test_indicator_browsers_run_in_parallel.py asserts
+    # the ports are distinct, which is the property the number was standing in for.
     assert (
         "run-studio-indicator-browser.sh" in runs
     ), "the ui-indicator job no longer invokes the cross-browser indicator helper at all"

@@ -224,8 +224,13 @@ class TestSupportedWheelArchList:
         )
 
 
-# Table 2: GPU marketing name -> gfx ─────────────────────────────────────── Each copy is an ordered, first-match-wins
 # ── Table 2: GPU marketing name -> gfx ───────────────────────────────────────
+#
+# Each copy is an ordered, first-match-wins table. The shell copies use case
+# globs (case-sensitive); the PowerShell copies use -match regexes
+# (case-insensitive, and the only place a negative lookahead is available).
+# Rather than diff the patterns -- which legitimately differ in syntax -- run
+# every copy against the same real GPU names and require the same answer.
 def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str]]:
     body = _sh_function_body(source, name)
     rows: list[tuple[list[str], str]] = []

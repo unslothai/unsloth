@@ -1218,8 +1218,11 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
 # time and simply never fetched.
 
 
+# The llama.cpp install step. Four hardware runs reported install_kind=None and
+# failed the export assertion for it, because nothing had ever installed a
+# llama.cpp under STUDIO_HOME. install_llama_prebuilt.py resolves a real
+# "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
 # time and simply never fetched.
-# The llama.cpp install step.
 def _load_payload():
     """Import run_studio_gpu under a private name.
 

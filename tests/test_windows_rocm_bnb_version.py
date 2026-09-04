@@ -65,7 +65,8 @@ def _force(import_fixes, monkeypatch, *, win, rocm, detected):
     monkeypatch.setattr(import_fixes, "_detect_installed_bnb_rocm_version", lambda: detected)
 
 
-# _detect_installed_bnb_rocm_version ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _detect_installed_bnb_rocm_version
 # ---------------------------------------------------------------------------
 
 
@@ -200,9 +201,9 @@ def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env)
     assert os.environ["BNB_ROCM_VERSION"] == ""
 
 
+# ---------------------------------------------------------------------------
 # _is_hip_torch_build: strict gate; HIP-SDK env hints (HIP_PATH) must NOT count
 # (regression for the HIP-SDK-on-a-CUDA-box false positive).
-# _is_hip_torch_build: strict gate;
 # ---------------------------------------------------------------------------
 
 

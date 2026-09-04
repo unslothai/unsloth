@@ -151,7 +151,6 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
     assert namespace["seen"] == [expect_enabled]
 
 
-# _get_per_token_logps and friends, which run as ordinary code --------
 # ---- _get_per_token_logps and friends, which run as ordinary code --------
 
 

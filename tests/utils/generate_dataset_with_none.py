@@ -112,8 +112,8 @@ _CHATML_ROWS = [
     {"messages": [None, {"role": "assistant", "content": "Reply"}]},
 ]
 
+# P1 rows: messages is None or non-list. Plain dicts (not an HF Dataset) since
 # pyarrow can't mix list/non-list in one column; the runner mocks find_none_chatml.
-# P1 rows: messages is None or non-list.
 _CHATML_P1_ROWS = [
     {"messages": None},
     {"messages": "not a list"},  # wrong type

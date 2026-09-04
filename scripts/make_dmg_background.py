@@ -56,8 +56,9 @@ GLOW_STRENGTH = 1.48
 GLOW_SIGMA = 50.0
 
 # the icon label sits just below the icon, so the halo is eased off down there.
-# the taper waits until START, which is inside the icon's own lower half, so the disc still reads round and the
-# transition is hidden behind the artwork rather than eating the visible bottom edge.
+# the taper waits until START, which is inside the icon's own lower half, so the
+# disc still reads round and the transition is hidden behind the artwork rather
+# than eating the visible bottom edge. left, right and top keep the full falloff.
 GLOW_BOTTOM_FLOOR = 0.25
 GLOW_BOTTOM_START = 50.0
 GLOW_BOTTOM_SPAN = 30.0
@@ -98,7 +99,8 @@ def render_glow(canvas: np.ndarray) -> np.ndarray:
     taper = smoothstep((ys - cy - GLOW_BOTTOM_START * SCALE) / (GLOW_BOTTOM_SPAN * SCALE))
     weight = weight * (1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * taper)
 
-    # a peak strength above 1 saturates the core rather than extrapolating past the glow colour.
+    # a peak strength above 1 saturates the core rather than extrapolating past
+    # the glow colour. that core sits under the app icon either way.
     weight = np.clip(weight, 0.0, 1.0)[..., None]
 
     mix = (GLOW_EDGE_MIX * smoothstep(radius / (GLOW_MIX_RADIUS * SCALE)))[..., None]

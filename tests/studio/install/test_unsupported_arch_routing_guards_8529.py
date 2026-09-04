@@ -316,9 +316,10 @@ class TestInstallShIndexSelectorRuns:
         assert url.endswith("/rocm6.4"), f"the AMD branch was not reached: {url!r}"
 
 
+# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper
+# installer, and keys the supported table on $_setup_mkt. The unsupported lookup exists to
 # print a line, so its result must not flow into either: assigning it to _setup_gfx passes
-# setup.sh forwards `--rocm-gfx "$_setup_gfx"` to install_llama_prebuilt.py and the whisper installer, and keys the
-# ── studio/setup.sh: the unsupported lookup is report-only ───────────────────
+# every arch assertion in this file and still ships --rocm-gfx gfx803.
 
 _SETUP_SH_UNSUPPORTED_HELPERS = ("_setup_unsupported_gfx_any", "_setup_unsupported_gfx_from_name")
 
@@ -548,10 +549,12 @@ class TestPowerShellMapEvaluated:
         assert not routed, f"setup.ps1: {routed} reach an AMD wheel index"
 
 
-# a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
-# The Strix reroute picks a per-arch index without consulting either family map, so it is a routing site the assertions
 # ── The second, independent arch to repo.amd.com gate ────────────────────────
 
+
+# The Strix reroute picks a per-arch index without consulting either family map, so it is
+# a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
+# not the property this file defends, and the literal is one line per source.
 _STRIX_SITES = [
     (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx="),
     (_STACK_PY, r"^\s*_strix_gfx\s*=\s*\{([^}]*)\}"),

@@ -144,8 +144,10 @@ def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout()
 
 
 def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
+    # The fallback is what a source checkout relies on, and a checkout can be half
+    # updated: `unsloth studio update` pulls a repo, and a stale tree can carry a new
     # main.py beside an old models/_utils.py or the reverse. Either file alone must still
-    # The fallback is what a source checkout relies on, and a checkout can be half updated:
+    # yield a real version rather than "dev".
     import re as _re
 
     main_py = (_REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")

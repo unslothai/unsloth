@@ -513,8 +513,9 @@ class TestMergeSizing:
     def test_supported_spellings_are_measured_too(self, sized, save_method):
         """`unsloth_save_model` normalizes spaces, so these are the same export."""
         S._preflight_merge_disk(_FakeModel(), "model", save_method)
+        # Not the GGUF estimate, which would add an intermediate conversion
         # this export never writes. No headroom either: `_FakeModel` has no
-        # Not the GGUF estimate, which would add an intermediate conversion this export never writes.
+        # adapter, so nothing here reaches `merge_and_overwrite_lora`.
         assert sized == [_merge_preflight_ask(10 * GB, 0)]
 
     @pytest.mark.parametrize(
@@ -2458,8 +2459,9 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
 
     def test_it_can_only_ever_lower_the_figure(self, phases, monkeypatch):
         """An estimator whose phases exceed the aggregate changes nothing."""
+        # Only the save-directory / sibling pair can be split. The working
+        # directory the conversion writes to is one filesystem with the sibling
         # here, so it is never charged to the save directory's disk.
-        # Only the save-directory / sibling pair can be split.
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
@@ -3157,8 +3159,9 @@ class TestASpecialExportStagesFromTheSuppliedDict:
             state_dict = self._dict(8),
             forwards_state_dict = True,
         )
+        # Unreserved: with no adapter, `unsloth_generic_save` casts the dict
+        # and writes it, and the sibling is a quarter of the merge at worst,
         # so the 5% band never showed up in this figure anyway.
-        # Unreserved: with no adapter, `unsloth_generic_save` casts the dict and writes it, and the sibling is a
         assert sized == [_merge_preflight_ask(8 * GB + 4 * GB, 0)]
 
     def test_a_torchao_export_measures_the_dict(self, sized):

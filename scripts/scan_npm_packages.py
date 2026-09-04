@@ -166,6 +166,8 @@ def _looks_binary(name: str, header: bytes) -> bool:
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
 # ─────────────────────────────────────────────────────────────────────
+# Severities + finding shape (mirrors scripts/scan_packages.py).
+# ─────────────────────────────────────────────────────────────────────
 
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
@@ -305,8 +307,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
     # Mini Shai-Hulud May-12 wave:
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
+    # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
     # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
-    # Mini Shai-Hulud May-12 wave:
     "@squawk/airport-data": {"0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8"},
     "@squawk/airports": {"0.6.2", "0.6.3", "0.6.4", "0.6.5", "0.6.6"},
     "@squawk/airspace": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
@@ -329,8 +331,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@squawk/types": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
     "@squawk/units": {"0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7"},
     "@squawk/weather": {"0.5.6", "0.5.7", "0.5.8", "0.5.9", "0.5.10"},
+    # Mini Shai-Hulud May-12 wave: @uipath/* (64 packages, single version each;
     # https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
-    # Mini Shai-Hulud May-12 wave:
     "@uipath/apollo-react": {"4.24.5"},
     "@uipath/apollo-wind": {"2.16.2"},
     "@uipath/cli": {"1.0.1"},
@@ -397,8 +399,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
+    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm), separate from PyPI mistralai
     # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
-    # Mini Shai-Hulud May-12 wave:
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
@@ -657,6 +659,8 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Tarball download (registry-only, size-capped, integrity-verified).
+# ─────────────────────────────────────────────────────────────────────
 
 
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
@@ -740,6 +744,8 @@ def download_tarball(
     return dest, None
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Safe tar extraction. Every Tarfile member is policed before write.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -841,9 +847,10 @@ def safe_extract(
     return None
 
 
+# How far back to look for an enclosing bracket opener. Symmetric with the
+# forward cap so a host that sits deep inside a large options object (its opening
+# `{` many properties above) still binds the whole object, not just its own line;
 # a too-far start only over-binds (more context, still fail-closed), never less.
-# How far back to look for an enclosing bracket opener.
-# ─────────────────────────────────────────────────────────────────────
 
 _MAX_CONT_LINES = 200
 # Hard cap on how far forward a bracket group is followed to its close, measured from the matched line so the tail
@@ -895,8 +902,10 @@ def _find_unescaped(line: str, quote: str, start: int) -> int:
     return -1
 
 
+# A `/` is a regex literal (not division) when the previous significant character
+# is none (start) or one of these expression-position chars. Used only by the
+# multi-line blanked view, and the span is unioned with the single-line view, so
 # an over- or under-detection only ever grows the bound span (never shrinks it).
-# A `/` is a regex literal (not division) when the previous significant character is none (start) or one of these
 _JS_REGEX_PRECEDERS = frozenset("([{,;:?=&|!+-*/%^~<>")
 
 
@@ -943,8 +952,9 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                 prev_sig = "v"  # a string is a value: a following `/` is division
                 continue
             if ch == "/" and (prev_sig == "" or prev_sig in _JS_REGEX_PRECEDERS):
+                # Regex literal: blank to the closing unescaped `/` outside a `[...]`
                 # char class. A regex never spans lines, so no close on the line
-                # Regex literal: blank to the closing unescaped `/` outside a `[...]` char class.
+                # means this `/` is really division.
                 j, in_class, closed = i + 1, False, False
                 while j < n:
                     c = line[j]
@@ -989,8 +999,10 @@ def _index_text(text: str) -> tuple[list[str], list[str], list[str], list[int]]:
     return lines, sl_blanked, ml_blanked, nl
 
 
+# Cap on formatted matches in one evidence string; beyond it the remaining match
 # texts are folded into a single digest so a huge/minified file cannot build a
-# Cap on formatted matches in one evidence string;
+# multi-megabyte evidence blob while an added/removed match past the cap still
+# changes the key.
 _MAX_EVIDENCE_MATCHES = 64
 
 
@@ -1558,8 +1570,11 @@ def _outbound_host_evidence(text: str, host: str) -> str:
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
 
+    # Code-only scanning for JS/TS sources: blank comments before matching so
+    # an IOC host / `eval(atob)` example / campaign marker quoted in a comment
     # cannot manufacture a false positive. Assigned string literals (where real
-    # Code-only scanning for JS/TS sources:
+    # droppers hide base64 payloads) are preserved. Non-JS text (json/yaml/sh/
+    # py/html) is scanned as-is -- this lexer only understands JS comments.
     if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
         text = _strip_js_noncode(text)
 
@@ -1757,8 +1772,10 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
-# v3 adds an evidence hash so a new payload under an already-listed package/path/pattern is not auto-suppressed;
-# Bumped when the entry-key semantics change.
+# Bumped when the entry-key semantics change. v3 adds an evidence hash so a new
+# payload under an already-listed package/path/pattern is not auto-suppressed; v2
+# keyed on the package-relative path; v1 stored only a basename. A pre-v3 baseline
+# with entries is ignored (fail closed) rather than mis-applied.
 _BASELINE_SCHEMA_VERSION = 3
 
 

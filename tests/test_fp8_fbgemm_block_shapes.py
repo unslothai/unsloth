@@ -23,8 +23,8 @@ pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
 
 
 def skip_without_fbgemm():
-    # Called inside the test so collection never imports unsloth.
     # unsloth's own probe, not an sm_90 check, so future arches enable themselves.
+    # Called inside the test so collection never imports unsloth.
     from unsloth.kernels import fp8
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
         pytest.skip("needs fbgemm f8f8bf16_blockwise")

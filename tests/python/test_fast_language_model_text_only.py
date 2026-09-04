@@ -307,8 +307,8 @@ def test_text_only_helper_preserves_quantization_config():
 
 
 def test_text_only_key_mapping_targets_published_prefixes():
-    # quantization_config must survive the strip so pre-quantized repos load.
-    # A sentinel object avoids a bitsandbytes dependency on transformers 4.51.3.
+    # Remap the published VLM decoder prefixes, applying only on transformers >=5
+    # (on 4.x base_model_prefix handles it and a mapping hurts).
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
     mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())

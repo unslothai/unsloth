@@ -192,8 +192,8 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                     "code" in printed
                 ), f"{name}: {helper.name}() prints on HTTPError without the status code"
 
+                # A read can raise (a truncated or already-consumed body), and
                 # that must not replace the real HTTPError with a confusing one.
-                # A read can raise (a truncated or already-consumed body), and that must not replace the real HTTPError
                 guarded = any(isinstance(node, ast.Try) for node in ast.walk(handler))
                 assert guarded, (
                     f"{name}: {helper.name}() reads the HTTPError body "

@@ -663,6 +663,8 @@ def test_accelerate_patch_wired_into_gpu_init():
 
 
 # ===========================================================================
+# bitsandbytes -- ROCm arch / warp-size detection shape
+# ===========================================================================
 
 
 def test_bitsandbytes_rocm_detection_helpers_recognizable():
@@ -709,6 +711,8 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
             )
 
 
+# ===========================================================================
+# psutil -- cpu_freq shape the Apple Silicon M4+ unit fix relies on
 # ===========================================================================
 
 

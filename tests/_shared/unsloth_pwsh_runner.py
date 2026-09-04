@@ -62,6 +62,35 @@ PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
 # --------------------------------------------------------------------------------------
+# Why the crash happens, and the one-line change that stops it
+# --------------------------------------------------------------------------------------
+# Every `-NonInteractive` startup reads and rewrites an ~83 KB
+# $XDG_CACHE_HOME/powershell/StartupProfileData-NonInteractive, and XDG_CACHE_HOME defaults
+# to $HOME/.cache. Under `-n 4` all four xdist workers share one $HOME, so the whole job's
+# pwsh processes race on that single file, and a startup that deserialises a half-written
+# one dies before it reaches our script.
+#
+# Measured on this repo's suite shape, 4000 startups per arm:
+#
+#   shared cache dir   7/4000 died -- returncodes {-11: 3, -6: 4}, stderr 'Stack overflow.'
+#                      and 'The PowerShell process will exit. Unhandled exception.
+#                      System.IO.FileLoadException: The given assembly name ...'
+#   private cache dirs 0/4000
+#
+# That reproduces BOTH crash shapes this repo has hit -- the SIGABRT that made run
+# 32341628757 red and the exit-banner that `_run_pwsh` in test_install_phase_timing.py was
+# written for -- and the FileLoadException names the torn cache outright. It is also the
+# independent confirmation from CI itself: of the pwsh-heavy test files in that run, exactly
+# one had zero failures, tests/test_windows_amd_gpu_scan_fallback.py, and it is the only one
+# that hands its child a private HOME (`{"PATH": ..., "HOME": str(tmp_path)}`) and so never
+# joined the race, across ~80 startups where a 20% rate predicts ~16 failures.
+#
+# So the fix is to stop sharing the file rather than to serialise access to it: one cache
+# directory per xdist worker. Workers run their tests one at a time, so within a worker the
+# startups are sequential and the cache still does its job warm; across workers the
+# directories are disjoint and there is nothing left to race on. This is why the runner does
+# not bound pwsh concurrency with a lock and does not ask for `-n 4` to be given up: the
+# contended resource is removed, not rationed.
 _CACHE_ROOT = None
 
 

@@ -549,7 +549,6 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
     assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False
 
 
-# a hook file planted before the directory was tightened ---------------
 # ---- a hook file planted before the directory was tightened ---------------
 
 
@@ -705,7 +704,6 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
         assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
 
 
-# the chained sitecustomize keeps its own name -------------------------
 # ---- the chained sitecustomize keeps its own name -------------------------
 
 

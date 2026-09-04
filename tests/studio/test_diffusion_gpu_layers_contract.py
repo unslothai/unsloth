@@ -275,7 +275,6 @@ def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, t
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
 
 
-# the probe must inspect the file that will be spawned, whatever its name ──
 # ── the probe must inspect the file that will be spawned, whatever its name ──
 
 
@@ -298,7 +297,6 @@ def test_probe_does_not_mistake_the_module_form_for_a_file(llama_cpp, monkeypatc
     assert llama_cpp._shim_supports_ngl(cmd) is False  # unresolvable -> conservative
 
 
-# the guard must mirror what the launcher will actually do ──
 # ── the guard must mirror what the launcher will actually do ──
 
 
@@ -356,7 +354,6 @@ def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_la
     )
 
 
-# a custom-named override answers for itself, not a sibling shim.py ──
 # ── a custom-named override answers for itself, not a sibling shim.py ──
 
 

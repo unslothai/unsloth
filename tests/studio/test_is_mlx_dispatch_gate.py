@@ -133,7 +133,9 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     assert _evaluate_is_mlx_precheck(platform, importlib.util, os) is False
 
 
-# detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND the host is Apple Silicon AND mlx is
+# ---------------------------------------------------------------------------
+# 3. detect_hardware() picks MLX only when CUDA+XPU are both unavailable AND
+#    the host is Apple Silicon AND mlx is importable.
 # ---------------------------------------------------------------------------
 
 

@@ -68,18 +68,18 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert '{ type: "text" as const, text: report }' in adapter
     # yields are deduped by status, or every streamed delta drives an autosave the server rejects.
     assert "run.status === yieldedStatus" in adapter
+    # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
     # signal, so one chat's Stop cannot abort a sibling streaming in the background.
-    # runSignal, not abortSignal:
     assert "if (runSignal.aborted) return" in adapter
+    # The model decides: arming research offers it the deep_research tool, and the run starts
     # off the tool events every loop already publishes, never off the toggle alone.
-    # The model decides: arming research offers it the deep_research tool, and the run starts off the tool events every
     assert "deep_research_armed: true" in adapter
     assert 'toolEvent.tool_name === "deep_research"' in adapter
     assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
     assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
     assert 'yield* startDeepResearch("")' not in adapter
+    # Armed research asks for Studio's tool loop on the external body too. Without it the
     # turn proxies through, the model is never offered the tool, and arming does nothing.
-    # Armed research asks for Studio's tool loop on the external body too.
     assert "projectRagEnabled ||" in adapter
     assert "deepResearchArmed)" in adapter
     research = adapter.split("const startDeepResearch = async function*", 1)[1].split(

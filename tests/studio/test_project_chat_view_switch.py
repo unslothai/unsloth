@@ -611,6 +611,8 @@ LOADED_MODEL = """
 
 
 # ---------------------------------------------------------------------------
+# Structural guards for what the emulator restates rather than replays.
+# ---------------------------------------------------------------------------
 
 
 def test_the_provider_wires_the_pause_and_the_shared_ref():
@@ -878,6 +880,8 @@ def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
 
 
 # ---------------------------------------------------------------------------
+# (b) Staged attachments, immediate and deferred.
+# ---------------------------------------------------------------------------
 
 
 def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
@@ -1002,6 +1006,8 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
 
 
 # ---------------------------------------------------------------------------
+# (c) ThreadAutoSwitch resets the shared nonce.
+# ---------------------------------------------------------------------------
 
 
 def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_again():
@@ -1110,6 +1116,8 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
 
 
 # ---------------------------------------------------------------------------
+# (d) Rapid switching, faster than switchToNewThread resolves.
+# ---------------------------------------------------------------------------
 
 
 def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
@@ -1210,6 +1218,8 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
     assert out["pending"] == 0
 
 
+# ---------------------------------------------------------------------------
+# (e) A switchToNewThread() that rejects.
 # ---------------------------------------------------------------------------
 
 
@@ -1643,6 +1653,8 @@ def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
 
 
 # ---------------------------------------------------------------------------
+# (f) requestTemporaryPromptQueueStop: how often, and whose queue.
+# ---------------------------------------------------------------------------
 
 
 def test_a_full_compare_round_trip_stops_the_temporary_queue_once():
@@ -1768,6 +1780,8 @@ def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen()
     assert out["unhandled"] == 0
 
 
+# ---------------------------------------------------------------------------
+# (g) Bounded work across many view switches.
 # ---------------------------------------------------------------------------
 
 
