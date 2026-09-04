@@ -503,7 +503,7 @@ async def logout(
 
 
 @router.post("/desktop-login", response_model = Token)
-async def desktop_login(payload: DesktopLoginRequest) -> Token:
+async def desktop_login(payload: DesktopLoginRequest, access_only: bool = False) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
@@ -515,7 +515,11 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
 
     return Token(
         access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
-        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
+        refresh_token = (
+            ""
+            if access_only
+            else create_refresh_token(subject = username, desktop = True, secret = jwt_secret)
+        ),
         token_type = "bearer",
         must_change_password = False,
     )
