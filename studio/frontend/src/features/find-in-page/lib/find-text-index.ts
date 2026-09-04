@@ -455,7 +455,11 @@ export function buildTextIndex(
  * The index is the workspace followed by the surfaces portaled in front of it, joined at
  * `rootLength`. A monitor stays searchable while it is up and rewrites its reading on a timer, so
  * judged as one string every poll reads as a renumbered document and throws the reader out of the
- * conversation behind it. What decides is whether the reader's own offset survived.
+ * conversation behind it. What decides is whether text moved AHEAD of the reader's offset.
+ *
+ * This is the cheap half of the answer. `search` asks the exact question afterwards, by looking for
+ * a match still starting at that offset, so this only has to turn down the rebuilds where the
+ * offset would be meaningless.
  *
  * Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
  */
@@ -474,15 +478,12 @@ export function renumbersMatches(
   if (activeStart === null || activeStart < before.rootLength) {
     return !workspaceGrewAtTail;
   }
-  // Inside a surface the seam has to hold too, since growing the workspace moves the whole tail
-  // along. Only the surface text BEFORE the occurrence has to be unchanged: a monitor rewriting a
-  // reading further down its own panel leaves the offset where it was.
-  return (
-    !workspaceGrewAtTail ||
-    after.rootLength !== before.rootLength ||
-    before.text.slice(before.rootLength, activeStart) !==
-      after.text.slice(after.rootLength, activeStart)
-  );
+  // Inside a surface, only the seam is worth checking. What a monitor writes in its own panel
+  // cannot move an offset unless it changes width, and `search` already asks whether a match still
+  // starts at the offset before it keeps anyone there. Comparing the panel text as well would read
+  // a reading going from 50% to 51% as a document that renumbered, and throw the reader out of the
+  // monitor on a poll that moved nothing.
+  return !workspaceGrewAtTail || after.rootLength !== before.rootLength;
 }
 
 /** Fold a query the way the haystack was folded. Null when it cannot match: empty, or carrying the

@@ -2178,13 +2178,26 @@ test("a surface reader only minds the text ahead of their occurrence", () => {
   assert.equal(renumbersMatches(before, polled, reader), false);
   assert.equal(findMatches(polled, "unsloth")[0].start, reader);
 
-  // Text that grows AHEAD of the occurrence does move it, and that reader re-anchors.
+  // A reading AHEAD of the occurrence changing width does move it, and there the offset stops
+  // naming anything: `search` finds no match starting there and re-anchors itself.
   const leading = (load: string) =>
     el("DIV", [el("P", [text(`${load} unsloth monitor`)])]);
   const wasLeading = buildTextIndex(reply, [leading("cpu 12%")]);
   const readerAfter = findMatches(wasLeading, "unsloth")[0].start;
   const grewLeading = buildTextIndex(reply, [leading("cpu 345%")]);
-  assert.equal(renumbersMatches(wasLeading, grewLeading, readerAfter), true);
+  assert.equal(
+    findMatches(grewLeading, "unsloth").some((m) => m.start === readerAfter),
+    false,
+  );
+
+  // Changing it without changing its width leaves the occurrence exactly where it was, which is
+  // the ordinary poll and must not move the reader.
+  const sameWidth = buildTextIndex(reply, [leading("cpu 99%")]);
+  assert.equal(renumbersMatches(wasLeading, sameWidth, readerAfter), false);
+  assert.equal(
+    findMatches(sameWidth, "unsloth").some((m) => m.start === readerAfter),
+    true,
+  );
 });
 
 test("history arriving above the reader still renumbers the list", () => {
@@ -2205,11 +2218,17 @@ test("history arriving above the reader still renumbers the list", () => {
     el("DIV", [el("P", [text("gpu 12%")])]),
   ]);
   assert.equal(renumbersMatches(before, replaced, 0), false);
-  // A reader deeper in that surface does lose their place, since the rewrite is ahead of them.
+  // Nor for a reader inside it: the rewrite kept its width, so nothing moved for them either.
   assert.equal(
     renumbersMatches(before, replaced, before.text.length - 1),
-    true,
+    false,
   );
+  // Growing the workspace under them is what moves a surface reader, and that still renumbers.
+  const grown = buildTextIndex(
+    el("DIV", [el("P", [text("unsloth one unsloth two")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, grown, before.text.length - 1), true);
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
