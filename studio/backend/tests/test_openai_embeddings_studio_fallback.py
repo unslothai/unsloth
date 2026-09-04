@@ -674,7 +674,8 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    assert _call({"input": "alpha"})["model"] == "sentence-transformers:bge"
+    reported = _call({"input": "alpha"})["model"]
+    assert reported.startswith("sentence-transformers:bge-") and str(tmp_path) not in reported
     studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
     error = _http_error({"input": "alphabet"})
     assert error.status_code == 400
@@ -710,13 +711,93 @@ def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embed
     assert payload["model"] == ("proxy" if answers else IDENTITY)
 
 
-@pytest.mark.parametrize(
-    ("name", "public"),
-    [
-        ("C:\\models\\private\\bge", "bge"),
-        ("/tmp/models/bge/", "bge"),
-        ("unsloth/bge-small-en-v1.5", "unsloth/bge-small-en-v1.5"),
-    ],
-)
-def test_public_embedding_name_hides_any_local_path_shape(name, public):
-    assert inference_route._public_embedding_name(name) == public
+def test_public_embedding_name_hides_any_local_path_shape():
+    public = inference_route._public_embedding_name
+    windows = public("C:\\models\\private\\bge")
+    assert windows.startswith("bge-") and len(windows) == len("bge-") + 8
+    assert "models" not in windows and "private" not in windows
+    assert public("/tmp/models/bge/").startswith("bge-")
+    assert public("/checkpoints/run-a/model") != public("/checkpoints/run-b/model")
+    assert public("unsloth/bge-small-en-v1.5") == "unsloth/bge-small-en-v1.5"
+
+
+def test_flat_token_array_passes_the_pre_switch_check(studio_embedder):
+    seen = []
+
+    async def record(request, current_subject, **_kwargs):
+        seen.append(current_subject)
+        return await request.json()
+
+    studio_embedder.setattr(inference_route, "_should_validate_before_switch", lambda: True)
+    studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    assert _http_error({"input": [1, 2, 3]}).status_code == 400
+    assert seen == ["tester"]
+
+
+def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
+    model_dir = str(tmp_path / "Foo")
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: model_dir)
+    studio_embedder.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    assert inference_route._names_studio_embedder(model_dir)
+    assert not inference_route._names_studio_embedder(str(tmp_path / "foo"))
+    assert inference_route._names_studio_embedder(f"sentence-transformers:{model_dir}")
+
+
+def test_alias_matching_never_probes_the_backend(studio_embedder):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("embedding_identity must not run on the request path")
+
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(rag_embeddings, "embedding_identity", boom)
+    assert inference_route._names_studio_embedder(IDENTITY)
+    assert inference_route._names_studio_embedder(MODEL.upper())
+    assert not inference_route._names_studio_embedder("text-embedding-3-small")
+
+
+def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder):
+    lock = threading.Lock()
+    gate = threading.Event()
+    calls = {"n": 0}
+
+    def encode(texts, **_kwargs):
+        with lock:
+            calls["n"] += 1
+        gate.wait(timeout = 5)
+        return _vectors(texts)
+
+    class _Gone(_Request):
+        async def is_disconnected(self):
+            return True
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", encode)
+    cap = inference_route._STUDIO_EMBED_CONCURRENCY
+
+    async def run():
+        blockers = [
+            asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "x"}), "t"))
+            for _ in range(cap)
+        ]
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if calls["n"] == cap:
+                break
+        with pytest.raises(asyncio.CancelledError):
+            await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert calls["n"] == cap
+        gate.set()
+        await asyncio.gather(*blockers)
+        response = await inference_route.openai_embeddings(_Request({"input": "later"}), "t")
+        assert response.status_code == 200
+        assert calls["n"] == cap + 1
+
+    asyncio.run(run())

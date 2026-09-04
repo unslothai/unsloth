@@ -25750,6 +25750,10 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     value = body.get("input")
     if isinstance(value, str):
         items = [value]
+    elif tokens_ok and isinstance(value, list) and value and all(
+        isinstance(token, int) for token in value
+    ):
+        items = [value]
     elif isinstance(value, (list, tuple)):
         items = list(value)
     else:
@@ -25792,7 +25796,11 @@ def _public_embedding_name(model_name: str) -> str:
     from utils.paths import is_local_path
     if not is_local_path(model_name):
         return model_name
-    return model_name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or model_name
+    import hashlib
+
+    normalized = model_name.replace("\\", "/").rstrip("/")
+    base = normalized.rsplit("/", 1)[-1] or "model"
+    return f"{base}-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
@@ -25818,16 +25826,29 @@ def _embedding_payload(vector, encoding_format: str):
 
 def _names_studio_embedder(requested: str) -> bool:
     from core.rag import config as rag_config
-    from core.rag import embeddings as rag_embeddings
+    from utils.paths import is_local_path
 
     model = rag_config.effective_embedding_model()
-    names = {model, rag_config.effective_gguf_repo_for_embedding_model(model)}
+    wanted = (rag_config.embedding_identity_model(requested) or requested).strip()
+    for name in (model, rag_config.effective_gguf_repo_for_embedding_model(model)):
+        if not name:
+            continue
+        if is_local_path(name) or is_local_path(wanted):
+            if wanted == name:
+                return True
+        elif wanted.casefold() == name.casefold():
+            return True
+    return False
+
+
+async def _embeddings_client_gone(request: Request) -> bool:
+    is_disconnected = getattr(request, "is_disconnected", None)
+    if is_disconnected is None:
+        return False
     try:
-        names.add(rag_embeddings.embedding_identity(model))
-    except Exception:  # noqa: BLE001 - the identity is a convenience alias, never a gate
-        pass
-    wanted = requested.strip().casefold()
-    return any(name and wanted == name.casefold() for name in names)
+        return bool(await is_disconnected())
+    except Exception:  # noqa: BLE001 - a broken transport reads as still connected
+        return False
 
 
 async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
@@ -25846,7 +25867,7 @@ async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
     requested = body.get("model")
     if not isinstance(requested, str) or not requested.strip():
         return None
-    return body if _names_studio_embedder(requested) else None
+    return body if await asyncio.to_thread(_names_studio_embedder, requested) else None
 
 
 async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
@@ -25915,11 +25936,17 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     # embedding and the limit above would stop meaning anything. Same reason as
     # _drain_pending_worker on the blocking-generation path.
     semaphore = _studio_embed_semaphore()
+    acquire = asyncio.ensure_future(semaphore.acquire())
     try:
-        await semaphore.acquire()
+        while not acquire.done():
+            await asyncio.wait({acquire}, timeout = 0.25)
+            if not acquire.done() and await _embeddings_client_gone(request):
+                raise asyncio.CancelledError()
     except asyncio.CancelledError:
-        # Cancelled while queued behind the limit. The monitor row is already open and running
-        # rows are never trimmed, so close it here or it stays in the monitor forever.
+        if not acquire.done():
+            acquire.cancel()
+        elif not acquire.cancelled() and acquire.exception() is None:
+            semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
         raise
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
