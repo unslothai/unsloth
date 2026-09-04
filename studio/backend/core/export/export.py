@@ -1251,7 +1251,9 @@ class ExportBackend:
                     exported_ggufs = list(relocated_ggufs)
                     # Kept in memory, not relocated: a config.json in the export folder
                     # would make _is_model_dir read it as a checkpoint directory.
-                    merged_config = Path(_model_tmp) / "config.json"
+                    merged_config = (
+                        Path(reported.get("save_directory") or _model_tmp) / "config.json"
+                    )
                     if merged_config.is_file():
                         exported_config = merged_config.read_bytes()
 
