@@ -585,7 +585,11 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
     posts = []
 
-    def post(path, payload, model_name = None):
+    def post(
+        path,
+        payload,
+        model_name = None,
+    ):
         posts.append((path, payload))
         return {"tokens": [101, 102]}
 
