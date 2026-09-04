@@ -4979,9 +4979,14 @@ def test_the_anthropic_paths_promote_a_replayed_mcp_envelope():
     ), "the loop's conversation cap has to start from what promotion put back"
 
     count = inspect.getsource(inference.anthropic_count_tokens)
-    assert (
-        "promote_mcp_history_images(" in count
-    ), "the count endpoint prices the base64 the completion never sends"
+    assert "await _promote_mcp_history_images_async(" in count, (
+        "the count endpoint prices the base64 the completion never sends, and must "
+        "not do the Pillow work inline on the event loop"
+    )
+    assert "messages_override = openai_messages" in generate, (
+        "admission has to reserve against the translated list, or an Anthropic "
+        "tool_result block prices its envelope as dense text"
+    )
 
 
 def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():

@@ -2058,6 +2058,7 @@ def _openai_llama_admission_tokens(
     injected_tools = None,
     context_window: Optional[int] = None,
     vision: bool = True,
+    messages_override = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2071,7 +2072,15 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    messages = getattr(payload, "messages", None)
+    # Anthropic nests a replayed MCP envelope in a role="user" tool_result BLOCK
+    # rather than a role="tool" string, so estimating off its raw payload misses the
+    # envelope branch entirely: megabytes of base64 get priced as dense text (which
+    # can clamp the reservation to the whole KV budget and serialise every other
+    # request) and the images that are really sent are charged nothing. The caller
+    # hands over the OpenAI-shaped list it will actually generate from.
+    messages = messages_override if messages_override is not None else getattr(
+        payload, "messages", None
+    )
     if isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
@@ -2150,6 +2159,7 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    messages_override = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -2168,6 +2178,7 @@ def _openai_llama_admission_reserve(
             injected_tools = injected_tools,
             context_window = _openai_llama_admission_context_window(llama_backend),
             vision = bool(getattr(llama_backend, "is_vision", False)),
+            messages_override = messages_override,
         )
         if payload is not None
         else None,
@@ -29146,7 +29157,11 @@ async def anthropic_count_tokens(
     # Priced as the images the request really sends, not as the base64 the envelope
     # carries: rendered verbatim a replayed screenshot counts thousands of tokens the
     # completion never sends, and the two endpoints must agree on the same prompt.
-    openai_messages = promote_mcp_history_images(openai_messages, vision = llama_backend.is_vision)
+    # Awaited, like the completion path: promotion is Pillow work on a permitted
+    # 40-megapixel raster, and running it inline stalls every other request on the loop.
+    openai_messages = await _promote_mcp_history_images_async(
+        openai_messages, vision = llama_backend.is_vision
+    )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
@@ -29675,6 +29690,10 @@ async def anthropic_messages(
                 tool_loop = tool_loop,
                 # Only the tool branch resolves a catalogue; the plain branch sends none.
                 injected_tools = openai_tools if tool_loop else None,
+                # The list generation really runs on: already translated out of the
+                # Anthropic block shape and already promoted, so a replayed screenshot
+                # is charged as the image it becomes rather than as its base64.
+                messages_override = openai_messages,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation

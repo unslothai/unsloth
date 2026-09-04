@@ -1062,7 +1062,10 @@ def test_a_partially_trimmed_turn_stops_claiming_the_images_it_lost():
     remaining = sum(1 for part in partial["content"] if part.get("type") == "image")
     note = next(part["text"] for part in partial["content"] if part.get("type") == "text")
     assert remaining == 2, remaining
-    assert f"first {remaining} of 8" in note, note
+    assert f"({remaining} of 8)" in note, note
+    assert "first" not in note, (
+        "the survivors are the newest images, not the first ones"
+    )
 
 
 def test_the_owned_list_drops_evicted_parts_before_it_counts():
@@ -1102,3 +1105,74 @@ def test_the_owned_list_drops_evicted_parts_before_it_counts():
         if part.get("type") == "image_url"
     )
     assert live == 4, f"the fresh result was over-trimmed to {live}"
+
+
+def test_a_live_result_of_unreadable_entries_bounds_its_decode_attempts():
+    """The payload-byte budget caps how BIG a result is, never how many entries it
+    holds, so a server answering with thousands of tiny unreadable ones could hold an
+    inference worker open on Pillow for a turn that can show four pictures at most."""
+    attempts: list = []
+
+    def _counting_url(data):
+        attempts.append(data)
+        return None
+
+    junk = [{"data": f"not-an-image-{i}", "mimeType": "image/png"} for i in range(5000)]
+
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = _counting_url
+    try:
+        urls = mcp_images._decoded_urls(junk)
+    finally:
+        mcp_images._png_data_url = original
+
+    assert urls == []
+    assert len(attempts) <= (
+        mcp_images.MAX_MODEL_IMAGES + mcp_images.DECODE_FAILURE_ALLOWANCE
+    ), f"{len(attempts)} Pillow opens for one tool result"
+
+
+def test_the_allowance_still_looks_past_a_run_of_rejects():
+    """The bound must not defeat what it is bounding: the whole reason entries are not
+    sliced first is that valid PNGs sit behind formats Pillow rejects."""
+    seen: list = []
+
+    def _url(data):
+        seen.append(data)
+        return None if data.startswith("bad") else "data:image/png;base64," + _png()
+
+    images = [{"data": f"bad{i}", "mimeType": "image/svg+xml"} for i in range(3)]
+    images += [{"data": f"good{i}", "mimeType": "image/png"} for i in range(4)]
+
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = _url
+    try:
+        urls = mcp_images._decoded_urls(images)
+    finally:
+        mcp_images._png_data_url = original
+
+    assert len(urls) == mcp_images.MAX_MODEL_IMAGES, (
+        f"the bound cut into the real pictures: {len(urls)}"
+    )
+
+
+def test_the_note_never_claims_the_survivors_are_the_first_ones():
+    """An oversized parallel batch keeps its NEWEST results, so a note reading
+    'first 8 of 12' names images the model was never shown."""
+    results = [
+        [{"data": _png(size = (4 + index, 4 + index)), "mimeType": "image/png"} for _ in range(4)]
+        for index in range(3)
+    ]
+    conversation: list = []
+
+    mcp_images.append_image_turn(conversation, results, per_result = True, limit = None)
+
+    note = next(
+        part["text"]
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert "(8 of 12)" in note, note
+    assert "first" not in note, note
