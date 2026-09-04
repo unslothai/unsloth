@@ -91,7 +91,8 @@ class TestWriteSide:
     def test_the_addition_is_backwards_compatible(self, tmp_path: pathlib.Path):
         """An additive optional key: older readers see the schema they already parse."""
         im.write_manifest(
-            root = tmp_path, req_root = tmp_path,
+            root = tmp_path,
+            req_root = tmp_path,
             woa_torch_index = "https://pypi.nvidia.com/nvtorch_oot",
         )
         payload = json.loads((tmp_path / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
@@ -142,12 +143,13 @@ class TestReadSide:
         may come back out, because the return value becomes --extra-index-url.
         """
         (tmp_path / "unsloth_install_manifest.json").write_text(
-            json.dumps({"schema": 1, "woa_torch_index": url}), encoding = "utf-8",
+            json.dumps({"schema": 1, "woa_torch_index": url}),
+            encoding = "utf-8",
         )
         got = self._invoke(tmp_path)
-        assert got == (url.strip().rstrip("/") if allowed else ""), (
-            f"{url!r} ({why}) came back as {got!r} and would be passed to uv"
-        )
+        assert got == (
+            url.strip().rstrip("/") if allowed else ""
+        ), f"{url!r} ({why}) came back as {got!r} and would be passed to uv"
 
     @requires_pwsh
     def test_a_missing_or_unreadable_manifest_is_empty_not_an_error(self, tmp_path: pathlib.Path):
@@ -167,7 +169,9 @@ class TestReadSide:
         script = f"{body}\nWrite-Output (Get-PersistedWoaTorchIndex -VenvPath '{venv}')"
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
