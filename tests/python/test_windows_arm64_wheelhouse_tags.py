@@ -75,6 +75,36 @@ class TestWheelMatchesInterpreter:
         assert matched is not free_threaded
         assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{major}{minor + 1}", "abi3"))
 
+    @pytest.mark.parametrize("gil_disabled", [0, 1])
+    def test_an_exact_minor_abi3_wheel_follows_the_build(self, ips, monkeypatch, gil_disabled):
+        """
+        The exact-minor branch used to accept "abi3" outright, shadowing the guarded
+        branch below it, so cp313-abi3 was installable on 3.13t. Free-threaded builds do
+        not implement the stable ABI (CPython #111506, PEP 703) -- and uv excludes abi3
+        wheels there for the same reason -- so accepting one marked a blocker available,
+        dropped its skip, and sent the resolver at a wheel it cannot use.
+
+        Simulated in both directions rather than read off this interpreter, which is
+        whichever build happens to be running the suite.
+        """
+        major, minor = sys.version_info[:2]
+        real = ips.sysconfig.get_config_var
+        monkeypatch.setattr(
+            ips.sysconfig,
+            "get_config_var",
+            lambda name: gil_disabled if name == "Py_GIL_DISABLED" else real(name),
+        )
+        exact = f"cp{major}{minor}"
+        abi3_wheel = _wheel("cffi", exact, "abi3")
+        assert ips._wheel_matches_interpreter(abi3_wheel) is (not gil_disabled)
+        # The tag a free-threaded build CAN install, and the one a GIL build cannot.
+        ft_wheel = _wheel("cffi", exact, f"{exact}t")
+        assert ips._wheel_matches_interpreter(ft_wheel) is bool(gil_disabled)
+        # And the forward-compatible spelling stays gated the same way.
+        assert ips._wheel_matches_interpreter(
+            _wheel("cffi", f"cp{major}2", "abi3")
+        ) is (not gil_disabled)
+
     def test_foreign_platform_does_not_match(self, ips):
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"

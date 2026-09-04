@@ -5408,7 +5408,15 @@ def _wheel_matches_interpreter(filename: str) -> bool:
     this_abi = f"{this_cpython}t" if free_threaded else this_cpython
     for py_tag in py_tags:
         for abi_tag in abi_tags:
-            if py_tag == this_cpython and abi_tag in ("none", "abi3", this_abi):
+            # "abi3" is excluded here when free-threaded rather than only in the branch
+            # below, which this one shadows for an exact-minor tag: cp313-abi3 would
+            # otherwise be accepted on 3.13t. Free-threaded builds do not implement the
+            # stable ABI (CPython #111506, PEP 703); PEP 803 adds a separate "abi3t" tag
+            # for them in 3.15, which is outside this project's requires-python.
+            if py_tag == this_cpython and (
+                abi_tag in ("none", this_abi)
+                or (abi_tag == "abi3" and not free_threaded)
+            ):
                 return True
             if abi_tag == "none":
                 # py3 / py313 / py2.py3: any minor at or below this one.
@@ -5435,7 +5443,12 @@ def _find_links_wheel_names() -> frozenset[str]:
     """
     names: set[str] = set()
     for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
-        for entry in (value or "").split(os.pathsep):
+        # The two variables do not agree on a separator -- uv reads UV_FIND_LINKS as a
+        # comma-separated list, pip splits its repeatable options on whitespace -- and
+        # os.pathsep is what a caller who set either by hand is likeliest to have used.
+        # Accept all three: install.ps1 appends this host's wheelhouse to whatever the
+        # caller already had, so more than one entry is now normal here.
+        for entry in re.split(r"[,\s" + re.escape(os.pathsep) + r"]+", value or ""):
             entry = entry.strip().strip('"')
             if not entry or "://" in entry:
                 continue  # a URL index cannot be listed cheaply; treat it as unknown

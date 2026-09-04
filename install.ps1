@@ -466,10 +466,37 @@ function Install-UnslothStudio {
     # unselected rather than half-configured.
     function Get-WoaPyarrowSource {
         param([string]$PythonMinor)
-        if ($env:UNSLOTH_PYARROW_WHEEL -and (Test-Path -LiteralPath $env:UNSLOTH_PYARROW_WHEEL -PathType Leaf)) {
-            return "local"
-        }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
+        # Existence was not enough: every other branch here checks the interpreter and
+        # platform tags, and this one accepted any file at all. An x64 wheel, a wheel for
+        # another minor, or something that is not a wheel selected the native path, and
+        # the staging step trusts the .whl name without opening it -- so the run failed at
+        # resolution having already given up the working x64 stack. Same checks as the
+        # siblings, plus the zip signature, since a truncated download is a file too.
+        if ($env:UNSLOTH_PYARROW_WHEEL) {
+            $_paWheel = $env:UNSLOTH_PYARROW_WHEEL
+            if (Test-Path -LiteralPath $_paWheel -PathType Leaf) {
+                $_paName = Split-Path -Leaf $_paWheel
+                if (($_paName -like "pyarrow-*") -and ($_paName -like "*$tag-$tag*") -and
+                    ($_paName -like "*win_arm64.whl")) {
+                    # Two bytes off a stream, not ReadAllBytes: a pyarrow wheel is tens of
+                    # megabytes and none of it but the signature is being inspected.
+                    $_paIsZip = $false
+                    try {
+                        $_paStream = [System.IO.File]::OpenRead($_paWheel)
+                        try {
+                            $_paIsZip = ($_paStream.ReadByte() -eq 0x50 -and $_paStream.ReadByte() -eq 0x4B)
+                        } finally { $_paStream.Dispose() }
+                    } catch { $_paIsZip = $false }
+                    if ($_paIsZip) { return "local" }
+                    substep "windows on arm: UNSLOTH_PYARROW_WHEEL is not a readable wheel archive -- ignoring it." "Yellow"
+                } else {
+                    substep "windows on arm: UNSLOTH_PYARROW_WHEEL is not a $tag win_arm64 pyarrow wheel -- ignoring it." "Yellow"
+                }
+            } else {
+                substep "windows on arm: UNSLOTH_PYARROW_WHEEL does not exist -- ignoring it." "Yellow"
+            }
+        }
         try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
@@ -5098,13 +5125,53 @@ exit 0
         if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName -match '^pyarrow-([^-]+)-') {
             $WoaOverrideLines += "pyarrow==$($Matches[1])"
         }
-        $WoaOverrideLines | Set-Content -Path $WoaOverrides -Encoding ascii
+        # Fold in whatever overrides the caller already had. The purge above deliberately
+        # keeps anything that is not this StudioHome's own, and overwriting the variable
+        # here threw that away -- a corporate wheel source or a caller's pin vanished from
+        # every dependency pass that followed.
+        #
+        # Folded rather than appended to UV_OVERRIDE, because uv COMBINES override files
+        # instead of letting a later one win, and two files naming the same package
+        # without distinguishing markers is an error. Appending could therefore turn a
+        # working install into a hard resolution failure -- this file names torch and
+        # torchvision, which a caller plausibly overrides too. Ours wins for the packages
+        # it declares, which is the whole reason it exists. Same shape as
+        # New-UnslothTorchOverridesFile.
+        $_woaOwnNames = @{}
+        foreach ($_woaLine in $WoaOverrideLines) {
+            if ($_woaLine -match '^\s*(#|$)') { continue }
+            $_woaName = (($_woaLine -split '[\s<>=!~;@\[]', 2)[0]).Trim()
+            if ($_woaName) { $_woaOwnNames[($_woaName -replace '[-_.]+', '-').ToLowerInvariant()] = $true }
+        }
+        if ($env:UV_OVERRIDE) {
+            foreach ($_woaOvFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
+                if (-not (Test-Path -LiteralPath $_woaOvFile -PathType Leaf)) { continue }
+                try { $_woaOvFull = Convert-Path -LiteralPath $_woaOvFile } catch { continue }
+                # ReadAllLines, not Get-Content: PS 5.1 decodes a BOM-less file with the
+                # ANSI code page and would mangle a non-ASCII path.
+                foreach ($_woaOvLine in [System.IO.File]::ReadAllLines($_woaOvFull)) {
+                    if ($_woaOvLine -match '^\s*(#|$)') { continue }
+                    $_woaOvName = ((($_woaOvLine -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
+                    if ($_woaOvName -and $_woaOwnNames.ContainsKey($_woaOvName)) { continue }
+                    $WoaOverrideLines += $_woaOvLine
+                }
+            }
+        }
+        # UTF-8 now that a caller's line can carry a non-ASCII path. No BOM: uv reads these
+        # as plain requirements files.
+        [System.IO.File]::WriteAllLines($WoaOverrides, [string[]]$WoaOverrideLines, (New-Object System.Text.UTF8Encoding($false)))
         # Space-safe: uv splits UV_OVERRIDE on whitespace and pip splits its repeatable
         # options the same way, and the default StudioHome sits under %USERPROFILE%.
-        # UV_FIND_LINKS is comma-separated, so it is passed through untouched.
         $env:UV_OVERRIDE = Get-UvSafePath $WoaOverrides
-        $env:UV_FIND_LINKS = $WoaWheelDir
-        $env:PIP_FIND_LINKS = Get-UvSafePath $WoaWheelDir
+        # Find-links are search paths: additive, no conflict semantics, so the caller's
+        # keep working alongside ours. Ours first, so a win_arm64 wheel staged for this
+        # host wins a tie against the same name elsewhere. UV_FIND_LINKS is
+        # comma-separated; PIP_FIND_LINKS is split on whitespace like UV_OVERRIDE.
+        $_woaCallerUvLinks = $env:UV_FIND_LINKS
+        $_woaCallerPipLinks = $env:PIP_FIND_LINKS
+        $env:UV_FIND_LINKS = if ($_woaCallerUvLinks) { "$WoaWheelDir,$_woaCallerUvLinks" } else { $WoaWheelDir }
+        $_woaSafeWheelDir = Get-UvSafePath $WoaWheelDir
+        $env:PIP_FIND_LINKS = if ($_woaCallerPipLinks) { "$_woaSafeWheelDir $_woaCallerPipLinks" } else { $_woaSafeWheelDir }
         # studio/install_python_stack.py only drives uv when `uv` resolves on PATH, and
         # falls back to plain pip when it does not. pip has no equivalent of UV_OVERRIDE,
         # so on this host the managed uv must be reachable by name in that child process.

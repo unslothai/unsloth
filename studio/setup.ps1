@@ -6061,8 +6061,15 @@ if ($LocalLlamaCppLinked) {
                 # one the flag asks for. Falsy spellings are _upstream_arm64_cuda_allowed's
                 # in install_llama_prebuilt.py; unset means allowed, as it does there.
                 $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
+                # Not opted out, the CPU bundle is still valid: the selector falls back to
+                # windows-arm64 by design when no compatible ARM64 CUDA asset exists, so
+                # demanding the CUDA kind deleted a healthy automatic fallback on every
+                # run. Widening does not strand anyone on CPU -- the installer's
+                # already-satisfied check is per candidate and CUDA is attempted first, so
+                # the upgrade still happens the day an asset appears. Opted out it stays
+                # exclusive, so a bundle installed before the flag is still replaced.
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
-                    if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda") }
+                    if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda", "windows-arm64") }
                 } else { @("windows-cuda") }
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {

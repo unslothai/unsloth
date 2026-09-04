@@ -322,11 +322,15 @@ def write_manifest(
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
         parsed = urlsplit(candidate)
+        # netloc, not hostname, for the port test: hostname strips ":443", so
+        # https://pypi.nvidia.com:443/... was written and then refused by setup.ps1's
+        # reader, whose pattern allows no port -- persisting a value that could never be
+        # read back is worse than not persisting it. Requiring the two to be equal keeps
+        # writer and reader accepting exactly the same set, and drops userinfo with it.
         if (
             parsed.scheme == "https"
             and parsed.hostname == "pypi.nvidia.com"
-            and not parsed.username
-            and not parsed.password
+            and parsed.netloc == parsed.hostname
             and not parsed.query
             and not parsed.fragment
         ):

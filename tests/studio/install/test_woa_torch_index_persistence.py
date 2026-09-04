@@ -717,9 +717,11 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            ("", "windows-arm64-cuda"),
-            ("1", "windows-arm64-cuda"),
-            ("true", "windows-arm64-cuda"),
+            # Not opted out: CUDA is preferred, and the CPU bundle the selector falls
+            # back to when no ARM64 CUDA asset exists is valid too.
+            ("", "windows-arm64-cuda,windows-arm64"),
+            ("1", "windows-arm64-cuda,windows-arm64"),
+            ("true", "windows-arm64-cuda,windows-arm64"),
             ("0", "windows-arm64"),
             ("false", "windows-arm64"),
             ("no", "windows-arm64"),
@@ -777,15 +779,59 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
             assert done.returncode == 0, done.stderr
             assert done.stdout.strip().splitlines()[-1] == "windows-cuda"
 
-    def test_the_opt_out_replaces_rather_than_widens(self):
+    @requires_pwsh
+    def test_the_opt_out_arm_stays_exclusive(self):
         """
-        A bundle installed before the flag was set must still be replaced by the one the
-        flag asks for, so the CPU kind is expected INSTEAD of the CUDA kind, not as well.
+        A CUDA bundle installed before the flag was set must still be replaced by the one
+        the flag asks for, so the opt-out arm expects the CPU kind INSTEAD of the CUDA
+        kind. Only the not-opted-out arm accepts both.
         """
+        assert self._kinds("0") == "windows-arm64", "opted out: CUDA is no longer valid"
+        assert self._kinds("") == "windows-arm64-cuda windows-arm64"
+
+    @staticmethod
+    def _kinds(value: str) -> str:
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        block = text[text.index("$_arm64CudaOptOut =") :][:700]
-        assert '@("windows-arm64")' in block
-        assert '@("windows-arm64-cuda", "windows-arm64")' not in block
+        start = text.index("$_arm64CudaOptOut =")
+        tail = '} else { @("windows-cuda") }'
+        end = text.index(tail, start) + len(tail)
+        script = "\n".join([
+            "function Test-WinArm64Venv { $true }",
+            text[start:end].strip(),
+            "Write-Output ($_nvidiaKinds -join ' ')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+            env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1]
+
+    def test_the_cpu_fallback_is_a_real_selector_outcome(self):
+        """
+        The premise of widening: resolve_asset_choice falls through to the published
+        windows-arm64 bundle when no ARM64 CUDA asset is available on an NVIDIA host.
+        """
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        start = source.index("def resolve_asset_choice(")
+        body = source[start:]
+        marker = body.index("host.is_windows and host.is_arm64")
+        assert 'published_asset_choice_for_kind(release, "windows-arm64")' in body[marker : marker + 4000]
+
+    def test_widening_does_not_strand_anyone_on_cpu(self):
+        """
+        The installer's already-satisfied short-circuit is per candidate, and CUDA is
+        attempted first, so a CPU bundle accepted here is still replaced the day an ARM64
+        CUDA asset appears. If that ever became a whole-plan check, this would need
+        revisiting.
+        """
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        raise_at = source.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
+        window = source[max(0, raise_at - 1200) : raise_at]
+        assert "choice = attempt" in window, (
+            "the reuse check is per attempt; a plan-level one would pin the user to CPU"
+        )
 
     def test_the_falsy_spellings_match_the_python_helper(self):
         """One vocabulary; the two must not drift apart."""
@@ -1033,3 +1079,142 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
             for line in text.splitlines():
                 if "--prerelease=allow" in line and "#" not in line.split("--prerelease")[0]:
                     assert "@(" in line, f"{path.name}: unexpected shape: {line.strip()}"
+
+
+class TestManifestWriterAndReaderAcceptTheSameSet:
+    """A value the writer persists and the reader refuses is worse than none at all.
+
+    urlsplit().hostname strips the port, so `https://pypi.nvidia.com:443/nvtorch_oot`
+    passed the writer's host test while setup.ps1's pattern, which allows no port,
+    rejected it -- and the fresh-shell update silently lost the index it had recorded.
+    """
+
+    PORTED = "https://pypi.nvidia.com:443/nvtorch_oot"
+
+    def test_the_writer_refuses_a_url_the_reader_cannot_read(self, tmp_path: pathlib.Path):
+        im.write_manifest(root = tmp_path, req_root = tmp_path, woa_torch_index = self.PORTED)
+        payload = json.loads((tmp_path / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
+        assert "woa_torch_index" not in payload
+
+    @requires_pwsh
+    def test_and_the_reader_still_refuses_it(self, tmp_path: pathlib.Path):
+        (tmp_path / "unsloth_install_manifest.json").write_text(
+            json.dumps({"schema": 1, "woa_torch_index": self.PORTED}), encoding = "utf-8",
+        )
+        assert TestReadSide._invoke(tmp_path) == ""
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://pypi.nvidia.com/nvtorch_oot",
+            "https://pypi.nvidia.com/nvtorch_oot_nightly",
+        ],
+    )
+    def test_the_two_agree_on_what_is_acceptable(self, tmp_path: pathlib.Path, url: str):
+        """The pair that matters: written, then read back unchanged."""
+        written = tmp_path / "w"
+        written.mkdir()
+        im.write_manifest(root = written, req_root = written, woa_torch_index = url)
+        payload = json.loads((written / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
+        assert payload["woa_torch_index"] == url
+        assert TestReadSide._invoke(written) == url
+
+
+class TestTheSuppliedPyarrowWheelIsValidated:
+    """install.ps1: UNSLOTH_PYARROW_WHEEL decides whether the native path is taken.
+
+    Every other branch of Get-WoaPyarrowSource checks the interpreter and platform tags.
+    This one accepted any existing file, so an x64 wheel, a wheel for another minor, or a
+    truncated download selected the native stack -- and the staging step trusts the .whl
+    name without opening it, so the run failed at resolution having already given up the
+    working x64 path.
+    """
+
+    ZIP = b"PK\x03\x04" + b"\0" * 64
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "name, content, expected, why",
+        [
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", ZIP, "local", "the wheel this is for"),
+            ("pyarrow-21.0.0-cp312-cp312-win_arm64.whl", ZIP, "", "another interpreter minor"),
+            ("pyarrow-21.0.0-cp313-cp313-win_amd64.whl", ZIP, "", "an x64 wheel"),
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", b"not a zip", "", "a truncated download"),
+            ("numpy-2.0.0-cp313-cp313-win_arm64.whl", ZIP, "", "a wheel for another project"),
+            ("pyarrow-21.0.0.tar.gz", ZIP, "", "an sdist, which cannot be staged"),
+        ],
+    )
+    def test_only_a_matching_readable_wheel_selects_native(
+        self, tmp_path: pathlib.Path, name: str, content: bytes, expected: str, why: str
+    ):
+        wheel = tmp_path / name
+        wheel.write_bytes(content)
+        assert self._probe(str(wheel)) == expected, why
+
+    @requires_pwsh
+    def test_a_missing_file_is_ignored_rather_than_fatal(self, tmp_path: pathlib.Path):
+        assert self._probe(str(tmp_path / "nope.whl")) == ""
+
+    @staticmethod
+    def _probe(wheel: str) -> str:
+        """Get-WoaPyarrowSource with its network branches stubbed out."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            "function substep { param($m, $c) }",
+            "function Join-UrlPath { param($Base, $Path) return $Base }",
+            "function Test-WoaWheelhouseIsLocal { $false }",
+            "function Invoke-RestMethod { throw 'no network in this test' }",
+            "$script:WoaWheelhouse = 'https://example.test/wheels'",
+            _function_source(text, "Get-WoaPyarrowSource"),
+            f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
+            "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1][1:-1]
+
+
+class TestCallerResolverConfigurationSurvives:
+    """install.ps1 must not discard what its own purge block just chose to keep.
+
+    The purge above removes only variables pointing into this StudioHome's woa directory,
+    precisely so a caller's corporate wheel source is left alone -- and then the three
+    assignments overwrote them anyway.
+    """
+
+    def test_the_overrides_are_folded_not_replaced(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = text[text.index("$_woaOwnNames = @{}"):][:2000]
+        assert "$env:UV_OVERRIDE -split" in block, "the caller's files are read"
+        assert "$WoaOverrideLines += $_woaOvLine" in block, "and their lines kept"
+        assert "$_woaOwnNames.ContainsKey($_woaOvName)" in block, (
+            "minus the packages this file declares -- uv combines override files and "
+            "errors on a duplicate package, so a blind append could fail the resolve"
+        )
+
+    def test_the_find_links_are_appended_with_the_right_separators(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert '$env:UV_FIND_LINKS = if ($_woaCallerUvLinks) { "$WoaWheelDir,$_woaCallerUvLinks" }' in text, (
+            "UV_FIND_LINKS is comma-separated"
+        )
+        assert '"$_woaSafeWheelDir $_woaCallerPipLinks"' in text, (
+            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
+        )
+
+    def test_ours_is_searched_first(self):
+        """A win_arm64 wheel staged for this host must win a tie against the same name."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert '"$WoaWheelDir,$_woaCallerUvLinks"' in text
+        assert '"$_woaCallerUvLinks,$WoaWheelDir"' not in text
+
+    def test_the_python_side_can_read_an_appended_value(self):
+        """
+        install_python_stack.py split find-links on os.pathsep alone, which would have
+        read "dirA,dirB" as one unusable path now that appending is possible.
+        """
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert 're.split(r"[,\\s" + re.escape(os.pathsep) + r"]+"' in source
