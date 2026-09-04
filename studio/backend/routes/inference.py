@@ -16775,9 +16775,14 @@ async def generate_audio(
     Works with both GGUF (llama-server) and Unsloth/transformers backends."""
     import base64
 
-    # _extract_content_parts keeps only text, so an unmodelled part would be spoken past in
-    # silence. Refuse it the way the completion does rather than voicing the text alone.
+    # _extract_content_parts keeps only text, so a part this cannot voice would be spoken past
+    # in silence. Refuse it the way the completion does rather than voicing the text alone.
     _reject_unsupported_content_parts(payload)
+    if _messages_have_input_audio(payload.messages):
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Audio input is not supported here; this route speaks the message text.",
+        )
 
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)

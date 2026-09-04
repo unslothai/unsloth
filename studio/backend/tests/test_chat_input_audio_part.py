@@ -320,3 +320,78 @@ def test_the_tts_route_refuses_an_unmodelled_part():
 
     assert response.status_code == 400
     assert "'file'" in response.json()["detail"]["error"]["message"]
+
+
+def test_the_tts_route_refuses_an_audio_part():
+    """/audio/generate voices the message text; a recording has nowhere to go there.
+
+    _extract_content_parts keeps only text, so the part was discarded and speech was returned
+    for an incomplete request that used to fail validation outright.
+    """
+    with _route_client() as client:
+        response = client.post(
+            "/audio/generate",
+            json = {"model": "default", "messages": [_audio_message(text = "read this out")]},
+        )
+
+    assert response.status_code == 400
+    assert "Audio input is not supported here" in response.json()["detail"]["error"]["message"]
+
+
+def _durable_run(content):
+    from routes.chat_generation_runs import CreateChatGenerationRun
+
+    return CreateChatGenerationRun(
+        runId = "run-1",
+        threadId = "thread-1",
+        userMessageId = "user-1",
+        assistantMessageId = "assistant-1",
+        requestPayload = {"model": "default", "messages": [{"role": "user", "content": content}]},
+    )
+
+
+def test_a_durable_run_refuses_a_nested_recording():
+    """The durable sanitizer refuses media because the payload persists verbatim.
+
+    It read only the top-level fields, so a recording carried in a content part would have lived
+    in ``request_json`` for the life of the thread.
+    """
+    from routes.chat_generation_runs import _sanitize_request
+
+    with pytest.raises(HTTPException) as exc:
+        _sanitize_request(
+            _durable_run(
+                [
+                    {"type": "text", "text": "transcribe this"},
+                    {"type": "input_audio", "input_audio": {"data": AUDIO_B64, "format": "wav"}},
+                ]
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "Media chat runs" in str(exc.value.detail)
+
+
+def test_a_durable_run_refuses_an_unmodelled_part_immediately():
+    """Otherwise the create endpoint returns 202 and the supervisor fails it out of band."""
+    from routes.chat_generation_runs import _sanitize_request
+
+    with pytest.raises(HTTPException) as exc:
+        _sanitize_request(
+            _durable_run(
+                [
+                    {"type": "text", "text": "summarise this"},
+                    {"type": "file", "file": {"file_id": "file_abc"}},
+                ]
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "'file'" in str(exc.value.detail)
+
+
+def test_a_plain_durable_run_is_still_queued():
+    from routes.chat_generation_runs import _sanitize_request
+
+    sanitized = _sanitize_request(_durable_run([{"type": "text", "text": "hello"}]))
+
+    assert sanitized["stream"] is True
+    assert sanitized["thread_id"] == "thread-1"
