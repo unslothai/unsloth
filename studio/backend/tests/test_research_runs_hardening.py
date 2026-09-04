@@ -328,6 +328,7 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
     assert "Local model" not in message
     assert "output limit" in message
 
+
 def test_resolve_max_tokens_honours_a_budget_above_the_old_ceiling(monkeypatch):
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
     assert _resolve_max_tokens(32_768, {}, [{"role": "user", "content": "x"}]) == 32_768

@@ -2746,8 +2746,8 @@ class ResearchSupervisor:
                 synthesis_usage = recovery_usage
             else:
                 requested_max_tokens = _resolve_max_tokens(
-                synthesis_max_tokens,
-                _run_inference_request(run),
+                    synthesis_max_tokens,
+                    _run_inference_request(run),
                     synthesis_messages,
                 )
             await self._check_active(run["id"])
