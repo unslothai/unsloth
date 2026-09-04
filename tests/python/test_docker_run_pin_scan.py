@@ -284,3 +284,66 @@ def test_a_local_path_is_not_given_a_timeout(run_mod, tmp_path):
         "nbformat": 4,
         "nbformat_minor": 5,
     }
+
+
+# The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
+# `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's marker. Honouring
+# it corrupts both sides: the target's pin overwrites the caller kernel's, and a target
+# with no pin runs against the caller's stale pin. A kernel that has not imported
+# transformers yet then activates the wrong sidecar.
+def _launch_with_inherited_marker(run_mod, monkeypatch, tmp_path, nb, caller_pin):
+    src = tmp_path / "target.ipynb"
+    src.write_text(json.dumps(nb))
+    caller = tmp_path / "caller_kernel_marker"
+    caller.write_text(caller_pin)
+    seen = {}
+
+    def fake_call(
+        cmd,
+        env = None,
+        **kwargs,
+    ):
+        seen["env"] = dict(env or {})
+        m = seen["env"].get("UNSLOTH_NB_TF_MARKER")
+        seen["marker_path"] = m
+        seen["child_reads"] = Path(m).read_text().strip() if m and os.path.exists(m) else None
+        return 0
+
+    monkeypatch.setattr(run_mod, "subprocess", SimpleNamespace(call = fake_call))
+    monkeypatch.setattr(sys, "argv", ["unsloth-run", str(src)])
+    monkeypatch.setenv("UNSLOTH_NB_TF_MARKER", str(caller))
+    with pytest.raises(SystemExit) as exc:
+        run_mod.main()
+    assert exc.value.code == 0
+    seen["caller_after"] = caller.read_text().strip()
+    seen["caller_path"] = str(caller)
+    return seen
+
+
+def test_a_run_does_not_overwrite_the_calling_kernels_marker(run_mod, monkeypatch, tmp_path):
+    seen = _launch_with_inherited_marker(
+        run_mod,
+        monkeypatch,
+        tmp_path,
+        _nb("!pip install transformers==5.5.0\n"),
+        caller_pin = "5.10.2",
+    )
+    assert seen["marker_path"] != seen["caller_path"], "the run reused the caller's marker"
+    assert (
+        seen["caller_after"] == "5.10.2"
+    ), "the target's pin was written into the CALLER kernel's marker"
+    assert seen["child_reads"] == "5.5.0", seen
+
+
+def test_an_unpinned_target_does_not_inherit_the_callers_pin(run_mod, monkeypatch, tmp_path):
+    seen = _launch_with_inherited_marker(
+        run_mod,
+        monkeypatch,
+        tmp_path,
+        _nb("print('no install here')\n"),
+        caller_pin = "5.10.2",
+    )
+    assert seen["marker_path"] != seen["caller_path"]
+    assert not seen[
+        "child_reads"
+    ], f"the target has no pin, but the kernel was handed {seen['child_reads']!r}"

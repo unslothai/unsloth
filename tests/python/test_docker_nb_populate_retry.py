@@ -324,3 +324,82 @@ def test_an_unstageable_state_leaves_the_marker_off_instead_of_copying(tmp_path:
     assert (dest / ".unsloth_sync_partial").exists()
     assert not (dest / "a.ipynb").exists(), "nothing may be published without a record"
     assert "could not be staged" in run.stdout, run.stdout
+
+
+# Staging the temp file proves DEST was writable ONCE, not that it stays so. A quota
+# or ENOSPC that lands on a post-copy `printf >> "$STATE.tmp"` leaves the notebook on
+# disk with no record, and an unrecorded file is read as a user edit and never
+# refreshed again -- while the marker is stamped anyway, because only `cp` failures
+# were counted. RLIMIT_FSIZE reproduces it without needing a real full filesystem:
+# the tiny notebooks copy fine, the growing state file is what hits the ceiling.
+def _run_capped(template: Path, dest: Path, max_bytes: int):
+    import resource
+    import signal
+
+    def _cap():
+        # SIGXFSZ would kill the script outright; the shell must SEE the write error
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (max_bytes, max_bytes))
+
+    return subprocess.run(
+        ["bash", str(SYNC)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        preexec_fn = _cap,
+        env = dict(
+            os.environ,
+            UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
+            UNSLOTH_NOTEBOOKS_DIR = str(dest),
+            UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
+            UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
+            UNSLOTH_KEEP_COLAB_INTRO = "1",
+        ),
+    )
+
+
+def _many_template(tmp_path: Path, count: int) -> Path:
+    template = tmp_path / "template"
+    template.mkdir(parents = True)
+    for i in range(count):
+        (template / f"n{i}.ipynb").write_text(f"N{i}", encoding = "utf-8")
+    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding = "utf-8")
+    return template
+
+
+@behavioural
+def test_a_failed_state_append_holds_back_the_commit_marker(tmp_path: Path):
+    """A record lost after a successful copy must count as a population failure."""
+    template = _many_template(tmp_path, 15)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    run = _run_capped(template, dest, 512)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    copied = sorted(p.name for p in dest.glob("*.ipynb"))
+    recorded = _state(dest)
+    assert len(copied) > len(
+        recorded
+    ), "the cap did not bite; this test proves nothing unless some append failed"
+    assert not (
+        dest / ".unsloth_sync_commit"
+    ).exists(), "notebooks copied but not recorded are user-owned for good once this is stamped"
+    assert (dest / ".unsloth_sync_partial").exists(), run.stdout
+
+
+@behavioural
+def test_the_retry_after_a_failed_append_converges(tmp_path: Path):
+    """And the retry must actually finish the job, not just defer forever."""
+    template = _many_template(tmp_path, 15)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    _run_capped(template, dest, 512)
+    assert not (dest / ".unsloth_sync_commit").exists()
+
+    run = _run(tmp_path, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert len(_state(dest)) == 15, _state(dest)
+    assert (dest / ".unsloth_sync_commit").exists(), run.stdout
+    assert not (dest / ".unsloth_sync_partial").exists()

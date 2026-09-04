@@ -237,13 +237,20 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
                 continue
             fi
             # same bytes already there, so copying would only stamp root:root on it
-            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+            # Every append is checked: staging the temp file proves DEST was writable
+            # once, not that it stays so. A quota or ENOSPC that lands here leaves the
+            # notebook on disk with no record, and an unrecorded file is read as a user
+            # edit and never refreshed again. Count it exactly like a failed copy, so
+            # the marker stays off and the next start retries.
+            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp" \
+                || populate_failed=$((populate_failed + 1))
             continue
         fi
         if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
             # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
             own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
-            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp" \
+                || populate_failed=$((populate_failed + 1))
         else
             populate_failed=$((populate_failed + 1))
         fi
@@ -265,7 +272,10 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             p="${line#*  }"
             [ -n "$p" ] && [ "$p" != "$line" ] || continue
             [ -n "${POPULATED[$p]:-}" ] && continue
-            printf '%s\n' "$line" >> "$STATE.tmp"
+            # same reason as the copy loop: a dropped record here hands a notebook the
+            # refresh already manages to the user permanently
+            printf '%s\n' "$line" >> "$STATE.tmp" \
+                || populate_failed=$((populate_failed + 1))
         done < "$STATE"
         unset POPULATED
     fi
@@ -288,6 +298,11 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     restored=0
     downgraded=0
     RS_TMP="$(mktemp)"
+    # Same class as the populate loop: an unchecked append publishes a state that is
+    # missing records for notebooks still on disk, which hands them to the user for
+    # good. Here the old $STATE is still valid, so abandon the rewrite rather than
+    # publish a truncated one.
+    rs_ok=1
     while IFS= read -r line; do
         h="${line%%  *}"; rel="${line#*  }"
         if [ -n "$rel" ] && [ "$rel" != "$line" ] \
@@ -297,7 +312,7 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
                 # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
                 own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
                 new_h="$(hash_of "$DEST/$rel")"
-                printf '%s  %s\n' "$new_h" "$rel" >> "$RS_TMP"
+                printf '%s  %s\n' "$new_h" "$rel" >> "$RS_TMP" || rs_ok=0
                 restored=$((restored + 1))
                 # The record was ahead of the baked copy, so this notebook has just
                 # gone BACKWARDS to whatever the image shipped. The refresh child
@@ -307,9 +322,15 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
                 continue
             fi
         fi
-        printf '%s\n' "$line" >> "$RS_TMP"
+        printf '%s\n' "$line" >> "$RS_TMP" || rs_ok=0
     done < "$STATE"
-    mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+    if [ "$rs_ok" = 1 ]; then
+        mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+    else
+        echo "[unsloth-nb] the sync state could not be rewritten in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
+        rm -f "$RS_TMP"
+        rm -f "$SYNCED" 2>/dev/null || true
+    fi
     # Only when one actually went backwards: dropping the marker on every restore
     # would make an ordinary delete cost a full clone even when the baked copy was
     # already current, and the marker is re-stamped as soon as the refresh succeeds.

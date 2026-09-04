@@ -202,15 +202,17 @@ def main():
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
-    # per-run marker: the shared default leaks this run's pin into concurrent runs
-    marker = env.get("UNSLOTH_NB_TF_MARKER")
-    if not marker:
-        fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
-        os.close(fd)
-        env["UNSLOTH_NB_TF_MARKER"] = marker
-        tmp_files.append(marker)
+    # Per-run marker, and ALWAYS a fresh one: an inherited value is never this run's.
+    # The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
+    # `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's. Reusing it
+    # broke both ways: a target with a pin overwrote the caller kernel's pin, and a
+    # target with no pin ran against the caller's stale one. Either way a kernel that
+    # has not imported transformers yet can be handed the wrong sidecar.
+    fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
+    os.close(fd)
+    env["UNSLOTH_NB_TF_MARKER"] = marker
+    tmp_files.append(marker)
     if want:
-        os.makedirs(os.path.dirname(marker) or ".", exist_ok = True)
         open(marker, "w").write(want)
     if sidecar:
         env["PYTHONPATH"] = sidecar + os.pathsep + env.get("PYTHONPATH", "")
