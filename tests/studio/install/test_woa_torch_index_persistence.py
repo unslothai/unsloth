@@ -470,9 +470,7 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         assign = text.index("$_effectiveTorchIndexUrl = $_cudaIndexUrl")
         publish = text.index("$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl")
         assert default < assign < publish, "default, then the install, then the publish"
-        assert text.count("$_effectiveTorchIndexUrl = ") == 2, (
-            "only the CUDA install may move it"
-        )
+        assert text.count("$_effectiveTorchIndexUrl = ") == 2, "only the CUDA install may move it"
 
     def test_the_nvidia_channel_publishes_no_flavor_tag(self):
         """
@@ -484,15 +482,19 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         if PWSH is None:
             pytest.skip("pwsh not available")
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Get-TorchIndexLeaf"),
-            _function_source(text, "Test-CudaFamilyLeaf"),
-            "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
-            "Write-Output \"$leaf|$(Test-CudaFamilyLeaf $leaf)\"",
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Get-TorchIndexLeaf"),
+                _function_source(text, "Test-CudaFamilyLeaf"),
+                "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
+                'Write-Output "$leaf|$(Test-CudaFamilyLeaf $leaf)"',
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         leaf, is_cuda = done.stdout.strip().splitlines()[-1].split("|")
@@ -517,15 +519,13 @@ class TestTheLlamaArm64CudaOptOut:
         found = []
 
         def uses(node, name: str) -> bool:
-            return any(
-                isinstance(n, ast.Attribute) and n.attr == name
-                for n in ast.walk(node)
-            )
+            return any(isinstance(n, ast.Attribute) and n.attr == name for n in ast.walk(node))
 
         def uses_positively(node, name: str) -> bool:
             """`not host.has_usable_nvidia` selects the CPU path and is not our business."""
             negated = {
-                id(n.operand) for n in ast.walk(node)
+                id(n.operand)
+                for n in ast.walk(node)
                 if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
             }
             return any(
@@ -537,7 +537,8 @@ class TestTheLlamaArm64CudaOptOut:
             if isinstance(node, ast.If):
                 # `elif` is an If inside orelse, so each one re-decides for itself.
                 here = arm64 or (
-                    uses(node.test, "is_arm64") and not uses(node.test, "is_linux")
+                    uses(node.test, "is_arm64")
+                    and not uses(node.test, "is_linux")
                     and not uses(node.test, "is_macos")
                 )
                 if here and uses_positively(node.test, "has_usable_nvidia"):
@@ -618,9 +619,9 @@ class TestTheLlamaArm64CudaOptOut:
         body = source[start:end]
         marker = body.index("if host.is_windows and host.is_arm64:")
         arm64_block = body[marker : marker + 900]
-        assert "_upstream_arm64_cuda_allowed()" in arm64_block, (
-            "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
-        )
+        assert (
+            "_upstream_arm64_cuda_allowed()" in arm64_block
+        ), "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
 
 
 class TestAMigratedX64VenvIsRebuiltAsArm64:
@@ -647,19 +648,19 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         """
         text = self._text()
         rebuild = text.index("$script:WoaNativeCudaTorch -and $_Migrated")
-        create = text.index('if (-not (Test-Path -LiteralPath $VenvPython)) {')
+        create = text.index("if (-not (Test-Path -LiteralPath $VenvPython)) {")
         assert rebuild < create
 
     def test_it_preserves_the_old_environment(self):
         """Same rollback the new-layout branch uses; the user's packages are recoverable."""
         text = self._text()
-        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated") :][:1800]
         assert "Start-StudioVenvRollback -ExistingDir $VenvDir" in block
 
     def test_a_failed_rollback_keeps_the_old_behaviour(self):
         """Losing the user's environment is never worth a native stack."""
         text = self._text()
-        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated") :][:1800]
         assert "} catch {" in block
         assert "using the x64 stack instead" in block
 
@@ -670,7 +671,7 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         a freshly created, empty venv that produces an unsloth with no dependencies.
         """
         text = self._text()
-        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated") :][:1800]
         rollback = block.index("Start-StudioVenvRollback")
         cleared = block.index("$_Migrated = $false")
         assert rollback < cleared, "cleared only after the environment is safely moved"
