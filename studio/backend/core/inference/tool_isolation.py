@@ -18,7 +18,7 @@ from typing import Any, Literal, Mapping
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ToolIsolationCapability:
     environment: str
     backend: str
@@ -34,7 +34,7 @@ class ToolIsolationCapability:
     limitations: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class IssuedLimitedGrant:
     token: str
     expires_at: float
@@ -42,7 +42,7 @@ class IssuedLimitedGrant:
     mode: Literal["limited"] = "limited"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ValidatedLimitedGrant:
     current_subject: str
     tool_ui_session_id: str
@@ -51,7 +51,7 @@ class ValidatedLimitedGrant:
     mode: Literal["limited"] = "limited"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _StoredLimitedGrant:
     token_digest: bytes
     current_subject: str
@@ -72,7 +72,12 @@ class LimitedGrantError(ValueError):
 class LimitedGrantStore:
     """Small, bounded, process-local store for UI-authorized Limited mode."""
 
-    def __init__(self, *, ttl_seconds: float = 300.0, max_entries: int = 1024):
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 300.0,
+        max_entries: int = 1024,
+    ):
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         if max_entries <= 0:
@@ -84,7 +89,7 @@ class LimitedGrantStore:
 
     @staticmethod
     def _digest(token: str) -> bytes:
-        return hashlib.sha256(token.encode("utf-8", errors="strict")).digest()
+        return hashlib.sha256(token.encode("utf-8", errors = "strict")).digest()
 
     def _cleanup_locked(self, now: float) -> None:
         expired = [
@@ -121,24 +126,24 @@ class LimitedGrantStore:
         with self._lock:
             self._cleanup_locked(now_monotonic)
             while len(self._records) >= self._max_entries:
-                self._records.popitem(last=False)
+                self._records.popitem(last = False)
             while True:
                 token = secrets.token_urlsafe(32)
                 digest = self._digest(token)
                 if digest not in self._records:
                     break
             self._records[digest] = _StoredLimitedGrant(
-                token_digest=digest,
-                current_subject=current_subject,
-                tool_ui_session_id=tool_ui_session_id,
-                probe_generation=probe_generation,
-                expires_monotonic=now_monotonic + self._ttl_seconds,
-                expires_at=expires_at,
+                token_digest = digest,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                probe_generation = probe_generation,
+                expires_monotonic = now_monotonic + self._ttl_seconds,
+                expires_at = expires_at,
             )
         return IssuedLimitedGrant(
-            token=token,
-            expires_at=expires_at,
-            probe_generation=probe_generation,
+            token = token,
+            expires_at = expires_at,
+            probe_generation = probe_generation,
         )
 
     def validate(
@@ -192,10 +197,10 @@ class LimitedGrantStore:
                     "Tool-isolation capability changed; request Limited access again.",
                 )
             return ValidatedLimitedGrant(
-                current_subject=record.current_subject,
-                tool_ui_session_id=record.tool_ui_session_id,
-                probe_generation=record.probe_generation,
-                expires_at=record.expires_at,
+                current_subject = record.current_subject,
+                tool_ui_session_id = record.tool_ui_session_id,
+                probe_generation = record.probe_generation,
+                expires_at = record.expires_at,
             )
 
 
@@ -213,20 +218,20 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
 
     from core.inference.os_sandbox import capability_snapshot as os_capability_snapshot
 
-    snapshot = os_capability_snapshot(force=force)
+    snapshot = os_capability_snapshot(force = force)
     return ToolIsolationCapability(
-        environment=str(_snapshot_value(snapshot, "environment")),
-        backend=str(_snapshot_value(snapshot, "backend")),
-        protection_state=str(_snapshot_value(snapshot, "protection_state")),
-        profile_id=str(_snapshot_value(snapshot, "profile_id")),
-        probe_generation=str(_snapshot_value(snapshot, "probe_generation")),
-        environment_fingerprint=str(_snapshot_value(snapshot, "environment_fingerprint")),
-        reason=str(_snapshot_value(snapshot, "reason")),
-        remediation=str(_snapshot_value(snapshot, "remediation")),
-        retryable=bool(_snapshot_value(snapshot, "retryable")),
-        available=bool(_snapshot_value(snapshot, "available")),
-        qualified=bool(_snapshot_value(snapshot, "qualified")),
-        limitations=tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
+        environment = str(_snapshot_value(snapshot, "environment")),
+        backend = str(_snapshot_value(snapshot, "backend")),
+        protection_state = str(_snapshot_value(snapshot, "protection_state")),
+        profile_id = str(_snapshot_value(snapshot, "profile_id")),
+        probe_generation = str(_snapshot_value(snapshot, "probe_generation")),
+        environment_fingerprint = str(_snapshot_value(snapshot, "environment_fingerprint")),
+        reason = str(_snapshot_value(snapshot, "reason")),
+        remediation = str(_snapshot_value(snapshot, "remediation")),
+        retryable = bool(_snapshot_value(snapshot, "retryable")),
+        available = bool(_snapshot_value(snapshot, "available")),
+        qualified = bool(_snapshot_value(snapshot, "qualified")),
+        limitations = tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
     )
 
 
@@ -238,10 +243,10 @@ def issue_limited_grant(
     requested_mode: ToolExecutionMode = "limited",
 ) -> IssuedLimitedGrant:
     return _LIMITED_GRANTS.issue(
-        current_subject=current_subject,
-        tool_ui_session_id=tool_ui_session_id,
-        probe_generation=probe_generation,
-        requested_mode=requested_mode,
+        current_subject = current_subject,
+        tool_ui_session_id = tool_ui_session_id,
+        probe_generation = probe_generation,
+        requested_mode = requested_mode,
     )
 
 
@@ -257,8 +262,8 @@ def validate_limited_grant(
 
     return _LIMITED_GRANTS.validate(
         token,
-        current_subject=current_subject,
-        tool_ui_session_id=tool_ui_session_id,
-        probe_generation=probe_generation,
-        requested_mode=requested_mode,
+        current_subject = current_subject,
+        tool_ui_session_id = tool_ui_session_id,
+        probe_generation = probe_generation,
+        requested_mode = requested_mode,
     )

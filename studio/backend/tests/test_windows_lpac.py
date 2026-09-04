@@ -29,11 +29,15 @@ from core.inference import tools as inference_tools
 from core.inference import windows_lpac
 
 
-def _spec(workdir: Path, *argv: str, env: dict[str, str] | None = None):
+def _spec(
+    workdir: Path,
+    *argv: str,
+    env: dict[str, str] | None = None,
+):
     return os_sandbox.ToolLaunchPlan(
-        argv=tuple(argv) or (sys.executable, "-I", "-S", "-c", "pass"),
-        workdir=str(workdir),
-        env=env
+        argv = tuple(argv) or (sys.executable, "-I", "-S", "-c", "pass"),
+        workdir = str(workdir),
+        env = env
         or {
             "HOME": str(workdir),
             "PATH": os.environ.get("PATH", ""),
@@ -44,7 +48,7 @@ def _spec(workdir: Path, *argv: str, env: dict[str, str] | None = None):
 
 def test_source_only_public_api_and_profile_are_narrow_and_unique():
     path = Path(windows_lpac.__file__).resolve()
-    source = path.read_text(encoding="utf-8")
+    source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     public = {
         node.name
@@ -81,19 +85,19 @@ def test_local_directory_rejects_roots_unc_and_drive_relative_paths(canonical, s
     monkeypatch.setattr(windows_lpac.os.path, "splitdrive", lambda _path: split)
     monkeypatch.setattr(windows_lpac.os.path, "isdir", lambda _path: True)
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="non-root directory"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "non-root directory"):
         windows_lpac._canonical_local_directory("ignored")
 
 
 def test_local_directory_rejects_non_fixed_drives(monkeypatch):
-    kernel32 = SimpleNamespace(GetDriveTypeW=lambda _drive: 4)
-    monkeypatch.setattr(windows_lpac, "_api", lambda: SimpleNamespace(kernel32=kernel32))
+    kernel32 = SimpleNamespace(GetDriveTypeW = lambda _drive: 4)
+    monkeypatch.setattr(windows_lpac, "_api", lambda: SimpleNamespace(kernel32 = kernel32))
     monkeypatch.setattr(windows_lpac.os.path, "abspath", lambda _path: r"C:\work")
     monkeypatch.setattr(windows_lpac.os.path, "realpath", lambda path: path)
     monkeypatch.setattr(windows_lpac.os.path, "splitdrive", lambda _path: ("C:", r"\work"))
     monkeypatch.setattr(windows_lpac.os.path, "isdir", lambda _path: True)
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="network.*removable"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "network.*removable"):
         windows_lpac._canonical_local_directory("ignored")
 
 
@@ -112,14 +116,15 @@ def test_workdir_rejects_root_and_nested_reparse_points(monkeypatch, tmp_path):
 
     def fake_lstat(path):
         if os.fspath(path) == str(nested):
-            return SimpleNamespace(st_file_attributes=0x400)
+            return SimpleNamespace(st_file_attributes = 0x400)
         info = original_lstat(path)
-        return SimpleNamespace(st_file_attributes=0, st_dev=info.st_dev,
-                               st_ino=info.st_ino, st_nlink=info.st_nlink)
+        return SimpleNamespace(
+            st_file_attributes = 0, st_dev = info.st_dev, st_ino = info.st_ino, st_nlink = info.st_nlink
+        )
 
     monkeypatch.setattr(windows_lpac.os, "lstat", fake_lstat)
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="reparse point"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "reparse point"):
         windows_lpac._validate_workdir(str(workdir))
 
 
@@ -127,12 +132,12 @@ def test_workdir_rejects_a_hardlink_crossing_its_boundary(monkeypatch, tmp_path)
     workdir = tmp_path / "work"
     workdir.mkdir()
     outside = tmp_path / "outside"
-    outside.write_text("secret", encoding="utf-8")
+    outside.write_text("secret", encoding = "utf-8")
     os.link(outside, workdir / "crossing-link")
     monkeypatch.setattr(windows_lpac, "_canonical_local_directory", lambda _path: str(workdir))
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path / "manifests"))
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="hardlink crossing"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "hardlink crossing"):
         windows_lpac._validate_workdir(str(workdir))
 
 
@@ -144,17 +149,17 @@ def test_runtime_tree_rejects_reparse_points_and_boundary_hardlinks(monkeypatch,
     def reparse_root(path):
         info = original_lstat(path)
         if os.fspath(path) == str(runtime):
-            return SimpleNamespace(st_file_attributes=0x400, st_mode=info.st_mode)
+            return SimpleNamespace(st_file_attributes = 0x400, st_mode = info.st_mode)
         return info
 
     monkeypatch.setattr(windows_lpac.os, "lstat", reparse_root)
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="runtime contains a reparse"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "runtime contains a reparse"):
         windows_lpac._validate_runtime_trees((str(runtime),))
     monkeypatch.setattr(windows_lpac.os, "lstat", original_lstat)
     outside = tmp_path / "outside"
-    outside.write_text("host", encoding="utf-8")
+    outside.write_text("host", encoding = "utf-8")
     os.link(outside, runtime / "crossing-link")
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="hardlink crossing"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "hardlink crossing"):
         windows_lpac._validate_runtime_trees((str(runtime),))
 
 
@@ -162,8 +167,8 @@ def test_environment_strips_host_channels_and_uses_private_temp(monkeypatch, tmp
     workdir = tmp_path / "work"
     private = tmp_path / "profile" / "Temp" / "private"
     workdir.mkdir()
-    private.mkdir(parents=True)
-    identity = SimpleNamespace(private_temp=str(private), profile_folder=str(private.parent.parent))
+    private.mkdir(parents = True)
+    identity = SimpleNamespace(private_temp = str(private), profile_folder = str(private.parent.parent))
     executable = os.path.realpath(sys.executable)
     monkeypatch.setattr(windows_lpac.sys, "executable", executable)
 
@@ -194,17 +199,20 @@ def test_identity_cleanup_is_lifo_and_removes_only_its_sid(monkeypatch):
     events: list[tuple[object, ...]] = []
     sid = ctypes.c_void_p(1234)
     api = SimpleNamespace(
-        userenv=SimpleNamespace(DeleteAppContainerProfile=lambda moniker:
-                                events.append(("profile", moniker)) or 0),
-        advapi32=SimpleNamespace(FreeSid=lambda value: events.append(("sid", value.value))))
+        userenv = SimpleNamespace(
+            DeleteAppContainerProfile = lambda moniker: events.append(("profile", moniker)) or 0
+        ),
+        advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("sid", value.value))),
+    )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(
         windows_lpac,
         "_revoke_sid",
-        lambda path, value, *, exact=False: events.append(("acl", path, value.value, exact)),
+        lambda path, value, *, exact = False: events.append(("acl", path, value.value, exact)),
     )
-    monkeypatch.setattr(windows_lpac.shutil, "rmtree",
-                        lambda path, **_kwargs: events.append(("temp", path)))
+    monkeypatch.setattr(
+        windows_lpac.shutil, "rmtree", lambda path, **_kwargs: events.append(("temp", path))
+    )
     monkeypatch.setattr(windows_lpac.os, "unlink", lambda path: events.append(("manifest", path)))
     monkeypatch.setattr(windows_lpac, "_validated_private_temp", lambda _profile, private: private)
     identity = windows_lpac._InvocationIdentity(
@@ -252,12 +260,24 @@ def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tm
         "owner_pid": 111,
         "owner_created": 222,
     }
-    valid.write_text(json.dumps(payload), encoding="utf-8")
-    invalid.write_text(json.dumps({**payload, "moniker": "foreign.profile"}), encoding="utf-8")
-    escaped.write_text(json.dumps({**payload, "moniker": "unsloth.studio.escaped",
-                                   "private_temp": str(tmp_path / ("b" * 24))}), encoding="utf-8")
-    active.write_text(json.dumps({**payload, "moniker": "unsloth.studio.active",
-                                  "owner_pid": 333, "owner_created": 444}), encoding="utf-8")
+    valid.write_text(json.dumps(payload), encoding = "utf-8")
+    invalid.write_text(json.dumps({**payload, "moniker": "foreign.profile"}), encoding = "utf-8")
+    escaped.write_text(
+        json.dumps(
+            {
+                **payload,
+                "moniker": "unsloth.studio.escaped",
+                "private_temp": str(tmp_path / ("b" * 24)),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    active.write_text(
+        json.dumps(
+            {**payload, "moniker": "unsloth.studio.active", "owner_pid": 333, "owner_created": 444}
+        ),
+        encoding = "utf-8",
+    )
 
     class Derive:
         argtypes = None
@@ -268,14 +288,15 @@ def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tm
             return 0
 
     api = SimpleNamespace(
-        userenv=SimpleNamespace(DeriveAppContainerSidFromAppContainerName=Derive())
+        userenv = SimpleNamespace(DeriveAppContainerSidFromAppContainerName = Derive())
     )
     cleaned: list[str] = []
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: sid_text)
-    monkeypatch.setattr(windows_lpac, "_process_identity",
-                        lambda pid=None: (333, 444) if pid == 333 else None)
+    monkeypatch.setattr(
+        windows_lpac, "_process_identity", lambda pid = None: (333, 444) if pid == 333 else None
+    )
     monkeypatch.setattr(
         windows_lpac, "_profile_folder", lambda _api, _sid: payload["profile_folder"]
     )
@@ -291,11 +312,11 @@ def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tm
     assert invalid.exists() and escaped.exists() and active.exists()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def live_lpac_backend():
     if sys.platform != "win32":
         pytest.skip("native LPAC tests run only on Windows")
-    capability = os_sandbox.capability_snapshot(force=True)
+    capability = os_sandbox.capability_snapshot(force = True)
     assert capability.available is True, capability.reason
     assert capability.qualified is True, capability.reason
     assert capability.backend == "windows-lpac"
@@ -320,11 +341,11 @@ def _run_native(
     argv: tuple[str, ...]
     if script:
         script_path = workdir / f"lpac-{uuid.uuid4().hex}.py"
-        script_path.write_text(code, encoding="utf-8")
+        script_path.write_text(code, encoding = "utf-8")
         argv = (sys.executable, "-I", "-S", str(script_path))
     else:
         argv = (sys.executable, "-I", "-S", "-c", code)
-    prepared = backend.prepare(_spec(workdir, *argv, env=env))
+    prepared = backend.prepare(_spec(workdir, *argv, env = env))
     identity = prepared.spawn_callback._lpac_identity
     private_temp = Path(identity.private_temp)
     manifest = Path(identity.manifest_path)
@@ -333,23 +354,23 @@ def _run_native(
     try:
         process = os_sandbox.spawn_prepared_launch(
             prepared,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=prepared.workdir,
-            env=prepared.env,
-            close_fds=prepared.close_fds,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            stdin = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = prepared.workdir,
+            env = prepared.env,
+            close_fds = prepared.close_fds,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        process.wait(timeout=timeout)
+        process.wait(timeout = timeout)
         output = process.stdout.read()
     finally:
         if process is not None and process.poll() is None:
             process.kill()
-            process.wait(timeout=10)
+            process.wait(timeout = 10)
         prepared.cleanup()
         assert not private_temp.exists()
         assert not manifest.exists()
@@ -359,8 +380,14 @@ def _run_native(
 
 
 def _acl_text(path: Path) -> str:
-    result = subprocess.run(["icacls", str(path)], capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", check=False)
+    result = subprocess.run(
+        ["icacls", str(path)],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        check = False,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
@@ -402,9 +429,9 @@ def test_live_profiles_sids_acl_and_owned_artifacts_are_per_invocation(live_lpac
 def test_live_workdir_home_runtime_native_extension_and_fresh_temp(live_lpac_backend, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
-    (workdir / "input.txt").write_text("inside", encoding="utf-8")
+    (workdir / "input.txt").write_text("inside", encoding = "utf-8")
     outside = tmp_path / "host-secret"
-    outside.write_text("secret", encoding="utf-8")
+    outside.write_text("secret", encoding = "utf-8")
     outside_write = tmp_path / "host-write"
     runtime_write = Path(sys.executable).parent / f"lpac-write-{uuid.uuid4().hex}"
     code = f"""
@@ -436,14 +463,19 @@ print('LPAC_FILESYSTEM_OK')
     output, _elapsed = _run_native(live_lpac_backend, workdir, code)
 
     assert "LPAC_FILESYSTEM_OK" in output
-    assert (workdir / "output.txt").read_text(encoding="utf-8") == "written"
-    assert (workdir / "home-output").read_text(encoding="utf-8") == "home"
-    assert outside.read_text(encoding="utf-8") == "secret"
+    assert (workdir / "output.txt").read_text(encoding = "utf-8") == "written"
+    assert (workdir / "home-output").read_text(encoding = "utf-8") == "home"
+    assert outside.read_text(encoding = "utf-8") == "secret"
     assert not outside_write.exists()
     assert not runtime_write.exists()
 
 
-def _listener(family, address, *, udp=False):
+def _listener(
+    family,
+    address,
+    *,
+    udp = False,
+):
     kind = socket.SOCK_DGRAM if udp else socket.SOCK_STREAM
     server = socket.socket(family, kind)
     server.bind(address)
@@ -459,9 +491,9 @@ def test_live_ipv4_ipv6_udp_dns_loopback_and_host_pipe_are_denied(live_lpac_back
     workdir.mkdir()
     ipv4, address4 = _listener(socket.AF_INET, ("127.0.0.1", 0))
     ipv6, address6 = _listener(socket.AF_INET6, ("::1", 0))
-    udp, udp_address = _listener(socket.AF_INET, ("127.0.0.1", 0), udp=True)
+    udp, udp_address = _listener(socket.AF_INET, ("127.0.0.1", 0), udp = True)
     pipe_address = rf"\\.\pipe\unsloth-host-{uuid.uuid4().hex}"
-    pipe = Listener(pipe_address, family="AF_PIPE", authkey=None)
+    pipe = Listener(pipe_address, family = "AF_PIPE", authkey = None)
     pipe_reached = threading.Event()
 
     def accept_pipe():
@@ -472,7 +504,7 @@ def test_live_ipv4_ipv6_udp_dns_loopback_and_host_pipe_are_denied(live_lpac_back
         except OSError:
             pass
 
-    waiter = threading.Thread(target=accept_pipe, daemon=True)
+    waiter = threading.Thread(target = accept_pipe, daemon = True)
     waiter.start()
     code = f"""
 import socket, threading
@@ -521,7 +553,7 @@ print('LPAC_NETWORK_OK')
             server.close()
         if not pipe_reached.is_set():
             try:
-                Client(pipe_address, family="AF_PIPE", authkey=None).close()
+                Client(pipe_address, family = "AF_PIPE", authkey = None).close()
             except OSError:
                 pass
         waiter.join(2)
@@ -533,12 +565,15 @@ print('LPAC_NETWORK_OK')
 def test_live_unexpected_inheritable_handles_are_absent(live_lpac_backend, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
-                                      wintypes.LPCWSTR]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateEventW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
     kernel32.CreateEventW.restype = wintypes.HANDLE
-    kernel32.SetHandleInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD,
-                                              wintypes.DWORD]
+    kernel32.SetHandleInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]
     kernel32.SetHandleInformation.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     handles = []
@@ -566,7 +601,7 @@ for raw in os.environ['UNSLOTH_TEST_HANDLES'].split(','):
     assert ctypes.get_last_error() == 6
 print('LPAC_HANDLES_OK')
 """
-        output, _elapsed = _run_native(live_lpac_backend, workdir, code, env=env)
+        output, _elapsed = _run_native(live_lpac_backend, workdir, code, env = env)
     finally:
         for handle in handles:
             kernel32.CloseHandle(handle)
@@ -603,7 +638,7 @@ if __name__ == '__main__':
     print('LPAC_MULTIPROCESSING_OK')
 """
 
-    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout=40, script=True)
+    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 40, script = True)
 
     assert "LPAC_MULTIPROCESSING_OK" in output
 
@@ -633,7 +668,7 @@ if __name__ == '__main__':
     print('LPAC_PYTORCH_OK')
 """
 
-    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout=60, script=True)
+    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 60, script = True)
 
     assert "LPAC_PYTORCH_OK" in output
 
@@ -657,15 +692,15 @@ def test_live_python_and_terminal_share_launcher_and_stream(
 
     python_result = inference_tools._python_exec(
         "print('python-lpac-stream')",
-        timeout=20,
-        output_callback=chunks.append,
-        launch_record_callback=records.append,
+        timeout = 20,
+        output_callback = chunks.append,
+        launch_record_callback = records.append,
     )
     terminal_result = inference_tools._bash_exec(
         "echo terminal-lpac-stream",
-        timeout=20,
-        output_callback=chunks.append,
-        launch_record_callback=records.append,
+        timeout = 20,
+        output_callback = chunks.append,
+        launch_record_callback = records.append,
     )
 
     assert python_result.strip() == "python-lpac-stream"
@@ -682,7 +717,7 @@ def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch
     workdir.mkdir()
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
 
-    timed_out = inference_tools._python_exec("import time; time.sleep(30)", timeout=1)
+    timed_out = inference_tools._python_exec("import time; time.sleep(30)", timeout = 1)
     cancel = threading.Event()
     timer = threading.Timer(0.5, cancel.set)
     timer.start()
@@ -692,7 +727,7 @@ def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch
             if inference_tools._get_shell_cmd("sleep 30")[0].lower().endswith("bash.exe")
             else "timeout /t 30 /nobreak >NUL"
         )
-        cancelled = inference_tools._bash_exec(command, cancel_event=cancel, timeout=20)
+        cancelled = inference_tools._bash_exec(command, cancel_event = cancel, timeout = 20)
     finally:
         timer.cancel()
 
@@ -707,7 +742,7 @@ def test_live_job_termination_reaps_descendants(live_lpac_backend, tmp_path):
     child = workdir / "child.py"
     child.write_text(
         f"import pathlib,time; time.sleep(2); pathlib.Path({str(marker)!r}).write_text('escaped')",
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     parent = workdir / "parent.py"
     parent.write_text(
@@ -715,31 +750,31 @@ def test_live_job_termination_reaps_descendants(live_lpac_backend, tmp_path):
         f"subprocess.Popen([sys.executable, {str(child)!r}], close_fds=True)\n"
         "print('READY', flush=True)\n"
         "time.sleep(30)\n",
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     prepared = live_lpac_backend.prepare(_spec(workdir, sys.executable, "-I", "-S", str(parent)))
     process = None
     try:
         process = os_sandbox.spawn_prepared_launch(
             prepared,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=prepared.workdir,
-            env=prepared.env,
-            close_fds=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            stdin = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = prepared.workdir,
+            env = prepared.env,
+            close_fds = True,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         assert process.stdout.readline().strip() == "READY"
         process.terminate()
-        process.wait(timeout=10)
+        process.wait(timeout = 10)
     finally:
         if process is not None and process.poll() is None:
             process.kill()
-            process.wait(timeout=10)
+            process.wait(timeout = 10)
         prepared.cleanup()
 
     time.sleep(2.5)

@@ -10051,8 +10051,7 @@ def apply_limited_tool_descriptions(tools: list[dict]) -> list[dict]:
                 **tool,
                 "function": {
                     **function,
-                    "description": _LIMITED_TOOL_DESCRIPTION_PREFIX
-                    + host_description,
+                    "description": _LIMITED_TOOL_DESCRIPTION_PREFIX + host_description,
                 },
             }
         )
@@ -14601,11 +14600,7 @@ def _resume_windows_process(kernel32, ctypes, proc) -> bool:
         kernel32.CloseHandle(snapshot)
 
 
-def _windows_job_capture(
-    proc,
-    *,
-    apply_resource_limits: bool = False,
-) -> "_WindowsToolJob | None":
+def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_WindowsToolJob | None":
     """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
     the pid-based fallback."""
     if os.name != "nt":
@@ -14643,6 +14638,7 @@ def _windows_job_capture(
         if not job:
             return None
         if apply_resource_limits:
+
             class _BasicLimits(ctypes.Structure):
                 _fields_ = [
                     ("PerProcessUserTimeLimit", ctypes.c_int64),
@@ -14684,14 +14680,22 @@ def _windows_job_capture(
                     1,
                     int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
                 )
-                memory = max(
-                    1,
-                    int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
-                ) * 1024 * 1024 * 1024
-                cpu_time = max(
-                    1,
-                    int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
-                ) * 10_000_000
+                memory = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
+                    )
+                    * 1024
+                    * 1024
+                    * 1024
+                )
+                cpu_time = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+                    )
+                    * 10_000_000
+                )
             except ValueError:
                 kernel32.CloseHandle(job)
                 return None
@@ -14714,9 +14718,7 @@ def _windows_job_capture(
         if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
             kernel32.CloseHandle(job)
             return None
-        if apply_resource_limits and not _resume_windows_process(
-            kernel32, ctypes, proc
-        ):
+        if apply_resource_limits and not _resume_windows_process(kernel32, ctypes, proc):
             kernel32.TerminateJobObject(job, 1)
             kernel32.CloseHandle(job)
             return None
@@ -16375,9 +16377,7 @@ def _python_exec(
                 workdir = workdir,
                 env = safe_env,
                 preexec_fn = launch_preexec,
-                launcher_preexec_fn = (
-                    None if full_access else _sandbox_launcher_preexec
-                ),
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
                 requested_mode = effective_execution_mode,
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
@@ -16421,9 +16421,7 @@ def _python_exec(
             if effective_execution_mode == "limited":
                 # The child cannot run between creation and assignment to its
                 # resource-limited Job Object.
-                popen_kwargs["creationflags"] |= getattr(
-                    subprocess, "CREATE_SUSPENDED", 0x00000004
-                )
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
@@ -16434,8 +16432,7 @@ def _python_exec(
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
         if sys.platform == "win32" and (
-            effective_execution_mode == "limited"
-            or prepared_launch.backend == "windows-lpac"
+            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
         ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:
@@ -16617,9 +16614,7 @@ def _bash_exec(
                 workdir = workdir,
                 env = safe_env,
                 preexec_fn = launch_preexec,
-                launcher_preexec_fn = (
-                    None if full_access else _sandbox_launcher_preexec
-                ),
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
                 requested_mode = effective_execution_mode,
                 current_subject = current_subject,
                 tool_ui_session_id = tool_ui_session_id,
@@ -16660,17 +16655,14 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             if effective_execution_mode == "limited":
-                popen_kwargs["creationflags"] |= getattr(
-                    subprocess, "CREATE_SUSPENDED", 0x00000004
-                )
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
         proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
         if sys.platform == "win32" and (
-            effective_execution_mode == "limited"
-            or prepared_launch.backend == "windows-lpac"
+            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
         ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:

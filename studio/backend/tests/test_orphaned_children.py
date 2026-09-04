@@ -744,9 +744,9 @@ def test_the_diffusion_runner_stays_in_the_backend_group():
                 continue
             if getattr(call.func, "attr", None) != "Popen":
                 continue
-            assert not any(kw.arg == "start_new_session" for kw in call.keywords), (
-                "a session of its own is out of reach of the group the desktop stops"
-            )
+            assert not any(
+                kw.arg == "start_new_session" for kw in call.keywords
+            ), "a session of its own is out of reach of the group the desktop stops"
             return
     raise AssertionError("could not find the diffusion runner spawn")
 

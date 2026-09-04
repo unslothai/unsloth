@@ -177,10 +177,7 @@ class PreparedSandboxLaunch:
                 logger.warning("Could not remove private sandbox path %s", path, exc_info = True)
 
 
-def spawn_prepared_launch(
-    prepared: PreparedSandboxLaunch,
-    **popen_kwargs: Any,
-) -> object:
+def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
     """Spawn exactly one prepared launch, using its backend-owned launcher when set."""
     if prepared.spawn_callback is not None:
         return prepared.spawn_callback(prepared, popen_kwargs)
@@ -1202,14 +1199,14 @@ def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
 
 
 def _macos_seatbelt_profile(
-    *,
-    workdir: str,
-    private_tmp: str,
-    runtime_paths: tuple[str, ...],
+    *, workdir: str, private_tmp: str, runtime_paths: tuple[str, ...]
 ) -> str:
-    read_filters = ["(literal \"/\")", *_sbpl_path_filters(
-        (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
-    )]
+    read_filters = [
+        '(literal "/")',
+        *_sbpl_path_filters(
+            (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
+        ),
+    ]
     write_filters = _sbpl_path_filters((workdir, private_tmp))
     temp_encoded, _ = _sbpl_path(private_tmp)
     device_filters = _sbpl_path_filters(_MACOS_DEVICES)
@@ -1217,8 +1214,8 @@ def _macos_seatbelt_profile(
         tuple(path for path in _MACOS_DENIED_EXECUTABLES if os.path.exists(path))
     )
     sysctl_filters = [
-        *(f'(sysctl-name {json.dumps(name)})' for name in _MACOS_SYSCTL_NAMES),
-        *(f'(sysctl-name-prefix {json.dumps(name)})' for name in _MACOS_SYSCTL_PREFIXES),
+        *(f"(sysctl-name {json.dumps(name)})" for name in _MACOS_SYSCTL_NAMES),
+        *(f"(sysctl-name-prefix {json.dumps(name)})" for name in _MACOS_SYSCTL_PREFIXES),
     ]
     lines = [
         "(version 1)",
@@ -1247,7 +1244,7 @@ def _macos_seatbelt_profile(
         f"(allow network-bind (local unix-socket (subpath {temp_encoded})))",
         f"(allow network-outbound (remote unix-socket (subpath {temp_encoded})))",
         "(allow sysctl-read " + " ".join(sysctl_filters) + ")",
-        "(allow iokit-open (iokit-registry-entry-class \"RootDomainUserClient\"))",
+        '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup",
         '  (global-name "com.apple.system.opendirectoryd.libinfo")',
         '  (global-name "com.apple.PowerManagement.control"))',
@@ -1256,9 +1253,7 @@ def _macos_seatbelt_profile(
 
 
 def _sanitize_macos_environment(
-    env: dict[str, str],
-    workdir: str,
-    private_tmp: str,
+    env: dict[str, str], workdir: str, private_tmp: str
 ) -> dict[str, str]:
     sanitized = {
         key: value
@@ -1794,17 +1789,13 @@ def _platform_backend() -> SandboxBackend | None:
     if sys.platform == "win32":
         if _WINDOWS_BACKEND is None:
             from .windows_lpac import WindowsLpacBackend
-
             _WINDOWS_BACKEND = WindowsLpacBackend()
         return _WINDOWS_BACKEND
     return None
 
 
 def _capability_with_identity(
-    capability: SandboxCapability,
-    *,
-    environment: str,
-    fingerprint: str,
+    capability: SandboxCapability, *, environment: str, fingerprint: str
 ) -> SandboxCapability:
     available = capability.qualified if capability.available is None else capability.available
     protection_state = capability.protection_state if available else "unavailable"
@@ -1918,7 +1909,9 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 "OS isolation is available; Limited mode is not authorized for this capability generation"
             )
         if not canonical.current_subject or not canonical.tool_ui_session_id:
-            raise SandboxUnavailableError("Limited mode requires an authenticated Studio UI session")
+            raise SandboxUnavailableError(
+                "Limited mode requires an authenticated Studio UI session"
+            )
         try:
             from .tool_isolation import LimitedGrantError, validate_limited_grant
         except ImportError as exc:

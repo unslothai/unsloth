@@ -1299,9 +1299,7 @@ def run_safetensors_tool_loop(
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
             if records_local_launch:
-                start_event["execution_state"] = (
-                    "awaiting_approval" if needs_confirm else "pending"
-                )
+                start_event["execution_state"] = "awaiting_approval" if needs_confirm else "pending"
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1524,9 +1522,7 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(
                 decision,
                 result,
-                execution_record = (
-                    execution_record.get("value") if records_local_launch else None
-                ),
+                execution_record = (execution_record.get("value") if records_local_launch else None),
             )
             if provisional_match:
                 provisional_resolved = True

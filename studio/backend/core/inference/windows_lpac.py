@@ -495,9 +495,7 @@ def _set_sid_acl(
         entry = _EXPLICIT_ACCESS_W(
             access,
             mode,
-            (
-                _SUB_CONTAINERS_AND_OBJECTS_INHERIT if os.path.isdir(path) else 0
-            )
+            (_SUB_CONTAINERS_AND_OBJECTS_INHERIT if os.path.isdir(path) else 0)
             if inheritance is None
             else inheritance,
             trustee,
@@ -515,9 +513,7 @@ def _set_sid_acl(
             # descendants. Ancestor traversal is deliberately an exact ACE,
             # so use SetFileSecurity with an absolute descriptor instead.
             exact_descriptor = _SECURITY_DESCRIPTOR()
-            if not api.advapi32.InitializeSecurityDescriptor(
-                ctypes.byref(exact_descriptor), 1
-            ):
+            if not api.advapi32.InitializeSecurityDescriptor(ctypes.byref(exact_descriptor), 1):
                 raise _winerror(f"InitializeSecurityDescriptor({path})")
             if not api.advapi32.SetSecurityDescriptorDacl(
                 ctypes.byref(exact_descriptor), True, new_acl, False
@@ -571,7 +567,12 @@ def _grant_traverse(path: str, sid: ctypes.c_void_p) -> None:
     )
 
 
-def _revoke_sid(path: str, sid: ctypes.c_void_p, *, exact: bool = False) -> None:
+def _revoke_sid(
+    path: str,
+    sid: ctypes.c_void_p,
+    *,
+    exact: bool = False,
+) -> None:
     if os.path.exists(path):
         _set_sid_acl(path, sid, mode = _REVOKE_ACCESS, inheritance = 0 if exact else None)
 
@@ -648,7 +649,9 @@ def _validate_runtime_trees(roots: tuple[str, ...]) -> None:
         try:
             info = os.lstat(path)
         except OSError as exc:
-            raise SandboxUnavailableError(f"an LPAC runtime path cannot be inspected: {path}") from exc
+            raise SandboxUnavailableError(
+                f"an LPAC runtime path cannot be inspected: {path}"
+            ) from exc
         if getattr(info, "st_file_attributes", 0) & 0x400:
             raise SandboxUnavailableError(f"an LPAC runtime contains a reparse point: {path}")
         if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
@@ -706,20 +709,16 @@ def _runtime_roots(workdir: str, argv: tuple[str, ...]) -> tuple[str, ...]:
             raise SandboxUnavailableError("the LPAC runtime and writable workdir overlap")
         if any(_is_within(canonical, existing) for existing in selected):
             continue
-        selected = [
-            existing
-            for existing in selected
-            if not _is_within(existing, canonical)
-        ]
+        selected = [existing for existing in selected if not _is_within(existing, canonical)]
         selected.append(canonical)
     return tuple(selected)
 
 
 def _is_within(path: str, root: str) -> bool:
     try:
-        return os.path.commonpath((os.path.realpath(path), os.path.realpath(root))) == os.path.realpath(
-            root
-        )
+        return os.path.commonpath(
+            (os.path.realpath(path), os.path.realpath(root))
+        ) == os.path.realpath(root)
     except ValueError:
         return False
 
@@ -938,7 +937,9 @@ class WindowsLpacProcess:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
-        milliseconds = _INFINITE if timeout is None else max(0, min(int(timeout * 1000), 0xFFFFFFFE))
+        milliseconds = (
+            _INFINITE if timeout is None else max(0, min(int(timeout * 1000), 0xFFFFFFFE))
+        )
         result = _api().kernel32.WaitForSingleObject(self._handle, milliseconds)
         if result == _WAIT_TIMEOUT:
             raise subprocess.TimeoutExpired(self.args, timeout)
@@ -994,12 +995,15 @@ def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
             info.BasicLimitInformation.ActiveProcessLimit = max(
                 1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
             )
-            memory = max(
-                1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8"))
-            ) * 1024 * 1024 * 1024
-            info.BasicLimitInformation.PerProcessUserTimeLimit = max(
-                1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"))
-            ) * 10_000_000
+            memory = (
+                max(1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")))
+                * 1024
+                * 1024
+                * 1024
+            )
+            info.BasicLimitInformation.PerProcessUserTimeLimit = (
+                max(1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"))) * 10_000_000
+            )
         except ValueError as exc:
             raise SandboxUnavailableError("Windows sandbox resource limits are invalid") from exc
         info.ProcessMemoryLimit = memory
@@ -1020,9 +1024,7 @@ def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
 
 
 def _spawn_lpac(
-    prepared: PreparedSandboxLaunch,
-    popen_kwargs: dict[str, Any],
-    identity: _InvocationIdentity,
+    prepared: PreparedSandboxLaunch, popen_kwargs: dict[str, Any], identity: _InvocationIdentity
 ) -> WindowsLpacProcess:
     if (
         popen_kwargs.get("stdout") != subprocess.PIPE
@@ -1165,10 +1167,7 @@ def _spawn_lpac(
 
 
 def _safe_environment(
-    env: dict[str, str],
-    workdir: str,
-    identity: _InvocationIdentity,
-    argv: tuple[str, ...],
+    env: dict[str, str], workdir: str, identity: _InvocationIdentity, argv: tuple[str, ...]
 ) -> dict[str, str]:
     denied = {
         "APPDATA",

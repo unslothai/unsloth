@@ -102,9 +102,9 @@ def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
     gate.write_text("go")
     deadline = time.monotonic() + _LEAK_WINDOW_S
     while time.monotonic() < deadline:
-        assert not sentinel.exists(), (
-            "a grandchild survived the process-group kill and wrote its sentinel"
-        )
+        assert (
+            not sentinel.exists()
+        ), "a grandchild survived the process-group kill and wrote its sentinel"
         time.sleep(0.02)
 
 
@@ -168,10 +168,7 @@ def test_launch_event_precedes_output_in_the_same_fifo():
 
     assert result == "done"
     assert [event["type"] for event in events] == ["tool_start", "tool_output"]
-    assert events[0]["execution_record"] == {
-        "effective_mode": "limited",
-        "os_isolation": False,
-    }
+    assert events[0]["execution_record"] == {"effective_mode": "limited", "os_isolation": False}
 
 
 def test_heartbeats_emitted_while_tool_blocks():
@@ -615,9 +612,7 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
-    result = _bash_exec(
-        command, timeout = None, output_callback = chunks.append, disable_sandbox = True
-    )
+    result = _bash_exec(command, timeout = None, output_callback = chunks.append, disable_sandbox = True)
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)

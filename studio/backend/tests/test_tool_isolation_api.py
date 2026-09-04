@@ -20,28 +20,31 @@ from routes import inference as inference_route
 
 
 def _capability(
-    *, generation: str = "probe-1", qualified: bool = False, available: bool | None = None
+    *,
+    generation: str = "probe-1",
+    qualified: bool = False,
+    available: bool | None = None,
 ):
     if available is None:
         available = qualified
     return isolation.ToolIsolationCapability(
-        environment="wsl2",
-        backend="bubblewrap",
-        protection_state="preview" if qualified else "unavailable",
-        profile_id="bubblewrap-v1",
-        probe_generation=generation,
-        environment_fingerprint="fingerprint-1",
-        reason="live probe did not qualify" if not qualified else "",
-        remediation="Use Limited mode for this session" if not qualified else "",
-        retryable=True,
-        qualified=qualified,
-        available=available,
+        environment = "wsl2",
+        backend = "bubblewrap",
+        protection_state = "preview" if qualified else "unavailable",
+        profile_id = "bubblewrap-v1",
+        probe_generation = generation,
+        environment_fingerprint = "fingerprint-1",
+        reason = "live probe did not qualify" if not qualified else "",
+        remediation = "Use Limited mode for this session" if not qualified else "",
+        retryable = True,
+        qualified = qualified,
+        available = available,
     )
 
 
 def _client(*, via_api_key: bool) -> TestClient:
     app = FastAPI()
-    app.include_router(inference_route.studio_router, prefix="/api/inference")
+    app.include_router(inference_route.studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "actor-a"
     app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
     return TestClient(app)
@@ -50,9 +53,9 @@ def _client(*, via_api_key: bool) -> TestClient:
 @pytest.mark.parametrize(
     "payload",
     [
-        ChatCompletionRequest(messages=[]),
-        ResponsesRequest(input="hello"),
-        AnthropicMessagesRequest(messages=[]),
+        ChatCompletionRequest(messages = []),
+        ResponsesRequest(input = "hello"),
+        AnthropicMessagesRequest(messages = []),
     ],
 )
 def test_request_families_default_to_required_os_isolation(payload):
@@ -65,9 +68,9 @@ def test_request_families_default_to_required_os_isolation(payload):
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda: ChatCompletionRequest(messages=[], tool_execution_mode=None),
-        lambda: ResponsesRequest(input="hello", tool_execution_mode=None),
-        lambda: AnthropicMessagesRequest(messages=[], tool_execution_mode=None),
+        lambda: ChatCompletionRequest(messages = [], tool_execution_mode = None),
+        lambda: ResponsesRequest(input = "hello", tool_execution_mode = None),
+        lambda: AnthropicMessagesRequest(messages = [], tool_execution_mode = None),
     ],
 )
 def test_explicit_null_execution_mode_normalizes_to_required(factory):
@@ -77,9 +80,9 @@ def test_explicit_null_execution_mode_normalizes_to_required(factory):
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda **values: ChatCompletionRequest(messages=[], **values),
-        lambda **values: ResponsesRequest(input="hello", **values),
-        lambda **values: AnthropicMessagesRequest(messages=[], **values),
+        lambda **values: ChatCompletionRequest(messages = [], **values),
+        lambda **values: ResponsesRequest(input = "hello", **values),
+        lambda **values: AnthropicMessagesRequest(messages = [], **values),
     ],
 )
 @pytest.mark.parametrize("legacy", ["permission_mode", "bypass_permissions"])
@@ -94,16 +97,16 @@ def test_legacy_full_permissions_normalize_to_full_execution(factory, legacy):
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda **values: ChatCompletionRequest(messages=[], **values),
-        lambda **values: ResponsesRequest(input="hello", **values),
-        lambda **values: AnthropicMessagesRequest(messages=[], **values),
+        lambda **values: ChatCompletionRequest(messages = [], **values),
+        lambda **values: ResponsesRequest(input = "hello", **values),
+        lambda **values: AnthropicMessagesRequest(messages = [], **values),
     ],
 )
 def test_limited_mode_does_not_bypass_approval_or_permissions(factory):
     request = factory(
-        tool_execution_mode="limited",
-        limited_grant="opaque",
-        tool_ui_session_id="page-a",
+        tool_execution_mode = "limited",
+        limited_grant = "opaque",
+        tool_ui_session_id = "page-a",
     )
     assert request.tool_execution_mode == "limited"
     assert request.bypass_permissions is False
@@ -112,11 +115,11 @@ def test_limited_mode_does_not_bypass_approval_or_permissions(factory):
 
 def test_responses_translation_preserves_isolation_fields():
     payload = ResponsesRequest(
-        input="hello",
-        tool_execution_mode="limited",
-        limited_grant="opaque",
-        tool_ui_session_id="page-a",
-        permission_mode="ask",
+        input = "hello",
+        tool_execution_mode = "limited",
+        limited_grant = "opaque",
+        tool_ui_session_id = "page-a",
+        permission_mode = "ask",
     )
     translated = inference_route._build_chat_request(payload, [], False)
     assert translated.tool_execution_mode == "limited"
@@ -127,40 +130,40 @@ def test_responses_translation_preserves_isolation_fields():
 
 
 def test_store_binds_grant_to_actor_ui_session_generation_and_mode():
-    store = isolation.LimitedGrantStore(ttl_seconds=60, max_entries=8)
+    store = isolation.LimitedGrantStore(ttl_seconds = 60, max_entries = 8)
     issued = store.issue(
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
     )
 
     validated = store.validate(
         issued.token,
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
-        requested_mode="limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
+        requested_mode = "limited",
     )
     assert validated.current_subject == "actor-a"
     assert validated.tool_ui_session_id == "page-a"
     assert validated.probe_generation == "probe-1"
 
     mismatches = [
-        dict(current_subject="actor-b", tool_ui_session_id="page-a", probe_generation="probe-1"),
-        dict(current_subject="actor-a", tool_ui_session_id="page-b", probe_generation="probe-1"),
-        dict(current_subject="actor-a", tool_ui_session_id="page-a", probe_generation="probe-2"),
+        dict(current_subject = "actor-b", tool_ui_session_id = "page-a", probe_generation = "probe-1"),
+        dict(current_subject = "actor-a", tool_ui_session_id = "page-b", probe_generation = "probe-1"),
+        dict(current_subject = "actor-a", tool_ui_session_id = "page-a", probe_generation = "probe-2"),
     ]
     for values in mismatches:
         with pytest.raises(isolation.LimitedGrantError):
-            store.validate(issued.token, requested_mode="limited", **values)
+            store.validate(issued.token, requested_mode = "limited", **values)
 
-    with pytest.raises(isolation.LimitedGrantError, match="only Limited mode"):
+    with pytest.raises(isolation.LimitedGrantError, match = "only Limited mode"):
         store.validate(
             issued.token,
-            current_subject="actor-a",
-            tool_ui_session_id="page-a",
-            probe_generation="probe-1",
-            requested_mode="full",
+            current_subject = "actor-a",
+            tool_ui_session_id = "page-a",
+            probe_generation = "probe-1",
+            requested_mode = "full",
         )
 
 
@@ -168,21 +171,21 @@ def test_forged_and_expired_grants_fail_without_leaking_token(monkeypatch):
     clock = {"monotonic": 10.0, "wall": 1_000.0}
     monkeypatch.setattr(isolation.time, "monotonic", lambda: clock["monotonic"])
     monkeypatch.setattr(isolation.time, "time", lambda: clock["wall"])
-    store = isolation.LimitedGrantStore(ttl_seconds=1, max_entries=8)
+    store = isolation.LimitedGrantStore(ttl_seconds = 1, max_entries = 8)
     issued = store.issue(
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
     )
 
     forged = f"{issued.token}forged"
     with pytest.raises(isolation.LimitedGrantError) as forged_error:
         store.validate(
             forged,
-            current_subject="actor-a",
-            tool_ui_session_id="page-a",
-            probe_generation="probe-1",
-            requested_mode="limited",
+            current_subject = "actor-a",
+            tool_ui_session_id = "page-a",
+            probe_generation = "probe-1",
+            requested_mode = "limited",
         )
     assert forged not in str(forged_error.value)
     assert issued.token not in str(forged_error.value)
@@ -191,10 +194,10 @@ def test_forged_and_expired_grants_fail_without_leaking_token(monkeypatch):
     with pytest.raises(isolation.LimitedGrantError) as expired_error:
         store.validate(
             issued.token,
-            current_subject="actor-a",
-            tool_ui_session_id="page-a",
-            probe_generation="probe-1",
-            requested_mode="limited",
+            current_subject = "actor-a",
+            tool_ui_session_id = "page-a",
+            probe_generation = "probe-1",
+            requested_mode = "limited",
         )
     assert expired_error.value.code == "EXPIRED_LIMITED_GRANT"
 
@@ -208,38 +211,38 @@ def test_store_uses_constant_time_comparison_and_bounded_cleanup(monkeypatch):
         return original(left, right)
 
     monkeypatch.setattr(isolation.hmac, "compare_digest", _compare)
-    store = isolation.LimitedGrantStore(ttl_seconds=60, max_entries=2)
+    store = isolation.LimitedGrantStore(ttl_seconds = 60, max_entries = 2)
     first = store.issue(
-        current_subject="actor-a", tool_ui_session_id="page-a", probe_generation="probe-1"
+        current_subject = "actor-a", tool_ui_session_id = "page-a", probe_generation = "probe-1"
     )
     second = store.issue(
-        current_subject="actor-a", tool_ui_session_id="page-a", probe_generation="probe-1"
+        current_subject = "actor-a", tool_ui_session_id = "page-a", probe_generation = "probe-1"
     )
     third = store.issue(
-        current_subject="actor-a", tool_ui_session_id="page-a", probe_generation="probe-1"
+        current_subject = "actor-a", tool_ui_session_id = "page-a", probe_generation = "probe-1"
     )
     assert len(store._records) == 2
     with pytest.raises(isolation.LimitedGrantError):
         store.validate(
             first.token,
-            current_subject="actor-a",
-            tool_ui_session_id="page-a",
-            probe_generation="probe-1",
-            requested_mode="limited",
+            current_subject = "actor-a",
+            tool_ui_session_id = "page-a",
+            probe_generation = "probe-1",
+            requested_mode = "limited",
         )
     store.validate(
         second.token,
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
-        requested_mode="limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
+        requested_mode = "limited",
     )
     store.validate(
         third.token,
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
-        requested_mode="limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
+        requested_mode = "limited",
     )
     assert len(comparisons) == 3
 
@@ -252,7 +255,7 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
         return _capability()
 
     monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", _snapshot)
-    with _client(via_api_key=False) as client:
+    with _client(via_api_key = False) as client:
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 200
     expected = asdict(_capability())
@@ -260,7 +263,7 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     assert response.json() == expected
     assert calls == [True]
 
-    with _client(via_api_key=True) as client:
+    with _client(via_api_key = True) as client:
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 403
     assert calls == [True]
@@ -271,13 +274,13 @@ def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
 
     def _snapshot(*, force: bool):
         calls.append(force)
-        return _capability(generation="probe-2")
+        return _capability(generation = "probe-2")
 
     monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", _snapshot)
-    with _client(via_api_key=False) as client:
+    with _client(via_api_key = False) as client:
         response = client.post(
             "/api/inference/tool-isolation/limited-grant",
-            json={"ui_session_id": "page-a", "probe_generation": "probe-1"},
+            json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
         )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "CAPABILITY_CHANGED"
@@ -305,10 +308,10 @@ def test_grant_endpoint_issues_opaque_session_grant_and_is_ui_only(monkeypatch):
     monkeypatch.setattr(
         inference_route, "tool_isolation_capability_snapshot", lambda *, force: _capability()
     )
-    with _client(via_api_key=False) as client:
+    with _client(via_api_key = False) as client:
         response = client.post(
             "/api/inference/tool-isolation/limited-grant",
-            json={"ui_session_id": "page-a", "probe_generation": "probe-1"},
+            json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
         )
     assert response.status_code == 200
     body = response.json()
@@ -318,16 +321,16 @@ def test_grant_endpoint_issues_opaque_session_grant_and_is_ui_only(monkeypatch):
 
     validated = isolation.validate_limited_grant(
         body["grant"],
-        current_subject="actor-a",
-        tool_ui_session_id="page-a",
-        probe_generation="probe-1",
-        requested_mode="limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = "probe-1",
+        requested_mode = "limited",
     )
     assert validated.probe_generation == "probe-1"
 
-    with _client(via_api_key=True) as client:
+    with _client(via_api_key = True) as client:
         forbidden = client.post(
             "/api/inference/tool-isolation/limited-grant",
-            json={"ui_session_id": "page-a", "probe_generation": "probe-1"},
+            json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
         )
     assert forbidden.status_code == 403

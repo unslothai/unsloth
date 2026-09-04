@@ -295,16 +295,12 @@ def test_mount_topology_changes_environment_fingerprint(monkeypatch):
     monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
     monkeypatch.setattr(os_sandbox, "_environment_class", lambda: "container")
     monkeypatch.setattr(os_sandbox.shutil, "which", lambda _name: None)
-    mounts = [
-        os_sandbox._LinuxMount("1", "0", "0:1", "/", "/", "rw", "overlay", "overlay", "rw")
-    ]
+    mounts = [os_sandbox._LinuxMount("1", "0", "0:1", "/", "/", "rw", "overlay", "overlay", "rw")]
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: tuple(mounts))
 
     before = os_sandbox._environment_fingerprint(None)
     mounts.append(
-        os_sandbox._LinuxMount(
-            "2", "1", "0:2", "/", "/run/secrets", "ro", "tmpfs", "tmpfs", "ro"
-        )
+        os_sandbox._LinuxMount("2", "1", "0:2", "/", "/run/secrets", "ro", "tmpfs", "tmpfs", "ro")
     )
 
     assert os_sandbox._environment_fingerprint(None) != before
@@ -385,9 +381,7 @@ def test_linux_nested_mount_beneath_exposed_root_is_masked(monkeypatch, tmp_path
     group = identity / "group"
     passwd.touch()
     group.touch()
-    mount = os_sandbox._LinuxMount(
-        "2", "1", "0:2", "/", str(nested), "rw", "9p", "drvfs", "rw"
-    )
+    mount = os_sandbox._LinuxMount("2", "1", "0:2", "/", str(nested), "rw", "9p", "drvfs", "rw")
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: (mount,))
     monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
@@ -408,9 +402,7 @@ def test_linux_nested_mount_beneath_exposed_root_is_masked(monkeypatch, tmp_path
 
 
 def test_wsl_workdir_on_drvfs_is_ineligible(monkeypatch, tmp_path):
-    mount = os_sandbox._LinuxMount(
-        "2", "1", "0:2", "/", str(tmp_path), "rw", "9p", "drvfs", "rw"
-    )
+    mount = os_sandbox._LinuxMount("2", "1", "0:2", "/", str(tmp_path), "rw", "9p", "drvfs", "rw")
     monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "wsl2")
     monkeypatch.setattr(os_sandbox, "_linux_mount_for_path", lambda _path: mount)
 
@@ -706,9 +698,7 @@ def test_workdir_validation_rejects_unix_socket(tmp_path):
         server = socket.socket(socket.AF_UNIX)
         try:
             server.bind(str(workdir / "host.sock"))
-            with pytest.raises(
-                os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"
-            ):
+            with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
                 os_sandbox._validate_workdir(str(workdir))
         finally:
             server.close()
@@ -791,7 +781,12 @@ def _patch_tool_harness(monkeypatch, workdir: Path):
     monkeypatch.setattr(inference_tools, "_build_bypass_env", lambda _path: {"MODE": "bypass"})
 
 
-def _invoke_tool(kind: str, *, disable_sandbox: bool = False, **kwargs) -> str:
+def _invoke_tool(
+    kind: str,
+    *,
+    disable_sandbox: bool = False,
+    **kwargs,
+) -> str:
     if kind == "python":
         return inference_tools._python_exec(
             "print('ok')", disable_sandbox = disable_sandbox, **kwargs
@@ -841,10 +836,13 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     monkeypatch.setattr(inference_tools, "prepare_tool_launch", prepare)
     monkeypatch.setattr(inference_tools.subprocess, "Popen", popen)
 
-    assert _invoke_tool(
-        kind,
-        launch_record_callback = lambda record: lifecycle_events.append(record),
-    ) == "ok\n"
+    assert (
+        _invoke_tool(
+            kind,
+            launch_record_callback = lambda record: lifecycle_events.append(record),
+        )
+        == "ok\n"
+    )
     assert len(specs) == 1
     assert len(popen_calls) == 1
     launched_argv, launched_kwargs = popen_calls[0]
@@ -929,9 +927,7 @@ def test_explicit_disable_sandbox_uses_full_launch_plan(kind, monkeypatch, tmp_p
     reason = "Limited compatibility evidence is collected on macOS and Windows",
 )
 @pytest.mark.parametrize("kind", ["python", "terminal"])
-def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(
-    kind, monkeypatch, tmp_path
-):
+def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(kind, monkeypatch, tmp_path):
     workdir = tmp_path / "limited-work"
     workdir.mkdir()
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
@@ -963,9 +959,7 @@ def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object behavior")
-def test_windows_limited_resource_setup_fails_before_payload_runs(
-    monkeypatch, tmp_path
-):
+def test_windows_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp_path):
     workdir = tmp_path / "limited-work"
     workdir.mkdir()
     sentinel = workdir / "payload-ran"
@@ -1022,7 +1016,9 @@ def test_posix_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp
 def qualified_native_capability():
     capability = os_sandbox.sandbox_capability()
     if capability.backend != "linux-bubblewrap" or not capability.qualified:
-        pytest.skip(f"qualified Bubblewrap is unavailable: {capability.backend}: {capability.reason}")
+        pytest.skip(
+            f"qualified Bubblewrap is unavailable: {capability.backend}: {capability.reason}"
+        )
     return capability
 
 

@@ -701,15 +701,11 @@ def test_local_process_events_carry_the_actual_execution_record(monkeypatch, too
         limited_grant = "grant-1",
     )
     events = [
-        json.loads(line[6:])
-        for line in lines
-        if line.startswith("data: ") and line[6:] != "[DONE]"
+        json.loads(line[6:]) for line in lines if line.startswith("data: ") and line[6:] != "[DONE]"
     ]
     starts = [event for event in events if event.get("type") == "tool_start"]
     end = next(event for event in events if event.get("type") == "tool_end")
-    output_index = next(
-        i for i, event in enumerate(events) if event.get("type") == "tool_output"
-    )
+    output_index = next(i for i, event in enumerate(events) if event.get("type") == "tool_output")
     recorded_start_index = next(
         i for i, event in enumerate(events) if event.get("execution_record") == record_payload
     )

@@ -15923,9 +15923,7 @@ def _read_tool_isolation_capability(*, force: bool) -> Any:
         )
 
 
-@studio_router.get(
-    "/tool-isolation/capability", response_model = ToolIsolationCapabilityResponse
-)
+@studio_router.get("/tool-isolation/capability", response_model = ToolIsolationCapabilityResponse)
 def get_tool_isolation_capability(
     current_subject: str = Depends(get_current_subject),
     via_api_key: _ToolIsolationViaApiKey = False,

@@ -25,11 +25,15 @@ from core.inference import os_sandbox
 from core.inference import tools as inference_tools
 
 
-def _spec(workdir: Path, *argv: str, env: dict[str, str] | None = None):
+def _spec(
+    workdir: Path,
+    *argv: str,
+    env: dict[str, str] | None = None,
+):
     return os_sandbox.ToolLaunchPlan(
-        argv=tuple(argv) or (sys.executable, "-I", "-c", "pass"),
-        workdir=str(workdir),
-        env=env
+        argv = tuple(argv) or (sys.executable, "-I", "-c", "pass"),
+        workdir = str(workdir),
+        env = env
         or {
             "HOME": str(workdir),
             "LANG": "C.UTF-8",
@@ -41,7 +45,7 @@ def _spec(workdir: Path, *argv: str, env: dict[str, str] | None = None):
 
 def test_probe_accepts_only_the_system_owned_launcher_but_reports_preview(monkeypatch):
     backend = os_sandbox.MacOSSeatbeltBackend()
-    launcher = SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0)
+    launcher = SimpleNamespace(st_mode = stat.S_IFREG | 0o755, st_uid = 0)
     monkeypatch.setattr(os_sandbox.os, "stat", lambda *_a, **_k: launcher)
     monkeypatch.setattr(
         os_sandbox,
@@ -50,8 +54,8 @@ def test_probe_accepts_only_the_system_owned_launcher_but_reports_preview(monkey
             current.identity,
             False,
             "live probe passed",
-            available=True,
-            protection_state="preview",
+            available = True,
+            protection_state = "preview",
         ),
     )
 
@@ -83,7 +87,7 @@ def test_probe_rejects_an_untrusted_launcher(mode, uid, monkeypatch):
     monkeypatch.setattr(
         os_sandbox.os,
         "stat",
-        lambda *_a, **_k: SimpleNamespace(st_mode=mode, st_uid=uid),
+        lambda *_a, **_k: SimpleNamespace(st_mode = mode, st_uid = uid),
     )
 
     capability = backend.probe()
@@ -106,12 +110,12 @@ def test_sbpl_path_json_encodes_a_canonical_path(tmp_path):
 
 @pytest.mark.parametrize("unsafe", ["", "relative", "bad\0path", "bad\npath", "bad\rpath"])
 def test_sbpl_path_rejects_unsafe_spellings(unsafe):
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="absolute.*NUL/newline"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "absolute.*NUL/newline"):
         os_sandbox._sbpl_path(unsafe)
 
 
 def test_sbpl_path_rejects_a_missing_absolute_path(tmp_path):
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match="does not exist"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "does not exist"):
         os_sandbox._sbpl_path(str(tmp_path / "missing"))
 
 
@@ -139,9 +143,9 @@ def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     monkeypatch.setattr(os_sandbox, "_MACOS_DENIED_EXECUTABLES", tuple(denied))
 
     profile = os_sandbox._macos_seatbelt_profile(
-        workdir=str(workdir),
-        private_tmp=str(private_tmp),
-        runtime_paths=(str(runtime),),
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (str(runtime),),
     )
     encoded_tmp = json.dumps(os.path.realpath(private_tmp))
 
@@ -167,7 +171,7 @@ def test_prepare_uses_a_private_environment_and_removes_it_on_cleanup(monkeypatc
     prepared = backend.prepare(
         _spec(
             workdir,
-            env={
+            env = {
                 "KEEP": "yes",
                 "DYLD_INSERT_LIBRARIES": "/host/inject.dylib",
                 "DISPLAY": ":0",
@@ -209,13 +213,13 @@ def test_prepare_failure_removes_its_private_temp(monkeypatch, tmp_path):
         lambda **_k: (_ for _ in ()).throw(RuntimeError("profile failed")),
     )
 
-    with pytest.raises(RuntimeError, match="profile failed"):
+    with pytest.raises(RuntimeError, match = "profile failed"):
         backend.prepare(_spec(workdir))
 
     assert not private_tmp.exists()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def live_seatbelt_backend():
     if sys.platform != "darwin":
         pytest.skip("native Seatbelt tests run only on Darwin")
@@ -240,15 +244,15 @@ def _run_native(
     try:
         completed = subprocess.run(
             prepared.argv,
-            cwd=prepared.workdir,
-            env=prepared.env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            close_fds=prepared.close_fds,
-            preexec_fn=prepared.preexec_fn,
+            cwd = prepared.workdir,
+            env = prepared.env,
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+            timeout = timeout,
+            close_fds = prepared.close_fds,
+            preexec_fn = prepared.preexec_fn,
         )
     finally:
         prepared.cleanup()
@@ -264,12 +268,12 @@ def test_live_workdir_boundary_symlinks_and_native_extension(live_seatbelt_backe
     workdir = tmp_path / "work"
     workdir.mkdir()
     inside = workdir / "input.txt"
-    inside.write_text("inside", encoding="utf-8")
+    inside.write_text("inside", encoding = "utf-8")
     outside = tmp_path / "outside.txt"
-    outside.write_text("secret", encoding="utf-8")
+    outside.write_text("secret", encoding = "utf-8")
     outside_write = tmp_path / "outside-write.txt"
     home_secret = Path.home() / f".unsloth-seatbelt-secret-{os.getpid()}"
-    home_secret.write_text("home-secret", encoding="utf-8")
+    home_secret.write_text("home-secret", encoding = "utf-8")
     repo_file = Path(__file__).resolve()
     (workdir / "escape-read").symlink_to(outside)
     (workdir / "escape-write").symlink_to(outside_write)
@@ -307,11 +311,11 @@ print('SEATBELT_FILESYSTEM_OK')
     try:
         completed = _run_native(live_seatbelt_backend, workdir, code)
     finally:
-        home_secret.unlink(missing_ok=True)
+        home_secret.unlink(missing_ok = True)
 
     assert "SEATBELT_FILESYSTEM_OK" in completed.stdout
-    assert (workdir / "output.txt").read_text(encoding="utf-8") == "written"
-    assert outside.read_text(encoding="utf-8") == "secret"
+    assert (workdir / "output.txt").read_text(encoding = "utf-8") == "written"
+    assert outside.read_text(encoding = "utf-8") == "secret"
     assert not outside_write.exists()
 
 
@@ -458,7 +462,7 @@ assert torch.equal(tensor, torch.arange(4))
 print('SEATBELT_PYTORCH_OK')
 """
 
-    completed = _run_native(live_seatbelt_backend, workdir, code, timeout=30)
+    completed = _run_native(live_seatbelt_backend, workdir, code, timeout = 30)
 
     assert "SEATBELT_PYTORCH_OK" in completed.stdout
 
@@ -476,15 +480,15 @@ def test_live_real_python_and_terminal_stream_and_record_limitations(
 
     python_result = inference_tools._python_exec(
         "print('python-seatbelt-stream')",
-        timeout=20,
-        output_callback=chunks.append,
-        launch_record_callback=records.append,
+        timeout = 20,
+        output_callback = chunks.append,
+        launch_record_callback = records.append,
     )
     terminal_result = inference_tools._bash_exec(
         "printf 'terminal-seatbelt-stream\\n'",
-        timeout=20,
-        output_callback=chunks.append,
-        launch_record_callback=records.append,
+        timeout = 20,
+        output_callback = chunks.append,
+        launch_record_callback = records.append,
     )
 
     assert python_result.strip() == "python-seatbelt-stream"
@@ -509,15 +513,13 @@ def test_live_timeout_and_cancellation_kill_an_ordinary_process_group(
     monkeypatch.setattr(inference_tools, "_check_code_safety", lambda _code: None)
     monkeypatch.setattr(inference_tools, "_harden_parent_against_proc_env_leak", lambda: True)
     if termination == "python-timeout":
-        child = (
-            f"import time; time.sleep(2); open({str(marker)!r}, 'w', encoding='utf-8').write('escaped')"
-        )
+        child = f"import time; time.sleep(2); open({str(marker)!r}, 'w', encoding='utf-8').write('escaped')"
         code = (
             "import subprocess, sys, time\n"
             f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
             "time.sleep(30)\n"
         )
-        result = inference_tools._python_exec(code, timeout=1)
+        result = inference_tools._python_exec(code, timeout = 1)
         assert result == "Execution timed out after 1 seconds."
     else:
         cancel = threading.Event()
@@ -525,7 +527,7 @@ def test_live_timeout_and_cancellation_kill_an_ordinary_process_group(
         timer.start()
         try:
             command = f"(sleep 2; printf escaped > {str(marker)!r}) & sleep 30"
-            result = inference_tools._bash_exec(command, cancel_event=cancel, timeout=20)
+            result = inference_tools._bash_exec(command, cancel_event = cancel, timeout = 20)
         finally:
             timer.cancel()
         assert result == "Execution cancelled."
@@ -565,7 +567,7 @@ os.waitpid(first, 0)
     while not pid_file.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert pid_file.exists(), "detached Seatbelt diagnostic did not publish its PID"
-    pid = int(pid_file.read_text(encoding="utf-8"))
+    pid = int(pid_file.read_text(encoding = "utf-8"))
     try:
         os.kill(pid, 0)
         assert "detached_descendant_cleanup_unverified" in live_seatbelt_backend.limitations
@@ -586,9 +588,7 @@ os.waitpid(first, 0)
         assert cleaned, f"detached Seatbelt diagnostic PID {pid} was not cleaned up"
 
 
-def test_live_twenty_seatbelt_startup_samples(
-    live_seatbelt_backend, tmp_path, record_property
-):
+def test_live_twenty_seatbelt_startup_samples(live_seatbelt_backend, tmp_path, record_property):
     workdir = tmp_path / "work"
     workdir.mkdir()
     samples: list[float] = []
