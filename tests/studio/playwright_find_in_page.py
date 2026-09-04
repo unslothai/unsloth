@@ -740,7 +740,7 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         engine,
         mode,
         "the failure offers reload recovery",
-        failure.get_by_role("button").count() == 1,
+        failure.get_by_role("button").count() == 2,
     )
     check(
         engine,
@@ -754,6 +754,14 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         mode,
         "the failed bar does not leave a search landmark",
         page.locator('[role="search"]').count() == 0,
+    )
+
+    failure.get_by_role("button", name="Close").click()
+    check(
+        engine,
+        mode,
+        "the failed bar can be dismissed without reloading",
+        failure.count() == 0,
     )
     if ENTRY_SCREENSHOT:
         Path(ENTRY_SCREENSHOT.format(engine = engine)).parent.mkdir(parents = True, exist_ok = True)
@@ -903,7 +911,21 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         "an active IME composition keeps the loading input mounted",
         loading.count() == 1 and field.evaluate("input => input.isConnected"),
     )
-    field.dispatch_event("compositionend", {"data": "u"})
+    field.evaluate(
+        """input => {
+          input.dispatchEvent(new CompositionEvent('compositionend', { data: '語', bubbles: true }));
+          const setValue = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            'value',
+          ).set;
+          setValue.call(input, '語');
+          input.dispatchEvent(new InputEvent('input', {
+            data: '語',
+            inputType: 'insertCompositionText',
+            bubbles: true,
+          }));
+        }""",
+    )
     loading.wait_for(
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
@@ -912,7 +934,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         engine,
         mode,
         "the loaded bar takes over after composition ends",
-        page.locator('[role="search"] input').count() == 1,
+        page.locator('[role="search"] input').count() == 1
+        and page.locator('[role="search"] input').input_value() == "語",
     )
     context.close()
 

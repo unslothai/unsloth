@@ -19,6 +19,7 @@ const SettingsDialog = lazy(() =>
 );
 
 function SettingsDialogLoading({ active }: { active: boolean }) {
+  const t = useT();
   const closeDialog = useSettingsDialogStore((state) => state.closeDialog);
   useEffect(() => {
     if (!active) return;
@@ -31,7 +32,19 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
     window.addEventListener("keydown", cancel, true);
     return () => window.removeEventListener("keydown", cancel, true);
   }, [active, closeDialog]);
-  return null;
+  if (!active) return null;
+  return (
+    <dialog
+      open
+      className="fixed inset-0 z-[100] m-0 grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-black/50 p-4"
+      data-testid="settings-dialog-loading"
+      aria-label={t("common.loading")}
+    >
+      <div className="rounded-xl border border-border bg-popover px-6 py-4 text-popover-foreground shadow-xl">
+        {t("common.loading")}
+      </div>
+    </dialog>
+  );
 }
 
 export function SettingsDialogMount({ active }: { active: boolean }) {

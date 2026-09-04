@@ -153,7 +153,13 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
 
   const [handoffBlock, setHandoffBlock] = useState<Promise<void> | null>(null);
   const releaseHandoffRef = useRef<(() => void) | null>(null);
+
+  const releaseHandoffTimerRef = useRef<number | null>(null);
   const beginLoadingComposition = useCallback(() => {
+    if (releaseHandoffTimerRef.current !== null) {
+      window.clearTimeout(releaseHandoffTimerRef.current);
+      releaseHandoffTimerRef.current = null;
+    }
     if (releaseHandoffRef.current) {
       return;
     }
@@ -165,12 +171,18 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     setHandoffBlock(block);
   }, []);
   const endLoadingComposition = useCallback(() => {
-    releaseHandoffRef.current?.();
-    releaseHandoffRef.current = null;
-    setHandoffBlock(null);
+    releaseHandoffTimerRef.current = window.setTimeout(() => {
+      releaseHandoffTimerRef.current = null;
+      releaseHandoffRef.current?.();
+      releaseHandoffRef.current = null;
+      setHandoffBlock(null);
+    }, 0);
   }, []);
   useEffect(
     () => () => {
+      if (releaseHandoffTimerRef.current !== null) {
+        window.clearTimeout(releaseHandoffTimerRef.current);
+      }
       releaseHandoffRef.current?.();
       releaseHandoffRef.current = null;
     },
@@ -246,6 +258,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
         <LazyImportFailure
           message={t("settings.dialog.panelFailed")}
           reloadLabel={t("settings.dialog.panelReload")}
+          dismissLabel={t("common.close")}
+          onDismiss={close}
           testId="find-in-page-load-failure"
           className="fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
         />
