@@ -8629,6 +8629,7 @@ class LlamaCppBackend:
     @staticmethod
     def _apply_cuda_unified_memory_correction(
         gpus: list[tuple[int, int, int]],
+        bus_ids: dict[int, str] | None = None,
     ) -> list[tuple[int, int, int]]:
         """Rewrite nvidia-smi's numbers for NVIDIA parts whose memory is the host's.
 
@@ -8650,9 +8651,24 @@ class LlamaCppBackend:
         hosts keep the reading they have always had.
         """
         try:
-            from utils.hardware.hardware import _cuda_device_integrated_and_total
+            from utils.hardware.hardware import (
+                _cuda_device_integrated_and_total,
+                canonical_pci_bus_id,
+                cuda_integrated_by_pci_bus_id,
+            )
         except Exception:
             return gpus
+        # Bus id is the exact join between the two views of a device. nvidia-smi
+        # enumerates by bus id while CUDA's default CUDA_DEVICE_ORDER is
+        # FASTEST_FIRST, so index and driver ordinal line up only by luck once a
+        # host has more than one card. Ordinal translation stays as the fallback
+        # for a driver or an nvidia-smi that did not report one.
+        by_bus: dict = {}
+        if bus_ids:
+            try:
+                by_bus = cuda_integrated_by_pci_bus_id()
+            except Exception:
+                by_bus = {}
         physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
         corrected: list[tuple[int, int, int]] = []
         available_mib = None
@@ -8660,18 +8676,28 @@ class LlamaCppBackend:
             # nvidia-smi reports physical ids; the driver's ordinals are what the
             # visibility mask filters, so translate through the same mapping the
             # torch branch uses before asking about a device.
-            ordinal = idx
-            if physical_ids is not None:
-                try:
-                    ordinal = physical_ids.index(idx)
-                except ValueError:
+            answer = None
+            bus_id = canonical_pci_bus_id((bus_ids or {}).get(idx, ""))
+            if bus_id and by_bus:
+                answer = by_bus.get(bus_id)
+                if answer is None:
+                    # The driver can see this bus id or it cannot; guessing an
+                    # ordinal for a device it did not report would classify a
+                    # different card.
                     corrected.append((idx, free_mib, total_mib))
                     continue
-            answer = None
-            try:
-                answer = _cuda_device_integrated_and_total(ordinal)
-            except Exception:
-                answer = None
+            else:
+                ordinal = idx
+                if physical_ids is not None:
+                    try:
+                        ordinal = physical_ids.index(idx)
+                    except ValueError:
+                        corrected.append((idx, free_mib, total_mib))
+                        continue
+                try:
+                    answer = _cuda_device_integrated_and_total(ordinal)
+                except Exception:
+                    answer = None
             if not answer or not answer[0]:
                 corrected.append((idx, free_mib, total_mib))
                 continue
@@ -9894,7 +9920,7 @@ class LlamaCppBackend:
             result = subprocess.run(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,memory.free,memory.total",
+                    "--query-gpu=index,memory.free,memory.total,pci.bus_id",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output = True,
@@ -9908,6 +9934,7 @@ class LlamaCppBackend:
             if result.returncode == 0:
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
                 gpus: list[tuple[int, int, int]] = []
+                bus_ids: dict[int, str] = {}
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
@@ -9930,11 +9957,18 @@ class LlamaCppBackend:
                             total_mib = 0
                     if allowed is not None and idx not in allowed:
                         continue
+                    # Bus id is asked for only so a device can be matched to the
+                    # CUDA driver's view of it exactly; absent or unparsed, the
+                    # correction below falls back to ordinal translation.
+                    if len(parts) >= 4 and parts[3]:
+                        bus_ids[idx] = parts[3].strip().lower()
                     gpus.append((idx, free_mib, total_mib))
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
-                    return LlamaCppBackend._apply_cuda_unified_memory_correction(gpus)
+                    return LlamaCppBackend._apply_cuda_unified_memory_correction(
+                        gpus, bus_ids = bus_ids
+                    )
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
 

@@ -91,6 +91,11 @@ GIB = 1024 * MIB
 _SMI_CARVE_OUT = (0, 7929, 8128)
 _REAL_POOL_BYTES = 48735117312  # 46477 MiB
 
+_NL = chr(10)
+# One line per device: "<ordinal> <integrated> <total_bytes>".
+_ONE_INTEGRATED = "0 1 48735117312" + _NL
+_ONE_DISCRETE_ONE_INTEGRATED = "0 0 25757220864" + _NL + "1 1 48735117312" + _NL
+
 
 @pytest.fixture(autouse = True)
 def _no_inherited_visibility_mask(monkeypatch):
@@ -286,23 +291,193 @@ def test_unreadable_system_memory_leaves_the_driver_figure_alone(HW, integrated,
     assert free == 46297 * MIB
 
 
+# ── matching a device to the driver's view of it ─────────────────────────────
+def test_the_two_sources_spell_a_bus_id_differently(HW):
+    """For one device: nvidia-smi says 0000000F:01:00.0, CUDA says 000f:01:00.0.
+
+    Measured on the GB10 laptop. Compared as text they never match, so the
+    correction would silently stop firing on the very hardware it is for.
+    """
+    smi, driver = "0000000F:01:00.0", "000f:01:00.0"
+    assert HW.canonical_pci_bus_id(smi) == HW.canonical_pci_bus_id(driver)
+    assert HW.canonical_pci_bus_id("01:00.0") == HW.canonical_pci_bus_id("0000:01:00.0")
+    for junk in ("[N/A]", "", None, "nonsense", "1:2"):
+        assert HW.canonical_pci_bus_id(junk) == "", junk
+
+
+def test_a_bus_id_beats_ordinal_guessing(HW, monkeypatch):
+    """nvidia-smi indexes by bus id; CUDA's default order is FASTEST_FIRST.
+
+    Here nvidia-smi index 0 is the driver's ordinal 1. Matching on the bus id gets
+    it right; translating index to ordinal would classify the other card.
+    """
+    monkeypatch.setattr(
+        HW, "cuda_integrated_by_pci_bus_id",
+        lambda: {"0:01:00.0": (True, _REAL_POOL_BYTES)},
+    )
+    monkeypatch.setattr(
+        HW, "_cuda_device_integrated_and_total",
+        lambda index: (False, 24 * GIB),  # what guessing by ordinal would answer
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000),
+    )
+    (idx, free_mib, total_mib), = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT], bus_ids = {0: "00000000:01:00.0"},
+    )
+    assert (idx, free_mib, total_mib) == (0, 46477 - 1024, 0)
+
+
+def test_a_device_the_driver_did_not_report_is_left_alone(HW, monkeypatch):
+    """Never fall back to ordinal guessing for a bus id the driver did not list."""
+    monkeypatch.setattr(
+        HW, "cuda_integrated_by_pci_bus_id",
+        lambda: {"0:02:00.0": (True, _REAL_POOL_BYTES)},
+    )
+    monkeypatch.setattr(
+        HW, "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES),
+    )
+    rows = [(0, 7929, 8128)]
+    assert LlamaCppBackend._apply_cuda_unified_memory_correction(
+        rows, bus_ids = {0: "00000000:01:00.0"},
+    ) == rows
+
+
 # ── the classifier itself ────────────────────────────────────────────────────
-def test_rocm_is_never_classified_by_the_cuda_driver(HW, monkeypatch):
-    """ROCm reuses the torch.cuda namespace but has its own APU classifier."""
-    HW._cuda_device_integrated_and_total.cache_clear()
-    monkeypatch.setattr(HW, "IS_ROCM", True)
-    try:
-        assert HW._cuda_device_integrated_and_total(0) is None
-    finally:
-        HW._cuda_device_integrated_and_total.cache_clear()
+class _FakeCompleted:
+    def __init__(self, stdout = "", returncode = 0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
 
 
-def test_a_host_with_no_cuda_driver_declines(HW, monkeypatch):
-    HW._cuda_device_integrated_and_total.cache_clear()
+@pytest.fixture
+def spawned(HW, monkeypatch):
+    """Record what the probe spawns, and answer it with canned stdout."""
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _FakeCompleted(_fake_run.stdout, _fake_run.returncode)
+
+    _fake_run.stdout = _ONE_INTEGRATED
+    _fake_run.returncode = 0
+    HW._cuda_integrated_map_cached.cache_clear()
+    monkeypatch.setattr(HW.subprocess, "run", _fake_run)
     monkeypatch.setattr(HW, "IS_ROCM", False)
-    monkeypatch.setattr(HW, "_cuda_driver_library", lambda: None)
+    yield calls, _fake_run
+    HW._cuda_integrated_map_cached.cache_clear()
+
+
+def test_the_probe_runs_out_of_process(HW, spawned):
+    """The whole point of the design: this process must not initialise CUDA.
+
+    cuInit in a long lived process makes every later fork useless for CUDA: the
+    child's own cuInit returns CUDA_ERROR_NOT_INITIALIZED, which torch surfaces as
+    cuda.is_available() == False. Measured on a GB10 laptop before this moved out
+    of process, a forked child that computed on the GPU stopped seeing it at all.
+    """
+    calls, _ = spawned
+    assert HW._cuda_device_integrated_and_total(0) == (True, _REAL_POOL_BYTES)
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[0] == sys.executable, "must re-run this interpreter, not a guess at one"
+    assert "-I" in cmd, "isolated: no site customisation, no user site-packages"
+    assert kwargs.get("timeout"), "an unresponsive driver must not hang the caller"
+
+
+def test_the_module_never_calls_cuinit_in_process(HW):
+    """Regression guard for the fork hazard, checked on the AST rather than text.
+
+    The child probe is a string constant, so it is data to the parser. Anything
+    the parser sees as an attribute access or a name is code this process would
+    run, and a driver call there re-introduces the fork hazard. Asserted this way
+    rather than by counting words so that editing the comments cannot break it.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(HW))
+    called_in_process = sorted(
+        {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr in {"cuInit", "cuDeviceGet", "cuDeviceGetAttribute"}
+        }
+        | {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id.startswith("cuInit")
+        }
+    )
+    assert called_in_process == [], (
+        "these CUDA driver entry points are reachable as code in the hosting "
+        f"process: {called_in_process}. They belong in the spawned probe only."
+    )
+    assert "cuInit" in HW._CUDA_UMA_PROBE_SOURCE, "the child probe still needs it"
+
+
+def test_one_spawn_answers_for_every_device(HW, spawned):
+    """A single child enumerates every device, so N devices cost one process."""
+    calls, fake = spawned
+    fake.stdout = _ONE_DISCRETE_ONE_INTEGRATED
+    assert HW._cuda_device_integrated_and_total(0) == (False, 25757220864)
+    assert HW._cuda_device_integrated_and_total(1) == (True, _REAL_POOL_BYTES)
+    assert HW._cuda_device_integrated_and_total(2) is None
+    assert len(calls) == 1
+
+
+def test_rocm_is_never_classified_by_the_cuda_driver(HW, spawned, monkeypatch):
+    """ROCm reuses the torch.cuda namespace but has its own APU classifier."""
+    calls, _ = spawned
+    monkeypatch.setattr(HW, "IS_ROCM", True)
+    HW._cuda_integrated_map_cached.cache_clear()
+    assert HW._cuda_device_integrated_and_total(0) is None
+    assert calls == [], "ROCm must not even spawn the probe"
+
+
+def test_a_failing_or_silent_probe_declines(HW, spawned):
+    """No driver, a crash, or unparseable output: decline, never guess."""
+    _calls, fake = spawned
+    for stdout, code in (
+        ("", 0),
+        ("garbage" + _NL, 0),
+        (_ONE_INTEGRATED, 1),
+        ("0 1" + _NL, 0),
+    ):
+        HW._cuda_integrated_map_cached.cache_clear()
+        fake.stdout, fake.returncode = stdout, code
+        assert HW._cuda_device_integrated_and_total(0) is None, (stdout, code)
+        assert HW.cuda_device_is_unified_memory(0) is False
+
+
+def test_a_probe_that_raises_declines(HW, monkeypatch):
+    """A timeout or a refused spawn must not surface in a caller's load."""
+    HW._cuda_integrated_map_cached.cache_clear()
+    monkeypatch.setattr(HW, "IS_ROCM", False)
+
+    def _boom(cmd, **kwargs):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(HW.subprocess, "run", _boom)
     try:
         assert HW._cuda_device_integrated_and_total(0) is None
-        assert HW.cuda_device_is_unified_memory(0) is False
     finally:
-        HW._cuda_device_integrated_and_total.cache_clear()
+        HW._cuda_integrated_map_cached.cache_clear()
+
+
+def test_a_changed_visibility_mask_is_not_answered_from_cache(HW, spawned, monkeypatch):
+    """Driver ordinals are assigned under CUDA_VISIBLE_DEVICES.
+
+    A process that changes the mask must not be handed a classification made
+    under the old one, so the mask is part of the cache key.
+    """
+    calls, fake = spawned
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert HW._cuda_device_integrated_and_total(0) == (True, _REAL_POOL_BYTES)
+    fake.stdout = "0 0 25757220864" + _NL
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert HW._cuda_device_integrated_and_total(0) == (False, 25757220864)
+    assert len(calls) == 2, "the mask change must force a fresh probe"
