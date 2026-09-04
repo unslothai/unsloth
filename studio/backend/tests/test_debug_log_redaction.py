@@ -187,7 +187,10 @@ QUOTED = [
     ("password='correct horse battery staple'", "password='<redacted>'"),
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
     ('llama-server --api-key="abcdef ghijklmnop"', 'llama-server --api-key="<redacted>"'),
-    ("ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes", "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes"),
+    (
+        "ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes",
+        "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes",
+    ),
     # The value ends at its own closing quote, so the fields after it survive.
     (
         '{"password": "correct horse battery staple", "model": "gpt-4o"}',
