@@ -1083,7 +1083,7 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
     append = _between(
         RUNTIME_PROVIDER,
         "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
-        "\n  // Always register the adapter so the mic stays clickable",
+        "\n  const dictation = useMemo(() => new StudioDictationAdapter(), []);",
     )
 
     assert (
