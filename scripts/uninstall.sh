@@ -1047,6 +1047,37 @@ _unsloth_uninstall_main() {
         echo "set to also remove that install tree, e.g.:"
         echo "  UNSLOTH_STUDIO_HOME=/your/path sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh)\""
     fi
+    # UNSLOTH_HOME takes the precedence chain in _custom_studio_roots alone, on purpose: with a
+    # master root exported, nothing was installed at UNSLOTH_STUDIO_HOME by this environment, so
+    # an install found there is treated as somebody else's and spared. Say so. Every build that
+    # shipped before UNSLOTH_HOME existed read UNSLOTH_STUDIO_HOME as "remove this install", and
+    # for an env-mode install re-exporting it is the ONLY way to reach the tree -- there is no
+    # breadcrumb in $HOME (install.sh puts DATA_DIR at $STUDIO_HOME/share). So a user upgrading
+    # from such a build, with UNSLOTH_HOME left over from a portable install or exported for
+    # anything else, otherwise saw "Unsloth Studio uninstalled" and "No studio.db was found"
+    # while that tree and its chat history stayed on disk, with nothing on stdout naming the
+    # variable that had been ignored. The removal policy is unchanged; only the silence is.
+    _ign_master=$(_trim_ws "${UNSLOTH_HOME:-}")
+    _ign_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_ign_studio" ] || _ign_studio=$(_trim_ws "${STUDIO_HOME:-}")
+    # Skip when both name the same tree, and when the Studio root is the master root's own
+    # studio/ child: that one was already removed with the master root, so there is nothing
+    # left behind to report (tests/sh/test_uninstall_home_precedence.sh case 4).
+    if [ -n "$_ign_master" ] && [ -n "$_ign_studio" ] \
+        && [ "$_ign_studio" != "$_ign_master" ] \
+        && [ "$_ign_studio" != "$_ign_master/studio" ] \
+        && [ -e "$_ign_studio" ]; then
+        echo ""
+        echo "Note: UNSLOTH_HOME was set, so it named the install to remove and"
+        echo "      UNSLOTH_STUDIO_HOME / STUDIO_HOME were ignored. This is still on disk:"
+        echo "        $_ign_studio"
+        echo "      Its chat history was NOT removed. If that is the install you meant to"
+        echo "      remove, re-run with UNSLOTH_HOME blank:"
+        # Blank rather than `env -u`: the branch above trims before testing -n, so an empty
+        # value falls through to UNSLOTH_STUDIO_HOME exactly as an unset one does, and BSD
+        # env on macOS is not somewhere to send a user for a -u that may not be there.
+        echo "        UNSLOTH_HOME= UNSLOTH_STUDIO_HOME='$_ign_studio' sh scripts/uninstall.sh"
+    fi
 }
 
 # Parse the entire script before running destructive work. This keeps piped help
