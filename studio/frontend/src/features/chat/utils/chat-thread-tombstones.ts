@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Tombstones mask deleted threads in the Dexie read fallback. Each carries a
- * `deletedAt` so old entries can be GC'd, keeping localStorage bounded. Reads
- * accept both the legacy plain-string format and the {id, deletedAt} tuple.
- */
+/** Tombstones mask deleted threads in the Dexie read fallback. Each carries a `deletedAt` so old
+ *  entries can be GC'd, keeping localStorage bounded. Reads accept both the legacy plain-string
+ *  format and the {id, deletedAt} tuple. */
 
 interface Tombstone {
   id: string;
