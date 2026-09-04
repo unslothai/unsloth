@@ -1106,7 +1106,11 @@ def _chat_project_response(project: dict) -> ChatProject:
 
 
 def _resolve_project_workspace_path(native_path_lease: str) -> tuple[str, tuple[str, str]]:
-    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+    from utils.native_path_leases import (
+        NativePathLeaseError,
+        plain_native_path,
+        verify_native_path_lease,
+    )
 
     try:
         grant = verify_native_path_lease(
@@ -1119,7 +1123,7 @@ def _resolve_project_workspace_path(native_path_lease: str) -> tuple[str, tuple[
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     if grant.device_id is None or grant.file_id is None:
         raise HTTPException(status_code = 400, detail = "Selected folder identity is unavailable")
-    return str(grant.canonical_path), (f"{grant.device_id:x}", f"{grant.file_id:x}")
+    return plain_native_path(grant.canonical_path), (f"{grant.device_id:x}", f"{grant.file_id:x}")
 
 
 @router.post("/projects", response_model = ChatProject)

@@ -153,6 +153,32 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
         chat_history.save_project(_probe_payload(), current_subject = "tester")
 
 
+def test_a_selected_folder_is_stored_without_the_verbatim_prefix(monkeypatch):
+    """The shell canonicalises to ``\\\\?\\C:\\...`` on Windows, and that spelling
+    was landing on the project row and in the Projects list."""
+    from types import SimpleNamespace
+
+    from routes import chat_history
+    from utils import native_path_leases
+
+    monkeypatch.setattr(
+        native_path_leases,
+        "verify_native_path_lease",
+        lambda *args, **kwargs: SimpleNamespace(
+            canonical_path = "\\\\?\\C:\\Users\\me\\repo", device_id = 7, file_id = 8
+        ),
+    )
+
+    path, identity = chat_history._resolve_project_workspace_path("lease")
+
+    assert path == "C:\\Users\\me\\repo"
+    assert identity == ("7", "8")
+    assert native_path_leases.plain_native_path("\\\\?\\UNC\\server\\share\\x") == (
+        "\\\\server\\share\\x"
+    )
+    assert native_path_leases.plain_native_path("/home/me/repo") == "/home/me/repo"
+
+
 def test_external_project_creation_requires_a_native_folder_grant():
     from fastapi import HTTPException
 

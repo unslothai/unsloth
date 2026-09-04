@@ -203,7 +203,7 @@ export function NewProjectDialog({
           />
         </div>
         {isTauri && nativePathLeasesSupported ? (
-          <div className="space-y-2 rounded-[16px] border border-border bg-muted/20 p-3 dark:border-transparent dark:bg-white/[0.04]">
+          <div className="min-w-0 space-y-2 rounded-[16px] border border-border bg-muted/20 p-3 dark:border-transparent dark:bg-white/[0.04]">
             <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-foreground">

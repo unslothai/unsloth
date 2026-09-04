@@ -412,6 +412,21 @@ def _remember_native_path_for_redaction(path: str, display_label: str) -> None:
         del _NATIVE_PATH_REDACTIONS[:-_MAX_NATIVE_PATH_REDACTIONS]
 
 
+def plain_native_path(path: "Path | str") -> str:
+    """The path without Windows' verbatim prefix, for storing and showing.
+
+    The shell canonicalises with ``\\\\?\\`` in front, which every file call
+    accepts and no user wants to read back off a project row. Only the two
+    spellings the shell produces are handled; anything else is returned as is.
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[len("\\\\?\\UNC\\"):]
+    if text.startswith("\\\\?\\"):
+        return text[len("\\\\?\\"):]
+    return text
+
+
 def _reject_network_or_device_path(path: Path) -> None:
     text = str(path)
     if os.name == "nt":
