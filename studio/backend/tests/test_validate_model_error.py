@@ -95,7 +95,13 @@ def test_empty_runtime_error_falls_back_to_generic(monkeypatch):
     assert http.detail == "Invalid model"
 
 
-def _drive_validate(monkeypatch, *, is_gguf: bool):
+def _drive_validate(
+    monkeypatch,
+    *,
+    is_gguf: bool,
+    mlx_speculative_mode: str = "off",
+    on_fetch = None,
+):
     """Run validate_model with both security helpers forced True; return the response."""
     from types import SimpleNamespace
 
@@ -114,14 +120,22 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
         is_vision = False,
         gguf_file = None,
     )
-    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+
+    def _from_identifier(**_kw):
+        if on_fetch is not None:
+            on_fetch()
+        return config
+
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(_from_identifier))
     # No LoRA base to resolve; keep it offline.
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
     # Both gates WOULD flag this repo (mixed repo with auto_map + an unsafe pickle).
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: True)
 
-    req = ValidateModelRequest(model_path = "org/mixed-repo")
+    req = ValidateModelRequest(
+        model_path = "org/mixed-repo", mlx_speculative_mode = mlx_speculative_mode
+    )
     return asyncio.run(inf.validate_model(req, current_subject = "tester"))
 
 
@@ -139,6 +153,56 @@ def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
     assert resp.is_gguf is False
     assert resp.requires_trust_remote_code is True
     assert resp.requires_security_review is True
+
+
+def test_a_target_no_drafter_can_attach_to_is_refused_before_the_model_is_unloaded(monkeypatch):
+    # This is the preflight the picker runs before /load frees the resident model, so a
+    # pairing the load will refuse has to be refused here rather than after the unload. The
+    # drafter itself is sound, which is the case that reaches the target's own rules at all.
+    monkeypatch.setattr(inf, "mlx_speculative_request_reason", lambda *_a, **_k: None)
+    with pytest.raises(HTTPException) as excinfo:
+        _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+    assert excinfo.value.status_code == 400
+    assert "vision-language" in excinfo.value.detail
+    # Auto is not a request to refuse: it falls back to ordinary MLX generation instead.
+    assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "auto")
+
+
+def test_a_comparison_the_target_cannot_answer_yet_is_not_a_refusal(monkeypatch):
+    # Comparing tokenizers needs the target's own tokenizer, which a first-time target has not
+    # downloaded at preflight time. Refusing on that rejects a pair the load would have run,
+    # because fetching the target is what makes the comparison possible.
+    monkeypatch.setattr(
+        inf, "mlx_speculative_request_reason", lambda *_a, **_k: "tokenizer_contract_unavailable"
+    )
+    # The target itself is eligible, so the undecided comparison is the only thing left to
+    # refuse on -- and validation still succeeds.
+    monkeypatch.setattr(inf, "mlx_speculative_target_ineligible", lambda **_k: None)
+    assert _drive_validate(monkeypatch, is_gguf = False, mlx_speculative_mode = "mtp")
+
+
+def test_the_pairing_is_judged_once_the_target_configuration_arrives(monkeypatch):
+    # Judged after the fetch, and only then: asked earlier it would answer from whatever
+    # revision happened to be cached, which is not the one the load goes on to use.
+    order = []
+
+    def _reason(*_a, **_k):
+        order.append("judged")
+        return "checkpoint_not_compatible"
+
+    monkeypatch.setattr(inf, "mlx_speculative_request_reason", _reason)
+    with pytest.raises(HTTPException) as excinfo:
+        _drive_validate(
+            monkeypatch,
+            is_gguf = False,
+            mlx_speculative_mode = "mtp",
+            on_fetch = lambda: order.append("fetched"),
+        )
+    assert excinfo.value.status_code == 400
+    # Once, and after the fetch: asked before it, the answer comes from whatever revision was
+    # cached rather than the one this load resolved.
+    assert order == ["fetched", "judged"]
+    assert "vision-language" not in excinfo.value.detail
 
 
 def test_resolve_loaded_trc_prefers_stored_value():
