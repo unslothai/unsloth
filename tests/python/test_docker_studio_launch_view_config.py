@@ -30,9 +30,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "docker" / "studio_launch.sh"
 
-behavioural = pytest.mark.skipif(
-    shutil.which("bash") is None, reason = "needs bash"
-)
+behavioural = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 
 
 @pytest.fixture(scope = "module")
@@ -90,13 +88,13 @@ def test_the_config_stays_valid_python_and_keeps_the_path(generator: str, name: 
 
     config = _load(rendered)  # a SyntaxError here is the bug
 
-    assert config.ServerApp.preferred_dir == view, (
-        "the path Jupyter ends up with must be the one the user asked for"
-    )
+    assert (
+        config.ServerApp.preferred_dir == view
+    ), "the path Jupyter ends up with must be the one the user asked for"
     assert config.ServerApp.default_url == f"/lab/tree/{name}"
-    assert config.LabApp.default_url == config.ServerApp.default_url, (
-        "LabApp otherwise overrides ServerApp back to /lab"
-    )
+    assert (
+        config.LabApp.default_url == config.ServerApp.default_url
+    ), "LabApp otherwise overrides ServerApp back to /lab"
 
 
 def test_a_newline_in_the_path_cannot_inject_a_config_line(generator: str):
@@ -143,7 +141,9 @@ def test_the_heredoc_form_this_replaced_really_was_broken(tmp_path: Path):
     )
     result = subprocess.run(
         ["bash", str(script), name, f"/workspace/{name}"],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     assert result.returncode == 0, result.stderr
 
