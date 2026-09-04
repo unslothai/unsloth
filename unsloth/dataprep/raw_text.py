@@ -44,6 +44,8 @@ class RawTextDataLoader:
     ):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(f"stride must be non-negative, got {stride}")
         if stride >= chunk_size:
             raise ValueError(f"stride ({stride}) must be smaller than chunk_size ({chunk_size})")
         self.tokenizer = tokenizer
@@ -88,8 +90,8 @@ class RawTextDataLoader:
             )
             all_chunks.extend(chunks)
         if not all_chunks:
-            # All files empty/whitespace: raise like load_from_file instead of
-            # create_causal_dataset([]) returning a 0-row text-column dataset.
+            # All files empty/whitespace: raise like load_from_file instead of create_causal_dataset([])
+            # returning a 0-row text-column dataset.
             raise ValueError("All files are empty or contain only whitespace")
         return self.create_causal_dataset(all_chunks)
 
@@ -106,7 +108,6 @@ class RawTextDataLoader:
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
         if chunks and isinstance(chunks[0], dict):
-            # Already-tokenized chunks: reshape for Dataset.from_dict
             input_ids = [chunk["input_ids"] for chunk in chunks]
             attention_mask = [chunk["attention_mask"] for chunk in chunks]
             # Labels == input_ids for causal LM
@@ -119,7 +120,6 @@ class RawTextDataLoader:
                 }
             )
         else:
-            # Text strings (backward compatibility)
             return Dataset.from_dict({"text": chunks})
 
     def smart_chunk_text(
@@ -138,14 +138,18 @@ class RawTextDataLoader:
         """
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(
+                f"stride must be non-negative, got {stride}: a negative stride advances the loop by "
+                f"more than chunk_size and silently skips the tokens in between"
+            )
         if stride >= chunk_size:
             raise ValueError(
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
             )
 
-        # Skip empty/whitespace text before tokenizing: BPE/SentencePiece emit
-        # real tokens for spaces/newlines, so a len(tokens)==0 check misses it
-        # and would yield a degenerate lone-EOS sample. Mirrors load_from_file.
+        # Skip empty/whitespace text before tokenizing: BPE/SentencePiece emit real tokens for
+        # spaces/newlines, so a len(tokens)==0 check misses it and would yield a degenerate lone-EOS sample.
         if not text or not text.strip():
             return []
 
@@ -187,7 +191,7 @@ class RawTextDataLoader:
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
 
-                # Append EOS on the last or a full chunk
+                # Append EOS on the last or a full chunk.
                 if end_idx == len(tokens) or len(chunk_tokens_list) == chunk_size:
                     eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                     if eos_token_id is not None:
@@ -197,10 +201,9 @@ class RawTextDataLoader:
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
-                # Decode back to text (backward compatibility)
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
-                # Append EOS on the last or a full chunk
+                # Append EOS on the last or a full chunk.
                 if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
                     eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
@@ -216,19 +219,31 @@ class RawTextDataLoader:
 
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
-        with open(file_path, "r", encoding = "utf-8") as f:
+        # utf-8-sig: Windows tooling (PowerShell Out-File, Excel "CSV UTF-8") prepends a BOM that plain
+        # utf-8 keeps as a leading character. Without a BOM it decodes exactly like utf-8.
+        with open(file_path, "r", encoding = "utf-8-sig") as f:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
-                lines = []
-                for line in f:
+                if Path(file_path).suffix.lower() == ".json":
+                    # A .json file is a single JSON document (commonly a list of records), so parsing it per line drops
+                    # the whole file.
                     try:
-                        data = json.loads(line.strip())
-                        text = self._extract_text_from_json(data)
-                        if text:
-                            lines.append(text)
+                        parsed = json.load(f)
+                        records = parsed if isinstance(parsed, list) else [parsed]
                     except json.JSONDecodeError:
-                        continue
+                        # Some files carry JSON Lines under a .json name.
+                        f.seek(0)
+                        records = self._iter_json_lines(f)
+                else:
+                    # A .jsonl file is one JSON value per line: stay streaming so a large file is never held in memory
+                    # at once.
+                    records = self._iter_json_lines(f)
+                lines = []
+                for data in records:
+                    text = self._extract_text_from_json(data)
+                    if text:
+                        lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
                 reader = csv.DictReader(f)
@@ -240,14 +255,24 @@ class RawTextDataLoader:
                 return "\n\n".join(texts)
         return ""
 
-    # Cache text fields/columns for better performance
     _TEXT_FIELDS = ("text", "content", "message", "body", "description", "prompt")
     _TEXT_COLUMNS = _TEXT_FIELDS
 
+    def _iter_json_lines(self, handle):
+        """Yield one parsed JSON value per line, skipping blank and malformed lines."""
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
-        # Skip non-object lines (str/list/number): `field in data` would be a
-        # substring/membership test, not a key lookup, and `data[field]` raises.
+        # Skip non-object lines (str/list/number): `field in data` would be a substring/membership test, not
+        # a key lookup, and `data[field]` raises.
         if not isinstance(data, dict):
             return ""
         for field in self._TEXT_FIELDS:
@@ -263,8 +288,23 @@ class RawTextDataLoader:
         return ""
 
 
+def _iter_column(dataset, column):
+    """Yield one column value at a time.
+
+    `dataset[column]` copies the whole column into Python objects, which for token
+    ids dominates validate_dataset's peak memory on datasets<4 (4.x returns a lazy
+    Column). Dataset.iter() streams Arrow batches instead; anything without it
+    (DataFrames, dicts, custom __getitem__) falls back to plain indexing.
+    """
+    batched = getattr(dataset, "iter", None)
+    if callable(batched):
+        for batch in batched(batch_size = 256):
+            yield from batch[column]
+    else:
+        yield from dataset[column]
+
+
 class TextPreprocessor:
-    # Compile regex patterns once for better performance
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
     _INVALID_CHARS_PATTERN = re.compile(r"[^\x20-\x7E\n]")
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
@@ -289,8 +329,8 @@ class TextPreprocessor:
         """Extract specific sections (e.g., code blocks, quotes)"""
         sections = []
         for pattern in patterns:
-            # Compile pattern on first use and cache? Well, patterns are user-provided,
-            # so just use re.findall with compiled flags
+            # Compile pattern on first use and cache? Well, patterns are user-provided, so just use re.findall
+            # with compiled flags
             matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
             sections.extend(matches)
         return sections
@@ -303,7 +343,11 @@ class TextPreprocessor:
         text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
         return text
 
-    def validate_dataset(self, dataset):
+    def validate_dataset(
+        self,
+        dataset,
+        tokenizer = None,
+    ):
         """
         Check for:
         - Minimum/maximum sequence lengths
@@ -322,7 +366,27 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        texts = dataset["text"]
+        # `column_names` is HF Dataset-only; None means a mapping-like (DataFrame, dict, custom
+        # __getitem__), which this method has always accepted.
+        column_names = getattr(dataset, "column_names", None)
+        if column_names is None or "text" in column_names:
+            texts = _iter_column(dataset, "text")
+
+        elif "input_ids" in column_names:
+            if tokenizer is None:
+                raise ValueError(
+                    "Dataset has 'input_ids' but no 'text' column; "
+                    "pass `tokenizer=` to validate_dataset() to decode it for validation."
+                )
+            # Generator, not a list: decoded text is consumed once by the loop below.
+            texts = (
+                tokenizer.decode(ids, skip_special_tokens = True)
+                for ids in _iter_column(dataset, "input_ids")
+            )
+
+        else:
+            raise ValueError("Dataset must have either 'text' or 'input_ids' column")
+
         text_lengths = []
         seen_texts = set()
 
@@ -331,31 +395,30 @@ class TextPreprocessor:
                 stats["empty_samples"] += 1
                 continue
 
-            # Check for encoding issues
             try:
                 text.encode("utf-8")
             except UnicodeEncodeError:
                 stats["encoding_issues"] += 1
 
-            # Calculate lengths
             length = len(text)
             text_lengths.append(length)
             stats["min_length"] = min(stats["min_length"], length)
             stats["max_length"] = max(stats["max_length"], length)
 
-            # Check for repeated content
             text_hash = hash(text.strip())
             if text_hash in seen_texts:
                 stats["repeated_content"] += 1
             else:
                 seen_texts.add(text_hash)
 
-        # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
 
-        # Generate warnings
+        # No sample had content, so min_length is still its float("inf") seed; report 0 like max_length and
+        # avg_length beside it.
+        if stats["min_length"] == float("inf"):
+            stats["min_length"] = 0
+
         if stats["empty_samples"] > 0:
             stats["warnings"].append(f"Found {stats['empty_samples']} empty samples")
 
@@ -365,7 +428,9 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
-        if stats["min_length"] < 10:
+        # Guard on text_lengths, not on min_length: with nothing measured it is now 0, and zero measured
+        # samples is not "some samples are very short".
+        if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 
         return stats

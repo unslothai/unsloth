@@ -138,9 +138,9 @@ def test_main_endpoints_expose_export_capability():
 
 def test_routes_guard_mutating_endpoints():
     r = _src("routes/export.py")
-    assert "def _ensure_export_supported()" in r
+    assert "async def _ensure_export_supported()" in r
     # load + all four export endpoints call the guard.
-    assert r.count("_ensure_export_supported()") >= 6
+    assert r.count("await _ensure_export_supported()") >= 5
 
 
 def test_export_methods_check_runtime():
@@ -154,3 +154,34 @@ def test_export_methods_check_runtime():
 def test_export_capability_reads_no_torch_helper():
     cap = _func_src("utils/hardware/hardware.py", "export_capability")
     assert "_has_torch()" in cap and "DeviceType.MLX" in cap and "is_apple_silicon()" in cap
+
+
+def test_a_failed_detection_is_reported_as_such(monkeypatch):
+    """Do not send the user to fix something that is not wrong. ensure_hardware_detected()
+    records CPU + "detection_failed" when the probe raises, so the host looks CPU-only to
+    export_capability; reporting no_accelerator (or pytorch_not_installed) there points the
+    remediation at hardware or an install that may both be fine."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
+
+    cap = hw.export_capability()
+
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "detection_failed"
+    assert "detection failed" in cap["export_unsupported_message"].lower()
+
+
+def test_a_genuinely_cpu_only_host_still_says_no_accelerator(monkeypatch):
+    """The new branch must not swallow the case it sits in front of."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+
+    cap = hw.export_capability()
+
+    assert cap["export_unsupported_reason"] == "no_accelerator"

@@ -29,7 +29,10 @@ from hub.services.datasets.local import (
 )
 from hub.utils.dataset_cache import (
     cached_dataset_candidates as _shared_cached_dataset_candidates,
+    dataset_snapshot_from_cache_path as _shared_dataset_snapshot_from_cache_path,
+    latest_cached_dataset_path as _shared_latest_cached_dataset_path,
     latest_cached_dataset_snapshot as _shared_latest_cached_dataset_snapshot,
+    load_cached_hf_dataset as _shared_load_cached_hf_dataset,
     split_label_matches as _split_label_matches,
 )
 from hub.utils import download_registry
@@ -37,14 +40,26 @@ from hub.utils.dataset_format import check_dataset_format, format_dataset_previe
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
+    normalize_path,
     resolve_dataset_path,
 )
+from hub.utils.hf_tokens import is_anonymous
+from utils.utils import anonymous_and_offline
+from utils.datasets.audio_decode import ensure_audio_decoding
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = get_logger(__name__)
 
 _BINARY_IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_PREVIEW_MAX_PIXELS = 16_000_000
 _IMAGE_PREVIEW_THUMBNAIL_SIZE = (512, 512)
+_LOCAL_CACHE_MISS_ERROR_CODE = "dataset_local_cache_miss"
+_MISSING_DATASET_DETAIL = "This dataset is no longer on disk. Add it again or pick another dataset."
+
+
+def _is_local_dataset_ref(dataset_name: str) -> bool:
+    normalized = normalize_path(str(dataset_name or "").strip())
+    return Path(normalized).expanduser().is_absolute()
 
 
 def _image_pixel_count(image) -> int:
@@ -108,6 +123,22 @@ def _serialize_binary_value(data):
         return f"<binary data, {len(data)} bytes>"
 
 
+def _serialize_decoded_audio(value):
+    """Summarise a decoded Audio cell the way binary cells are summarised."""
+    samples = value.get("array") or []
+    rate = value.get("sampling_rate")
+    try:
+        seconds = len(samples) / rate if rate else None
+    except (TypeError, ZeroDivisionError):
+        seconds = None
+    detail = f"{len(samples)} samples"
+    if rate:
+        detail += f" @ {rate} Hz"
+    if seconds is not None:
+        detail += f", {seconds:.1f}s"
+    return f"<audio, {detail}>"
+
+
 def _serialize_preview_value(value):
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -129,6 +160,10 @@ def _serialize_preview_value(value):
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
+        # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
+        # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
+        if "sampling_rate" in value and isinstance(value.get("array"), (list, tuple)):
+            return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
 
     if isinstance(value, (list, tuple)):
@@ -147,6 +182,8 @@ def _serialize_preview_rows(rows):
 def _latest_cached_dataset_snapshot(
     repo_id: str, local_path: Optional[str] = None
 ) -> Optional[Path]:
+    if local_path:
+        return _shared_dataset_snapshot_from_cache_path(local_path, repo_id)
     return _shared_latest_cached_dataset_snapshot(repo_id, local_path)
 
 
@@ -174,10 +211,27 @@ def _repo_file_matches_split(path: str, split: str) -> bool:
     return _split_label_matches(path, split)
 
 
+def _repo_file_has_other_common_split(path: str, train_split: str) -> bool:
+    requested = train_split.strip().lower()
+    return any(
+        label != requested and _repo_file_matches_split(path, label)
+        for label in ("train", "validation", "valid", "dev", "eval", "test")
+    )
+
+
 def _select_tier1_repo_file(
-    files: list[str], *, subset: Optional[str], train_split: str
+    files: list[str],
+    *,
+    subset: Optional[str],
+    train_split: str,
+    allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
-    data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
+    # "._train.parquet" sorts first and would be handed to the single-file preview load.
+    data_files = sorted(
+        f
+        for f in drop_shadowed_appledouble_names(list(files))
+        if any(f.lower().endswith(ext) for ext in DATA_EXTS)
+    )
     if not data_files:
         return None
     tabular_files = [f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)]
@@ -186,8 +240,16 @@ def _select_tier1_repo_file(
         candidates = [f for f in candidates if _repo_file_matches_label(f, subset)]
         if not candidates:
             return None
-    candidates = [f for f in candidates if _repo_file_matches_split(f, train_split)]
-    return candidates[0] if candidates else None
+    split_candidates = [f for f in candidates if _repo_file_matches_split(f, train_split)]
+    if split_candidates:
+        return split_candidates[0]
+    if (
+        allow_unlabeled_fallback
+        and len(candidates) == 1
+        and not _repo_file_has_other_common_split(candidates[0], train_split)
+    ):
+        return candidates[0]
+    return None
 
 
 def _load_cached_hf_preview_slice(request: CheckFormatRequest, preview_size: int):
@@ -222,25 +284,19 @@ def _load_processed_hf_preview_slice(
 ):
     if not _is_valid_repo_id(request.dataset_name):
         return None
-    try:
-        from datasets import DownloadConfig
-
-        # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
-        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
-    except Exception:
-        return None
-
-    load_kwargs = {
-        "path": request.dataset_name,
-        "split": request.train_split or "train",
-        "download_config": DownloadConfig(local_files_only = True),
-    }
-    if request.subset:
-        load_kwargs["name"] = request.subset
-    if hf_token:
-        load_kwargs["token"] = hf_token
-
-    dataset = load_dataset(**load_kwargs)
+    local_path = request.local_path
+    if not local_path:
+        cached_path = _shared_latest_cached_dataset_path(request.dataset_name)
+        if cached_path is None:
+            return None
+        local_path = str(cached_path)
+    dataset = _shared_load_cached_hf_dataset(
+        request.dataset_name,
+        local_path,
+        subset = request.subset,
+        split = request.train_split or "train",
+        token = hf_token,
+    )
     total_rows = len(dataset)
     preview_slice = dataset.select(range(min(preview_size, total_rows)))
     return preview_slice, total_rows
@@ -251,6 +307,11 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
+    # Both paths return real rows off disk without asking the Hub: the raw slice reads the
+    # snapshot, the processed one loads with local_files_only=True and drops the falsy
+    # sentinel. Refuse the whole disk route here; the handler then answers 404.
+    if is_anonymous(hf_token):
+        return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
     if cached_preview is not None:
         return cached_preview
@@ -266,7 +327,10 @@ def _load_any_cached_hf_preview_slice(
 
 
 def check_format_response(
-    request: CheckFormatRequest, hf_token: Optional[str] = None
+    request: CheckFormatRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_unlabeled_tier1_fallback: bool = False,
 ) -> CheckFormatResponse:
     """
     Check if a dataset requires manual column mapping.
@@ -274,7 +338,9 @@ def check_format_response(
     HF datasets: tier 1 loads a single requested split/subset file (avoids
     resolving thousands of files); tier 2 falls back to full streaming. Local
     files load directly. Plain `def` so FastAPI runs the blocking IO in a
-    thread-pool.
+    thread-pool. The deprecated alias opts into the single-file fallback that
+    its previous implementation used, preserving source column order when the
+    only data filename has no split label.
     """
     try:
         from itertools import islice
@@ -283,15 +349,28 @@ def check_format_response(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
+        # An audio column decodes on the first preview row, so this precedes every tier.
+        ensure_audio_decoding()
+
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)
         except ValueError as e:
-            # Malformed path (null bytes, '..', outside roots) is a client error:
-            # surface 400 rather than the generic 500 below.
+            # Malformed path (null bytes, '..', outside roots) is a client error: surface 400, not 500.
             raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
-        if dataset_path.exists():
+        dataset_exists = dataset_path.exists()
+        if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
+            raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
+
+        # Offline `datasets` answers a streaming load from its cache without authorizing,
+        # and Tier 2 runs on the default prefer_local_cache=false, ahead of that guard.
+        if anonymous_and_offline(hf_token) and not dataset_exists:
+            raise HTTPException(
+                status_code = 404,
+                detail = "This request cannot be authorized without network access.",
+            )
+        if dataset_exists:
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
                 dataset_path = dataset_path,
@@ -312,7 +391,10 @@ def check_format_response(
             elif request.prefer_local_cache:
                 raise HTTPException(
                     status_code = 404,
-                    detail = "Dataset is not available in the local cache.",
+                    detail = {
+                        "code": _LOCAL_CACHE_MISS_ERROR_CODE,
+                        "message": "Dataset is not available in the local cache.",
+                    },
                 )
             else:
                 preview_slice = None
@@ -320,17 +402,20 @@ def check_format_response(
                 try:
                     from huggingface_hub import HfApi
 
+                    # No token on the constructor: list_repo_files is given it explicitly
+                    # and that argument wins.
                     api = HfApi()
                     repo_files = api.list_repo_files(
                         request.dataset_name,
                         repo_type = "dataset",
-                        token = hf_token or None,
+                        token = hf_token,
                     )
                     train_split = request.train_split or "train"
                     first_file = _select_tier1_repo_file(
                         repo_files,
                         subset = request.subset,
                         train_split = train_split,
+                        allow_unlabeled_fallback = allow_unlabeled_tier1_fallback,
                     )
                     if first_file:
                         logger.info(f"Tier 1: loading single file {first_file}")
@@ -339,9 +424,8 @@ def check_format_response(
                             "data_files": {train_split: [first_file]},
                             "split": train_split,
                             "streaming": True,
+                            "token": hf_token,
                         }
-                        if hf_token:
-                            load_kwargs["token"] = hf_token
 
                         streamed_ds = load_dataset(**load_kwargs)
                         rows = list(islice(streamed_ds, PREVIEW_SIZE))
@@ -354,18 +438,17 @@ def check_format_response(
                     )
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files — slow for large repos)
+                # Tier 2: full streaming (resolves all files - slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 try:
                     load_kwargs = {
                         "path": request.dataset_name,
                         "split": request.train_split or "train",
                         "streaming": True,
+                        "token": hf_token,
                     }
                     if request.subset:
                         load_kwargs["name"] = request.subset
-                    if hf_token:
-                        load_kwargs["token"] = hf_token
 
                     streamed_ds = load_dataset(**load_kwargs)
 
@@ -397,8 +480,7 @@ def check_format_response(
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
-                # Heuristic-detected: show raw data so columns match the response;
-                # column stripping happens at training time, not preview.
+                # Heuristic-detected: show raw data so columns match the response (stripping happens at training).
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
@@ -410,7 +492,6 @@ def check_format_response(
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
-        # Collect warnings: from check_dataset_format + URL-based image detection
         warning = result.get("warning")
         image_col = result.get("detected_image_column")
         if image_col and image_col in (result.get("columns") or []):
@@ -438,6 +519,7 @@ def check_format_response(
             detected_audio_column = result.get("detected_audio_column"),
             detected_text_column = result.get("detected_text_column"),
             detected_speaker_column = result.get("detected_speaker_column"),
+            chat_column = result.get("chat_column"),
             preview_samples = preview_samples,
             total_rows = total_rows,
             warning = warning,

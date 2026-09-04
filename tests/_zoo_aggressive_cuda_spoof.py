@@ -64,7 +64,9 @@ def apply() -> None:
     class _CudaRt:
         @staticmethod
         def cudaMemGetInfo(device: int = 0):
-            return (0, 80 * 1024**3)
+            # (free, total), where `torch.cuda.mem_get_info` delegates. Zero free
+            # is an exhausted card, and the fused loss raises instead of chunking.
+            return (60 * 1024**3, 80 * 1024**3)
 
         @staticmethod
         def cudaGetDeviceCount(*_a, **_k):
@@ -80,7 +82,7 @@ def apply() -> None:
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
-        _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+        _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
         _cuda_memory.memory_stats = lambda *a, **k: {}
         _cuda_memory.memory_allocated = lambda *a, **k: 0
         _cuda_memory.max_memory_allocated = lambda *a, **k: 0

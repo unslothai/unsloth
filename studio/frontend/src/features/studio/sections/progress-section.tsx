@@ -23,17 +23,18 @@ import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
+  getTrainingMethodLabel,
+  type TrainingViewData,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
-import type { TrainingViewData } from "@/features/training";
-import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
   FolderExportIcon,
@@ -45,7 +46,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
@@ -53,7 +54,7 @@ import {
   formatNumber,
   phaseColors,
 } from "./progress-section-lib";
-import { useT, type TranslationKey } from "@/i18n";
+import type { RunConfigOverride } from "./run-config-override";
 
 type ConfigGroup = {
   section: string;
@@ -68,6 +69,7 @@ const phaseLabelKeys = {
   loading_dataset: "studio.progress.phase.loadingDataset",
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
+  finalizing: "studio.progress.phase.finalizing",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -145,8 +147,7 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to the Export page with
-  // this run preselected (its output-dir basename is the export model name).
+  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -174,8 +175,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
-  // editable form store until it loads; History shows blanks, never live form values.
+  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -189,8 +189,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as
-  // AdamW, so label them AdamW here too.
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
@@ -314,6 +313,25 @@ export function ProgressSection({
             </p>
           )}
 
+          {data.warnings.length > 0 && (
+            <div
+              aria-live="polite"
+              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+            >
+              <HugeiconsIcon
+                icon={Alert02Icon}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <ul className="min-w-0 space-y-1">
+                {data.warnings.map((warning) => (
+                  <li key={warning} className="break-words">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div
             className={cn(
               "grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2",
@@ -384,14 +402,9 @@ function LiveGpuPanel({
         ? [gpuData]
         : [];
 
-  useEffect(() => {
-    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
-      setSelectedGpu(0);
-    }
-  }, [gpus.length, selectedGpu]);
-
   const gpuCount = gpus.length;
-  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
+  const selectedGpuIndex = selectedGpu >= 0 && selectedGpu < gpuCount ? selectedGpu : 0;
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpuIndex] || {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -402,7 +415,7 @@ function LiveGpuPanel({
           </p>
           {gpuCount > 1 && (
             <select
-              value={selectedGpu}
+              value={selectedGpuIndex}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
               className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"

@@ -3,28 +3,59 @@
 
 """
 Chat history API routes backed by studio.db.
+
+SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup. Those
+mixed handlers explicitly send their database transaction through Starlette's threadpool.
 """
 
-from typing import Annotated, Any, Literal, Optional
+import asyncio
+import sqlite3
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from auth.authentication import get_current_subject
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from loggers import get_logger
+from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
+    ChatThreadDeletedError,
+    ChatThreadPreconditionFailed,
     CorruptSettingsError,
+    ProjectWorkspaceError,
+    build_chat_history_export,
     clear_chat_history,
+    clear_chat_history_with_replay_status,
+    mark_clear_operation_caches_cleared,
+    record_clear_operation_reap_scope,
+    unreaped_clear_operation_image_ids,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
-    delete_chat_threads,
     delete_chat_project,
+    delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
     get_chat_thread,
@@ -43,6 +74,8 @@ from storage.studio_db import (
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
+    upsert_chat_settings_merge_if_current,
+    write_chat_thread_settings,
     upsert_chat_thread,
 )
 
@@ -51,11 +84,88 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _reject_boolean(value: Any) -> Any:
+    """bool subclasses int, so lax mode would take `true` for a number the user never set."""
+    if isinstance(value, bool):
+        raise ValueError("Expected a number, got a boolean.")
+    return value
+
+
+NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+
+# llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
+MAX_SAMPLING_SEED = 2**32 - 2
+SamplingSeed = Optional[
+    Annotated[int, Field(ge = 0, le = MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
+]
+
+
+class ChatRagThreadSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["thread"]
+
+
+class ChatRagKnowledgeBaseSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["kb"]
+    kbId: str = Field(min_length = 1, max_length = 256)
+
+
+class ChatThreadSettings(BaseModel):
+    """The chat settings captured per thread; a thread storing none uses the global ones."""
+
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take a bare NaN, stored as a token no
+    # strict reader can parse back.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+
+    reasoningEnabled: Optional[bool] = None
+    reasoningEffort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    artifactsEnabled: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragEnabled: Optional[bool] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # The sampling params a chat runs with. Ranges match the sliders that set them.
+    temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
+    topP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
+    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
+    minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
+    presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    seed: SamplingSeed = None
+    # Not length-capped, like the installation-wide copy: truncating here would
+    # silently change what the chat runs with.
+    systemPrompt: Optional[str] = None
+    systemVariables: Optional[str] = None
+
+
 class ChatThread(BaseModel):
     id: str
     title: str = "New Chat"
     modelType: Literal["base", "lora", "model1", "model2"]
     modelId: str = ""
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: bool = False
@@ -65,12 +175,122 @@ class ChatThread(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
+    settings: Optional[ChatThreadSettings] = None
+
+    @field_serializer("settings")
+    def _only_the_keys_the_snapshot_stored(
+        self, settings: Optional[ChatThreadSettings]
+    ) -> Optional[dict]:
+        """Report a key the snapshot never held as absent rather than as null.
+
+        `seed` is the one setting whose null is a value: it means this chat draws its own
+        rather than taking the pinned one. Spelling every unset field as null, which is
+        what the default dump does, would make a snapshot written before the field existed
+        read as a chat that had cleared it.
+        """
+        if settings is None:
+            return None
+        return settings.model_dump(exclude_unset = True)
+
+
+def thread_from_row(row: dict) -> ChatThread:
+    """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
+
+    `settings` is the first strictly validated nested model Unsloth builds out of the
+    database rather than off the wire, and a stored snapshot outlives the build that
+    wrote it: a newer Unsloth adding a seventeenth setting, widening an enum or
+    raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
+    open and takes the entire history export with it, since the export validates
+    every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
+    that parses but postdates this build deserves the same treatment.
+
+    Only the read is forgiving. The wire contract stays strict in both directions, so
+    a client still cannot invent a setting, and the row itself is left untouched,
+    which means upgrading again restores whatever this build had to drop.
+    """
+    settings = row.get("settings")
+    if isinstance(settings, dict):
+        row = {**row, "settings": readable_thread_settings(settings)}
+    elif settings is not None:
+        row = {**row, "settings": None}
+    return ChatThread(**row)
+
+
+def readable_thread_settings(settings: dict) -> Optional[dict]:
+    """The part of a stored snapshot this build can validate, or None if none of it is."""
+    known = {k: v for k, v in settings.items() if k in ChatThreadSettings.model_fields}
+    # Drop exactly the fields pydantic names and retry: a version gap usually
+    # carries several at once, so removing one guess at a time gives up too early.
+    for _ in range(len(known) + 1):
+        try:
+            ChatThreadSettings.model_validate(known)
+            return known
+        except ValidationError as exc:
+            bad = {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+            if not bad or not bad & set(known):
+                return None
+            known = {k: v for k, v in known.items() if k not in bad}
+    return None
+
+
+def _unreadable_thread_settings(stored: dict) -> dict:
+    """The part of a stored snapshot this build cannot validate, and so must not delete.
+
+    An older Unsloth opening a database a newer one wrote drops the fields it cannot read.
+    A blind replacement would make that loss permanent instead of temporary, so a write
+    carries forward everything the writer could not have known about: unknown keys, and
+    known keys holding values this build rejects.
+    """
+    readable = readable_thread_settings(stored) or {}
+    return {k: v for k, v in stored.items() if k not in readable}
+
+
+def _settings_write_from_patch(patch: dict) -> Optional[dict]:
+    """Take `settings` / `settingsPatch` out of `patch` and describe the write they ask for.
+
+    `settings` replaces the snapshot, `settingsPatch` applies only the fields it names,
+    for a client that knows what changed but not what else the row holds. The result is
+    handed to storage rather than executed here: the read, the merge and the guarded
+    metadata write all have to be one transaction, or two tabs each build a replacement
+    from the same stale row, or a rejected precondition returns 409 having already
+    committed the settings.
+    """
+    replace = "settings" in patch
+    merge = "settingsPatch" in patch
+    seq = patch.pop("settingsSeq", None)
+    writer = patch.pop("settingsWriter", None)
+    if not (replace or merge):
+        return None
+    incoming = patch.pop("settingsPatch", None)
+    if merge:
+        # A merge is the more specific instruction; sending both is a client bug.
+        patch.pop("settings", None)
+    else:
+        incoming = patch.pop("settings")
+    if incoming is None:
+        # Clearing is the one instruction that means the whole column. A merge of
+        # nothing is not an instruction at all, so it leaves the row alone.
+        if replace and not merge:
+            return {"clear": True, "seq": seq, "writer": writer}
+        return None
+    return {
+        "merge": incoming if merge else None,
+        "replace": None if merge else incoming,
+        "seq": seq,
+        "writer": writer,
+        "keep_unreadable": _unreadable_thread_settings,
+    }
 
 
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
+    # Apply only while the row still holds this title, so a rename beats a background rewrite.
+    expectedTitle: Optional[str] = None
+    # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
+    expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: Optional[bool] = None
@@ -78,6 +298,16 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    # Replaces the whole snapshot, except for anything the client could not read.
+    settings: Optional[ChatThreadSettings] = None
+    # Applies just the fields it names. For the writer that knows what changed but not
+    # what else the row holds, which is any write made before the row has been read.
+    settingsPatch: Optional[ChatThreadSettings] = None
+    # Orders this writer's snapshot writes against its OWN earlier ones.
+    # So a keepalive sent on unload cannot be undone by a PATCH the server already had in hand. Never compared across
+    # writers: two browsers' counters mean nothing to each other.
+    settingsSeq: Optional[int] = None
+    settingsWriter: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -100,6 +330,12 @@ class ChatProject(BaseModel):
     archived: bool = False
     createdAt: int
     updatedAt: int
+
+
+class ChatProjectDeleted(ChatProject):
+    """The deleted project, plus the member sandboxes that still hold files."""
+
+    sandboxes_kept: list[str] = []
 
 
 class ChatProjectPatch(BaseModel):
@@ -125,10 +361,22 @@ class ChatMessageListResponse(BaseModel):
 class ChatMessageSyncRequest(BaseModel):
     messages: list[ChatMessage]
     pruneMissing: bool = False
+    deletedMessageIds: list[str] = Field(default_factory = list)
 
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+    # Files a tool call wrote. Off by default: they are the user's and the chat
+    # card offers them as downloads. An empty sandbox is removed either way.
+    delete_files: bool = False
+
+
+class ChatClearRequest(BaseModel):
+    # The client fences every legacy Dexie thread it holds, so this bound has to sit above what
+    # a migrated install can legitimately collect: a 422 here fails the whole clear, and the
+    # identical retry fails with it, leaving backend history behind after Clear all.
+    ids: list[str] = Field(default_factory = list, max_length = 200_000)
+    operationId: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
 
 
 class ChatCountResponse(BaseModel):
@@ -145,7 +393,10 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity.
+    # A bare NaN token in value_json reads back fine but renders as null, so refuse it at the door the way
+    # models/training.py does.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -159,17 +410,33 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    seed: SamplingSeed = None
 
 
 class ChatPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
+    nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    # The normalizer emits both keys on every preset (null included) and this model is
+    # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
+    # preset carrying a loadConfig, including one that only pinned nParallel.
+    nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    # Same forbid trap as nBatch/nUbatch: normalizePresetLoadConfig always emits these
+    # keys (null included). Without them, saving a named system-prompt preset that
+    # carries any loadConfig 400s the whole customPresets write (#9879).
+    loadMode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = None
+    specDraftCacheDtype: Optional[str] = None
+    ctxCheckpoints: NotABoolean = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cacheRam: NotABoolean = Field(default = None, ge = -1, le = CACHE_RAM_MAX_MIB)
     tensorParallel: Optional[bool] = None
+    disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
@@ -183,10 +450,26 @@ class ChatPreset(BaseModel):
     loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
-class ChatSettingsPayload(BaseModel):
+class ChatResearchWebsitePolicy(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
+    # 253 is the maximum length of a DNS name.
+    allowedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+    blockedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+
+
+class ChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+
     inferenceParams: Optional[ChatInferenceSettings] = None
+    # Last-used params per checkpoint id. Deep-merged per key, so patching one
+    # model cannot drop another's.
+    inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
@@ -197,14 +480,111 @@ class ChatSettingsPayload(BaseModel):
     preserveThinking: Optional[bool] = None
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
+    # Read by the web_search tool at call time, so it lives with the install, not one browser.
+    searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
+    # Composer and RAG toggles. They describe the installation, not the browser
+    # that set them, so a second browser or a remote session reads them back here
+    # instead of falling back to defaults.
+    reasoningEnabled: Optional[bool] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
+    artifactsEnabled: Optional[bool] = None
+    showCanvasMenuItem: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    confirmToolCalls: Optional[bool] = None
+    # "full" (Full access) is session-only by design and never persisted.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragOcrScanned: Optional[bool] = None
+    ragCaptionFigures: Optional[bool] = None
+    # Standing load preferences the model-load path reads outside the store.
+    speculativeType: Optional[Literal["auto", "ngram", "off"]] = None
+    gpuMemoryMode: Optional[Literal["auto", "manual"]] = None
+    expandQuantizations: Optional[bool] = None
+    showAllQuantizations: Optional[bool] = None
+    fitOnDeviceOnly: Optional[bool] = None
+    # Off omits context_overflow, so a full window errors instead of silently dropping history.
+    # contextPolicy/headroom are the per-request overrides for UNSLOTH_CONTEXT_POLICY and
+    # ROLLING_COMPACTION_HEADROOM_RATIO.
+    autoCompactEnabled: Optional[bool] = None
+    contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
+    compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
+
 
 class ChatSettingsResponse(BaseModel):
     settings: dict[str, Any]
+
+
+class ConditionalChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    expected: ChatSettingsPayload
+    expectedAbsent: list[str] = Field(default_factory = list)
+    expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
+    patch: ChatSettingsPayload
+
+    @field_validator("expectedAbsent")
+    @classmethod
+    def _known_absent_fields(cls, value: list[str]) -> list[str]:
+        unknown = set(value) - set(ChatSettingsPayload.model_fields)
+        if unknown:
+            unknown_names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unknown chat settings field(s): {unknown_names}")
+        return value
+
+    @field_validator("expectedAbsentPaths")
+    @classmethod
+    def _known_absent_paths(cls, value: list[list[str]]) -> list[list[str]]:
+        for path in value:
+            if len(path) < 2 or any(not segment for segment in path):
+                raise ValueError("Expected-absent paths require at least two non-empty segments")
+            if path[0] not in ChatSettingsPayload.model_fields:
+                raise ValueError(f"Unknown chat settings field: {path[0]}")
+        return value
+
+
+class ConditionalChatSettingsResponse(ChatSettingsResponse):
+    applied: bool
 
 
 class ChatMessagesBatchRequest(BaseModel):
@@ -231,8 +611,19 @@ class ChatImportLedgerRecordResponse(BaseModel):
     inserted: int
 
 
+# Both conflicts are 409 and mean opposite things (protected: stop resending; thread
+# collision: surface the failure), so they are told apart by a header, not by `detail`.
+# main.py must expose the header for a cross-origin Studio to read it.
+CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+
+
+def _conflict_headers(exc: Exception) -> dict:
+    kind = "protected" if isinstance(exc, ChatMessageProtectedError) else "thread-collision"
+    return {CONFLICT_KIND_HEADER: kind}
+
+
 @router.get("/threads", response_model = ChatThreadListResponse)
-async def list_threads(
+def list_threads(
     model_type: Optional[str] = Query(None),
     pair_id: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
@@ -245,58 +636,102 @@ async def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
+    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+
+
+def _missing_project_error(project_id: Optional[str]) -> HTTPException:
+    """The row references a project that is gone, whether the check or the write noticed it."""
+    return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+
+
+def _missing_thread_error(thread_id: str) -> HTTPException:
+    return HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+
+
+def _deleted_thread_error(thread_id: str) -> HTTPException:
+    return HTTPException(status_code = 410, detail = f"Thread {thread_id} was deleted")
 
 
 @router.post("/threads", response_model = ChatThread)
-async def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
-        raise HTTPException(
-            status_code = 404,
-            detail = f"Project {payload.projectId} not found",
-        )
-    return ChatThread(**upsert_chat_thread(payload.model_dump()))
+        raise _missing_project_error(payload.projectId)
+    try:
+        return thread_from_row(upsert_chat_thread(payload.model_dump()))
+    except ChatThreadDeletedError as exc:
+        raise _deleted_thread_error(payload.id) from exc
+    except sqlite3.IntegrityError as exc:
+        # The project can be deleted between the check above and this insert, and the foreign key
+        # then fails. Report the same 404 rather than surfacing a 500.
+        if not payload.projectId:
+            raise
+        raise _missing_project_error(payload.projectId) from exc
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
-async def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
+def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
 
 
 @router.patch("/threads/{thread_id}", response_model = ChatThread)
-async def patch_thread(
+def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
+    expected_title = patch.pop("expectedTitle", None)
+    expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
-        raise HTTPException(
-            status_code = 404,
-            detail = f"Project {patch['projectId']} not found",
+        raise _missing_project_error(patch["projectId"])
+    settings_write = _settings_write_from_patch(patch)
+    try:
+        thread = update_chat_thread(
+            thread_id,
+            patch,
+            expected_title = expected_title,
+            expected_opening_message_id = expected_opening_message_id,
+            settings_write = settings_write,
         )
-    thread = update_chat_thread(
-        thread_id,
-        patch,
-    )
+    except sqlite3.IntegrityError as exc:
+        # Same race as save_thread: the project can go away before this write lands.
+        if not patch.get("projectId"):
+            raise
+        raise _missing_project_error(patch["projectId"]) from exc
+    except ChatThreadPreconditionFailed:
+        raise HTTPException(
+            status_code = 409,
+            detail = f"Thread {thread_id} changed since it was read",
+        )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
+
+
+def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
+    """Signal workers for active runs captured by the deletion transaction."""
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    if supervisor is None:
+        return
+    for run_id in run_ids:
+        try:
+            supervisor.cancel(run_id)
+        except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
+            logger.warning(
+                "chat_history.cancel_deleted_research_failed run_id=%s",
+                run_id,
+                exc_info = True,
+            )
 
 
 def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
-    """Signal any active research runs on these threads to stop before their rows are deleted.
-
-    Deleting a thread cascade-deletes its research_runs row, but the worker only notices at its
-    next lease check, so it can keep doing model/web/RAG work (up to a tool timeout) for a run
-    that no longer exists. Best-effort: cancellation bookkeeping must never break the deletion.
-    """
+    """Compatibility path for callers that must cancel runs before deleting their rows."""
     if not thread_ids:
         return
     try:
@@ -322,15 +757,183 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
                 )
 
 
+def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
+    """Stop these research runs by id. Best effort, like every cleanup here."""
+    if not run_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for run_id in run_ids:
+        # The row is usually already gone here, which makes request_cancel raise:
+        # the supervisor is what actually stops the worker, so it is told first
+        # and the status update is the best-effort half.
+        if supervisor is not None:
+            try:
+                supervisor.cancel(run_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not signal research run %s", run_id, exc_info = True)
+        try:
+            research_runs_db.request_cancel(run_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _cancel_active_generations(thread_ids: list[str]) -> None:
+    """Stop any generation still running for these threads.
+
+    The sandbox goes with the thread, but a request that has not reached the
+    executor yet would dispatch its tool call afterwards, recreate the folder,
+    and write files no chat can reach. The in-flight guard only covers calls
+    already inside the executor. Best effort: this must never break a delete.
+    """
+    if not thread_ids:
+        return
+    try:
+        from state import active_generations
+    except Exception:  # noqa: BLE001 - never block a delete on this
+        return
+    for thread_id in thread_ids:
+        try:
+            active_generations.cancel_thread(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
+    """Cancel durable producers whose rows were captured before thread cascade."""
+    if not run_ids:
+        return
+    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
+    for run_id in run_ids:
+        try:
+            if supervisor is not None:
+                supervisor.cancel(run_id)
+            else:
+                from routes.inference import _cancel_by_cancel_id_or_stash
+                from state import active_generations
+
+                active_generations.cancel_run(run_id)
+                _cancel_by_cancel_id_or_stash(run_id)
+        except Exception:  # noqa: BLE001 - deletion must still complete
+            logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
+
+
 @router.delete("/threads")
 async def delete_threads(
     payload: ChatDeleteRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _cancel_active_research(request, payload.ids)
-    delete_chat_threads(payload.ids)
-    return {"status": "deleted"}
+    from starlette.concurrency import run_in_threadpool
+
+    # Before the rows go, so a thread id that comes back in the gap is cut here.
+    cutoff = _archive_cutoff()
+    deleted_research_run_ids, deleted_chat_run_ids = await run_in_threadpool(
+        delete_chat_threads_with_active_runs,
+        payload.ids,
+    )
+    _cancel_research_runs(request, deleted_research_run_ids)
+    _cancel_chat_generation_runs(request, deleted_chat_run_ids)
+    _cancel_active_generations(payload.ids)
+    # Keyed by thread id, so the folder is unreachable once the thread is gone; done in a worker because the
+    # post-upgrade legacy move can be a cross-filesystem copy.
+    removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
+    # drop them rather than leaking a scope per deleted chat.
+    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
+    return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _archive_cutoff() -> str:
+    """The instant a delete was accepted, as an ISO-8601 UTC string. See below."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns. Never raises."""
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return
+    for thread_id in thread_ids or []:
+        # Cut at the instant the delete was accepted, not on recreation: another tab can have recreated this id, and
+        # skipping the scope left the deleted conversation recallable.
+        # Everything archived before that instant belongs to the deleted conversation, everything after to the new one.
+        recreated = get_chat_thread(str(thread_id)) is not None
+        if recreated and not cutoff:
+            continue
+        try:
+            conversation_archive.delete_for_thread(
+                str(thread_id), created_before = cutoff if recreated else None
+            )
+        except Exception:
+            logger.warning("Could not remove the conversation archive for %s", thread_id)
+
+
+async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
+    """Drop each thread's sandbox off the event loop. Never raises.
+
+    Returns how many went and which ids still have files. The chat is the only
+    way to those files, so a caller that never offered the choice can offer it
+    once it knows there was something to keep.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    def _remove() -> "tuple[int, list[str]]":
+        from core.inference.tools import (
+            record_kept_sandbox,
+            remove_session_sandbox,
+            sandbox_removal_deferred,
+            session_sandbox_has_files,
+        )
+        from storage.studio_db import sandbox_is_referenced_elsewhere
+
+        removed, kept = 0, []
+        for thread_id in thread_ids:
+            # The row went first, and another tab can upsert the same id in the
+            # meantime. That chat is alive, with a tool call possibly running in
+            # here, so its folder is not this delete's to take.
+            if get_chat_thread(thread_id) is not None:
+                continue
+            # A fork clones the message content, cards and all, so the source
+            # chat's files are still on screen in a chat the user kept.
+            if delete_files and sandbox_is_referenced_elsewhere(thread_id):
+                if session_sandbox_has_files(thread_id):
+                    kept.append(thread_id)
+                    # The user asked for these files and the chat is gone, so
+                    # nothing comes back to that folder: written down, and the
+                    # collection below takes it once the last fork goes too.
+                    record_kept_sandbox(thread_id)
+                continue
+            # Again, next to the removal: the reference scan above reads
+            # every message, and another tab can recreate the chat while it runs.
+            if get_chat_thread(thread_id) is not None:
+                continue
+            if remove_session_sandbox(thread_id, delete_files = delete_files):
+                removed += 1
+            # A removal that had to wait for a running tool call is reported as
+            # kept: that call can still write a file, and this is the only
+            # answer the caller gets.
+            elif sandbox_removal_deferred(thread_id) or session_sandbox_has_files(thread_id):
+                kept.append(thread_id)
+        return removed, kept
+
+    try:
+        result = await run_in_threadpool(_remove)
+    except Exception:
+        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+        return 0, []
+    # Whatever this delete asked for: the last chat referencing a workspace the
+    # user already asked to delete can go through the plain path, and only the
+    # records marked pending are ever collected.
+    from core.inference.tools import collect_orphaned_project_workspaces
+
+    await run_in_threadpool(collect_orphaned_project_workspaces)
+    return result
 
 
 @router.get("/attachments")
@@ -462,6 +1065,7 @@ def delete_attachment(
             safe_curated_detail(exc),
             event = "chat_history.delete_attachment_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
@@ -469,7 +1073,7 @@ def delete_attachment(
 
 
 @router.get("/projects", response_model = ChatProjectListResponse)
-async def list_projects(
+def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
@@ -481,12 +1085,25 @@ async def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-async def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
-    return ChatProject(**upsert_chat_project(payload.model_dump()))
+def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+    try:
+        return ChatProject(**upsert_chat_project(payload.model_dump()))
+    except ProjectWorkspaceError as exc:
+        # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
+        # upsert also opens the database, which lives elsewhere.
+        raise log_and_http_error(
+            exc,
+            500,
+            f"Could not create the project folder {exc.path}. Check that the "
+            "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
+            "location.",
+            event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-async def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
+def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -497,7 +1114,7 @@ async def get_project(project_id: str, current_subject: str = Depends(get_curren
 
 
 @router.patch("/projects/{project_id}", response_model = ChatProject)
-async def patch_project(
+def patch_project(
     project_id: str,
     payload: ChatProjectPatch,
     current_subject: str = Depends(get_current_subject),
@@ -517,56 +1134,192 @@ async def patch_project(
     return ChatProject(**project)
 
 
-@router.delete("/projects/{project_id}", response_model = ChatProject)
+def _delete_project_rag_sources(project_id: str) -> None:
+    """Retire an ownerless project scope and reap it when RAG is available."""
+    from storage import rag_db
+    from core.rag import folder_sync, store as rag_store
+
+    scope = rag_store.project_scope(project_id)
+    # a project id is reusable, and the tombstone outlives the scope, so retiring one that
+    # another client already recreated would permanently disable RAG for the new project
+    with folder_sync.scope_lock(scope):
+        checked_at = folder_sync.now_iso()
+        if get_chat_project(project_id) is not None:
+            return
+        folder_sync.retire_scope(scope, checked_at)
+    if rag_db.rag_available():
+        folder_sync.delete_retired_scope(scope)
+
+
+@router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
 async def delete_project(
     project_id: str,
     request: Request,
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    _cancel_active_research(
-        request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
-    )
-    project = delete_chat_project(project_id, delete_files = delete_files)
+    from starlette.concurrency import run_in_threadpool
+
+    # Rows first, files last: a member chat can still be running a tool in the
+    # workspace, and its cwd disappearing mid-call either kills the call or
+    # leaves what it writes next in a directory no project owns.
+    cutoff = _archive_cutoff()
+    try:
+        project = await run_in_threadpool(
+            lambda: delete_chat_project(project_id, delete_files = False)
+        )
+    except Exception:
+        try:
+            if await run_in_threadpool(get_chat_project, project_id) is None:
+                await run_in_threadpool(_delete_project_rag_sources, project_id)
+        except Exception:  # noqa: BLE001 - preserve the original deletion error
+            logger.warning(
+                "failed to delete RAG sources for committed project %s", project_id, exc_info = True
+            )
+        raise
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
+    # The transaction is authoritative about membership and captured the worker ids before its
+    # cascades. Signal them before any potentially slow RAG or workspace cleanup.
+    member_ids = list(project.get("memberIds") or [])
+    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
+    _cancel_chat_generation_runs(
+        request,
+        list(project.get("activeChatGenerationRunIds") or []),
+    )
+    _cancel_active_generations(member_ids)
+    # before any workspace work: the row is already gone.
     try:
-        import os
-
-        from storage import rag_db
-        if rag_db.RAG_AVAILABLE:
-            from core.rag import store as rag_store
-            from utils.paths import rag_uploads_root
-
-            uploads = os.path.realpath(str(rag_uploads_root()))
-            conn = rag_db.get_connection()
-            try:
-                scope = rag_store.project_scope(project_id)
-                for doc in rag_store.list_documents(conn, scope):
-                    full = rag_store.get_document(conn, doc["id"]) or {}
-                    rag_store.delete_document(conn, doc["id"])
-                    stored = full.get("stored_path")
-                    # Also remove the uploaded file; confined to the uploads root.
-                    if stored:
-                        target = os.path.realpath(stored)
-                        if (
-                            os.path.isfile(target)
-                            and os.path.commonpath([uploads, target]) == uploads
-                        ):
-                            os.remove(target)
-            finally:
-                conn.close()
+        await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    return ChatProject(**project)
+    # The project's chats go with it, so their archives have to as well.
+    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
+    if project.get("sandboxPath"):
+        from core.inference.tools import (
+            finish_workspace_delete_when_idle,
+            forget_orphaned_project,
+            forget_orphaned_project_if_gone,
+            live_project_owns,
+            project_session_id,
+            record_orphaned_project,
+            wait_for_sessions_idle,
+        )
+        from storage.studio_db import (
+            delete_project_workspace,
+            sandbox_is_referenced_elsewhere,
+        )
+
+        # Cancelling only asks: a call already in the executor still has its
+        # cwd in there, and removing it strands what it writes next. The shared
+        # id first, since a call in a project runs as `project-<id>`.
+        shared = project_session_id(project_id)
+        idle = (
+            await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
+            if delete_files
+            else True
+        )
+        # A chat forked out of the project still shows cards for the shared
+        # workspace, and the fork is not one of the ids deleted here.
+        referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
+        # The row went first, so another client can create a project with this
+        # id in the window. It resolves to the same default path, and a tool
+        # call of its own may be writing in there right now.
+        recreated = await run_in_threadpool(get_chat_project, project_id) is not None
+        if not delete_files:
+            # The files stay, so the only job here is making them reachable: the
+            # row that held a custom path is gone, and a fork's cards still name
+            # this session.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                False,
+                project.get("rootPath"),
+            )
+        elif recreated:
+            logger.warning(
+                "Kept project workspace %s: a project was created with that id",
+                project_id,
+            )
+        elif not idle:
+            # Still running after the wait. Removing a live tool call's working
+            # directory is worse than keeping files the user asked to delete,
+            # and the record below means the next delete can still collect them.
+            logger.warning(
+                "Kept project workspace %s: a tool call was still running in it",
+                project_id,
+            )
+        elif referenced:
+            logger.info(
+                "Kept project workspace %s: a surviving chat still shows its files",
+                project_id,
+            )
+        if delete_files and idle and not referenced and not recreated:
+            # Written down first: the delete can decline an unexpected path or
+            # stop at a locked file, and the row that knew where this workspace
+            # lives has already gone. The record is the only way back to it.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                True,
+                project.get("rootPath"),
+            )
+            # Once more, next to the delete itself: the record write above is
+            # an await, and a project created in that window resolves to this
+            # same path.
+            if await run_in_threadpool(get_chat_project, project_id) is not None:
+                logger.warning(
+                    "Kept project workspace %s: a project was created with that id",
+                    project_id,
+                )
+                # Only when the new row is about these folders: the default
+                # root carries the project's name, so a project remade under
+                # this id can sit elsewhere and the old one would be stranded.
+                if await run_in_threadpool(
+                    live_project_owns,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                ):
+                    await run_in_threadpool(forget_orphaned_project, project_id)
+            else:
+                await run_in_threadpool(delete_project_workspace, project)
+                await run_in_threadpool(
+                    forget_orphaned_project_if_gone,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                )
+        elif delete_files and not recreated:
+            # Written down so it can be resolved and later collected: the row
+            # that knew where it lives is gone. The root too, since the deferred
+            # delete removes what the immediate one would; not for a live id.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                True,
+                project.get("rootPath"),
+            )
+            if not idle:
+                # Nothing else comes back to it: the collection would otherwise wait for a later delete
+                # that may never happen.
+                finish_workspace_delete_when_idle(project_id)
+    # Each member chat had its own sandbox for anything it wrote before joining
+    # the project, and deleting the project removes the only records of them.
+    _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
+    # Those folders are reachable from nothing now, so the caller is told which
+    # ones survived and can offer the delete once.
+    return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
+def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -575,7 +1328,7 @@ async def get_thread_messages(thread_id: str, current_subject: str = Depends(get
 
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
-async def batch_thread_messages(
+def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
@@ -588,7 +1341,7 @@ async def batch_thread_messages(
 
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
-async def get_thread_message(
+def get_thread_message(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -606,6 +1359,7 @@ def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
+    allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
@@ -613,7 +1367,13 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(**upsert_chat_message(payload.model_dump()))
+        return ChatMessage(
+            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        )
+    except sqlite3.IntegrityError as exc:
+        if get_chat_thread(thread_id) is None:
+            raise _missing_thread_error(thread_id) from exc
+        raise
     except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
@@ -621,6 +1381,7 @@ def save_thread_message(
             safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -649,9 +1410,14 @@ def replace_thread_messages(
                     thread_id,
                     messages,
                     prune_missing = payload.pruneMissing,
+                    deleted_message_ids = payload.deletedMessageIds,
                 )
             ]
         )
+    except sqlite3.IntegrityError as exc:
+        if get_chat_thread(thread_id) is None:
+            raise _missing_thread_error(thread_id) from exc
+        raise
     except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
@@ -659,16 +1425,17 @@ def replace_thread_messages(
             safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
 @router.get("/count", response_model = ChatCountResponse)
-async def count_threads(current_subject: str = Depends(get_current_subject)):
+def count_threads(current_subject: str = Depends(get_current_subject)):
     return ChatCountResponse(count = count_chat_threads())
 
 
 @router.get("/import-ledger", response_model = ChatImportLedgerResponse)
-async def get_import_ledger(current_subject: str = Depends(get_current_subject)):
+def get_import_ledger(current_subject: str = Depends(get_current_subject)):
     """Legacy-Dexie import ledger: legacy thread ids already copied into chat tables.
 
     The frontend checks this on tab open to decide whether to re-run the Dexie -> studio.db import.
@@ -677,7 +1444,7 @@ async def get_import_ledger(current_subject: str = Depends(get_current_subject))
 
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
-async def record_import_ledger(
+def record_import_ledger(
     payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
@@ -686,25 +1453,161 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
-    _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
-    clear_chat_history()
-    return {"status": "deleted"}
+async def clear_history(
+    request: Request,
+    payload: Optional[ChatClearRequest] = None,
+    delete_files: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    from starlette.concurrency import run_in_threadpool
+
+    cutoff = _archive_cutoff()
+    # Admission is already closed in the frontend. Include its pending and legacy ids in the
+    # transaction's fence so a delayed POST cannot recreate a chat after this returns.
+    thread_ids = (
+        list(payload.ids)
+        if payload is not None
+        else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
+    )
+
+    def _clear_rows() -> tuple[list[str], list[str], list[str], bool, Optional[set]]:
+        """The clear, and the image snapshot the reap will be bounded to.
+
+        Both in ONE threadpool call, so there is no await between them. Split across two,
+        the event loop can run another request in the gap: a chat created there survives
+        the transaction, but its images register before the snapshot and the reap takes
+        them, leaving its cards 404ing out of thumbnail_bytes.
+
+        Narrowed, NOT closed, and the difference is worth stating. Another worker thread can
+        still register between the commit and the read a few instructions later, and only one
+        thing would truly close that: holding ``_registry_lock`` across the transaction. That
+        lock is what every image registration in the process takes, and this transaction is a
+        BEGIN IMMEDIATE that waits out contention for seconds, so paying for it means stalling
+        every search in every chat for the length of a clear. The window bought back is a few
+        instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
+        """
+        from core.inference.search_images import snapshot_and_fence_registrations
+
+        if payload is None:
+            cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
+                include_chat_generation_runs = True
+            )
+            return (
+                cleared,
+                cleared_runs,
+                cleared_chat_runs,
+                False,
+                snapshot_and_fence_registrations(),
+            )
+        # Answered by the transaction itself: read beforehand it is a guess, and a concurrent retry of the same
+        # operation id would replay while believing it cleared.
+        # The one BEGIN IMMEDIATE puts second replays while still believing it cleared; `replayed` is whichever the
+        # transaction actually did.
+        cleared, cleared_runs, cleared_chat_runs, replayed = clear_chat_history_with_replay_status(
+            payload.ids,
+            operation_id = payload.operationId,
+            include_chat_generation_runs = True,
+        )
+        if replayed:
+            # A replay takes no snapshot of its own -- the chats created since the original
+            # clear are not its to reap. It may still have to FINISH that clear's reap,
+            # though, if the process died between the commit and the cleanup.
+            return (
+                cleared,
+                cleared_runs,
+                cleared_chat_runs,
+                True,
+                unreaped_clear_operation_image_ids(payload.operationId),
+            )
+        snapshot = snapshot_and_fence_registrations()
+        # Recorded before the reap runs.
+        record_clear_operation_reap_scope(payload.operationId, snapshot)
+        return cleared, cleared_runs, cleared_chat_runs, False, snapshot
+
+    # The clear reports what it deleted.
+    (
+        cleared,
+        cleared_runs,
+        cleared_chat_runs,
+        replayed,
+        reapable_image_ids,
+    ) = await run_in_threadpool(_clear_rows)
+    # A chat started between the listing and the transaction is in `cleared` but was never
+    # cancelled, so its live generation could rebuild the sandbox this call removes.
+    listed = set(thread_ids)
+    late = [thread_id for thread_id in cleared if thread_id not in listed]
+    _cancel_active_generations(thread_ids)
+    if late:
+        _cancel_active_generations(late)
+    # By id: the rows went with the threads, so nothing can look them up now.
+    _cancel_research_runs(request, cleared_runs)
+    _cancel_chat_generation_runs(request, cleared_chat_runs)
+    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
+    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    await run_in_threadpool(
+        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+    )
+    # "Clear all chats" is the common bulk delete.
+    # delete_files matches DELETE /threads: off by default, since the files are the user's.
+    removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    # Search thumbnails are keyed by id, not thread.
+    # reapable_image_ids is the original clear's own snapshot off the ledger, so a replay's reap cannot reach a newer
+    # chat's images.
+    if not replayed or reapable_image_ids:
+        from core.inference.search_images import clear_cache
+        await run_in_threadpool(clear_cache, reapable_image_ids)
+        if payload is not None:
+            await run_in_threadpool(mark_clear_operation_caches_cleared, payload.operationId)
+    return {
+        "status": "deleted",
+        "deletedThreadIds": cleared,
+        "sandboxes_removed": removed,
+        "sandboxes_kept": kept,
+    }
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)
-async def get_settings(current_subject: str = Depends(get_current_subject)):
+def get_settings(current_subject: str = Depends(get_current_subject)):
     return ChatSettingsResponse(settings = list_chat_settings())
 
 
-@router.put("/settings", response_model = ChatSettingsResponse)
-async def put_settings(
+@router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
+def compare_and_set_settings(
     payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
+    # A raw dict, as put_settings takes: automatic validation of a typed body
+    # renders the offending input back, and Starlette dumps with allow_nan =
+    # False, so a rejected NaN would 500 a request the validator refused.
+    try:
+        parsed = ConditionalChatSettingsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
+    try:
+        settings, applied = upsert_chat_settings_merge_if_current(
+            parsed.expected.model_dump(exclude_unset = True),
+            parsed.patch.model_dump(exclude_unset = True),
+            parsed.expectedAbsent,
+            parsed.expectedAbsentPaths,
+        )
+        return ConditionalChatSettingsResponse(settings = settings, applied = applied)
+    except CorruptSettingsError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.compare_and_set_settings_conflict",
+            log = logger,
+        ) from exc
+
+
+@router.put("/settings", response_model = ChatSettingsResponse)
+def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_current_subject)):
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+        # safe_validation_errors, not exc.errors(): raw errors echo the input, and Starlette dumps with allow_nan=False,
+        # so a rejected NaN made the 400 handler itself 500.
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
@@ -736,8 +1639,12 @@ class ChatForkCountResponse(BaseModel):
     count: int
 
 
+class ChatThreadForkCountsResponse(BaseModel):
+    counts: dict[str, int]
+
+
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
-async def fork_thread(
+def fork_thread(
     thread_id: str,
     payload: ChatForkRequest,
     current_subject: str = Depends(get_current_subject),
@@ -761,27 +1668,28 @@ async def fork_thread(
         )
     base_title = source.get("title") or "New Chat"
     new_title = f"fork · {base_title}"
-    forked = fork_chat_thread(
-        source_thread_id = thread_id,
-        branch_message_id = payload.messageId,
-        new_thread_id = payload.newThreadId,
-        new_title = new_title,
-        created_at = payload.createdAt,
-        id_factory = lambda: str(uuid.uuid4()),
-    )
+    try:
+        forked = fork_chat_thread(
+            source_thread_id = thread_id,
+            branch_message_id = payload.messageId,
+            new_thread_id = payload.newThreadId,
+            new_title = new_title,
+            created_at = payload.createdAt,
+            id_factory = lambda: str(uuid.uuid4()),
+        )
+    except ChatThreadDeletedError as exc:
+        raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
-        raise HTTPException(status_code = 500, detail = "Fork failed")
+        # The source can be deleted between the reads above and the fork transaction, which the
+        # threadpool lets run concurrently. Report it gone rather than as a server fault.
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = list_chat_messages(payload.newThreadId)
-    # Best-effort OpenAI container snapshot. Stub: a follow-up patch can
-    # call /v1/containers list+download / create+upload here and patch
-    # the new openaiCodeExecContainerId. For v1 we always start clean
-    # and surface the same warning regardless of provider so the UI can
-    # show a consistent "sandbox starts fresh" toast.
+    # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
-        thread = ChatThread(**forked),
+        thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],
         containerSnapshotWarning = warning,
     )
@@ -791,7 +1699,7 @@ async def fork_thread(
     "/threads/{thread_id}/messages/{message_id}/forks",
     response_model = ChatForkCountResponse,
 )
-async def get_fork_count(
+def get_fork_count(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -799,18 +1707,24 @@ async def get_fork_count(
     return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
 
 
-@router.get("/export", response_model = ChatExportResponse)
-async def export_history(current_subject: str = Depends(get_current_subject)):
-    from datetime import datetime, timezone
+@router.get(
+    "/threads/{thread_id}/forks",
+    response_model = ChatThreadForkCountsResponse,
+)
+def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    """Every fork count of a thread in one read, so a rendered thread costs one request."""
+    return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
 
-    threads = list_chat_threads(include_archived = True)
-    projects = list_chat_projects(include_archived = True)
-    messages = list_chat_messages_for_threads([thread["id"] for thread in threads])
+
+@router.get("/export", response_model = ChatExportResponse)
+def export_history(current_subject: str = Depends(get_current_subject)):
+    from datetime import datetime, timezone
+    projects, threads, messages = build_chat_history_export()
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,
         threadCount = len(threads),
         projects = [ChatProject(**project) for project in projects],
-        threads = [ChatThread(**thread) for thread in threads],
+        threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )

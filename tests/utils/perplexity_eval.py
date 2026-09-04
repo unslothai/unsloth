@@ -2,6 +2,9 @@ from tqdm import tqdm
 import torch
 import pandas as pd
 
+# DEVICE_TYPE_TORCH, not DEVICE_TYPE: the latter can be "hip"/"mlx", which .to() rejects.
+from unsloth.device_type import DEVICE_TYPE_TORCH
+
 model_comparison_results = {}
 
 
@@ -17,7 +20,7 @@ def ppl_model(model, tokenizer, dataset):
         for begin_loc in range(0, seq_len, stride):
             end_loc = min(begin_loc + max_length, seq_len)
             trg_len = end_loc - prev_end_loc
-            input_ids = encodings.input_ids[:, begin_loc:end_loc].to("cuda")
+            input_ids = encodings.input_ids[:, begin_loc:end_loc].to(DEVICE_TYPE_TORCH)
             target_ids = input_ids.clone()
             target_ids[:, :-trg_len] = -100
             pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0

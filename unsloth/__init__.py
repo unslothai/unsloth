@@ -12,20 +12,80 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, importlib.util, platform
+import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Relax Metal's context-store timeout before MLX modules can initialize Metal.
-# Keep an explicit user value authoritative.
+# Transformers 4.x imports TensorFlow / Flax merely because they are installed (processing_utils
+# -> image_transforms); it reads these variables once at its own import, so they have to land
+# first. An explicit opt-in still wins, and 5.x ignores all of this.
+if "transformers" not in sys.modules:
+    _TRUE = {"1", "ON", "YES", "TRUE"}
+    # Overwrite, not `setdefault`: unset means AUTO ("enable if installed"), but an already-imported
+    # backend is in use, so opting it out breaks a `from_tf` load.
+    for _var, _modules, _opt_ins in (
+        ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        os.environ[_var] = "0"
+    del _TRUE, _var, _modules, _opt_ins
+else:
+    # Transformers derives _tf_available / _flax_available from find_spec alone, and being in
+    # sys.modules does not mean its body ran, so clear the cached flags AND write the variables:
+    # inert once read, decisive in that window, unconditional since waiting deadlocks.
+    _TRUE = {"1", "ON", "YES", "TRUE"}
+    _import_utils = sys.modules.get("transformers.utils.import_utils")
+    for _var, _flag, _const, _modules, _opt_ins, _cached in (
+        (
+            "USE_TF",
+            "_tf_available",
+            "USE_TF",
+            ("tensorflow",),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+        ),
+        (
+            "USE_FLAX",
+            "_flax_available",
+            "USE_JAX",
+            ("flax", "jax"),
+            ("USE_FLAX",),
+            ("USE_JAX",),
+        ),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        # An opt-in can be consumed and then restored, so read the snapshot Transformers used. Env USE_FLAX
+        # lands in the constant USE_JAX.
+        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
+            continue
+        os.environ[_var] = "0"
+        try:
+            # import_utils copies the env into USE_TF / USE_JAX (lines 102-104) and derives the flags at
+            # 264 / 355, so mid-body only the constant works.
+            if hasattr(_import_utils, _const):
+                setattr(_import_utils, _const, "0")
+            # Absent on 5.x, and a module proxy can refuse the write.
+            if getattr(_import_utils, _flag, False):
+                setattr(_import_utils, _flag, False)
+        except (AttributeError, TypeError):
+            pass
+    del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
+
+# Relax Metal's context-store timeout before MLX modules can initialize Metal; an explicit user
+# value stays authoritative.
 if platform.system() == "Darwin" and platform.machine() == "arm64":
     os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
+# Legacy Windows consoles (cp1252) cannot encode Unsloth's emoji/box-drawing glyphs and crash with
+# UnicodeEncodeError; errors="replace" guarantees no crash on an unencodable glyph.
 # ── Windows console UTF-8 safety ─────────────────────────────────────────────
-# Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
-# glyphs and crash with UnicodeEncodeError. Force stdout/stderr to UTF-8 only on
-# Windows and only when not already UTF-8; no-op elsewhere. errors="replace"
-# guarantees we never crash on an unencodable glyph.
 if platform.system() == "Windows":
     import sys as _sys
     for _name in ("stdout", "stderr"):
@@ -60,9 +120,8 @@ def _bytes_to_gb(value):
 
 
 def _is_mlx_available():
-    # Transitional import barrier: keep non-Apple-Silicon imports from touching
-    # unsloth_zoo until unsloth_zoo.mlx is import-safe on GPU hosts. Then this
-    # can collapse back to the centralized zoo runtime call below.
+    # Transitional import barrier: keep non-Apple-Silicon imports from touching unsloth_zoo until
+    # unsloth_zoo.mlx is import-safe on GPU hosts.
     if (
         os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
         or platform.system() != "Darwin"
@@ -81,6 +140,29 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
+    # 2.10 dies on `ScalingType`.
+    try:
+        from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
+        _fix_torchao()
+        del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old torchao.dtypes.nf4tensor path.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
+    try:
+        # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
+        # surface here with the same wrong remedy.
+        from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
+        _check_tf_deps()
+        del _check_tf_deps
+    except Exception:
+        pass
     try:
         import unsloth_zoo
     except ImportError as _e:
@@ -88,9 +170,8 @@ if _IS_MLX:
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
             "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
         ) from _e
-    # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the
-    # mlx.trainer / mlx.loader submodules. Surface a friendly install hint
-    # instead of a raw ImportError on the submodule path.
+    # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the mlx.trainer / mlx.loader
+    # submodules; surface an install hint instead of a raw ImportError.
     try:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
@@ -113,7 +194,10 @@ if _IS_MLX:
     import types as _types
     import warnings as _warnings
 
-    __version__ = unsloth_zoo.__version__
+    # unsloth_zoo is a different distribution, pinned >=, so borrowing its number reported neither the
+    # installed core nor the latest zoo. `_version` imports nothing, so this stays torch-free.
+    from ._version import __version__
+
     DEVICE_TYPE = "mlx"
     _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
     _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()
@@ -166,8 +250,8 @@ if _IS_MLX:
             target = kwargs.get("device", device)
             if _is_mlx_cuda_device_target(target):
                 return self
-            # device given by keyword: don't also pass the positional None, or the
-            # original raises "multiple values for 'device'" (e.g. .to(device="cpu")).
+            # device given by keyword: do not also pass the positional None, or the original raises "multiple
+            # values for 'device'".
             if "device" in kwargs:
                 return original_to(self, *args, **kwargs)
             return original_to(self, device, *args, **kwargs)
@@ -178,8 +262,8 @@ if _IS_MLX:
 
     _patch_mlx_batch_encoding_to_cuda()
 
-    # Load raw_text helpers without executing dataprep/__init__.py, which
-    # imports synthetic.py -> torch and would defeat the torch-free MLX path.
+    # Load raw_text helpers without executing dataprep/__init__.py, which imports synthetic.py -> torch
+    # and would defeat the torch-free MLX path.
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
@@ -263,6 +347,35 @@ if _IS_MLX:
         if clear_cache is None and hasattr(mx, "metal"):
             clear_cache = getattr(mx.metal, "clear_cache", None)
         if callable(clear_cache):
+            # MLX pins buffers a live command buffer reads, but not a dropped output array.
+            # Generation runs on its own streams, which a no-argument mx.synchronize()
+            # would not wait on. Best effort: this helper is torch.cuda.empty_cache() on
+            # MLX, called from finally arms on any thread, and synchronizing a stream
+            # bound on another thread raises (mlx 0.31.2 made encoders thread local).
+            _synchronize = getattr(mx, "synchronize", None)
+            if callable(_synchronize):
+                _drained = []
+                for _module in (
+                    "mlx_lm.generate",
+                    "mlx_vlm.generate",
+                    "mlx_vlm.generate.dispatch",
+                    "mlx_vlm.generate.ar",
+                    # Speculative decoding owns a second stream wired_limit never sees.
+                    "mlx_vlm.speculative.common",
+                ):
+                    try:
+                        _stream = getattr(sys.modules.get(_module), "generation_stream", None)
+                        # 0.6.x aliases one object across every mlx_vlm.generate name.
+                        if _stream is None or any(_stream is _seen for _seen in _drained):
+                            continue
+                        _drained.append(_stream)
+                        _synchronize(_stream)
+                    except Exception:
+                        continue
+                try:
+                    _synchronize()
+                except Exception:
+                    pass
             clear_cache()
 
     def _patch_mlx_torch_cuda_compat_api():
@@ -513,8 +626,8 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks CUDA/TRL optimizer aliases; map common
-            # adamw_* names so notebook defaults (optim="adamw_8bit") still work.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
+            # notebook defaults (optim="adamw_8bit") working.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:
@@ -586,15 +699,12 @@ if _IS_MLX:
             return False
         if _is_mlx_training_args_like(args[1]):
             return True
-        # TRL callers often pass explicit defaults:
-        # SFTTrainer(model, None, None, train_dataset, ...)
+        # TRL callers often pass explicit defaults: SFTTrainer(model, None, None, train_dataset, ...)
         return len(args) >= 3 and args[1] is None and (args[2] is None or callable(args[2]))
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):
@@ -714,9 +824,8 @@ if _IS_MLX:
                 )
 
             max_length_value = kwargs.get("max_length", None)
-            # Only the canonical max_seq_length marks context length explicit; TRL
-            # max_length stays a compatibility alias and defers to the model's
-            # context length when one is available.
+            # Only the canonical max_seq_length marks context length explicit; TRL max_length stays a
+            # compatibility alias that defers to the model's context length.
             max_seq_length_explicit = (
                 _positive_mlx_context_length(kwargs.get("max_seq_length", None)) is not None
             )
@@ -1206,7 +1315,7 @@ if _IS_MLX:
                             kwargs[collator_key] = collator_kwargs[collator_key]
                     _raise_unsupported_mlx_vision_collator_kwargs(collator_kwargs)
                 elif _is_mlx_native_text_collator(data_collator):
-                    pass  # redundant on MLX; MLXTrainer batches/masks/pads natively
+                    pass
                 else:
                     raise NotImplementedError(
                         "Unsloth MLX: custom data_collator is not supported by "
@@ -1314,7 +1423,14 @@ if _IS_MLX:
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
-        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+        # Prefer the chat_templates export, which bounds the zoo's dataset.map() worker count (#2693); it is
+        # None on a torch-free host, so fall back and let the zoo raise its own ImportError.
+        from .chat_templates import train_on_responses_only as _train_on_responses_only
+
+        if _train_on_responses_only is None:
+            from unsloth_zoo.dataset_utils import (
+                train_on_responses_only as _train_on_responses_only,
+            )
         return _train_on_responses_only(*args, **kwargs)
 
     def _safe_mlx_trl_star_exports(_trl):
@@ -1332,9 +1448,8 @@ if _IS_MLX:
                 safe_exports.append(name)
         return safe_exports
 
-    # trl trainers with no MLX implementation yet. Swap them for stubs that fail
-    # with a clear message instead of importing the real torch/CUDA trainer and
-    # crashing deep inside it, so an unmigrated GRPO/DPO/ORPO notebook is legible.
+    # Stub the trl trainers with no MLX implementation yet, so an unmigrated GRPO/DPO/ORPO notebook
+    # fails with a clear message instead of crashing deep inside the real torch/CUDA trainer.
     _MLX_UNSUPPORTED_TRL_TRAINERS = (
         "GRPOTrainer",
         "DPOTrainer",
@@ -1388,17 +1503,13 @@ if _IS_MLX:
 
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = _MLXSFTConfig
-        # Only retarget trainers the installed trl actually exposes (don't invent
-        # attributes); idempotent so re-importing unsloth is a no-op.
-        # Decide what to stub from trl's declared exports (__all__) and already
-        # materialized attrs only. A getattr probe here would trigger trl's lazy
-        # trainer import, pulling torch and breaking `import unsloth` on torch-free
-        # MLX just to check existence.
+        # Only retarget trainers the installed trl actually exposes; idempotent, so re-importing unsloth is a no-op.
+        # Names come from trl's __all__ and already materialized attrs, never a getattr probe: resolving
+        # one triggers trl's lazy trainer import and pulls torch, breaking `import unsloth` on MLX.
         _trl_exports = set(getattr(_trl, "__all__", ()) or ())
-        # Stub every non-SFT trainer trl exposes, not just a fixed list, so newer
-        # trainers (RLOOTrainer, ...) also fail with a clear MLX message instead
-        # of importing the real torch trainer. Names come from __all__ so we never
-        # resolve them (that would trigger trl's lazy import and pull torch).
+        # Stub every non-SFT trainer trl exposes, not just a fixed list, so newer trainers (RLOOTrainer, ...)
+        # also fail with a clear MLX message instead of importing the real torch trainer. Names come from
+        # __all__ so we never resolve them (that would trigger trl's lazy import and pull torch).
         _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
             _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
         }
@@ -1465,3 +1576,14 @@ else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# A `pip install --target` / PYTHONPATH layout makes dill pickle whole modules by value, and every
+# training path here builds a datasets.Dataset, which fingerprints through dill. See
+# import_fixes.fix_dill_module_by_value_pickling.
+try:
+    from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
+    _fix_dill()
+    del _fix_dill
+except Exception:
+    pass

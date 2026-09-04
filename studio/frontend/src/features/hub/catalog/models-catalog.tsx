@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import type { HubFailure } from "@/features/hub/lib/network";
 import { cn } from "@/lib/utils";
 import {
   type ReactNode,
+  type Ref,
   type RefObject,
   memo,
   useCallback,
@@ -16,6 +18,7 @@ import {
 import type {
   CachedInventoryRow,
   DiscoverRow,
+  InventoryRow,
   LocalInventoryRow,
   ModelsTab,
 } from "../types";
@@ -46,6 +49,7 @@ export interface ModelsCatalogState {
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   inventoryTokens: readonly string[];
@@ -59,7 +63,7 @@ export interface ModelsCatalogState {
 
 export interface ModelsCatalogPagination {
   scrollRef: RefObject<HTMLDivElement | null>;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   isLoadingMore: boolean;
 }
 
@@ -70,6 +74,7 @@ export interface ModelsCatalogHandlers {
   onRetry: () => void;
   onInventoryChange?: () => void;
   onSwitchDevice?: () => void;
+  onOpenModelSettings?: (row: InventoryRow) => void;
 }
 
 function assignRef<T>(ref: RefObject<T | null>, value: T | null) {
@@ -111,6 +116,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     activeCheckpoint,
     activeGgufVariant,
     searchError,
+    searchFailure,
     online,
     isDataset,
     inventoryTokens,
@@ -128,6 +134,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     onRetry,
     onInventoryChange,
     onSwitchDevice,
+    onOpenModelSettings,
   } = handlers;
   const [scrolled, setScrolled] = useState(false);
   const [streamingActive, setStreamingActive] = useState(false);
@@ -144,8 +151,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   const [downloadedScrollEl, setDownloadedScrollEl] =
     useState<HTMLDivElement | null>(null);
   const activeTabRef = useRef(tab);
-  // Per-tab scroll positions: some browsers drop the hidden pane's scrollTop,
-  // so mirror it live via the scroll listener and restore on tab entry.
+  // Per-tab scroll positions: some browsers drop the hidden pane's scrollTop, so mirror it live.
   const savedScrollTopsRef = useRef<Record<ModelsTab, number>>({
     discover: 0,
     downloaded: 0,
@@ -166,9 +172,8 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     setDownloadedScrollEl(node);
   }, []);
 
-  // Restore the incoming pane's scrollTop and rebind scrollRef. Don't read
-  // scrollTop off the outgoing pane: overflow toggling can clamp it to 0 before
-  // this runs, so trust the live listener mirror instead and avoid that race.
+  // Restore the incoming pane's scrollTop and rebind scrollRef. Don't read scrollTop off the
+  // outgoing pane: overflow toggling can clamp it to 0 first, so trust the live listener mirror.
   useLayoutEffect(() => {
     let restoreFrame: number | null = null;
     const previousTab = activeTabRef.current;
@@ -214,8 +219,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   useEffect(() => {
     const discoverEl = discoverScrollRef.current;
     const downloadedEl = downloadedScrollRef.current;
-    // Mirror scrollTop ONLY from the active pane; the inactive pane can fire
-    // spurious scroll events that would overwrite the saved position with 0.
+    // Mirror scrollTop ONLY from the active pane; the inactive pane can fire spurious 0 events.
     const onDiscoverScroll = () => {
       if (!discoverEl || activeTabRef.current !== "discover") {
         return;
@@ -347,26 +351,23 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   }, [tab, isLoading, isLoadingMore, scannedCount, loadingIntentCount]);
 
   const showDiscoverLoading = tab === "discover" && streamingActive;
-  // overflow-y stays `auto` on BOTH panes: toggling to `hidden` clamps the
-  // inactive pane's scrollTop to 0 and corrupts the mirror; visibility +
-  // pointer-events-none hides it while preserving native scroll state.
-  // Non-split reserves an equal `both-edges` gutter so the centered 1100px
-  // column stays symmetric and aligned with the top bar; split mode pins a
-  // narrow master left, so it reserves only the right (divider) gutter.
+  // overflow-y stays `auto` on BOTH panes: toggling to `hidden` clamps the inactive pane's
+  // scrollTop to 0 and corrupts the mirror, so visibility + pointer-events-none hides it instead.
+  // Non-split reserves an equal `both-edges` gutter so the centered --hub-measure column stays
+  // symmetric; split mode pins a narrow master left, so it reserves only the right gutter.
   const scrollPaneClassName =
     "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
     (discoverView === "split"
       ? "[scrollbar-gutter:stable]"
       : "[scrollbar-gutter:stable_both-edges]");
-  // Split mode keeps the top bar's left padding to align the list header but
-  // tightens the right padding so compact rows run wider toward the divider.
+  // Split mode keeps the top bar's left padding to align the list header but tightens the right.
   const splitView = discoverView === "split";
   const discoverColumnClassName = splitView
-    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const downloadedColumnClassName = splitView
-    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(
@@ -424,6 +425,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 suppressEmptyState={suppressEmptyState}
                 sentinelRef={sentinelRef}
                 searchError={searchError}
+                searchFailure={searchFailure}
                 online={online}
                 isDataset={isDataset}
                 deviceType={deviceType}
@@ -483,6 +485,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 columns={discoverView === "two" ? 2 : 1}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
+                onOpenModelSettings={onOpenModelSettings}
               />
             </div>
           ) : (

@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { idleProbeVerdict } from "./adopt-rules";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import {
   getActiveDatasetDownloads,
   getAllActiveModelDownloads,
   type DownloadJobState,
 } from "./api";
-import { DOWNLOAD_KIND } from "./constants";
-import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
+import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
+import {
+  ACTIVE_STATES,
+  POLL_REQUEST_TIMEOUT_MS,
+  RESUMABLE_STATES,
+} from "./download-manager-config";
 import {
   apiGetProgress,
   apiGetStatus,
   isRequestTimeout,
 } from "./download-api-adapter";
-import type {
-  DownloadRequest,
-  ManagedDownload,
+import {
+  downloadRequestInventoryKind,
+  type DownloadRequest,
+  type ManagedDownload,
 } from "./download-manager-types";
 import {
   getState,
@@ -65,6 +71,7 @@ function removeLocalActivePeers(
   const activeJobKey = jobKeyOf(kind, repoId, variant);
   const snapshotJobKey = jobKeyOf(kind, repoId, null);
   for (const job of Object.values(getState().jobs)) {
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (repoKeyOf(job.kind, job.repoId) !== activeRepoKey) continue;
     if (variant !== null && kind === DOWNLOAD_KIND.MODEL) {
@@ -83,20 +90,30 @@ async function adoptActiveModelDownloads(): Promise<void> {
   for (const download of downloads) {
     const repoId = download.repo_id?.trim();
     if (!repoId || !ACTIVE_STATES.has(download.state)) continue;
-    removeLocalActivePeers(
-      DOWNLOAD_KIND.MODEL,
-      repoId,
-      download.variant ?? null,
-    );
+    const variant = download.variant ?? null;
+    const files = download.files?.length ? [...download.files] : undefined;
+    const inventoryKind = downloadRequestInventoryKind({
+      kind: DOWNLOAD_KIND.MODEL,
+      variant,
+      files,
+    });
+    removeLocalActivePeers(DOWNLOAD_KIND.MODEL, repoId, variant);
     adoptJob(
       {
         kind: DOWNLOAD_KIND.MODEL,
         repoId,
-        variant: download.variant ?? null,
+        variant,
+        ...(inventoryKind ? { inventoryKind } : {}),
+        ...(files ? { files } : {}),
         expectedBytes: 0,
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no marker" must clear one left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -118,6 +135,11 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no marker" must clear one left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -129,8 +151,6 @@ const BACKEND_ADOPTERS: Record<BackendAdoptionSide, () => Promise<void>> = {
   dataset: adoptActiveDatasetDownloads,
 };
 
-// Adopt backend-running downloads this client doesn't know about. Retry only
-// the failed side(s) so backend readiness settles without duplicating jobs.
 async function hydrateBackendActiveDownloads(
   attempt = 0,
   sides: readonly BackendAdoptionSide[] = ["model", "dataset"],
@@ -166,16 +186,57 @@ async function probeHydratedIdleProgress(
     );
     const current = getState().jobs[key];
     if (!current || !ACTIVE_STATES.has(current.state)) return "settled";
-    const { downloadedBytes } = applyProgressUpdate(key, current, progressResp);
+    applyProgressUpdate(key, current, progressResp);
     const updated = getState().jobs[key];
     if (!updated || !ACTIVE_STATES.has(updated.state)) return "settled";
     if (hasObservedExpectedBytes(updated)) {
       finalize(key, "complete", { bytes: updated.downloadedBytes });
       return "settled";
     }
-    return downloadedBytes > 0 ? "active" : "gone";
+    // A persisted job whose cache was wiped must read "gone" here, not sit as a phantom download blocking a fresh start until the idle-evict grace expires.
+    // A zero alone is not proof, since a transient measurement failure returns a successful all-zero response; cache_path is null only when no cache dir exists.
+    return idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    );
   } catch {
     return "active";
+  }
+}
+
+async function revalidateHydratedResumableJob(
+  key: string,
+  job: ManagedDownload,
+): Promise<void> {
+  try {
+    const progressResp = await withHydrationTimeout((signal) =>
+      apiGetProgress(job, signal),
+    );
+    const current = getState().jobs[key];
+    if (!current || !RESUMABLE_STATES.has(current.state)) return;
+    applyProgressUpdate(key, current, progressResp);
+    const updated = getState().jobs[key];
+    if (!updated || !RESUMABLE_STATES.has(updated.state)) return;
+    if (hasObservedExpectedBytes(updated)) {
+      // Completed jobs are not restored after a restart; removing the stale
+      // terminal row lets the verified inventory state show through.
+      removeJob(key);
+      return;
+    }
+    if (
+      idleProbeVerdict(
+        progressResp.downloaded_bytes,
+        progressResp.cache_path,
+        progressResp.target_present,
+        progressResp.cache_measured,
+      ) === "gone"
+    ) {
+      removeJob(key);
+    }
+  } catch {
+    // An unavailable or unreadable cache is not evidence that the partial is gone.
   }
 }
 
@@ -262,6 +323,15 @@ export function hydrateDownloadManager(): void {
   void hydrateBackendActiveDownloads();
   const jobs = Object.values(getState().jobs);
   for (const job of jobs) {
+    // External jobs are live in memory and have no hub job to probe.
+    if (job.external) continue;
+    // Failed and cancelled rows stay in Downloads so they can be resumed
+    // after a restart. Complete jobs are not persisted, and anything else
+    // is not a card the list should keep.
+    if (RESUMABLE_STATES.has(job.state)) {
+      void revalidateHydratedResumableJob(job.key, job);
+      continue;
+    }
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;
@@ -270,6 +340,9 @@ export function hydrateDownloadManager(): void {
       kind: job.kind,
       repoId: job.repoId,
       variant: job.variant,
+      ...(job.inventoryKind ? { inventoryKind: job.inventoryKind } : {}),
+      ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
+      ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
       expectedBytes: job.expectedBytes,
     };
     void probeHydratedJob(job.key, req, 0);

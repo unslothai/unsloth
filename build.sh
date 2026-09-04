@@ -103,7 +103,7 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Build wheel/sdist
+# 4. Build wheel/sdist.
 python -m build
 
 if [ "${1:-}" = "publish" ]; then
@@ -114,6 +114,16 @@ _restore_studio_build_info
 trap - EXIT
 
 # 5. Optionally publish
+#
+# Wheel only. The sdist is still built above, because --verify-dist checks the
+# release stamp in every artifact and a local sdist is the cheapest way to catch
+# a packaging change that only shows up in the source tree. It is not uploaded.
+#
+# A release is ~169MB across both artifacts, and the PyPI project size limit is
+# 10GB; the sdist is the larger half. Uploading only the wheel halves what each
+# release costs against that limit. Nothing is lost for installers: the wheel is
+# py3-none-any, so pip and uv resolve to it on every platform and Python, and the
+# sdist is only reachable through --no-binary or a mirror that vendors sources.
 if [ "${1:-}" = "publish" ]; then
-    python -m twine upload dist/*
+    python -m twine upload dist/*.whl
 fi

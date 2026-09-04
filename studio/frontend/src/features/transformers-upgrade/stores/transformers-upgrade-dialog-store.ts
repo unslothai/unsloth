@@ -3,7 +3,10 @@
 
 import { create } from "zustand";
 import { installLatestTransformers } from "../api/transformers-upgrade-api";
-import type { TransformersUpgradeInfo, TransformersUpgradePhase } from "../types";
+import type {
+  TransformersUpgradeInfo,
+  TransformersUpgradePhase,
+} from "../types";
 
 type Resolver = (installed: boolean) => void;
 
@@ -18,10 +21,18 @@ interface TransformersUpgradeDialogStore {
   errorMessage: string | null;
   /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
+  /** The caller already confirmed the model swap's "stop N chats" prompt, so the install
+   *  may stop them too; without it the install 409s and Retry can never succeed. */
+  forceCancelActive: boolean;
   /** True once this consent's install completed. The install unloads the previous
    *  model before swapping, so the caller must treat it as already unloaded; the
    *  custom-code fallback resolves true without installing and leaves it loaded. */
   installRan: boolean;
+  /** Completed installs this session. The sidecar it provisions is a persistent overlay
+   *  that changes every later answer about every model, what is left to install and
+   *  whether a run still loads 4-bit, so anything caching those answers keys on this and
+   *  re-asks once it moves. Survives `resolve`, unlike the per-consent flags. */
+  sidecarGeneration: number;
   /** True when the server unloaded the active chat model during this consent,
    *  including a swap that failed AFTER the unload: callers must then treat
    *  their previous model as gone and roll back on any later cancel. */
@@ -34,7 +45,10 @@ interface TransformersUpgradeDialogStore {
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
-    options?: { trustRemoteCodeFallback?: boolean },
+    options?: {
+      trustRemoteCodeFallback?: boolean;
+      forceCancelActive?: boolean;
+    },
   ) => Promise<boolean>;
   /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
@@ -49,7 +63,9 @@ export const useTransformersUpgradeDialogStore =
     phase: "consent",
     errorMessage: null,
     trustRemoteCodeFallback: false,
+    forceCancelActive: false,
     installRan: false,
+    sidecarGeneration: 0,
     serverUnloadedChat: false,
     requestConsent: (modelName, upgrade, options) =>
       new Promise<boolean>((resolve) => {
@@ -62,6 +78,7 @@ export const useTransformersUpgradeDialogStore =
           phase: "consent",
           errorMessage: null,
           trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
+          forceCancelActive: Boolean(options?.forceCancelActive),
           installRan: false,
         });
       }),
@@ -71,14 +88,14 @@ export const useTransformersUpgradeDialogStore =
       return value;
     },
     install: async () => {
-      const { upgrade, phase } = get();
+      const { upgrade, phase, forceCancelActive } = get();
       const version = upgrade?.pypi_version;
       if (!version || phase === "installing") return;
       const requestResolver = pendingResolver;
       set({ phase: "installing", errorMessage: null });
       let result: Awaited<ReturnType<typeof installLatestTransformers>>;
       try {
-        result = await installLatestTransformers(version);
+        result = await installLatestTransformers(version, forceCancelActive);
         // Latch the server-side unload IMMEDIATELY, before any resolver-identity
         // guard: even a superseded consent's install may have unloaded the chat
         // model, and the signal must survive for whichever load consumes it next.
@@ -103,7 +120,11 @@ export const useTransformersUpgradeDialogStore =
           // serverUnloadedChat was latched above (and is never reset here): a
           // retry after a failed-after-unload attempt reports false because the
           // model is already gone, and a superseded install may have set it too.
-          set({ installRan: true });
+          // The overlay is live from here on, for this tab and every model in it.
+          set({
+            installRan: true,
+            sidecarGeneration: get().sidecarGeneration + 1,
+          });
           get().resolve(true);
           return;
         }
@@ -133,6 +154,7 @@ export const useTransformersUpgradeDialogStore =
         phase: "consent",
         errorMessage: null,
         trustRemoteCodeFallback: false,
+        forceCancelActive: false,
       });
       resolver?.(installed);
     },

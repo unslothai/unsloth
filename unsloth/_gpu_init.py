@@ -23,29 +23,28 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
-# Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
     fix_torch_check_is_size,
+    fix_torchao_torch_symbol_skew,
+    propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
+    check_transformers_dependency_versions,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
     fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
+    disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
-# Redirect a read-only Hugging Face cache before anything below imports
-# huggingface_hub / transformers / vllm (disable_broken_vllm probes `import vllm`
-# and its compiled extensions, check_fbgemm_gpu_version imports transformers,
-# fix_huggingface_hub imports huggingface_hub) -- any of which would freeze Hub's
-# cache constants with the un-redirected paths. unsloth_zoo runs the same redirect
-# at import, but only after these probes. hf_cache.py is stdlib-only, so load it
-# straight from its file without triggering the full unsloth_zoo init this early;
-# the zoo's later call is an idempotent no-op. Older unsloth_zoo without it is
-# skipped silently.
+# Redirect a read-only Hugging Face cache before anything below imports huggingface_hub /
+# transformers / vllm (disable_broken_vllm probes `import vllm`, check_fbgemm_gpu_version imports
+# transformers, fix_huggingface_hub imports huggingface_hub), any of which would freeze Hub's
+# cache constants with the un-redirected paths. hf_cache.py is stdlib-only, so it loads straight
+# from its file without triggering the full unsloth_zoo init this early.
 try:
     import importlib.util as _importlib_util
     from pathlib import Path as _Path
@@ -74,8 +73,18 @@ disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
+fix_torchao_torch_symbol_skew()
+# The above fixes THIS process only; vLLM's model-architecture inspector is a subprocess that
+# imports torchao itself and hits the same ImportError.
+propagate_torchao_fix_to_subprocesses()
+# Warn, do not raise: this only adds the correct remedy just before transformers prints its misleading one.
+check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
+# Must precede `import unsloth_zoo`: its temporary_patches reach transformers.processing_utils ->
+# audio_utils -> torchaudio, so a torchaudio raising at extension init takes the whole unsloth
+# import down before the late guard would have neutralised it.
+disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
@@ -84,13 +93,16 @@ del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
 del fix_torch_check_is_size
+del fix_torchao_torch_symbol_skew
+del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
+del check_transformers_dependency_versions
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
 
-# Unsloth patches these libraries at import time; if imported first, the
-# unoptimized versions run, risking OOM or slower training.
+# Unsloth patches these libraries at import time; if they are imported first the unoptimized
+# versions run, risking OOM or slower training.
 if already_imported:
     # stacklevel=2 points the warning at the user's import line
     warnings.warn(
@@ -102,8 +114,7 @@ if already_imported:
     )
 del already_imported, critical_modules
 
-# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import
-# unsloth_zoo` below pulls it in on ROCm hosts).
+# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import unsloth_zoo` below pulls it in on ROCm hosts).
 from .import_fixes import maybe_set_windows_rocm_bnb_version
 
 maybe_set_windows_rocm_bnb_version()
@@ -114,30 +125,18 @@ del maybe_set_windows_rocm_bnb_version
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# [TODO] Check why some GPUs don't work
-#    "pinned_use_cuda_host_register:True,"\
-#    "pinned_num_register_threads:8"
-
 
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
-# Check for unsloth_zoo
+# Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.5.2"):
+    if Version(unsloth_zoo_version) < Version("2026.8.15"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
         )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
@@ -147,7 +146,6 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
-# Try importing PyTorch and check version
 try:
     import torch
 except ModuleNotFoundError:
@@ -166,12 +164,16 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from .device_type import arch_lacks_bf16, hip_visible_archs
 
-# Fix other issues
 from .import_fixes import (
+    fix_transformers5_bare_annotation_configs,
+    fix_transformers_fully_masked_rows,
     fix_xformers_performance_issue,
+    fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
+    fix_torchao_nf4tensor_move,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -182,6 +184,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
@@ -195,27 +198,41 @@ from .import_fixes import (
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    fix_peft_stale_torchao_import_error,
     patch_accelerate_recursively_apply,
 )
 
+# Must run first: guards PretrainedConfig before vLLM defines its config classes.
+fix_transformers5_bare_annotation_configs()
+# Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
+# nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
+# same process is covered too (#9708).
+fix_transformers_fully_masked_rows()
 fix_xformers_performance_issue()
+# Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
+# BEFORE models/_utils.py imports xformers.ops.
+fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
+# torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the old path. Lazy alias, so
+# it costs nothing unless asked for.
+fix_torchao_nf4tensor_move()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
-# Must run before unsloth_zoo's patch_torch_compile and the gpt-oss temporary
-# patches raise the dynamo recompile limits, so those settings reach the
-# autograd worker threads on torch >= 2.12.
+# Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
+# recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+# Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
+patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
@@ -225,17 +242,23 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
-# Must run before patch_peft_weight_converter_compatibility: stubs the
-# transformers v5 submodules peft 0.19.x imports, so the next patch can wrap
-# build_peft_weight_mapping instead of being swallowed by its ImportError.
+# Must run before patch_peft_weight_converter_compatibility: it stubs the transformers v5
+# submodules peft 0.19.x imports, so the next patch can wrap build_peft_weight_mapping instead of
+# being swallowed by its ImportError.
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+# After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
+# replaced too, not just import_utils'.
+fix_peft_stale_torchao_import_error()
 patch_accelerate_recursively_apply()
 
+del fix_transformers5_bare_annotation_configs
 del fix_xformers_performance_issue
+del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
+del fix_torchao_nf4tensor_move
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
@@ -247,6 +270,7 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_psutil_cpu_freq
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del patch_openspiel_env_async
@@ -254,14 +278,22 @@ del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
+del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del fix_peft_stale_torchao_import_error
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE at "cuda" on a host with a CUDA-built torch and no usable
+    # device, so ask whether a device is present before asking what it can do: get_device_capability()
+    # would raise out of _lazy_init(). is_bf16_supported() is stubbed to match.
+    SUPPORTS_BFLOAT16 = False
+    torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 
@@ -280,10 +312,21 @@ if DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     del major_version, minor_version
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+
+    # SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the visible set must disable it for all.
+    SUPPORTS_BFLOAT16 = (
+        not any(arch_lacks_bf16(arch) for arch in hip_visible_archs()) and old_is_bf16_supported()
+    )
+
+    def is_bf16_supported(*args, **kwargs):
+        return SUPPORTS_BFLOAT16
+
+    torch.cuda.is_bf16_supported = is_bf16_supported
+    del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() does not have including_emulation
-    # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
+    # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
+    # torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
 # For Gradio HF Spaces?
@@ -293,6 +336,7 @@ import triton
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
+        # Try loading bitsandbytes and triton
         try:
             from triton.backends.nvidia.driver import libcuda_dirs
         except:
@@ -300,19 +344,28 @@ if DEVICE_TYPE == "cuda":
     else:
         from triton.common.build import libcuda_dirs
 
-    # Try loading bitsandbytes and triton
     try:
         import bitsandbytes as bnb
+
+        # Bind the submodule by name: a half-imported bitsandbytes leaves the parent without a `functional`
+        # attribute, which would otherwise be misreported below as a CUDA linking failure.
+        import bitsandbytes.functional as bnb_functional
     except:
         print(
             "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
         )
         bnb = None
+        bnb_functional = None
     try:
-        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+        cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
+        if not torch.cuda.is_available():
+            # UNSLOTH_ALLOW_CPU=1 on a driverless host: a missing libcuda is the expected state, not broken
+            # linkage, and repairing it would ldconfig the host's linker cache as root for a device that is
+            # not there.
+            pass
+        elif hasattr(os, "geteuid") and os.geteuid() == 0:
             warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
 
             if os.path.exists("/usr/lib64-nvidia"):
@@ -342,16 +395,18 @@ if DEVICE_TYPE == "cuda":
             if bnb is not None:
                 importlib.reload(bnb)
             importlib.reload(triton)
+            # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
             try:
                 libcuda_dirs = lambda: None
                 if Version(triton.__version__) >= Version("3.0.0"):
                     try:
                         from triton.backends.nvidia.driver import libcuda_dirs
                     except:
+                        # TODO: check triton for intel installed properly.
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+                cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
                 libcuda_dirs()
             except:
                 warnings.warn(
@@ -374,9 +429,15 @@ elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    import bitsandbytes as bnb
+    # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        print(
+            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
+        )
+        bnb = None
 
-    # TODO: check triton for intel installed properly.
     pass
 
 from .models import *
@@ -397,8 +458,7 @@ from unsloth_zoo.rl_environments import (
     launch_openenv,
 )
 
-# Patch TRL trainers for backwards compatibility. Skipped under
-# UNSLOTH_ALLOW_CPU=1 (CPU-only CI): rebinding trl.SFTTrainer.__init__
-# changes inspect.getsource() and corrupts downstream drift detectors.
+# Skipped under UNSLOTH_ALLOW_CPU=1 (CPU-only CI): rebinding trl.SFTTrainer.__init__ changes
+# inspect.getsource() and corrupts downstream drift detectors.
 if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
     _patch_trl_trainer()

@@ -112,3 +112,47 @@ def test_already_failed_doc_has_its_chunks_dropped(rag_conn):
 
     assert store.get_document(rag_conn, "failed_doc")["status"] == "failed"
     assert _chunk_count(rag_conn, "failed_doc") == 0
+
+
+def test_live_foreign_lease_is_preserved_then_reconciled_after_expiry(rag_conn):
+    _add_doc(rag_conn, "kb_a", "foreign", "processing", ["alpha bravo"])
+    _orphan_job(rag_conn, "foreign", "kb_a")
+    rag_conn.execute(
+        "INSERT INTO rag_job_leases(kind, job_id, owner_id, expires_at) "
+        "VALUES('ingestion', 'job-foreign', 'other-backend', '9999-12-31T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 0
+    assert store.get_document(rag_conn, "foreign")["status"] == "processing"
+    assert _job_status(rag_conn, "foreign") == "running"
+    assert _chunk_count(rag_conn, "foreign") == 1
+
+    rag_conn.execute(
+        "UPDATE rag_job_leases SET expires_at='2000-01-01T00:00:00+00:00' "
+        "WHERE kind='ingestion' AND job_id='job-foreign'"
+    )
+    rag_conn.commit()
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+    assert store.get_document(rag_conn, "foreign")["status"] == "failed"
+    assert _job_status(rag_conn, "foreign") == "failed"
+    assert _chunk_count(rag_conn, "foreign") == 0
+    assert (
+        rag_conn.execute(
+            "SELECT 1 FROM rag_job_leases WHERE kind='ingestion' AND job_id='job-foreign'"
+        ).fetchone()
+        is None
+    )
+
+
+def test_cancelled_job_is_terminal_and_survives_a_restart(rag_conn):
+    # The worker cancelled itself because the document was deleted mid-ingestion.
+    # A restart must leave that verdict alone: rewriting it to 'failed' reports a
+    # deliberate cancellation to the UI's getJob fallback as an indexing failure.
+    _add_doc(rag_conn, "kb_a", "cancelled_doc", "processing", ["alpha bravo"])
+    _orphan_job(rag_conn, "cancelled_doc", "kb_a", status = "cancelled")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 0
+
+    assert _job_status(rag_conn, "cancelled_doc") == "cancelled"
