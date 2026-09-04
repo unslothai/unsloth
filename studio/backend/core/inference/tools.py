@@ -11240,15 +11240,13 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     )
 
     def _fits(candidate_text, max_tokens) -> bool:
-        # None means the estimate itself failed, so there is nothing to enforce.
-        # Zero is the opposite: a measured "no room left".
+        # None means the estimate itself failed; zero is a measured "no room left".
         if max_tokens is None:
             return True
         if max_tokens <= 0:
             return False
-        # Priced by the serving GGUF when it can, doubled when it cannot. The
-        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
-        # nearer two characters per token) being charged the English four.
+        # Priced by the serving GGUF when it can, doubled when it cannot, so dense
+        # ASCII is not charged the English four characters per token.
         return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
 
     def _trim(
@@ -11259,19 +11257,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     ):
         """Drop passages from the tail until the rendered block fits, else None.
 
-        Re-renders only when something is dropped, so an untrimmed result comes
-        back exactly as retrieval built it.
-
-        None when not even the top passage fits: the block joins the current
-        turn, which the window may not evict, so an overflowing injection fails
-        the request rather than degrading the answer. Losing the attachment is
-        what this branch exists to prevent, but main already loses it here, and
-        that beats an error instead of an answer.
-
-        ``keep_first`` is where the tail ends. Ranked retrieval can spend the
-        whole list, so one is the floor there; a whole document ahead of its
-        companions is not a ranking, and eating into it would return part of a
-        file the user attached whole under the name of the whole thing.
+        Re-renders only when something is dropped. None when not even the first
+        ``keep_first`` passages fit: the block joins the current turn, which the
+        window may not evict, so it fails the request rather than answering from
+        a truncated attachment. ``keep_first`` is the floor of the tail: one for
+        ranked retrieval, but a whole document must never be eaten into.
         """
         floor = max(1, keep_first)
         kept, rendered = list(hit_sources), hit_text
@@ -11307,11 +11297,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
                 if proj is not None:
-                    # Trim the combination against the measured cost, as the fallback
-                    # companion path does, but only into the project tail: the
-                    # document was admitted whole and stays whole, so a combination
-                    # that will not fit falls back to it alone rather than to a
-                    # truncated copy of it.
+                    # Trim into the project tail only: the document was admitted whole
+                    # and stays whole, so a combination that will not fit falls back
+                    # to the document alone.
                     merged = sources + proj[1]
                     trimmed = _trim(render_sources(merged), merged, budget, keep_first = len(sources))
                     if trimmed is not None:
