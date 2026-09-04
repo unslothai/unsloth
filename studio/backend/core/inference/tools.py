@@ -11742,14 +11742,17 @@ def _fetch_budget_exceeded(deadline, cancel_event):
     return None
 
 
-def _fetch_hop_timeout(timeout, deadline):
+def _fetch_hop_timeout(timeout, deadline, attempts_left = 1):
     """Per-operation socket timeout: the lesser of the caller's per-op timeout
     and the time left on the deadline, so one slow hop cannot overrun the whole
-    budget. Callers check ``_fetch_budget_exceeded`` first, so remaining time is
-    positive here; the tiny floor only guards a race."""
+    budget. ``attempts_left`` divides that remaining time when more than one
+    address still has to be tried, so an address that fails only by timing out
+    cannot spend the budget the working one needs. Callers check
+    ``_fetch_budget_exceeded`` first, so remaining time is positive here; the
+    tiny floor only guards a race."""
     if deadline is None:
         return timeout
-    remaining = deadline - time.monotonic()
+    remaining = (deadline - time.monotonic()) / max(1, attempts_left)
     if remaining <= 0:
         remaining = 0.001
     return remaining if timeout is None else min(timeout, remaining)
@@ -11893,13 +11896,16 @@ def _open_first_reachable(opener, request_urls, headers, hop_timeout):
     ``socket.create_connection`` walks every address a host resolves to; pinning one
     of them against DNS rebinding dropped that fallback, so a host whose first record
     is unroutable (a blackholed IPv6, a down A record) became unreachable.
-    ``hop_timeout`` is re-read per address, so the overall fetch budget still binds.
+    ``hop_timeout`` is given the number of addresses still to try, so a blackholed
+    one that fails only by timing out leaves the working one a usable share of the
+    budget instead of the floor, and the overall fetch budget still binds.
     """
     last_error = None
-    for request_url in request_urls:
+    for index, request_url in enumerate(request_urls):
         try:
             return opener.open(
-                urllib.request.Request(request_url, headers = headers), timeout = hop_timeout()
+                urllib.request.Request(request_url, headers = headers),
+                timeout = hop_timeout(len(request_urls) - index),
             )
         except urllib.error.HTTPError:
             raise
@@ -12012,7 +12018,7 @@ def _fetch_url_raw(
                     opener,
                     request_urls,
                     headers,
-                    lambda: _fetch_hop_timeout(timeout, deadline),
+                    lambda attempts_left: _fetch_hop_timeout(timeout, deadline, attempts_left),
                 )
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):

@@ -12,7 +12,9 @@ the skip-link / nav / footer furniture, and the README rendered inside
 
 from __future__ import annotations
 
+import email
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -774,6 +776,54 @@ def test_fetch_url_raw_falls_back_to_the_next_resolved_address(monkeypatch):
     assert err is None
     assert "served by the second address" in body
     assert tried == ["https://[2606:2800:220:1::1]/", "https://93.184.216.34/"]
+
+
+def test_a_blackholed_first_address_leaves_the_working_one_a_usable_budget(monkeypatch):
+    # The headline case: a configured-but-blackholed IPv6 DROPs the SYN, so the
+    # attempt fails only by running out its socket timeout rather than erroring
+    # straight away. Handing that address the whole remaining deadline left the
+    # working one the 0.001s floor, so the walk reached it and still failed.
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    attempts = []
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"served by the second address"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    class _BlackholeOpener:
+        def open(self, req, timeout = None):
+            attempts.append((req.full_url, timeout))
+            if "[" in req.full_url:
+                time.sleep(timeout)
+                raise urllib.error.URLError(TimeoutError("timed out"))
+            return _FakeResp()
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _BlackholeOpener())
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        timeout = 4,
+        deadline = time.monotonic() + 4,
+    )
+
+    assert err is None
+    assert "served by the second address" in body
+    # The blackholed address gets a share, not the whole budget, so the address
+    # that actually answers is still given a timeout it can connect within.
+    assert attempts[0][1] <= 2.5
+    assert attempts[1][1] > 0.5
 
 
 def test_fetch_url_raw_reports_the_last_error_when_no_address_connects(monkeypatch):
