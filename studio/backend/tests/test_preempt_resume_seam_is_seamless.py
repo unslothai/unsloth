@@ -138,9 +138,7 @@ class TestThePlainPathSeam:
         # And the replay still carries only what was new, never the prefix twice.
         assert recorder.payloads[2]["messages"][-1]["content"] == "one two"
 
-    def test_a_resume_paused_before_its_first_token_still_continues_the_partial(
-        self, monkeypatch
-    ):
+    def test_a_resume_paused_before_its_first_token_still_continues_the_partial(self, monkeypatch):
         """Measured: the essay appeared twice, the second copy starting right after the
         first 107 characters. The resumed attempt was paused again before it produced
         anything, and the re-issue sent the partial as a finished turn with a fresh
