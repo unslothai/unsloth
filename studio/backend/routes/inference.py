@@ -25282,17 +25282,25 @@ async def _openai_catalog_objects() -> list[dict]:
     quants_owner: dict[str, dict] = {}
     ambiguous_quants: set[str] = set()
 
-    def _offer_quants(row: dict, base: str, found) -> None:
+    def _offer_quants(row: dict, base: Optional[str], found) -> None:
+        """Record what this copy of ``row["id"]`` holds, and publish it if it is alone.
+
+        Every servable copy is recorded, including one with no quants at all: a
+        non-GGUF copy reports an empty tuple, and if the resolver reaches that one a
+        GGUF sibling's quants are just as unreachable.
+        """
         key = str(row.get("id", "")).lower()
         if not key or key in ambiguous_quants:
             return
+        found_key = tuple(found)
         seen = quants_seen.get(key)
         if seen is None:
-            row["quants"] = _quant_list(base, found)
-            quants_seen[key] = tuple(found)
-            quants_owner[key] = row
+            quants_seen[key] = found_key
+            if base and found_key:
+                row["quants"] = _quant_list(base, found)
+                quants_owner[key] = row
             return
-        if seen != tuple(found):
+        if seen != found_key:
             ambiguous_quants.add(key)
             quants_owner.pop(key, {}).pop("quants", None)
 
@@ -25318,23 +25326,21 @@ async def _openai_catalog_objects() -> list[dict]:
             # any; `_offer_quants` withdraws them if a second copy of this id disagrees
             # about what is on disk.
             listed = by_id[cid]
-            if quants and cid.lower() not in ambiguous_quants:
-                base = listed.get("quant")
-                if not base and listed.get("loaded"):
-                    # A cold resolver index withholds the resident quant, because a pin
-                    # it cannot resolve is a dead pin. This scan just read the files, so
-                    # a loaded variant that appears among them is exactly the proof that
-                    # was missing; publish it now instead of after the next poll.
-                    resident = getattr(get_llama_cpp_backend(), "hf_variant", None)
-                    scanned = next(
-                        (q for q in quants if resident and q.lower() == resident.lower()),
-                        None,
-                    )
-                    if scanned:
-                        base = scanned
-                        listed["quant"] = scanned
-                if base:
-                    _offer_quants(listed, base, quants)
+            base = listed.get("quant")
+            if not base and quants and listed.get("loaded"):
+                # A cold resolver index withholds the resident quant, because a pin it
+                # cannot resolve is a dead pin. This scan just read the files, so a
+                # loaded variant that appears among them is exactly the proof that was
+                # missing; publish it now instead of after the next poll.
+                resident = getattr(get_llama_cpp_backend(), "hf_variant", None)
+                scanned = next(
+                    (q for q in quants if resident and q.lower() == resident.lower()),
+                    None,
+                )
+                if scanned:
+                    base = scanned
+                    listed["quant"] = scanned
+            _offer_quants(listed, base, quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25352,10 +25358,9 @@ async def _openai_catalog_objects() -> list[dict]:
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
         if is_gguf and loaded and resident_quant:
             obj["quant"] = resident_quant
-            _offer_quants(obj, resident_quant, quants)
         elif quants:
             obj["quant"] = quants[0]
-            _offer_quants(obj, quants[0], quants)
+        _offer_quants(obj, obj.get("quant"), quants)
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display

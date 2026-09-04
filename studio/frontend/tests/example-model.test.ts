@@ -48,9 +48,19 @@ function resolve(overrides: Partial<Parameters<typeof resolveExampleModel>[0]>) 
 
 test("options list the resident model first, with every on-disk quant", () => {
   assert.deepEqual(exampleModelOptions(CATALOG), [
-    { id: "unsloth/Qwen3-GGUF", loaded: true, quants: ["Q4_K_M", "Q8_0"] },
-    { id: "unsloth/Llama-GGUF", loaded: false, quants: ["Q8_0"] },
-    { id: "org/Mistral", loaded: false, quants: [] },
+    {
+      id: "unsloth/Qwen3-GGUF",
+      loaded: true,
+      residentQuant: "Q4_K_M",
+      quants: ["Q4_K_M", "Q8_0"],
+    },
+    {
+      id: "unsloth/Llama-GGUF",
+      loaded: false,
+      residentQuant: null,
+      quants: ["Q8_0"],
+    },
+    { id: "org/Mistral", loaded: false, residentQuant: null, quants: [] },
   ]);
   // An older server sends `quant` alone; it is still the one quant to offer.
   assert.deepEqual(exampleModelOptions([{ id: "a", quant: "Q4" }])[0].quants, [
@@ -319,4 +329,16 @@ test("merging case variants keeps whichever row carries the quants", () => {
   assert.equal(options[0].id, "Org/Foo");
   assert.equal(options[0].loaded, true);
   assert.deepEqual(options[0].quants, ["BF16", "Q2_K"]);
+  // The loaded row named no quant, and the offered ones came from the other copy, so
+  // nothing here proves which file is in memory.
+  assert.equal(options[0].residentQuant, null);
+  const mixed = resolveExampleModel({
+    ...base,
+    catalog,
+    picked: "Org/Foo:BF16",
+    options,
+  });
+  // Pinning one of them still needs a switch; claiming it resident would hide that.
+  assert.equal(mixed.servable, false);
+  assert.equal(mixed.blockedBy, "autoSwitchOff");
 });

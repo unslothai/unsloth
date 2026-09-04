@@ -11,6 +11,9 @@ export const PLACEHOLDER_EXAMPLE_MODEL = `${EXAMPLE_MODEL_REPO}:${EXAMPLE_MODEL_
 export type ExampleModelOption = {
   id: string;
   loaded: boolean;
+  // The quant actually in memory, from the row that reported residency. Null when the
+  // server withheld it, or when the quants came from a different copy of this repo.
+  residentQuant: string | null;
   quants: string[];
 };
 
@@ -63,7 +66,10 @@ export function exampleModelOptions(
     const existing = byIdentity.get(identity);
     if (existing) {
       // Residency belongs to the repo, so keep it wherever the rows disagree.
-      existing.loaded = existing.loaded || m.loaded === true;
+      if (m.loaded === true && !existing.loaded) {
+        existing.loaded = true;
+        existing.residentQuant = m.quant ?? null;
+      }
       // The server attaches `quants` to whichever spelling it can vouch for, which
       // need not be the first one listed. Take them from the row that carries them
       // rather than lose the quant dropdown.
@@ -75,6 +81,7 @@ export function exampleModelOptions(
     byIdentity.set(identity, {
       id: m.id,
       loaded: m.loaded === true,
+      residentQuant: m.loaded === true ? (m.quant ?? null) : null,
       quants: m.quants?.length ? m.quants : m.quant ? [m.quant] : [],
     });
   }
@@ -161,13 +168,13 @@ function servability(
   keylessOnly: boolean,
   autoSwitch: boolean,
 ): { servable: boolean; blockedBy: "autoSwitchOff" | "keyless" | null } {
-  // `loaded` marks the repo, but only one quant of it is in memory, and the catalog
-  // lists that one first. Pinning any other quant still needs a switch to serve, so
-  // the resident shortcut only applies to the quant actually loaded.
-  const residentQuant = option.quants[0] ?? null;
+  // `loaded` marks the repo, but only one quant of it is in memory. Pinning any other
+  // still needs a switch, so the resident shortcut applies only to the quant the
+  // catalog said is loaded -- never to one inferred from the offered list, which can
+  // have come from a different copy of the repo.
   if (
     option.loaded &&
-    (pinned === null || residentQuant === null || pinned === residentQuant)
+    (pinned === null || pinned === option.residentQuant)
   ) {
     return { servable: true, blockedBy: null };
   }
