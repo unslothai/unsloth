@@ -33,6 +33,7 @@ from routes.inference import (
     _estimate_gguf_required_gb,
     _guard_chat_load_against_training,
     _llama_runtime_fields,
+    _load_keeps_a_projector,
     _LoadPlacement,
 )
 
@@ -748,6 +749,130 @@ def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
         _estimate_gguf_required_gb(config, disable_vision = True)
 
     assert seen.get("include_mmproj") is True
+
+
+def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
+    """The repo publishes none, so the Hub listing cannot see the projector the load
+    will attach. Uncharged, the coexistence guard admits a chat load over VRAM a
+    running training job needs."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        # What the real helper returns when the repo lists no projector of its own.
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        charged = _estimate_gguf_required_gb(config)
+
+    assert seen.get("local_mmproj_bytes") == 3 * MIB
+    assert charged is not None and charged > 4 * GIB / (1024**3)
+
+
+@pytest.mark.parametrize(
+    "kwargs,accepts_image,charged,label",
+    [
+        ({}, True, True, "no switch charges it"),
+        ({"disable_vision": True}, True, False, "the switch suppresses an image tower"),
+        ({"disable_vision": True}, False, True, "an audio encoder survives the switch"),
+        ({"llama_extra_args": ["--no-mmproj"]}, True, False, "the extras opt-out resolves none"),
+    ],
+)
+def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
+    tmp_path, kwargs, accepts_image, charged, label
+):
+    """This branch holds the file, unlike the published projector it cannot read, so
+    charging one the launch suppresses is a 409 for a load that fits."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+    import utils.models.gguf_metadata as _meta
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch.object(_meta, "mmproj_accepts_image", lambda _p: accepts_image),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        _estimate_gguf_required_gb(config, **kwargs)
+
+    assert seen.get("local_mmproj_bytes") == (3 * MIB if charged else 0), label
+
+
+def test_gpu_ownership_reads_the_remote_configs_own_projector(tmp_path):
+    """`_load_keeps_a_projector` decides whether a load needs the GPU, so treating a
+    suppressed image tower as unknown lets a CPU-only chat load evict a running
+    image or video pipeline."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * MIB)
+    config = SimpleNamespace(
+        is_vision = True,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+    )
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: True):
+        assert _load_keeps_a_projector(config, disable_vision = True) is False
+        assert _load_keeps_a_projector(config, disable_vision = False) is True
+
+    # An audio encoder has no image tower to drop, so the switch leaves it loaded.
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: False):
+        assert _load_keeps_a_projector(config, disable_vision = True) is True
 
 
 def _ambient_mmproj(tmp_path, monkeypatch):
