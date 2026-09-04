@@ -2608,6 +2608,65 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured["seed"] == 3407
 
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"tools": [{"name": "lookup", "input_schema": {"type": "object"}}]},
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "t1", "content": "42"}
+                        ],
+                    },
+                ]
+            },
+        ],
+        ids = ["catalog", "history"],
+    )
+    def test_client_tool_contract_without_passthrough_is_rejected(self, monkeypatch, fields):
+        # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
+        backend = _mock_backend(
+            monkeypatch, supports_tools = False, supports_tool_passthrough = False
+        )
+
+        with pytest.raises(HTTPException) as excinfo:
+            _drive(
+                anthropic_messages(
+                    _basic_payload(**fields), request = self._Request(), current_subject = "t"
+                )
+            )
+
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.detail["error"]["type"] == "invalid_request_error"
+        assert "does not advertise tools" in excinfo.value.detail["error"]["message"]
+        assert backend.calls == []
+
+    def test_disabled_tool_choice_still_answers_without_passthrough(self, monkeypatch):
+        backend = _mock_backend(
+            monkeypatch, supports_tools = False, supports_tool_passthrough = False
+        )
+        payload = _basic_payload(
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+            tool_choice = {"type": "none"},
+        )
+
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        [(path, _kwargs)] = backend.calls
+        assert path == "plain"
+
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2668,14 +2727,18 @@ class TestAnthropicMessagesToolRouting:
 
         _mock_backend(
             monkeypatch,
-            supports_tool_passthrough = False,
             generate_chat_completion = _gen_plain,
             generate_chat_completion_with_tools = _gen_tools,
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         fields = (
-            {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+            {
+                "enable_tools": True,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            }
+            if with_tools
+            else {}
         )
 
         response = _drive(

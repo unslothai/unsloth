@@ -29047,11 +29047,26 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
-    client_tools = (
-        not server_tools
-        and len(openai_client_tools) > 0
-        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+    supports_tool_passthrough = getattr(
+        llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    client_tools = not server_tools and len(openai_client_tools) > 0 and supports_tool_passthrough
+
+    # Same contract /v1/chat/completions rejects: the catalogue would otherwise be dropped
+    # and the caller would get prose where it asked for a tool_use block.
+    _has_client_tool_contract = (
+        openai_client_tools and openai_tool_choice != "none"
+    ) or _has_openai_tool_history(openai_messages)
+    if not server_tools and _has_client_tool_contract and not supports_tool_passthrough:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "Client-supplied tools or tool-call history require a GGUF chat template "
+                "with tool-call support; the current model/template does not advertise tools.",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
