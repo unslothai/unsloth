@@ -1,0 +1,319 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Publishes the unsloth wheel + sdist to PyPI when a release lands on main.
+#
+# A release is marked by the installer-pin bump (e.g. "Bump install.sh /
+# install.ps1 pin to unsloth>=2026.6.6"), where the `unsloth>=` floor reaches
+# __version__. We gate on that content rather than the commit title, which has
+# been worded several different ways over time. The `decide` job publishes only
+# when both installer pins (install.sh + install.ps1) equal __version__ and that
+# version is not already complete on PyPI, so it fires exactly once per release
+# and ignores unrelated edits and re-runs.
+#
+# We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta).
+# They are unrelated to the PyPI package version (taken from __version__), but
+# the published wheel must still carry the current Studio version in its stamp
+# (release-desktop.yml verifies the downloaded wheel's STUDIO_RELEASE_VERSION),
+# so the build job resolves it via `git describe` and stamps it. The stamp is
+# the newest reachable v* tag, so push the Studio release tag before (or with)
+# the installer-pin bump; otherwise the immutable wheel gets a stale tag and the
+# desktop preflight for the new tag fails.
+#
+# Build and publish are separate jobs: the frontend/package build (npm + many
+# third-party deps) runs unprivileged and hands dist/ to the publish job as an
+# artifact. Only the publish job holds the OIDC `id-token: write` permission, so
+# a compromised build dependency cannot mint a PyPI trusted-publishing token --
+# this is the separation PyPA recommends.
+#
+# Uses PyPI Trusted Publishing (OIDC) -- no API token is stored in the repo;
+# the publisher must be registered on PyPI for unslothai/unsloth +
+# pypi-publish.yml (+ the `pypi` environment below).
+
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+    # Watch every file the decide gate reads. A release that lands one gate at a
+    # time (e.g. install.ps1 or __version__ fixed in a follow-up commit) must
+    # still retrigger, or the new version would stay unpublished.
+    paths:
+      - install.sh
+      - install.ps1
+      - unsloth/models/_utils.py
+  # Manual retry path. Once the pins already match __version__, a build that
+  # failed for a reason unrelated to the gate files can't be retriggered by a
+  # gate-file push, and rerunning the old run reuses the broken commit. The
+  # decide gate still runs on dispatch, so this can't publish off a non-release.
+  workflow_dispatch:
+    inputs:
+      studio_version:
+        description: Studio tag to stamp (e.g. v0.1.2-beta); blank -> git describe
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per-commit group. A global group would let GitHub cancel an earlier *pending*
+  # publish (it keeps only one pending run per group) when a newer release-pin
+  # push queues, dropping that intermediate version. Per-SHA, every release runs.
+  #
+  # Accepted residual: two commits that both land the gate for the *same* $ver
+  # (e.g. a pin bump then an installer hotfix keeping that version) can race the
+  # immutable upload, and skip-existing makes the loser a no-op -- so the version
+  # is always published *complete*, but whichever run uploads first decides which
+  # tree's bytes win. A version-keyed group would serialize this, but $ver is
+  # computed in `decide` and isn't available in this workflow-level context; a
+  # job-level "defer to the newer tip" guard is unsound (a same-version tip that
+  # touched no gate file never triggers its own run, so deferring would strand
+  # the release). The harm needs two commits sharing one $ver but shipping
+  # different packaged bytes -- itself a versioning mistake -- so we accept it.
+  group: pypi-publish-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Decide whether to publish
+    # Only ever run against main. The push trigger is already main-only, but
+    # workflow_dispatch lets any write-access user pick an arbitrary ref; without
+    # this a crafted branch (gate files + a poisoned build.sh) could drive an
+    # OIDC publish, resting entirely on the pypi environment's branch policy.
+    # Pinning main here (and gating build -> publish on decide) keeps that
+    # guarantee in the workflow, not only in repo settings. A dispatch from a
+    # tag or branch simply no-ops.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - id: check
+        run: |
+          # `|| true`: steps run under `set -eo pipefail`, so a no-match grep
+          # would abort the step. We want a missing/odd pin to skip, not fail.
+          # Require BOTH installers to be on the new floor, so we never publish
+          # while install.ps1 (Windows) still pins the previous version.
+          # Capture the full PEP 440 version after the quoted `"unsloth>=` pin
+          # (digits/dots + any a/b/rc/.post/.dev/+local suffix) so a suffixed
+          # release like 2026.5.3.post1 compares equal to __version__. The leading
+          # quote matches only real pins, excluding `unsloth-zoo>=` and comments.
+          pin_sh=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.sh  | sort -u || true)
+          pin_ps=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.ps1 | sort -u || true)
+          ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
+          echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: $ver"
+          one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
+          if ! { one "$pin_sh" && one "$pin_ps" && [ "$pin_sh" = "$ver" ] && [ "$pin_ps" = "$ver" ]; }; then
+            echo "install.sh / install.ps1 pins do not both match __version__ (or are ambiguous) -> skip"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Pins agree on $ver. Publish if the version is absent OR incomplete
+          # (missing wheel or sdist), so a rerun can finish a partial upload;
+          # the publish step uses skip-existing to not re-upload what's there.
+          decision=$(python3 - "$ver" <<'PY'
+          import json, sys, urllib.error, urllib.request
+          ver = sys.argv[1]
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/unsloth/{ver}/json", timeout=30) as r:
+                  kinds = {f.get("packagetype") for f in (json.load(r).get("urls") or [])}
+          except urllib.error.HTTPError as e:
+              print("publish" if e.code == 404 else f"error:HTTP {e.code}"); sys.exit(0)
+          except Exception as e:
+              print(f"error:{e}"); sys.exit(0)
+          print("skip" if {"bdist_wheel", "sdist"} <= kinds else "publish")
+          PY
+          )
+          case "$decision" in
+            publish) echo "unsloth $ver absent/incomplete on PyPI -> publish"; echo "publish=true"  >> "$GITHUB_OUTPUT" ;;
+            skip)    echo "unsloth $ver already complete on PyPI -> skip";      echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            *)       echo "::error::PyPI check failed for $ver: ${decision#error:}"; exit 1 ;;
+          esac
+
+  build:
+    name: Build wheel + sdist
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # need tags for `git describe` (Studio release version)
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Upgrade npm to 11.16+ (min-release-age + allowScripts)
+        # setup-node@22 bundles npm 10.9.x, which silently ignores both the
+        # min-release-age=7 cooldown in studio/frontend/.npmrc (landed in npm
+        # 11.10) and the allowScripts allowlist enforced by --strict-allow-scripts
+        # (landed in npm 11.16). Upgrade to the 11.16+ floor so the frozen
+        # install below gets both gates, matching studio-frontend-ci.yml.
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has min-release-age + allowScripts" ;;
+            *) echo "::error::npm $V predates allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        # build.sh runs `npm install`, which executes lifecycle scripts. This
+        # structural lockfile scan -- the same one wheel-smoke runs -- is the
+        # practical defence against the npm postinstall-dropper class: it fires
+        # before any tarball runs, on the injection pattern itself.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Frozen frontend install (fail closed on lockfile drift)
+        # build.sh later runs `npm install`, which can re-resolve deps and
+        # rewrite the committed package-lock.json (the file the wheel ships)
+        # when package.json has drifted from it -- after the audit above already
+        # scanned the committed lock. Run `npm ci` first: it exits on any
+        # package.json/lock mismatch and never writes the lockfile, so the
+        # release can't publish unaudited resolutions. --strict-allow-scripts
+        # hard-fails any install script not in package.json's allowScripts
+        # allowlist (advisory by default in npm 11), and .npmrc's min-release-age
+        # cooldown applies here too. This mirrors studio-frontend-ci.yml's gate,
+        # which the pin bump already passed at PR time, so a clean release lock
+        # installs without prompting; build.sh stays the maintainer publish path.
+        working-directory: studio/frontend
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: Resolve Studio release version
+        id: studio
+        # On the push trigger this takes the newest reachable v* tag, so push
+        # the Studio release tag before/with the pin bump (the immutable wheel
+        # is stamped once). A manual dispatch can pin the exact tag via the
+        # studio_version input, which also lets a stale-tag build be corrected.
+        env:
+          OVERRIDE: ${{ github.event.inputs.studio_version }}
+        run: |
+          studio="${OVERRIDE:-}"
+          [ -n "$studio" ] || studio=$(git describe --tags --abbrev=0 --match 'v[0-9]*' || true)
+          [ -n "$studio" ] || { echo "::error::no v* Studio tag found to stamp"; exit 1; }
+          # A manual override feeds an immutable wheel stamp, so require it to
+          # name a real, pushed tag (rejects a typo, a date-style backend
+          # version, or a tag not yet pushed). checkout uses fetch-depth: 0, so
+          # every tag is present. git describe only ever yields existing v*
+          # tags, so this is a no-op on the push path.
+          if [ -n "${OVERRIDE:-}" ] && ! git show-ref -q --verify "refs/tags/$studio"; then
+            echo "::error::studio_version does not name an existing Studio tag: $studio"; exit 1
+          fi
+          echo "Studio release version: $studio"
+          echo "studio=$studio" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend + wheel + sdist
+        # build.sh stamps STUDIO_RELEASE_VERSION from this env var (read first by
+        # stamp_studio_release.py), matching the maintainer's `build.sh publish`.
+        env:
+          UNSLOTH_STUDIO_RELEASE_VERSION: ${{ steps.studio.outputs.studio }}
+        run: |
+          python -m pip install --upgrade pip build
+          bash build.sh
+
+      - name: Verify the Studio stamp landed in dist/
+        env:
+          STUDIO: ${{ steps.studio.outputs.studio }}
+        run: python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO"
+
+      - name: Wheel content sanity
+        # wheel-smoke runs this too, but in a parallel workflow that can't block
+        # this upload -- so we gate on it here before shipping to PyPI.
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          w = glob.glob("dist/unsloth-*.whl")
+          if not w:
+              print("FAIL: no wheel produced"); sys.exit(2)
+          w = w[0]
+          print(f"wheel: {w}")
+          with zipfile.ZipFile(w) as z:
+              n = z.namelist()
+              checks = {
+                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
+                "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
+              }
+              js = [s for s in n
+                    if "studio/frontend/dist/assets/" in s
+                    and s.endswith(".js")
+                    and "/index-" in s]
+              if not js:
+                  print("FAIL: no main bundle index-*.js in wheel"); sys.exit(2)
+              data = z.read(js[0]).decode("utf-8", "replace")
+              hits = data.count("unstable_Provider:")
+              print(f"main bundle: {js[0]}")
+              print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
+              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+
+              print()
+              for k, v in checks.items():
+                  print(f"  [{'PASS' if v else 'FAIL'}] {k}")
+              sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Upload dist artifact
+        # Upload the verified dist/ BEFORE the import smoke below. That smoke
+        # installs third-party deps from PyPI, whose install/import hooks run
+        # arbitrary code and could mutate dist/ before the OIDC-scoped publish
+        # job uploads it. Uploading the already-verified bytes (stamp + wheel
+        # content) closes that window; a smoke failure still fails the job, so
+        # publish (needs: build) never runs.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Studio backend import smoke
+        # Import the app from the freshly-built wheel in a clean venv -- catches
+        # the 2026.5.1 class (missing frontend dist / lockfile, broken source).
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          /tmp/v/bin/pip install -r studio/backend/requirements/studio.txt
+          /tmp/v/bin/pip install \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 mammoth unpdf requests \
+            'numpy<3'
+          /tmp/v/bin/pip install --no-deps dist/unsloth-*.whl
+          # Run from /tmp so Python imports the installed package, not the source tree.
+          cd /tmp
+          /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI Trusted Publishing (OIDC); no checkout or build here
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: pypi-dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          # Complete a partial upload on rerun (e.g. wheel landed, sdist didn't)
+          # instead of failing on the already-present file.
+          skip-existing: true
