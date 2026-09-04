@@ -1408,8 +1408,19 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
+def _is_existing_file(path: Path) -> bool:
+    """Whether *path* exists: ``os.walk`` names a dangling link like any other file."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None
+    directory: str,
+    model_root: Optional[str] = None,
+    *,
+    require_existing_files: bool = False,
 ) -> tuple[list[GgufVariantInfo], bool]:
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
@@ -1435,6 +1446,10 @@ def list_local_gguf_variants(
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user
+        # can see and clean that quant. Only a caller advertising what it loads excludes it.
+        if require_existing_files and not _is_existing_file(file):
+            continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_imatrix_filename(file.name):

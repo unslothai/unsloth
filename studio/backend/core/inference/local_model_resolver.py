@@ -109,7 +109,10 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
+
+    # The lister every stored per-model setting is keyed by, so one file has one identity.
+    from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -127,7 +130,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
-        variants, _ = list_local_gguf_variants(str(load_dir))
+        # Asked of the lister, not filtered after: two checkpoints can share a quant, and
+        # grouping keeps one, so a dead file would take its readable namesake down with it.
+        variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
