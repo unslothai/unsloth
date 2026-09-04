@@ -486,6 +486,12 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         token = normalize_token(hf_token)
+        # The sentinel is about credential *use*, so it goes to the loaders. The detection
+        # probes take the plain token: their shared-cache guards refuse a cached read for an
+        # anonymous caller, which offline misreads a cached VLM as a text model. Cache-read
+        # policy is a separate, pre-existing question (see the PR description); this change
+        # only stops the operator's credential being used.
+        probe_token = token or None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -517,10 +523,10 @@ class ExportBackend:
             # skip.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 self.is_vision = not self._audio_type and is_vision_model(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
 
             if self._audio_type == "csm":

@@ -368,8 +368,9 @@ def test_the_weight_loader_never_receives_none_for_an_anonymous_caller(
         checkpoint_path = "owner/model", hf_token = hf_token
     )
 
-    assert seen["audio"] == expected
-    assert seen["vision"] == expected
+    # The probes take the plain token; only the loaders get the sentinel.
+    assert seen["audio"] == (expected or None)
+    assert seen["vision"] == (expected or None)
     assert seen["loader"] == expected
 
 
@@ -454,3 +455,43 @@ def test_a_local_merged_save_carries_the_sentinel(monkeypatch, tmp_path, hf_toke
 
     backend.export_merged_model(save_directory = str(tmp_path), hf_token = hf_token)
     assert seen["token"] == expected
+
+
+def test_offline_type_detection_is_not_degraded_by_the_sentinel(monkeypatch):
+    """model_config's cache guards refuse an anonymous cached read, which offline turns a
+    cached vision model into a text one. Detection keeps the plain token for that reason."""
+    from core.export import export as export_backend_module
+
+    seen: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            seen["loader"] = kwargs["token"]
+            raise _Stop()
+
+    monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_backend_module, "_hf_offline", lambda: True)
+    monkeypatch.setattr(
+        export_backend_module,
+        "detect_audio_type",
+        lambda model_id, hf_token, local_files_only: seen.setdefault("audio", hf_token) and None,
+    )
+    monkeypatch.setattr(
+        export_backend_module,
+        "is_vision_model",
+        lambda model_id, hf_token, local_files_only: bool(seen.setdefault("vision", hf_token))
+        and False,
+    )
+    monkeypatch.setattr(export_backend_module, "FastLanguageModel", _Loader)
+
+    export_backend_module.ExportBackend().load_checkpoint(
+        checkpoint_path = "owner/vlm", hf_token = False
+    )
+
+    assert seen["audio"] is None, "an anonymous probe must not be forced down the guard"
+    assert seen["vision"] is None
+    assert seen["loader"] is False, "the loader still gets the sentinel"
