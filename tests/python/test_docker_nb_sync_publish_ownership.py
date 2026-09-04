@@ -111,9 +111,9 @@ def _run(
 
 def _assert_refreshed_and_still_the_owners(dest: Path, res):
     live = dest / REL
-    assert live.read_text(encoding = "utf-8") == V2, (
-        f"the upstream change must reach the container; stdout={res.stdout!r} stderr={res.stderr!r}"
-    )
+    assert (
+        live.read_text(encoding = "utf-8") == V2
+    ), f"the upstream change must reach the container; stdout={res.stdout!r} stderr={res.stderr!r}"
     mode = stat.S_IMODE(live.stat().st_mode)
     assert mode == HOST_MODE, (
         f"the published notebook kept mode 0o{mode:o}, not the host user's "
@@ -159,9 +159,9 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     # user could not edit a notebook upstream had just added. It now falls
     # through to own_like_dir instead.
     assert 'if [ ! -e "$2" ]; then' in block
-    assert "own_like_dir" in block, (
-        "a brand-new notebook must take the owner of the directory it lands in"
-    )
+    assert (
+        "own_like_dir" in block
+    ), "a brand-new notebook must take the owner of the directory it lands in"
 
 
 @pytest.mark.skipif(
@@ -342,9 +342,9 @@ def test_a_brand_new_notebook_gets_the_destination_directorys_owner(tmp_path: Pa
         "stage_metadata",
     )
 
-    assert calls == [f"--reference={dest_dir} {staged}"], (
-        f"a new notebook must take the owner of the directory it lands in: {calls}"
-    )
+    assert calls == [
+        f"--reference={dest_dir} {staged}"
+    ], f"a new notebook must take the owner of the directory it lands in: {calls}"
     # 0666 & ~022, the mode a plain write would have produced.
     assert stat.S_IMODE(os.stat(staged).st_mode) == 0o644, oct(
         stat.S_IMODE(os.stat(staged).st_mode)
@@ -387,9 +387,9 @@ def test_both_template_copies_hand_the_file_to_the_host_user():
     lines = source.splitlines()
     for i in copies:
         window = "\n".join(lines[i : i + 4])
-        assert "own_like_dir" in window, (
-            f"the copy at line {i + 1} publishes the template's root:root mode"
-        )
+        assert (
+            "own_like_dir" in window
+        ), f"the copy at line {i + 1} publishes the template's root:root mode"
 
 
 # --- the notebook root itself ---------------------------------------------------
@@ -441,9 +441,9 @@ def test_the_notebook_root_is_created_with_its_ancestors_owner(tmp_path: Path):
         timeout = 120,
     )
 
-    assert (dest / REL).is_file(), (
-        f"populate must still run; stdout={res.stdout!r} stderr={res.stderr!r}"
-    )
+    assert (
+        dest / REL
+    ).is_file(), f"populate must still run; stdout={res.stdout!r} stderr={res.stderr!r}"
     calls = [
         line
         for line in (log.read_text(encoding = "utf-8").splitlines() if log.exists() else [])
