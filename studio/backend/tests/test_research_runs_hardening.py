@@ -410,9 +410,7 @@ def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
     """The loaded local window explains nothing about a report a connection generated."""
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
-    notice = _synthesis_length_limit_error(
-        usage, requested_max_tokens = 32_768, external = True
-    )
+    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 32_768, external = True)
     assert "Context Length" not in notice
     assert "Local model" not in notice
 
