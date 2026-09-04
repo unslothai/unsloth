@@ -33,9 +33,6 @@ _CTX = mp.get_context("spawn")
 _LOG_BUFFER_MAXLEN = 4000
 
 
-_UNPINNED = object()
-
-
 class ExportOrchestrator:
     """
     Export backend orchestrator — subprocess-based.
@@ -49,20 +46,6 @@ class ExportOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-
-        # The private Hugging Face token directory a non-ambient worker runs against, and
-        # every such directory this process has created and not yet confirmed removed. Three
-        # states have to stay apart, because one scalar conflating them is a race per state:
-        # the live worker's store, a store allocated for a worker that has not spawned yet,
-        # and a store whose deletion failed and must be retried.
-        self._token_store: Optional[str] = None
-        self._token_store_pending: bool = False
-        self._owned_token_stores: set = set()
-        # Guards only the (process, token store) pair. Deliberately not self._lock, which an
-        # export op holds for its whole duration: is_worker_alive and cancel_export are
-        # lock-free against that one on purpose. Never held across rmtree or any other I/O,
-        # so contention is a few instructions.
-        self._state_lock = threading.Lock()
         # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
@@ -145,17 +128,9 @@ class ExportOrchestrator:
         return self._export_active
 
     def is_worker_alive(self) -> bool:
-        """True while the persistent export subprocess is running (op or idle).
-
-        Reaps on the way out, like the internal check: utils/transformers_version.py calls
-        this one directly, so a worker that died while idle would otherwise keep its private
-        token store until something else happened to look.
-        """
+        """True while the persistent export subprocess is running (op or idle)."""
         proc = self._proc
-        if proc is not None and proc.is_alive():
-            return True
-        self._reap_dead_worker()
-        return False
+        return proc is not None and proc.is_alive()
 
     def was_cancelled(self) -> bool:
         """True if the in-flight (or most recent) run was cancelled by the user."""
@@ -203,16 +178,7 @@ class ExportOrchestrator:
         """
         self._cancel_requested = True
         proc = self._proc
-        # Read after proc, and re-checked against it before either cleanup below. This runs
-        # without the lock, so a reload can swap in a new worker and a new store between any
-        # two statements here, and an old process paired with the replacement's store would
-        # delete a live worker's credential directory.
-        store = getattr(self, "_token_store", None)
         if proc is None or not proc.is_alive():
-            # Nothing to cancel, but it may have died holding a store. owner= makes the
-            # "has a reload swapped in a worker since we read" test part of the same
-            # transaction as the clear, rather than a separate statement before it.
-            self._discard_token_store(only = store, owner = proc)
             return False
         logger.info(
             "Export cancel requested: terminating export subprocess (pid=%s)",
@@ -230,18 +196,6 @@ class ExportOrchestrator:
                 proc.join(timeout = 3)
             except Exception:
                 pass
-        # _run_export swallows the RuntimeError this kill produces and returns without
-        # shutting down, so neither _shutdown_subprocess cleanup runs on a cancel. Only once
-        # the worker is confirmed dead, though: a survivor of terminate+kill (the wedged CUDA
-        # syscall this class handles elsewhere) still has HF_TOKEN_PATH pointing here, and
-        # pulling the directory out from under it would both break its Hub calls and let it
-        # recreate an untracked one. It is discarded by the next shutdown instead.
-        if not proc.is_alive():
-            self._discard_token_store(only = store, owner = proc)
-        else:
-            logger.warning(
-                "Export subprocess survived cancellation; keeping its token store until it exits"
-            )
         return True
 
     # ------------------------------------------------------------------
@@ -278,7 +232,7 @@ class ExportOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
-            proc = _CTX.Process(
+            self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
@@ -288,16 +242,11 @@ class ExportOrchestrator:
                 },
                 daemon = True,
             )
-            proc.start()
-            # Installed under the same guard the reaper compares against, so a liveness check
-            # that decided the previous worker was dead cannot clear this live one. start()
-            # stays outside: the guard is never held across process creation.
-            with self._state_guard():
-                self._proc = proc
+            self._proc.start()
         from utils.process_lifetime import adopt_pid
 
-        adopt_pid(proc.pid)
-        logger.info("Export subprocess started (pid=%s)", proc.pid)
+        adopt_pid(self._proc.pid)
+        logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         """Gracefully shut down the export subprocess.
@@ -309,8 +258,6 @@ class ExportOrchestrator:
         handle and refuse the destructive sidecar swap."""
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            # A worker that crashed after the loader persisted a token still left it behind.
-            self._discard_token_store()
             return True
 
         self._drain_queue()
@@ -352,7 +299,6 @@ class ExportOrchestrator:
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
-        self._discard_token_store()
         logger.info("Export subprocess shut down")
         return True
 
@@ -360,157 +306,9 @@ class ExportOrchestrator:
         """atexit handler."""
         self._shutdown_subprocess(timeout = 5.0)
 
-    def _reap_dead_worker(self) -> None:
-        """Drop a worker that died on its own, store included.
-
-        An export that kills the worker surfaces as a RuntimeError that _run_export catches
-        and returns from, so no shutdown runs and the credential its store may hold would sit
-        in /tmp until the next load.
-        """
-        proc = self._proc
-        if proc is not None and proc.is_alive():
-            return
-        # Compare and clear as one step: a reload can install a live worker between the
-        # liveness check and the assignment, and clearing then would orphan a running GPU
-        # worker and delete the credential directory it is using.
-        with self._state_guard():
-            if self._proc is not proc:
-                return
-            self._proc = None
-            store = self._token_store
-            if self._token_store_pending:
-                return
-            self._token_store = None
-        self._sweep_token_stores(remove = store)
-
-    def _state_guard(self) -> threading.Lock:
-        """The (process, token store) lock, created on demand.
-
-        The shutdown tests build an orchestrator with __new__ and no __init__, so every
-        accessor of this state has to tolerate its absence.
-        """
-        lock = getattr(self, "_state_lock", None)
-        if lock is None:
-            lock = self._state_lock = threading.Lock()
-        return lock
-
-    def _new_token_store(self) -> str:
-        """A private Hugging Face token directory for the next non-ambient worker.
-
-        The worker points HF_TOKEN_PATH here so the operator's stored login is out of its
-        reach and any token the loader persists lands somewhere disposable. The parent holds
-        the path so it can delete it even when the worker is killed rather than exiting.
-
-        Published as *pending* until a worker is actually spawned against it: until then a
-        lock-free canceller must not mistake it for a dead worker's leftovers.
-        """
-        import tempfile
-
-        # Whatever was current stops being current here, so it goes with this sweep rather
-        # than waiting for a later one to notice; it may hold the previous caller's token.
-        with self._state_guard():
-            previous = getattr(self, "_token_store", None)
-        self._sweep_token_stores(remove = previous)
-        store = tempfile.mkdtemp(prefix = "unsloth-export-hf-")
-        with self._state_guard():
-            if not hasattr(self, "_owned_token_stores"):
-                self._owned_token_stores = set()
-            self._owned_token_stores.add(store)
-            self._token_store = store
-            self._token_store_pending = True
-        return store
-
-    def _attach_token_store(self) -> None:
-        """Mark the pending store as belonging to the worker that just spawned."""
-        with self._state_guard():
-            self._token_store_pending = False
-
-    def _sweep_token_stores(self, remove: Optional[str] = None) -> None:
-        """Delete owned stores that no worker is using, plus *remove* if given.
-
-        The store currently published is never swept, pending or not: a concurrent reload
-        may have just installed it, and a sweep that took it would hand that worker a path
-        it would recreate untracked. A directory that will not delete, a file locked on
-        Windows say, stays owned so the next sweep tries again.
-
-        rmtree runs outside the state lock; only the bookkeeping is inside it.
-        """
-        import os
-        import shutil
-
-        with self._state_guard():
-            current = getattr(self, "_token_store", None)
-            candidates = [
-                path
-                for path in getattr(self, "_owned_token_stores", ())
-                if path != current or (remove is not None and path == remove)
-            ]
-        for path in candidates:
-            shutil.rmtree(path, ignore_errors = True)
-            if os.path.exists(path):
-                logger.warning("Could not remove the export token store %s; will retry", path)
-                continue
-            with self._state_guard():
-                self._owned_token_stores.discard(path)
-
-    def _discard_token_store(
-        self,
-        only: Any = _UNPINNED,
-        owner: Any = _UNPINNED,
-    ) -> None:
-        """Retire the current worker's private token directory, credential and all.
-
-        *only* pins the removal to one store, for a caller holding no lock: if a reload has
-        already installed a replacement, that one belongs to the live worker, not to us.
-        Pinning to ``None`` is meaningful, and means the cancelled worker had no store, so
-        there is nothing of ours to remove; that is why the default is a separate sentinel.
-
-        *owner* pins it to a process too, checked under the same guard as the clear. A
-        lock-free caller that compared the process itself and then called in would leave a
-        window in which a spawn completes and its store is taken from under it.
-        """
-        # getattr throughout: an orchestrator built without __init__ (the shutdown tests do
-        # exactly that) has none of these yet.
-        with self._state_guard():
-            if owner is not _UNPINNED and self._proc is not owner:
-                # A reload installed a worker since the caller looked; nothing here is ours.
-                return
-            store = getattr(self, "_token_store", None)
-            if only is not _UNPINNED:
-                if store != only:
-                    # Not the current store any more. Still ours to remove if we made it.
-                    target = only if only in getattr(self, "_owned_token_stores", ()) else None
-                    store = None
-                elif getattr(self, "_token_store_pending", False):
-                    # A load published this store but its worker has not spawned yet, so it
-                    # is not a dead worker's leftovers; a lock-free caller leaves it alone.
-                    return
-                else:
-                    target = store
-                    self._token_store = None
-                    self._token_store_pending = False
-            else:
-                target = store
-                self._token_store = None
-                self._token_store_pending = False
-        self._sweep_token_stores(remove = target)
-
     def _ensure_subprocess_alive(self) -> bool:
-        """Check if subprocess is alive, reaping it if it is not.
-
-        Every caller that cares whether the worker is up comes through here, which makes it
-        the one place a worker that died on its own is noticed. Reaping from here rather than
-        from each caller is deliberate: the worker has more exits than any one branch sees
-        (crash mid-wait, crash while idle, cancellation, a failed load), and its private token
-        store must not outlive it on any of them.
-        """
-        # One read: a concurrent public liveness check can reap and clear _proc between two,
-        # and the second would then be None.is_alive().
-        proc = self._proc
-        if proc is not None and proc.is_alive():
-            return True
-        self._reap_dead_worker()
-        return False
+        """Check if subprocess is alive."""
+        return self._proc is not None and self._proc.is_alive()
 
     # ------------------------------------------------------------------
 
@@ -552,9 +350,6 @@ class ExportOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    # The caller catches this and returns without shutting down, so the
-                    # dead worker's private token store has to be reaped here.
-                    self._reap_dead_worker()
                     raise RuntimeError("Export subprocess crashed during wait")
                 continue
 
@@ -635,9 +430,6 @@ class ExportOrchestrator:
             "subject": subject,
             "hf_token": hf_token,
             "allow_ambient": allow_ambient,
-            # Filled in below, once the old worker is gone: shutting it down discards its
-            # store, which would take a store allocated here with it.
-            "hf_token_store": None,
         }
 
         with self._lock:
@@ -673,16 +465,9 @@ class ExportOrchestrator:
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 
-                # Owned by this process, not the worker: a cancel goes through terminate()
-                # and then kill(), neither of which runs the child's atexit, and the loader
-                # may have persisted the caller's token into it by then.
-                if not allow_ambient:
-                    sub_config["hf_token_store"] = self._new_token_store()
-
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 try:
                     self._spawn_subprocess(sub_config)
-                    self._attach_token_store()
                 except Exception:
                     # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
                     # fails on.
@@ -711,11 +496,6 @@ class ExportOrchestrator:
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
                     logger.error("Failed to load checkpoint: %s", error)
-                    # A failed load leaves the worker alive holding nothing useful, and
-                    # unsloth may already have persisted the caller's token into its private
-                    # store. Retire both rather than leaving the credential until the next
-                    # load; the next one spawns a fresh worker anyway.
-                    self._shutdown_subprocess(timeout = 5)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False

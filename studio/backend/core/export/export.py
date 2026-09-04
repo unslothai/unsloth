@@ -11,7 +11,7 @@ import os
 import shutil
 import contextlib
 from pathlib import Path
-from typing import Iterator, Optional, Tuple, List
+from typing import Optional, Tuple, List
 
 # unsloth imports torch, so a --no-torch install raises here; stay importable and return a clean
 # "PyTorch is not installed" error.
@@ -33,7 +33,6 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
-    is_local_path,
     outputs_root,
     resolve_export_write_dir,
     resolve_output_dir,
@@ -53,170 +52,6 @@ if not _IS_MLX:
         _TORCH_IMPORT_ERROR = _torch_exc
 
 logger = get_logger(__name__)
-
-
-def _cache_snapshot_ref(local_path: str) -> Optional[Tuple[str, Optional[str]]]:
-    """The repository and revision a Hugging Face cache snapshot path holds, else None.
-
-    A path under ``models--org--repo/snapshots/<rev>`` is local only in spelling: it is the
-    operator's copy of a Hub repo, and /hub/cached-models hands API callers exactly these
-    absolute ids. Reuses the security gate's provenance recovery.
-    """
-    try:
-        from utils.security.file_security import _hf_cache_snapshot_ref
-        ref = _hf_cache_snapshot_ref(local_path)
-    except Exception:
-        return None
-    return (ref[0], ref[1]) if ref else None
-
-
-class _BaseUnresolved(Exception):
-    """A remote adapter whose base could not be determined, so it cannot be authorized."""
-
-
-def _looks_like_remote_adapter(checkpoint_path: str, token: HfTokenArg) -> bool:
-    """True when *checkpoint_path* is a remote repo that carries an adapter_config.json.
-
-    ``hf_file_definitely_absent`` is definitive only about absence, which is what separates
-    "this is a plain model repo" from "the lookup did not come back".
-    """
-    if is_local_path(checkpoint_path):
-        return False
-    try:
-        from utils.hf_probe import hf_file_definitely_absent
-        return not hf_file_definitely_absent(checkpoint_path, "adapter_config.json", token = token)
-    except Exception:
-        return True
-
-
-def _remote_load_targets(
-    checkpoint_path: str,
-    token: HfTokenArg = False,
-    offline: bool = False,
-) -> Iterator[Tuple[str, Optional[str]]]:
-    """Every Hugging Face repository a load of *checkpoint_path* will reach, named first.
-
-    Three shapes count. A repo id names one directly. An absolute cache snapshot path is
-    local only in spelling: it is the operator's copy of a Hub repo, and /hub/cached-models
-    hands API callers exactly those ids. And an adapter, local or remote, pulls in the base
-    its adapter_config names, which the loader follows on its own; /api/models/checkpoints
-    lists the operator's training checkpoints and their base ids to any authenticated
-    caller, so a local adapter is not the caller's own property either.
-
-    A generator so the caller authorizes the named repo before this resolves its base: a
-    caller who cannot read the repo should be told that, not sent to look up its adapter.
-
-    Only a genuinely local checkpoint directory is exempt as itself: it holds no Hub
-    repository's content.
-    """
-    seen = set()
-    named = _cache_snapshot_ref(checkpoint_path)
-    if named is None and not is_local_path(checkpoint_path):
-        named = (checkpoint_path, None)
-    # Provenance, not spelling: a cache snapshot path is absolute and local-looking but is
-    # the operator's copy of a Hub repo, and /hub/cached-models hands those paths out.
-    checkpoint_is_remote = named is not None
-    if named:
-        seen.add(named[0])
-        yield named
-
-    try:
-        from utils.models.model_config import get_base_model_from_lora_identifier
-        base = get_base_model_from_lora_identifier(checkpoint_path, token)
-    except Exception as exc:
-        logger.debug("Could not resolve a base for '%s': %s", checkpoint_path, exc)
-        base = None
-    if base is None and not offline and _looks_like_remote_adapter(checkpoint_path, token):
-        # The resolver returns None both for "not an adapter" and for a transient failure,
-        # and its base is exactly what a public adapter would hide a private repo behind.
-        # It does look like an adapter, so the missing base is inconclusive, not absent.
-        #
-        # Online only: hf_file_definitely_absent answers False for any failure, so offline it
-        # calls every repo a possible adapter and this would refuse every air-gapped load of
-        # an ordinary cached model. Offline policy is _access_allowed's alone.
-        raise _BaseUnresolved(checkpoint_path)
-    resolved = None
-    if base:
-        if is_local_path(base) and _cache_snapshot_ref(base) is None and checkpoint_is_remote:
-            # A remote adapter must not redirect its load into a server-local checkpoint:
-            # /api/models/checkpoints hands out those paths, so a small public adapter
-            # pointing at one would load the operator's weights with nothing to authorize.
-            # Keyed on provenance, so caching the adapter first and then naming its snapshot
-            # path does not launder it into the local exemption.
-            raise _BaseUnresolved(checkpoint_path)
-        resolved = _cache_snapshot_ref(base) or (None if is_local_path(base) else (base, None))
-    if resolved and resolved[0] not in seen:
-        yield resolved
-
-
-def _access_allowed(
-    repo_id: str,
-    offline: bool,
-    token: HfTokenArg = False,
-    revision: Optional[str] = None,
-) -> Tuple[bool, str]:
-    """Whether *token* may be served a cache-backed load of *repo_id*.
-
-    The question is not whether the files are on disk; it is whether this caller could have
-    fetched them itself. ``auth_check`` is exactly that question: it raises for a private
-    repo, and for a gated one the caller has not been granted, which reading the ``gated``
-    flag cannot tell apart from a gated repo the caller *can* read. Presence of a token is
-    not access either, so a supplied token is verified rather than trusted.
-
-    Offline nothing can be asked. An anonymous caller is refused; a caller that supplied a
-    credential keeps the availability it had before, since refusing it would break
-    air-gapped installs without the Hub ever having said no.
-    """
-    anonymous = is_anonymous(token) or token is None
-    if offline:
-        if not anonymous:
-            return True, ""
-        return False, (
-            f"Cannot load '{repo_id}' without a Hugging Face token while the Hub is "
-            "unreachable: the local cache is the server operator's and is not served to API "
-            "callers unauthenticated. Supply hf_token, or retry when the Hub is reachable."
-        )
-    try:
-        from concurrent.futures import ThreadPoolExecutor
-        from concurrent.futures import TimeoutError as _FutureTimeout
-        from huggingface_hub import auth_check
-
-        pool = ThreadPoolExecutor(max_workers = 1)
-        try:
-            pool.submit(auth_check, repo_id, token = token).result(timeout = _ACCESS_CHECK_TIMEOUT_S)
-        except _FutureTimeout:
-            logger.warning("Access check for '%s' timed out; refusing", repo_id)
-            return False, (
-                f"Could not verify access to '{repo_id}' before the Hub stopped responding, "
-                "so it cannot be loaded from the shared cache. Retry."
-            )
-        finally:
-            # Not a context manager: its __exit__ joins the worker, which is the very wait
-            # the timeout exists to escape.
-            pool.shutdown(wait = False)
-    except Exception as exc:
-        logger.info("Access check refused '%s': %s", repo_id, exc)
-        return False, (
-            f"'{repo_id}' is not readable with the credential this request supplied, so it "
-            "cannot be loaded from the shared cache. Supply an hf_token with access."
-        )
-    if revision is not None:
-        # A cached snapshot can outlive the visibility it was fetched under, and an id can be
-        # deleted and recreated by someone else, so pin the commit as well as the repo.
-        try:
-            HfApi().model_info(
-                repo_id,
-                revision = revision,
-                token = token,
-                timeout = _ACCESS_CHECK_TIMEOUT_S,
-            )
-        except Exception as exc:
-            logger.info("Revision check refused '%s'@%s: %s", repo_id, revision, exc)
-            return False, (
-                f"The cached revision of '{repo_id}' is not readable with the credential "
-                "this request supplied, so it cannot be loaded from the shared cache."
-            )
-    return True, ""
 
 
 def _export_runtime_available() -> bool:
@@ -245,12 +80,6 @@ _PYTORCH_MISSING_MESSAGE = (
 )
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
-
-# auth_check takes no timeout of its own and runs while the orchestrator's export lock is
-# held, so a Hub that accepts the connection and then stops answering would pin every load
-# and export until _wait_response gives up an hour later. Mirrors the bound
-# core/inference/openai_auto_download.py puts on the same call.
-_ACCESS_CHECK_TIMEOUT_S = 8.0
 
 
 def _multi_gpu_device_map_kwargs() -> dict:
@@ -648,12 +477,10 @@ class ExportBackend:
         (otherwise a gated repo passes scanning then 401s at from_pretrained).
 
         The ``False`` sentinel means the caller was denied the ambient token, and it has to
-        travel all the way down. ``None`` is not anonymous to this stack: it is the request
-        to go and find a credential. unsloth spells that ``if token is None: get_token()``
+        travel all the way down. ``None`` is not anonymous to this stack, it is the request
+        to go and find a credential: unsloth spells that ``if token is None: get_token()``
         (``save.py``, and ``hf_login`` at ``models/_utils.py:4106``), and ``get_token()``
-        reads the operator's stored login from ``~/.cache/huggingface/token``, which no
-        amount of environment scrubbing touches. The detection probes need it for a second
-        reason: their shared-cache reads are gated on is_anonymous().
+        reads the operator's stored login, which the environment scrub does not touch.
 
         Returns:
             Tuple of (success: bool, message: str)
@@ -677,39 +504,6 @@ class ExportBackend:
 
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
-
-            # The shared cache is not partitioned by credential, and it answers without
-            # reauthorizing: measured against a cached gated repo, hf_hub_download and
-            # transformers' cached_file both serve the operator's snapshot for token=False,
-            # online as much as offline. So an anonymous caller has to be authorized against
-            # the repo before a cache-backed load of it, the way the capability probes are
-            # (utils/models/model_config.py:1074, 1267, 1394). Only a caller denied the
-            # ambient token is checked; a UI session is the operator.
-            #
-            # On checkpoint_path, NOT model_id: for a locally trained adapter model_id is the
-            # base named in adapter_config.json, so testing it would refuse every export of a
-            # local LoRA (Studio's main flow, and MCP is always non-ambient) over a base the
-            # caller never named. That leaves reading a private base through a crafted local
-            # adapter_config, which needs a separate write onto this host.
-            # Runs for a scoped credential of any shape: the sentinel, and a supplied token,
-            # whose presence is not access. A UI session (token is None) keeps the ambient
-            # fallback and is the operator anyway.
-            if token is not None:
-                # The try spans the loop, not just the call: _remote_load_targets is a
-                # generator, so it resolves the base during iteration, not up front.
-                try:
-                    for target, revision in _remote_load_targets(
-                        checkpoint_path, token, local_files_only
-                    ):
-                        allowed, why = _access_allowed(target, local_files_only, token, revision)
-                        if not allowed:
-                            return False, why
-                except _BaseUnresolved:
-                    return False, (
-                        f"Could not determine the base model '{checkpoint_path}' resolves to, "
-                        "so it cannot be authorized against the shared cache. Retry, or "
-                        "supply an hf_token with access."
-                    )
 
             # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
@@ -1054,15 +848,28 @@ class ExportBackend:
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
+                # The merge resolves and prewarms the base repo, and save.py substitutes
+                # get_token() for a None, so the credential comes along even though nothing
+                # is being pushed.
+                merged_token_kw = (
+                    {"token": hf_token}
+                    if (hf_token or is_anonymous(hf_token))
+                    and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
+                    else {}
+                )
                 if _IS_MLX:
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
                         save_method = mlx_save_method,
+                        **merged_token_kw,
                     )
                 else:
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer, save_method = save_method
+                        save_directory,
+                        self.current_tokenizer,
+                        save_method = save_method,
+                        **merged_token_kw,
                     )
 
                 # Compressed / torchao writes to the "<dir>-<suffix>" sibling; report that as output.
@@ -1288,7 +1095,7 @@ class ExportBackend:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: HfTokenArg = None,
+        hf_token: Optional[str] = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -1342,10 +1149,7 @@ class ExportBackend:
             )
         shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
-        # push shares and names token= itself. Still gated on imatrix: forwarding a credential to
-        # a save that has no Hub work is what the two "does not forward the token" tests in
-        # test_export_gguf_discovery.py pin. False belongs here as much as a real token does,
-        # because omitting the kwarg lets save.py fall back to get_token().
+        # push shares and names token= itself.
         local_token_kw = (
             {"token": hf_token}
             if imatrix_file
@@ -1617,9 +1421,9 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's
-                        # config, and forward False so a caller denied the ambient one stays
-                        # anonymous instead of inheriting this worker's get_token().
+                        # Forward the token so convert_lora_to_gguf.py can fetch a gated
+                        # base's config, and forward False so a caller denied the ambient one
+                        # stays anonymous instead of falling back to get_token().
                         token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.

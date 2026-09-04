@@ -43,10 +43,6 @@ activate_native_tls()
 # Dropped lines are still echoed to the saved fds so the server log keeps them.
 _log_forward_gate = threading.Event()
 
-# Set at startup when this worker was loaded by a caller denied the ambient token. Its store
-# holds no operator credential and must not become a channel between its callers.
-_WORKER_IS_NON_AMBIENT = False
-
 
 def _setup_log_capture(resp_queue: Any) -> None:
     """Redirect fds 1 and 2 through pipes so every line printed by this worker
@@ -171,26 +167,6 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _redirect_hf_token_store(store: str) -> None:
-    """Point this worker's Hugging Face token file into the store the parent made.
-
-    Scrubbing the environment is only half of it. ``get_token()`` also reads the stored
-    login at ``~/.cache/huggingface/token``, so a non-ambient worker would still find the
-    operator's credential there, and ``hf_login`` hands it to any call left at ``None``.
-    The traffic goes the other way too: ``huggingface_hub.login()`` *saves* what it is
-    given (``_validate_and_save_token``), and unsloth's loaders call it on every
-    ``from_pretrained``, so a caller's own token would overwrite the operator's stored
-    login for the whole machine. An empty private store gives neither a place to live.
-
-    The directory belongs to the orchestrator, which deletes it once the worker is gone:
-    a cancel terminates and then kills, so nothing here would run to clean it up.
-
-    Must run before huggingface_hub is imported: HF_TOKEN_PATH is read once, at import,
-    and HF_STORED_TOKENS_PATH is derived from its directory.
-    """
-    os.environ["HF_TOKEN_PATH"] = os.path.join(store, "token")
-
-
 def _activate_transformers_version(model_name: str, hf_token: HfTokenArg = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
@@ -254,63 +230,6 @@ def _offline_window_if_unreachable(step = "loading"):
                 os.environ[k] = v
 
 
-@contextlib.contextmanager
-def _credential_scope(hf_token: HfTokenArg):
-    """Confine an export command to its own caller's credential.
-
-    A command is not necessarily from whoever loaded the worker, and it has two ways to
-    reach a credential it was not given. The GGUF converters build their child environment
-    from ``os.environ`` (``unsloth/save.py`` ``_unsloth_save_lora_gguf``) and only overwrite
-    it for a nonempty string token; and anything that ends up at ``token=None`` calls
-    ``get_token()``, which reads the stored login file. So scope both.
-
-    Per command, unlike the worker-wide HF_HUB_DISABLE_IMPLICIT_TOKEN: a child reads the
-    environment at its own import, and ``_get_token_from_file`` reads ``HF_TOKEN_PATH`` off
-    the constants module every call rather than freezing it.
-    """
-    import shutil
-    import tempfile
-
-    keys = (
-        "HF_TOKEN",
-        "HF_HUB_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HUGGINGFACEHUB_API_TOKEN",
-        "HF_HUB_DISABLE_IMPLICIT_TOKEN",
-        "HF_TOKEN_PATH",
-    )
-    saved = {k: os.environ.get(k) for k in keys}
-    from hub.utils.hf_tokens import apply_token_to_child_env, is_anonymous
-
-    constants = sys.modules.get("huggingface_hub.constants")
-    saved_token_path = getattr(constants, "HF_TOKEN_PATH", None) if constants else None
-    store = None
-    try:
-        apply_token_to_child_env(os.environ, hf_token)
-        # In a non-ambient worker every command gets its own empty store, not just an
-        # anonymous one: the load caller's token may have been persisted into the worker's
-        # store, and a later ambient command would otherwise read it back out.
-        if is_anonymous(hf_token) or _WORKER_IS_NON_AMBIENT:
-            # An empty store, so the in-process get_token() finds nothing either.
-            store = tempfile.mkdtemp(prefix = "unsloth-export-hf-cmd-")
-            token_path = os.path.join(store, "token")
-            os.environ["HF_TOKEN_PATH"] = token_path
-            if constants is not None:
-                constants.HF_TOKEN_PATH = token_path
-        yield
-    finally:
-        if constants is not None and saved_token_path is not None:
-            constants.HF_TOKEN_PATH = saved_token_path
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        if store is not None:
-            shutil.rmtree(store, ignore_errors = True)
-
-
 def _send_response(resp_queue: Any, response: dict) -> None:
     """Send a response to the parent process."""
     try:
@@ -324,11 +243,12 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     from hub.utils.hf_tokens import hf_token_arg
 
     checkpoint_path = cmd["checkpoint_path"]
-    # The route carries the policy as a flag, but the preflight helpers read it off the token:
-    # the shared-cache guards in model_config.py test is_anonymous(), which a plain None fails,
-    # so a scrubbed environment alone would still serve this caller the operator's cached
-    # private snapshots. Rebuild the canonical HfTokenArg once, here, for the whole load.
-    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
+    # The route carries the policy as a flag; the preflight helpers read it off the token,
+    # and None means "find a credential" to everything downstream. Rebuild the canonical
+    # HfTokenArg once, here, and use it for the whole load.
+    hf_token = hf_token_arg(
+        cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True)
+    )
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
@@ -646,38 +566,20 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
-    # Runs before huggingface_hub is imported: it reads HF_HUB_DISABLE_IMPLICIT_TOKEN once, into
-    # a module constant. Every later Hub read in this worker and its children inherits this env.
-    #
-    # Fully anonymous, even when this caller sent a token. Two credentials must stay out of the
-    # environment: the operator's, which get_token() would hand to any call left at token=None
-    # (HF_TOKEN and HUGGING_FACE_HUB_TOKEN are both read); and this caller's own, because the
-    # worker outlives the load and later serves export commands from other callers, who would
-    # then inherit it. A credential belongs to one request, so it travels as an argument.
-    #
-    # The scope is the worker, not the command, and it cannot be otherwise: huggingface_hub
-    # freezes HF_HUB_DISABLE_IMPLICIT_TOKEN at import, so a later command cannot re-enable
-    # implicit lookup by restoring the variable. So an export runs under the identity that
-    # loaded the checkpoint. A UI export after an API-key load gets no ambient fallback;
-    # reloading spawns a fresh worker (the orchestrator always does) and restores it.
-    #
-    # This bounds implicit use, not the operator's credential: get_token() also reads
-    # ~/.cache/huggingface/token, which nothing here removes. That is why every call in this
-    # worker has to be handed the sentinel rather than left at None.
+    # Before huggingface_hub is imported: it reads HF_HUB_DISABLE_IMPLICIT_TOKEN once, into a
+    # module constant. Everything this worker and its children do inherits this environment.
+    # An export runs under the identity that loaded the checkpoint; the orchestrator spawns a
+    # fresh worker per load, so a later load re-decides.
     from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg
 
     if not config.get("allow_ambient", True):
-        global _WORKER_IS_NON_AMBIENT
-        _WORKER_IS_NON_AMBIENT = True
-        apply_token_to_child_env(os.environ, False)
-        if config.get("hf_token_store"):
-            _redirect_hf_token_store(config["hf_token_store"])
+        apply_token_to_child_env(os.environ, config.get("hf_token") or False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            # The sentinel, not None: `or None` would ask the tier probe to go find a
-            # credential, and _probe_autoconfig scrubs its child only for the sentinel.
+            # The sentinel, not None: `or None` asks the tier probe to find a credential,
+            # and _probe_autoconfig scrubs its child env only for the sentinel.
             _activate_transformers_version(
                 checkpoint_path,
                 hf_token_arg(
@@ -796,11 +698,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                # Scoped per command, not per worker: this one may have been loaded by a
-                # different caller, and the GGUF converters read credentials out of the
-                # environment they are spawned with.
-                with _credential_scope(cmd.get("hf_token")):
-                    _handle_export(backend, cmd, resp_queue)
+                _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

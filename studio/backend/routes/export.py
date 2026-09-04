@@ -83,12 +83,12 @@ def _resolve_export_hf_token(
 ) -> HfTokenArg:
     """The credential this export runs under, as the anonymous-aware sentinel.
 
-    A local export still reads the Hub (imatrix resolution, a LoRA base's config), and it runs
-    in a worker another caller may have loaded, so returning a plain ``None`` here would let a
-    caller denied the ambient token borrow that worker's credential.
+    ``None`` is not anonymous downstream: unsloth reads it as "go and find a credential"
+    (``if token is None: get_token()``), so a caller denied the ambient token has to be
+    spelled ``False`` rather than left unset.
     """
     token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
-    if push_to_hub and not token and not allow_ambient:
+    if push_to_hub and token is None and not allow_ambient:
         raise HTTPException(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
@@ -114,11 +114,6 @@ async def load_checkpoint(
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
-        hf_token = (
-            request.hf_token.strip()
-            if isinstance(request.hf_token, str) and request.hf_token.strip()
-            else None
-        )
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -126,7 +121,11 @@ async def load_checkpoint(
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            hf_token = hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token, allow_ambient = allow_ambient
+            ),
+            # The sentinel alone cannot say whether a *supplied* token came from a UI
+            # session or an API key, and only the latter's worker gets scrubbed.
             allow_ambient = allow_ambient,
             subject = current_subject,
         )
@@ -344,18 +343,17 @@ async def export_merged_model(
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
-        hf_token = _resolve_export_hf_token(
-            request.hf_token,
-            push_to_hub = request.push_to_hub,
-            allow_ambient = allow_ambient,
-        )
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
             save_directory = request.save_directory,
             format_type = request.format_type,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             compressed_method = request.compressed_method,
         )
@@ -396,17 +394,16 @@ async def export_base_model(
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
-        hf_token = _resolve_export_hf_token(
-            request.hf_token,
-            push_to_hub = request.push_to_hub,
-            allow_ambient = allow_ambient,
-        )
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             base_model_id = request.base_model_id,
         )
@@ -449,18 +446,17 @@ async def export_gguf(
         backend = get_export_backend()
         # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
-        hf_token = _resolve_export_hf_token(
-            request.hf_token,
-            push_to_hub = request.push_to_hub,
-            allow_ambient = allow_ambient,
-        )
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
             save_directory = request.save_directory,
             quantization_method = request.quantization_method,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             imatrix_file = imatrix_file,
             private = request.private,
             gguf_shard_size = request.gguf_shard_size,
@@ -502,17 +498,16 @@ async def export_lora_adapter(
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
-        hf_token = _resolve_export_hf_token(
-            request.hf_token,
-            push_to_hub = request.push_to_hub,
-            allow_ambient = allow_ambient,
-        )
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,

@@ -554,17 +554,15 @@ def publish_job_dataset(
 ):
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
-    raw_token = (
-        payload.hf_token.strip()
-        if isinstance(payload.hf_token, str) and payload.hf_token.strip()
-        else None
-    )
-    if not raw_token and not allow_ambient:
+    hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
+    hf_token = hf_token or None
+    # publish_recipe_dataset hands the token straight to HuggingFaceHubClient and
+    # card.push_to_hub, so a None here publishes as whoever the host is logged in as.
+    if hf_token is None and not allow_ambient:
         raise HTTPException(
             status_code = 400,
             detail = "Hugging Face token is required to publish datasets when authenticated via API key.",
         )
-    hf_token = raw_token or None
     artifact_path = (
         payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
     )
