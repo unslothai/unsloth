@@ -5894,9 +5894,11 @@ if ($LocalLlamaCppLinked) {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
                 # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for now.
-                # windows-arm64-cuda only on the arch that can run it: accepting it on x64 would
-                # keep an install that machine cannot use, where today it is removed as mismatched.
-                $_nvidiaKinds = if ((Get-HostMachineArch) -eq "arm64") { @("windows-arm64-cuda") } else { @("windows-cuda") }
+                # windows-arm64-cuda only where it can run, and that is the VENV's arch, not the
+                # machine's: a Windows-on-ARM host on the x64 fallback runs the prebuilt helper
+                # under an emulated x64 python, which installs windows-cuda. Asking the machine
+                # would call that bundle mismatched and discard a working runtime.
+                $_nvidiaKinds = if (Test-WinArm64Venv) { @("windows-arm64-cuda") } else { @("windows-cuda") }
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
