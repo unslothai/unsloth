@@ -314,7 +314,7 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
 
 def _real_mp4_bytes(
     frames: int = 8,
-    size: int = 32,
+    size: int | tuple[int, int] = 32,
     rate: int = 8,
 ) -> bytes:
     # A real tiny MP4 for the transcode tests: flat-color frames in mpeg4 (bundled in every PyAV build, unlike libx264).
@@ -325,12 +325,13 @@ def _real_mp4_bytes(
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
         stream = out.add_stream("mpeg4", rate = rate)
-        stream.width = size
-        stream.height = size
+        width, height = size if isinstance(size, tuple) else (size, size)
+        stream.width = width
+        stream.height = height
         stream.pix_fmt = "yuv420p"
         for i in range(frames):
             frame = av.VideoFrame.from_ndarray(
-                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+                np.full((height, width, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
             )
             for packet in stream.encode(frame):
                 out.mux(packet)
@@ -486,6 +487,31 @@ def test_thumbnail_produces_a_webp_from_the_video():
     with Image.open(io.BytesIO(thumbnail)) as image:
         assert image.format == "WEBP"
         assert image.size == (64, 64)
+
+
+def test_thumbnail_scales_large_frames_to_gallery_width():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 180)), _meta())
+
+    with Image.open(io.BytesIO(gallery.thumbnail(record["id"]))) as image:
+        assert image.size == (192, 108)
+
+    portrait = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 568)), _meta())
+    with Image.open(io.BytesIO(gallery.thumbnail(portrait["id"]))) as image:
+        assert image.size == (192, 341)
+
+
+def test_thumbnail_scales_with_pillow_before_resampling_enum():
+    """Pillow 8 satisfies Studio's dependency floor but predates Image.Resampling."""
+    from types import SimpleNamespace
+
+    legacy = SimpleNamespace(LANCZOS = 1)
+    modern = SimpleNamespace(Resampling = SimpleNamespace(LANCZOS = 2))
+
+    assert gallery._lanczos_resampling(legacy) == 1
+    assert gallery._lanczos_resampling(modern) == 2
 
 
 def test_thumbnail_rejects_unowned_and_invalid_videos():

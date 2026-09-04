@@ -29,6 +29,12 @@ logger = get_logger(__name__)
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _JOB_OUTCOME_KEY = "_worker_outcome"
 _job_lock = threading.Lock()
+_THUMBNAIL_WIDTH = 192
+
+
+def _lanczos_resampling(image_module: Any) -> Any:
+    """Return the Lanczos filter across Pillow's pre- and post-9.1 APIs."""
+    return getattr(image_module, "Resampling", image_module).LANCZOS
 
 
 def gallery_dir() -> Path:
@@ -196,8 +202,9 @@ def _thumbnail_webp(path: Path) -> bytes:
     import io
     try:
         import av
-    except Exception as exc:  # noqa: BLE001 -- no PyAV -> no thumbnail
-        raise RuntimeError("Thumbnail generation needs the 'av' package (PyAV).") from exc
+        from PIL import Image
+    except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency makes thumbnails unavailable
+        raise RuntimeError("Thumbnail generation needs the 'av' and 'Pillow' packages.") from exc
     try:
         with av.open(str(path)) as src:
             if not src.streams.video:
@@ -205,8 +212,15 @@ def _thumbnail_webp(path: Path) -> bytes:
             frame = next(src.decode(src.streams.video[0]), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
+            image = frame.to_image()
+            if image.width > _THUMBNAIL_WIDTH:
+                scale = _THUMBNAIL_WIDTH / image.width
+                image = image.resize(
+                    (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                    _lanczos_resampling(Image),
+                )
             buf = io.BytesIO()
-            frame.to_image().save(buf, format = "WEBP", quality = 85, method = 4)
+            image.save(buf, format = "WEBP", quality = 85, method = 4)
             return buf.getvalue()
     except RuntimeError:
         raise
