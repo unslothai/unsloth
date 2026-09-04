@@ -67,7 +67,12 @@ def erasures(monkeypatch):
         lambda scrape: {"idle": [0], "resident": 2000, "idle_tokens": 2000},
     )
 
-    def _reclaim(occupancy, erase, *, needed = 0):
+    def _reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         for slot_id in occupancy.get("idle", []):
             seen.append(slot_id)
             erase(slot_id)
@@ -92,9 +97,7 @@ class TestTheSingleUserCaseCIChecks:
     def test_a_lone_finished_chat_keeps_its_cells(self, controller, erasures):
         """Turn one of the two-turn probe, ending with nobody else in the cache."""
         controller.register("only-chat", lease = _Lease(), tokens = 2000)
-        inference._openai_llama_preemption_disarm(
-            llama_backend = _Backend(), gen_id = "only-chat"
-        )
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "only-chat")
         assert controller.snapshot().committed == 0, "the charge must still be dropped"
         assert erasures == [], (
             "the prompt cache turn two would have reused was erased. This is the "
@@ -121,9 +124,7 @@ class TestTheContendedCaseStillReclaims:
         controller.register("leaving", lease = _Lease(), tokens = 2000)
         controller.register("waiting", lease = _Lease(), tokens = 3000)
         controller.set_state("waiting", ParticipantState.PAUSED)
-        inference._openai_llama_preemption_disarm(
-            llama_backend = _Backend(), gen_id = "leaving"
-        )
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
         assert erasures == [0], (
             "somebody is paused for want of cells and the finished chat's were left in "
             "place, which is the livelock this reclaim exists to end"
@@ -133,9 +134,7 @@ class TestTheContendedCaseStillReclaims:
         controller.register("leaving", lease = _Lease(), tokens = 2000)
         controller.register("busy", lease = _Lease(), tokens = 3000)
         controller.set_state("busy", ParticipantState.DECODING)
-        inference._openai_llama_preemption_disarm(
-            llama_backend = _Backend(), gen_id = "leaving"
-        )
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
         assert erasures == [0]
 
     def test_a_raw_stream_counts_too(self, controller, erasures):
@@ -151,9 +150,7 @@ class TestTheContendedCaseStillReclaims:
             tokens = 3000,
             state = ParticipantState.STREAMING_RAW,
         )
-        inference._openai_llama_preemption_disarm(
-            llama_backend = _Backend(), gen_id = "leaving"
-        )
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
         assert erasures == [0]
 
 
