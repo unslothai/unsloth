@@ -111,7 +111,7 @@ function Harness() {
     <TooltipProvider>
       <div data-testid="harness-root">
         <Boundary>
-          <SettingsDialogMount />
+          <SettingsDialogMount active />
         </Boundary>
       </div>
     </TooltipProvider>

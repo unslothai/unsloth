@@ -28,7 +28,6 @@ const PANEL_SOURCE = readFileSync(
   "utf8",
 );
 
-
 const ROOT_SOURCE = readFileSync(
   fileURLToPath(new URL("../src/app/routes/__root.tsx", import.meta.url)),
   "utf8",
@@ -211,7 +210,7 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
   );
 });
 
-test("a closed lazy monitor cannot leave its load failure on screen", () => {
+test("closed lazy settings surfaces cannot leave load failures on screen", () => {
   const mount = readFileSync(
     fileURLToPath(
       new URL(
@@ -221,18 +220,23 @@ test("a closed lazy monitor cannot leave its load failure on screen", () => {
     ),
     "utf8",
   );
-  // Keep the rejected boundary mounted for a later retry, but only show its error while the user is
-  // still asking for the monitor. A slow rejected chunk must not outlive a quick Show -> Hide.
-  assert.match(
-    mount,
-    /fallback=\{\s*monitorOpen\s*\?\s*\(\s*<LazyImportFailure[\s\S]*?testId="floating-monitor-load-failure"[\s\S]*?\)\s*:\s*null\s*\}/,
-  );
+  // Keep rejected boundaries mounted for a later retry, but only show their errors while the user is
+  // still asking for that surface. A slow rejected chunk must not outlive a quick Open -> Close.
+  for (const [open, testId] of [
+    ["settingsOpen", "settings-dialog-load-failure"],
+    ["monitorOpen", "floating-monitor-load-failure"],
+  ]) {
+    assert.match(
+      mount,
+      new RegExp(
+        `fallback=\\{\\s*${open}\\s*\\?\\s*\\(\\s*<LazyImportFailure[\\s\\S]*?testId="${testId}"[\\s\\S]*?\\)\\s*:\\s*null\\s*\\}`,
+      ),
+    );
+  }
 });
 
-
-// Once Settings has loaded the monitor, an auth-route round trip must not
-// forget that lazy-entry latch. The inner dialog still unmounts on /login so
-// its open monitor remains dormant there, then resumes after authentication.
+// Once either surface has loaded, an auth-route round trip must not forget its lazy-entry latch.
+// Both surfaces stay dormant there, then resume independently after authentication.
 test("the lazy Settings mount survives an auth-route round trip", () => {
   assert.match(
     ROOT_SOURCE,
@@ -244,25 +248,35 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
   );
   assert.match(
     SETTINGS_MOUNT_SOURCE,
-    /if \(!active \|\| !mounted\) return null;/,
-
+    /if \(!active \|\| !\(settingsMounted \|\| monitorMounted\)\) return null;/,
   );
   assert.match(
     SETTINGS_MOUNT_SOURCE,
-    /const \[mounted, setMounted\] = useState\(open \|\| monitorOpen\)/,
+    /const \[settingsMounted, setSettingsMounted\] = useState\(settingsOpen\)/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /const \[monitorMounted, setMonitorMounted\] = useState\(monitorOpen\)/,
   );
 
-  assert.match(SETTINGS_MOUNT_SOURCE, /dismissLabel=\{t\("common\.close"\)\}/);
+  assert.equal(
+    (
+      SETTINGS_MOUNT_SOURCE.match(/dismissLabel=\{t\("common\.close"\)\}/g) ??
+      []
+    ).length,
+    2,
+  );
   assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
   assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
   assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
-
   assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);
   assert.match(SETTINGS_MOUNT_SOURCE, /event\.target === event\.currentTarget/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /restoreSettingsOpener\(opener, openerFallback\)/);
-
   assert.match(
     SETTINGS_MOUNT_SOURCE,
-    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*setMonitorOpen\(false\);/,
+    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*restoreSettingsOpener\(opener, openerFallback\);/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /onDismiss=\{\(\) => setMonitorOpen\(false\)\}/,
   );
 });
