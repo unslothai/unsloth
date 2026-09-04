@@ -257,6 +257,274 @@ def test_an_explicit_seed_token_wins_for_either_caller(monkeypatch):
         assert seen["token"] == "caller-token"
 
 
+def test_publish_derives_its_policy_from_the_caller(monkeypatch):
+    """A UI session may publish with the ambient token; an API key may not."""
+    from routes.data_recipe import jobs as jobs_routes
+
+    seen = {}
+
+    monkeypatch.setattr(
+        jobs_routes,
+        "publish_recipe_dataset",
+        lambda **kwargs: seen.update(kwargs) or "https://huggingface.co/datasets/org/ds",
+    )
+
+    class _Mgr:
+        def get_status(self, _job_id):
+            return {
+                "status": "completed",
+                "execution_type": "full",
+                "artifact_path": "/data/recipe-out",
+            }
+
+    monkeypatch.setattr(jobs_routes, "get_job_manager", lambda: _Mgr())
+
+    for via_api_key in (True, False):
+        app = FastAPI()
+        app.include_router(jobs_routes.router, prefix = "/api/data-recipe")
+        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+        response = TestClient(app, raise_server_exceptions = False).post(
+            "/api/data-recipe/jobs/job-1/publish",
+            json = {"repo_id": "org/ds", "description": "recipe dataset"},
+            headers = {"Authorization": "Bearer token"},
+        )
+        assert response.status_code == 200
+        assert seen["hf_token"] is (
+            False if via_api_key else None
+        ), "hf_token or None would give an API key the operator's HF_TOKEN"
+
+
+def test_an_explicit_publish_token_wins_for_either_caller(monkeypatch):
+    from routes.data_recipe import jobs as jobs_routes
+
+    seen = {}
+    monkeypatch.setattr(
+        jobs_routes,
+        "publish_recipe_dataset",
+        lambda **kwargs: seen.update(kwargs) or "https://huggingface.co/datasets/org/ds",
+    )
+
+    class _Mgr:
+        def get_status(self, _job_id):
+            return {
+                "status": "completed",
+                "execution_type": "full",
+                "artifact_path": "/data/recipe-out",
+            }
+
+    monkeypatch.setattr(jobs_routes, "get_job_manager", lambda: _Mgr())
+
+    for via_api_key in (True, False):
+        app = FastAPI()
+        app.include_router(jobs_routes.router, prefix = "/api/data-recipe")
+        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+        TestClient(app, raise_server_exceptions = False).post(
+            "/api/data-recipe/jobs/job-1/publish",
+            json = {
+                "repo_id": "org/ds",
+                "description": "recipe dataset",
+                "hf_token": "  caller-token  ",
+            },
+            headers = {"Authorization": "Bearer token"},
+        )
+        assert seen["hf_token"] == "caller-token"
+
+
+def test_publish_does_not_launder_the_sentinel():
+    """`hf_token or None` turned False back into ambient access."""
+    import inspect
+
+    from routes.data_recipe import jobs as jobs_routes
+
+    source = inspect.getsource(jobs_routes.publish_job_dataset)
+    assert "allow_ambient_token" in inspect.signature(jobs_routes.publish_job_dataset).parameters
+    assert "hf_token_arg(" in source
+    assert "hf_token or None" not in source
+
+
+@pytest.mark.parametrize(
+    "path, method, body",
+    [
+        (
+            "/api/export/export/merged",
+            "export_merged_model",
+            {
+                "save_directory": "/tmp/unsloth-export",
+                "push_to_hub": True,
+                "repo_id": "org/model",
+            },
+        ),
+        (
+            "/api/export/export/base",
+            "export_base_model",
+            {
+                "save_directory": "/tmp/unsloth-export",
+                "push_to_hub": True,
+                "repo_id": "org/model",
+            },
+        ),
+        (
+            "/api/export/export/gguf",
+            "export_gguf",
+            {
+                "save_directory": "/tmp/unsloth-export",
+                "push_to_hub": True,
+                "repo_id": "org/model",
+            },
+        ),
+        (
+            "/api/export/export/lora",
+            "export_lora_adapter",
+            {
+                "save_directory": "/tmp/unsloth-export",
+                "push_to_hub": True,
+                "repo_id": "org/model",
+            },
+        ),
+    ],
+)
+def test_export_push_derives_its_policy_from_the_caller(monkeypatch, path, method, body):
+    from routes import export as export_routes
+
+    seen = {}
+
+    class _Backend:
+        def export_merged_model(self, **kwargs):
+            seen.update(kwargs)
+            return True, "ok", None
+
+        export_base_model = export_merged_model
+        export_gguf = export_merged_model
+        export_lora_adapter = export_merged_model
+
+    async def _supported():
+        return None
+
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", _supported)
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: _Backend())
+
+    for via_api_key in (True, False):
+        app = FastAPI()
+        app.include_router(export_routes.router, prefix = "/api/export")
+        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+        response = TestClient(app, raise_server_exceptions = False).post(
+            path,
+            json = body,
+            headers = {"Authorization": "Bearer token"},
+        )
+        assert response.status_code == 200, response.text
+        assert seen["hf_token"] is (
+            False if via_api_key else None
+        ), f"{method} must not give an API key the operator's HF_TOKEN"
+
+
+def test_an_explicit_export_push_token_wins_for_either_caller(monkeypatch):
+    from routes import export as export_routes
+
+    seen = {}
+
+    class _Backend:
+        def export_merged_model(self, **kwargs):
+            seen.update(kwargs)
+            return True, "ok", None
+
+    async def _supported():
+        return None
+
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", _supported)
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: _Backend())
+
+    for via_api_key in (True, False):
+        app = FastAPI()
+        app.include_router(export_routes.router, prefix = "/api/export")
+        app.dependency_overrides[get_current_subject] = lambda: "alice"
+        app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+        TestClient(app, raise_server_exceptions = False).post(
+            "/api/export/export/merged",
+            json = {
+                "save_directory": "/tmp/unsloth-export",
+                "push_to_hub": True,
+                "repo_id": "org/model",
+                "hf_token": "  caller-token  ",
+            },
+            headers = {"Authorization": "Bearer token"},
+        )
+        assert seen["hf_token"] == "caller-token"
+
+
+def test_export_push_routes_resolve_the_body_token():
+    import inspect
+
+    from routes import export as export_routes
+    for fn in (
+        export_routes.export_merged_model,
+        export_routes.export_base_model,
+        export_routes.export_gguf,
+        export_routes.export_lora_adapter,
+    ):
+        source = inspect.getsource(fn)
+        assert "allow_ambient_token" in inspect.signature(fn).parameters
+        assert "_export_hub_token(" in source
+
+
+def test_export_gguf_push_refuses_the_forced_anonymous_sentinel(monkeypatch):
+    from core.export.export import ExportBackend, _export_hub_push_token
+
+    assert _export_hub_push_token(False) is None
+    assert _export_hub_push_token(None) is None
+
+    monkeypatch.setattr("core.export.export._export_runtime_available", lambda: True)
+
+    class _Model:
+        save_pretrained_gguf = staticmethod(lambda *_a, **_k: None)
+        push_to_hub_gguf = staticmethod(lambda *_a, **_k: None)
+
+    backend = ExportBackend.__new__(ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+
+    success, message, output = backend.export_gguf(
+        save_directory = "",
+        push_to_hub = True,
+        repo_id = "org/model",
+        hf_token = False,
+    )
+    assert success is False
+    assert "token required" in message.lower()
+    assert output is None
+
+
+def test_export_worker_passes_false_sentinel_into_gguf_export():
+    import queue
+
+    from core.export.worker import _handle_export
+
+    seen = {}
+
+    class _Backend:
+        def export_gguf(self, **kwargs):
+            seen.update(kwargs)
+            return True, "ok", None
+
+    resp_queue = queue.SimpleQueue()
+    _handle_export(
+        _Backend(),
+        {
+            "export_type": "gguf",
+            "save_directory": "",
+            "quantization_method": "q4_k_m",
+            "push_to_hub": True,
+            "repo_id": "org/model",
+            "hf_token": False,
+        },
+        resp_queue,
+    )
+    assert seen["hf_token"] is False
+
+
 @pytest.mark.parametrize(
     "hf_token, allow_ambient, expected",
     [

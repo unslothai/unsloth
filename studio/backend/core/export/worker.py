@@ -560,7 +560,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+            config_token = config.get("hf_token")
+            _activate_transformers_version(
+                checkpoint_path,
+                False if config_token is False else config_token,
+            )
         except Exception as exc:
             _send_response(
                 resp_queue,
