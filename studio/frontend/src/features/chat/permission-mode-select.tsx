@@ -501,7 +501,7 @@ export function PermissionModeComposerPill({
           <button
             type="button"
             className="composer-pill-btn composer-pill-permissions"
-            data-pill-label={`${active.label} · ${isolation.label}`}
+            data-pill-label={active.label}
             data-active={fullAccess ? "true" : "false"}
             data-variant={fullAccess ? "danger" : undefined}
             aria-label="Permission level for tool calls"
