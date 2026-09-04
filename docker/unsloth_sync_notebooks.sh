@@ -334,7 +334,15 @@ if [ -f "$STATE" ]; then
     done < "$STATE"
 fi
 
-TMPSTATE="$(mktemp)"
+# Beside $STATE, like the two writers above, NOT in /tmp. A sibling makes the publish
+# an atomic same-directory rename that cannot half-succeed, and it makes the state fail
+# with the notebooks instead of independently of them: a $DEST that is full or
+# read-only fails the notebook writes too, which already holds the marker back. From
+# /tmp the move was a cross-device copy that could fail on its own, after the notebooks
+# had landed, and no marker check can undo that -- the stale hashes then read every
+# freshly written notebook as user-edited for good.
+TMPSTATE="$STATE.tmp"
+: > "$TMPSTATE" 2>/dev/null || TMPSTATE="$(mktemp)"
 updated=0; kept=0; unchanged=0; failed=0
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
@@ -438,10 +446,18 @@ if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ];
     unset CLONED_LOWER
 fi
 
-mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
+# The state has to land before the marker does, so a failed publish holds the marker
+# back like any other write failure. Stamping over it wedges the tree for good: the
+# next boot exits on remote == last, and once upstream finally moves, the stale hashes
+# no longer match the notebooks this run just wrote, so every one of them reads as
+# user-edited and is kept forever.
+published=1
+mv "$TMPSTATE" "$STATE" 2>/dev/null || { rm -f "$TMPSTATE"; published=0; }
 # recording the commit after a failure makes the next boot exit on remote == last
-if [ "$failed" -eq 0 ]; then
+if [ "$failed" -eq 0 ] && [ "$published" -eq 1 ]; then
     echo "$remote" > "$SYNCED" 2>/dev/null || true
+elif [ "$published" -eq 0 ]; then
+    echo "[unsloth-nb] the sync state could not be written; leaving the sync marker so the next start retries"
 else
     echo "[unsloth-nb] $failed notebook(s) could not be written; leaving the sync marker so the next start retries"
 fi

@@ -254,3 +254,80 @@ def test_the_successful_removal_still_stamps_the_commit(tmp_path: Path):
 
     assert (dest / ".unsloth_sync_commit").is_file()
     assert "1 removed upstream" in run.stdout, run.stdout
+
+
+def _refuse_mv_to(tmp_path: Path, target: Path) -> Path:
+    """An `mv` earlier on PATH that fails for one destination, the way a full or
+    read-only /workspace fails when the state file is published. Every other move,
+    including the same-dir rename each notebook is published with, passes through."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok = True)
+    stub = bindir / "mv"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        f'  [ "$a" = "{target}" ] && exit 1\n'
+        "done\n"
+        'exec /bin/mv "$@"\n',
+        encoding = "utf-8",
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
+@behavioural
+def test_a_state_that_cannot_be_published_holds_the_sync_marker(tmp_path: Path):
+    """Stamping the commit over a failed state publish wedges the tree permanently.
+    The next boot exits on remote == last, and once upstream moves again the stale
+    hashes no longer match the notebooks this run wrote, so all of them read as
+    user-edited and are never updated again. `failed` already holds the marker back
+    for a notebook that could not be written; the state file has to count too."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+    before = _state(dest)
+    bindir = _refuse_mv_to(tmp_path, dest / ".unsloth_sync_state")
+
+    run = _refresh(
+        tmp_path, remote, template, dest, PATH = f"{bindir}{os.pathsep}{os.environ['PATH']}"
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert _state(dest) == before, "precondition: the stub refused the state publish"
+    assert not (
+        dest / ".unsloth_sync_commit"
+    ).is_file(), "the commit was stamped over an unpublished state, so the tree is wedged"
+
+
+@behavioural
+def test_the_state_temp_file_is_published_by_a_same_directory_rename(tmp_path: Path):
+    """Holding the marker is not on its own enough, which is why the temp file sits
+    beside the state file rather than in /tmp. The notebooks are published BEFORE the
+    state is, so a publish that fails on its own leaves disk ahead of state, and no
+    marker check undoes that: the next run reads every notebook it just wrote as
+    user-edited, because they no longer hash to the stale record. A sibling makes the
+    publish an atomic rename and makes it fail WITH the notebook writes, which already
+    hold the marker. Asserted on the script text because the failure it removes cannot
+    be provoked once the rename is atomic."""
+    source = SYNC.read_text(encoding = "utf-8")
+    assert 'TMPSTATE="$STATE.tmp"' in source, (
+        "the refresh state temp file left $DEST, so publishing it is a cross-device "
+        "copy that can fail after the notebooks have already landed"
+    )
+    stray = [
+        line.strip()
+        for line in source.splitlines()
+        if "mktemp" in line and "TMPSTATE=" in line and "||" not in line
+    ]
+    assert not stray, f"the refresh state must not be staged outside $DEST: {stray}"
+
+
+@behavioural
+def test_a_published_state_still_stamps_the_commit(tmp_path: Path):
+    """Non-vacuity for the assertion above: the identical run without the stub records
+    the marker, so that check is testing the failure and not the environment."""
+    remote, template, dest = _setup(tmp_path)
+    _advance(remote)
+
+    run = _refresh(tmp_path, remote, template, dest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert (dest / ".unsloth_sync_commit").is_file()
