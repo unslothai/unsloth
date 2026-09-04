@@ -399,3 +399,35 @@ def test_status_reports_both_nodes_and_json_round_trips():
             await b.stop()
 
     run(scenario())
+
+
+def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
+    async def scenario():
+        a = await FakeLlama("a").start()
+        router = await _router(a, slots = 1, queue_limit = 2)
+        try:
+            backend = router.get_backend("a")
+            await router._acquire(backend)
+            order: List[str] = []
+
+            async def take(name: str):
+                await router._acquire(backend)
+                order.append(name)
+
+            queued = asyncio.create_task(take("queued"))
+            await _until(lambda: backend.queued == 1)
+            await router._release(backend)
+            # A newcomer arriving right as the slot frees must not jump the queue.
+            newcomer = asyncio.create_task(take("newcomer"))
+            await _until(lambda: len(order) == 1)
+            assert order == ["queued"]
+            assert backend.queued == 1 and backend.in_flight == 1
+            await router._release(backend)
+            await asyncio.gather(queued, newcomer)
+            assert order == ["queued", "newcomer"]
+            await router._release(backend)
+        finally:
+            await router.stop()
+            await a.stop()
+
+    run(scenario())

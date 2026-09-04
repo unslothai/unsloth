@@ -305,6 +305,7 @@ class SparkRouter:
         self.on_backend_down = on_backend_down
         self.on_backend_up = on_backend_up
         self.backends: List[Backend] = []
+        self._rings: Dict[Tuple[str, ...], List[Tuple[int, Backend]]] = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._health_task: Optional[asyncio.Task] = None
         self._started = False
@@ -547,11 +548,18 @@ class SparkRouter:
     # ── Selection ─────────────────────────────────────────────────────────────
 
     def _ring(self, candidates: List[Backend]) -> List[Tuple[int, Backend]]:
+        # The ring only changes with the healthy set (two possibilities on a pair), so
+        # it is built once per set rather than once per keyed request.
+        names = tuple(b.name for b in candidates)
+        cached = self._rings.get(names)
+        if cached is not None:
+            return cached
         points = []
         for backend in candidates:
             for i in range(_VIRTUAL_NODES):
                 points.append((_stable_hash(f"{backend.name}#{i}"), backend))
         points.sort(key = lambda p: p[0])
+        self._rings[names] = points
         return points
 
     def pick(
@@ -583,7 +591,10 @@ class SparkRouter:
         """Take a slot on ``backend``, waiting in its bounded queue when full."""
         cond = backend.cond()
         async with cond:
-            if self._has_room(backend):
+            # The fast path yields to anyone already queued: a slot freed by _release
+            # belongs to the first waiter, not to whichever newcomer runs first, or a
+            # sustained burst starves the queue past its wait budget.
+            if self._has_room(backend) and backend.queued == 0:
                 backend.in_flight += 1
                 return
             if backend.queued >= backend.queue_limit:

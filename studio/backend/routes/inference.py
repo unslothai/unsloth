@@ -13188,14 +13188,19 @@ async def _run_tracked_load_model_impl(
 
         _spark_slots = _resolve_parallel_slots(request, fastapi_request)
         request = await spark_serving.before_load(request, _spark_slots)
-        response = await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
-        )
+        try:
+            response = await _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+            )
+        except BaseException:
+            # A failed or cancelled load leaves nothing for the peer to serve.
+            await spark_serving.load_failed()
+            raise
         await spark_serving.after_load(get_llama_cpp_backend(), _spark_slots)
         return response
     finally:

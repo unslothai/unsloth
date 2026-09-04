@@ -292,14 +292,16 @@ class _FakeRequest:
     def __init__(self, model_path: str, **kw):
         self.model_path = model_path
         self.gguf_variant = kw.get("gguf_variant")
-        self.context_length = kw.get("context_length", 0)
+        self.max_seq_length = kw.get("max_seq_length", 0)
+        self.cache_type_kv = kw.get("cache_type_kv")
         self.llama_extra_args = kw.get("llama_extra_args")
 
     def model_copy(self, update):
         clone = _FakeRequest(
             self.model_path,
             gguf_variant = self.gguf_variant,
-            context_length = self.context_length,
+            max_seq_length = self.max_seq_length,
+            cache_type_kv = self.cache_type_kv,
             llama_extra_args = self.llama_extra_args,
         )
         for k, v in update.items():
@@ -337,7 +339,9 @@ def _patch_remote(
 
     async def fake_start(self):
         started.append(self)
-        self.started_at = None  # never "started then died", so no relaunch in tests
+        # Looks alive for as long as the test runs, so nothing relaunches it.
+        self.proc = SimpleNamespace(returncode = None)
+        self.started_at = None
 
     async def fake_stop(self, timeout = 10.0):
         return None
@@ -558,3 +562,105 @@ def test_launch_files_names_every_sidecar_the_launch_uses(tmp_path):
         "4096",
     ]
     assert ss.launch_files(argv, str(weights)) == [str(weights), str(mmproj)]
+
+
+def test_before_load_reuses_a_live_rpc_server_and_after_load_reconciles(
+    cluster, monkeypatch, tmp_path
+):
+    cluster.topology = "layer_split"
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    first = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 1 and "--rpc" in first.llama_extra_args
+    # A reload (no-op or not) keeps the running rpc-server: it is model-agnostic.
+    again = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 1 and "--rpc" in again.llama_extra_args
+    assert ss.state().peer_process is started[0]
+    # The launch that carries --rpc is the split; it is attached, not torn down.
+    split_backend = _FakeBackend(4242, str(model))
+    split_backend._process.args += ["--rpc", "192.168.200.13:50052"]
+    run(ss.after_load(split_backend, 4))
+    assert ss.state().topology == "layer_split" and ss.state().peer_process is started[0]
+    assert ss.state().attached_backend is split_backend
+    # A launch without --rpc (the split was dropped, or another model loaded) frees it.
+    run(ss.after_load(_FakeBackend(4243, str(model)), 4))
+    assert ss.state().peer_process is None and ss.state().topology == "single"
+    run(ss.shutdown())
+
+
+def test_a_failed_load_stops_what_the_pre_load_step_started(cluster, monkeypatch, tmp_path):
+    cluster.topology = "layer_split"
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert ss.state().topology == "layer_split" and started
+    run(ss.load_failed())
+    assert ss.state().topology == "single" and ss.state().peer_process is None
+    # Nothing resident after the load reads the same way.
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 2
+    run(ss.after_load(SimpleNamespace(is_loaded = False), 4))
+    assert ss.state().peer_process is None
+
+
+def test_after_load_keeps_replicas_across_a_no_op_reload(cluster, monkeypatch, tmp_path):
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 100)
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    async def scenario():
+        fake = await FakeLlama("main").start()
+        backend = _FakeBackend(fake.port, str(model))
+        try:
+            await ss.after_load(backend, 16)
+            router = ss.state().router
+            assert router is not None and len(started) == 1
+            # The same server again (the load was skipped): nothing restarts.
+            await ss.after_load(backend, 16)
+            assert ss.state().router is router and len(started) == 1
+            # A real reload lands on a new port: the replica follows it.
+            backend._port = fake.port  # same fake, but a new process identity
+            backend._process = SimpleNamespace(args = list(backend._process.args))
+            ss.state().attached_port = fake.port + 1
+            await ss.after_load(backend, 16)
+            assert ss.state().router is not router and len(started) == 2
+        finally:
+            await ss.shutdown()
+            await fake.stop()
+
+    run(scenario())
+
+
+def test_peer_process_never_shows_the_api_key():
+    argv = ["/b/llama-server", "-m", "/m.gguf", "--api-key", "sk-secret", "--port", "1"]
+    process = ss.PeerProcess("llama-server", "192.168.200.13", argv)
+    assert "sk-secret" in process.remote_command
+    assert "sk-secret" not in process.redacted_command
+    assert "sk-secret" not in process.snapshot()["command"]
+    assert ss.redacted_argv(["--api-key=sk-secret"]) == ["--api-key=<redacted>"]
+
+
+def test_kv_estimate_reads_the_gguf_header_and_scales_with_cache_type(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    path = tmp_path / "tiny.gguf"
+    writer = gguf.GGUFWriter(str(path), "llama")
+    writer.add_block_count(2)
+    writer.add_head_count(4)
+    writer.add_head_count_kv(2)
+    writer.add_embedding_length(64)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    # 2 (K and V) x 2 layers x 1024 tokens x 2 kv heads x 16 head dim x bytes per element.
+    assert ss.estimate_kv_bytes(str(path), 1024) == 2 * 2 * 1024 * 2 * 16 * 2
+    assert ss.estimate_kv_bytes(str(path), 1024, "q8_0") == int(2 * 2 * 1024 * 2 * 16 * (34 / 32))
+    assert ss.estimate_kv_bytes(str(path), 0) is None
+    assert ss.estimate_kv_bytes(str(tmp_path / "missing.gguf"), 1024) is None
+    assert ss.kv_bytes_per_elem("q4_0") == 18 / 32 and ss.kv_bytes_per_elem(None) == 2.0

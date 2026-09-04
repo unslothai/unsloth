@@ -256,12 +256,37 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
     return candidates[0] if candidates else None
 
 
-def estimate_kv_bytes(gguf_path: Optional[str], n_ctx: int) -> Optional[int]:
-    """f16 KV cache for ``n_ctx`` tokens, from the GGUF header.
+# Bytes per KV element per llama.cpp cache type; f16 when unknown. Same table as
+# LlamaCppBackend's _kv_bytes_per_elem, kept local so this module stays importable
+# without the 32k-line backend.
+_KV_BYTES_PER_ELEM = {
+    "f32": 4.0,
+    "f16": 2.0,
+    "bf16": 2.0,
+    "q8_0": 34 / 32,
+    "q4_0": 18 / 32,
+    "q4_1": 20 / 32,
+    "q5_0": 22 / 32,
+    "q5_1": 24 / 32,
+    "iq4_nl": 18 / 32,
+}
+
+
+def kv_bytes_per_elem(cache_type: Optional[str]) -> float:
+    return _KV_BYTES_PER_ELEM.get(str(cache_type or "f16").strip().lower(), 2.0)
+
+
+def estimate_kv_bytes(
+    gguf_path: Optional[str],
+    n_ctx: int,
+    cache_type: Optional[str] = None,
+) -> Optional[int]:
+    """KV cache for ``n_ctx`` tokens at ``cache_type`` (f16 default), from the GGUF header.
 
     Uses the ``gguf`` reader the backend already depends on; answers None when the
     file or the keys cannot be read, and the caller charges zero plus the planner's
-    fixed overhead rather than refusing to plan.
+    fixed overhead rather than refusing to plan. SWA layers are charged in full, so
+    the estimate errs high for models that have them.
     """
     if not gguf_path or n_ctx <= 0:
         return None
@@ -293,7 +318,7 @@ def estimate_kv_bytes(gguf_path: Optional[str], n_ctx: int) -> Optional[int]:
             head_dim = n_embd // n_head
         if not (n_layer and n_kv and head_dim):
             return None
-        return int(2 * n_layer * int(n_ctx) * n_kv * head_dim * 2)
+        return int(2 * n_layer * int(n_ctx) * n_kv * head_dim * kv_bytes_per_elem(cache_type))
     except Exception:
         return None
 
@@ -353,10 +378,19 @@ async def ssh_run(
 def peer_path(path: Path) -> str:
     """``path`` as the peer's shell should expand it: ``$HOME/...`` under our home.
 
-    Same rule as ``spark_cluster._peer_relative_path``: provision copies to the same
+    ``spark_cluster._peer_relative_path`` owns the rule (provision copies to the same
     place on the peer, whose home may differ, so a path under our home is sent home
-    relative and expanded there.
+    relative and expanded there); its ``~/`` form is turned into ``$HOME/`` because
+    the remote checks quote their paths and a quoted tilde does not expand.
     """
+    sc = _cluster()
+    relative = getattr(sc, "_peer_relative_path", None)
+    if callable(relative):
+        try:
+            text = str(relative(path))
+            return "$HOME/" + text[2:] if text.startswith("~/") else text
+        except Exception:
+            pass
     try:
         return "$HOME/" + path.relative_to(Path.home()).as_posix()
     except ValueError:
@@ -438,6 +472,17 @@ def replica_argv(local_argv: List[str], *, binary: str, host: str, port: int) ->
     return out
 
 
+def redacted_argv(argv: List[str]) -> List[str]:
+    """``argv`` with the value after ``--api-key`` replaced, for logs and status."""
+    out = list(argv)
+    for index, arg in enumerate(out):
+        if arg == "--api-key" and index + 1 < len(out):
+            out[index + 1] = "<redacted>"
+        elif arg.startswith("--api-key="):
+            out[index] = "--api-key=<redacted>"
+    return out
+
+
 def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[str]:
     """``ggml-rpc-server`` on the peer, bound to the cluster interface and caching
     tensors (``-c``) only when the model file is there to cache from."""
@@ -486,10 +531,20 @@ class PeerProcess:
         return "echo UNSLOTH_SPARK_PID=$$; exec " + " ".join(shlex.quote(a) for a in self.argv)
 
     @property
+    def redacted_command(self) -> str:
+        """For logs and status: the launch with the --api-key value hidden, the same
+        rule as ``LlamaCppBackend._redacted_cmd_for_log``."""
+        return " ".join(redacted_argv(self.argv))
+
+    @property
     def alive(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
     async def start(self) -> None:
+        # A relaunch must not inherit the previous run's pid: a session that dies
+        # before printing its own would otherwise have stop() kill whatever the
+        # peer has since reused that number for.
+        self.remote_pid = None
         self.proc = await asyncio.create_subprocess_exec(
             *ssh_argv(self.peer, self.remote_command, keepalive = True),
             stdout = asyncio.subprocess.PIPE,
@@ -510,7 +565,7 @@ class PeerProcess:
                 handle = open(self.log_path, "a", encoding = "utf-8", errors = "replace")
                 handle.write(
                     f"\n# {time.strftime('%Y-%m-%d %H:%M:%S')} {self.name} on {self.peer}: "
-                    f"{self.remote_command}\n"
+                    f"{self.redacted_command}\n"
                 )
             except OSError:
                 handle = None
@@ -544,7 +599,8 @@ class PeerProcess:
                 self.exited_at = time.time()
 
     async def stop(self, *, timeout: float = 10.0) -> None:
-        """Kill the remote process by pid, then the ssh session carrying it."""
+        """Kill the remote process by pid (only a pid this run printed), then the ssh
+        session carrying it."""
         if self.remote_pid:
             await ssh_run(
                 self.peer,
@@ -579,7 +635,7 @@ class PeerProcess:
             "started_at": self.started_at,
             "exited_at": self.exited_at,
             "returncode": self.returncode,
-            "command": " ".join(self.argv),
+            "command": self.redacted_command,
             "log": str(self.log_path) if self.log_path else None,
             "tail": list(self.tail)[-5:],
         }
@@ -660,15 +716,24 @@ class SparkServing:
         if not enabled():
             return request
         try:
-            await self.detach()
+            # Nothing is torn down here. The load may turn out to be a no-op (the
+            # model is already resident and _load_model_impl skips the reload), and
+            # the running llama-server still depends on whatever peer process serves
+            # it. after_load reconciles against what actually launched.
             model_path = str(getattr(request, "model_path", "") or "")
             variant = getattr(request, "gguf_variant", None)
             local_file = cached_repo_file(model_path, variant)
             size = gguf_size_bytes(local_file)
-            requested_ctx = int(getattr(request, "context_length", None) or 0)
+            # LoadRequest.max_seq_length: 0 means "let the backend size it", in which
+            # case no KV is charged before the load and after_load re-plans with the
+            # context that was actually allocated.
+            requested_ctx = int(getattr(request, "max_seq_length", None) or 0)
+            cache_type = getattr(request, "cache_type_kv", None)
             kv_total = None
             if local_file and requested_ctx:
-                kv_total = await asyncio.to_thread(estimate_kv_bytes, local_file, requested_ctx)
+                kv_total = await asyncio.to_thread(
+                    estimate_kv_bytes, local_file, requested_ctx, cache_type
+                )
             users = max(1, int(n_parallel))
             kv_per_user = (kv_total / users) if kv_total else 0.0
             plan = self.decide(model_bytes = size, users = users, kv_bytes_per_user = kv_per_user)
@@ -694,11 +759,37 @@ class SparkServing:
         sc = _cluster()
         port = int(getattr(sc, "RPC_DEFAULT_PORT", RPC_PORT_DEFAULT))
 
+        def _with_rpc_args(req: Any) -> Any:
+            extra = list(getattr(req, "llama_extra_args", None) or [])
+            extra += layer_split_extra_args(peer, port)
+            try:
+                return req.model_copy(update = {"llama_extra_args": extra})
+            except AttributeError:
+                req.llama_extra_args = extra
+                return req
+
         def _fall_back(reason: str) -> Any:
             self.topology, self.reason = "single", reason
             self.plan = dict(plan, topology = "single", reason = reason)
             logger.warning("spark serving: %s", reason)
             return request
+
+        running = self.peer_process
+        if (
+            self.topology == "layer_split"
+            and running is not None
+            and running.name == "ggml-rpc-server"
+            and running.peer == peer
+            and running.alive
+        ):
+            # The rpc-server is model-agnostic: the one already serving this node's
+            # llama-server can serve the next load too, and a no-op reload keeps it.
+            self.plan = plan
+            self.reason = str(plan.get("reason", ""))
+            return _with_rpc_args(request)
+        if running is not None:
+            # A replica from the previous model: the new one needs a split instead.
+            await self.detach()
 
         # Both bundles must speak the same RPC protocol, and nothing stale may sit on
         # the port. The preflight does ssh and socket work, so it runs in a thread.
@@ -757,27 +848,53 @@ class SparkServing:
         self.plan = plan
         self.relaunch_attempts = 0
         self.relaunch_gave_up = False
-        extra = list(getattr(request, "llama_extra_args", None) or [])
-        extra += layer_split_extra_args(peer, port)
         logger.info("spark serving: layer split over %s:%s (%s)", peer, port, self.reason)
-        self._ensure_supervisor()
-        try:
-            return request.model_copy(update = {"llama_extra_args": extra})
-        except AttributeError:
-            request.llama_extra_args = extra
-            return request
+        return _with_rpc_args(request)
+
+    async def load_failed(self) -> None:
+        """The load raised or came back with nothing resident: stop whatever the
+        pre-load step started for it."""
+        if self.peer_process is not None or self.router is not None:
+            await self.detach()
 
     async def after_load(self, llama_backend: Any, n_parallel: int) -> None:
-        """Attach replicas (or record single) once this node's llama-server is up."""
+        """Reconcile with what actually launched: attach replicas, keep or drop a
+        layer split, or record single. Runs after every load, no-op reloads included."""
         if not enabled():
             return
         try:
             if not getattr(llama_backend, "is_loaded", False):
+                await self.load_failed()
                 return
-            if self.topology == "layer_split" and self.peer_process is not None:
+            process = getattr(llama_backend, "_process", None)
+            argv = list(getattr(process, "args", None) or [])
+            port = getattr(llama_backend, "_port", None)
+            if "--rpc" in argv or any(str(a).startswith("--rpc=") for a in argv):
+                # The server that launched is a layer split. Its rpc-server is ours if
+                # before_load started it; a user-supplied --rpc is recorded, not managed.
+                if self.router is not None:
+                    await self.detach()
                 self.attached_backend = llama_backend
-                self.attached_port = getattr(llama_backend, "_port", None)
+                self.attached_port = port
+                self.topology = "layer_split"
+                if self.peer_process is None:
+                    self.reason = "llama-server launched with a user-supplied --rpc"
+                self._ensure_supervisor()
                 return
+            if self.topology == "layer_split":
+                # The split was planned but the launch dropped it (or a reload changed
+                # the model): the rpc-server is idle now.
+                await self.detach()
+            if (
+                self.topology == "replicas"
+                and self.router is not None
+                and self.attached_backend is llama_backend
+                and self.attached_port == port
+            ):
+                # Same server, same port: a no-op reload. Keep the replica and router.
+                return
+            if self.router is not None or self.peer_process is not None:
+                await self.detach()
             gguf_path = getattr(llama_backend, "gguf_path", None)
             size = gguf_size_bytes(gguf_path)
             n_ctx = int(
@@ -788,8 +905,12 @@ class SparkServing:
             slots = max(
                 1, int(getattr(llama_backend, "effective_parallel_slots", n_parallel) or n_parallel)
             )
+            cache_types = getattr(llama_backend, "_effective_cache_types", None) or ()
+            cache_type = cache_types[0] if cache_types else None
             kv_total = (
-                await asyncio.to_thread(estimate_kv_bytes, gguf_path, n_ctx) if gguf_path else None
+                await asyncio.to_thread(estimate_kv_bytes, gguf_path, n_ctx, cache_type)
+                if gguf_path
+                else None
             )
             kv_per_user = (kv_total / slots) if kv_total else 0.0
             plan = self.decide(model_bytes = size, users = slots, kv_bytes_per_user = kv_per_user)
@@ -1108,6 +1229,12 @@ async def after_load(llama_backend: Any, n_parallel: int) -> None:
     if not enabled():
         return
     await state().after_load(llama_backend, n_parallel)
+
+
+async def load_failed() -> None:
+    if _STATE is None or not enabled():
+        return
+    await _STATE.load_failed()
 
 
 async def shutdown() -> None:
