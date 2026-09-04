@@ -4792,6 +4792,26 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 # the catch: this is the last statement before Fast-Install starts resolving `python`.
 Assert-VenvActivated -VenvDir $VenvDir
 
+# pip does not understand uv's resolver flags, and handing it one turns a failed uv resolve
+# into an unreadable "no such option" usage dump. Drop them (with the value that follows a
+# two-token flag) so the fallback runs the same install pip would have run on its own.
+# Returns the argument list unchanged for every caller that passes none of them.
+function Remove-UvOnlyResolverFlags {
+    param([object[]]$Arguments)
+    $kept = @()
+    $skipNext = $false
+    foreach ($arg in @($Arguments)) {
+        if ($skipNext) { $skipNext = $false; continue }
+        $token = [string]$arg
+        if ($token -eq '--index-strategy') { $skipNext = $true; continue }
+        if ($token -like '--index-strategy=*') { continue }
+        if ($token -eq '--prerelease') { $skipNext = $true; continue }
+        if ($token -like '--prerelease=*') { $kept += '--pre'; continue }
+        $kept += $token
+    }
+    return ,$kept
+}
+
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
@@ -4821,21 +4841,7 @@ function Fast-Install {
             $result = & uv pip install --python $VenvPy @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
         }
-        # pip does not understand uv's resolver flags, and handing it one turns a failed
-        # uv resolve into an unreadable "no such option" usage dump. Drop them (with the
-        # value that follows a two-token flag) so the fallback runs the same install pip
-        # would have run on its own. Inert for every caller that passes none.
-        $pipArgs = @()
-        $skipNext = $false
-        foreach ($arg in @($Args_)) {
-            if ($skipNext) { $skipNext = $false; continue }
-            $token = [string]$arg
-            if ($token -eq '--index-strategy') { $skipNext = $true; continue }
-            if ($token -like '--index-strategy=*') { continue }
-            if ($token -eq '--prerelease') { $skipNext = $true; continue }
-            if ($token -like '--prerelease=*') { $pipArgs += '--pre'; continue }
-            $pipArgs += $token
-        }
+        $pipArgs = Remove-UvOnlyResolverFlags -Arguments $Args_
         & python -m pip install @pipArgs 2>&1
     }
     finally {
