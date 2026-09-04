@@ -25905,7 +25905,10 @@ async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict
 
 
 async def _studio_embeddings(
-    request: Request, body: dict, current_subject: str, model_name: Optional[str] = None
+    request: Request,
+    body: dict,
+    current_subject: str,
+    model_name: Optional[str] = None,
 ) -> Response:
     from core.inference.llama_keepwarm import (
         untrack_admitted_inference,

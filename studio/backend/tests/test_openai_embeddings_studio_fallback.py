@@ -874,7 +874,9 @@ def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    studio_embedder.setattr(rag_embeddings, "encode", lambda texts, **_: calls.append(texts) or _vectors(texts))
+    studio_embedder.setattr(
+        rag_embeddings, "encode", lambda texts, **_: calls.append(texts) or _vectors(texts)
+    )
 
     async def run():
         with pytest.raises(asyncio.CancelledError):
@@ -890,7 +892,12 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
     settings = iter([MODEL, "unsloth/other-model", "unsloth/other-model"])
     seen = []
 
-    def _encode_with_identity(texts, *, model_name = None, normalize = True):
+    def _encode_with_identity(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         seen.append(model_name)
         return _vectors(texts), IDENTITY
 
