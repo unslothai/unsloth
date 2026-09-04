@@ -4,9 +4,9 @@
 
 set -euo pipefail
 
-# PyPI/Studio release publishing must use `./build.sh publish` (or an
-# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Studio
-# artifacts include the display-only Studio release version.
+# PyPI/Unsloth release publishing must use `./build.sh publish` (or an
+# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Unsloth
+# artifacts include the display-only Unsloth release version.
 
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
@@ -87,7 +87,7 @@ cd ../..
 # 2. Clean old artifacts
 rm -rf build dist *.egg-info
 
-# 3. Stamp display-only Studio release metadata for packaged builds.
+# 3. Stamp display-only Unsloth release metadata for packaged builds.
 _STUDIO_BUILD_INFO="studio/backend/utils/_studio_release_build.py"
 _STUDIO_BUILD_INFO_BACKUP="$(mktemp)"
 cp "$_STUDIO_BUILD_INFO" "$_STUDIO_BUILD_INFO_BACKUP"
@@ -103,7 +103,7 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Build wheel/sdist
+# 4. Build wheel/sdist.
 python -m build
 
 if [ "${1:-}" = "publish" ]; then
@@ -114,6 +114,16 @@ _restore_studio_build_info
 trap - EXIT
 
 # 5. Optionally publish
+#
+# Wheel only. The sdist is still built above, because --verify-dist checks the
+# release stamp in every artifact and a local sdist is the cheapest way to catch
+# a packaging change that only shows up in the source tree. It is not uploaded.
+#
+# A release is ~169MB across both artifacts, and the PyPI project size limit is
+# 10GB; the sdist is the larger half. Uploading only the wheel halves what each
+# release costs against that limit. Nothing is lost for installers: the wheel is
+# py3-none-any, so pip and uv resolve to it on every platform and Python, and the
+# sdist is only reachable through --no-binary or a mirror that vendors sources.
 if [ "${1:-}" = "publish" ]; then
-    python -m twine upload dist/*
+    python -m twine upload dist/*.whl
 fi

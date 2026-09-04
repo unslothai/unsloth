@@ -15,7 +15,7 @@ RL_REPLACEMENTS_SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_r
 
 
 def _read(path: str) -> str:
-    with open(path, "r") as fh:
+    with open(path, "r", encoding = "utf-8") as fh:
         return fh.read()
 
 

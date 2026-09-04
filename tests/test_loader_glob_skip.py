@@ -116,7 +116,7 @@ class TestLoaderSourceHasGuard(unittest.TestCase):
         loader_path = os.path.join(
             os.path.dirname(__file__), os.pardir, "unsloth", "models", "loader.py"
         )
-        with open(loader_path) as f:
+        with open(loader_path, encoding = "utf-8") as f:
             source = f.read()
 
         lines = source.splitlines()

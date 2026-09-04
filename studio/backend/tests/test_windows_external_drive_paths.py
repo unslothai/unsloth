@@ -57,6 +57,18 @@ def test_windows_drive_roots_empty_off_windows(monkeypatch):
     assert external_media.windows_drive_roots() == []
 
 
+def test_macos_volume_roots_lists_readable_mounts(monkeypatch, tmp_path):
+    volumes = tmp_path / "Volumes"
+    external = volumes / "External SSD"
+    unreadable = volumes / "Unavailable"
+    external.mkdir(parents = True)
+    unreadable.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(external_media.os, "access", lambda path, _mode: Path(path) == external)
+
+    assert external_media.macos_volume_roots(volumes) == [external]
+
+
 def test_windows_drive_roots_lists_readable_drives(monkeypatch):
     _stub_windows(monkeypatch, {"C", "D", "E"})
 
@@ -204,8 +216,10 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = lambda: [],
+        macos_volume_roots = lambda: [],
         windows_drive_roots = lambda: [drive_root],
     )
+    fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = lambda _p: False,
@@ -270,8 +284,10 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = _media_roots,
+        macos_volume_roots = lambda: [],
         windows_drive_roots = _drive_roots,
     )
+    fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(list_scan_folders = lambda: [])
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)

@@ -2,13 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
-import { classifyGgufFit } from "@/features/hub/lib/gguf-fit";
+import { formatBytes } from "@/features/hub/lib/format";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
-
-type GgufVariantResources = {
-  gpuGb?: number;
-  systemRamGb?: number;
-};
+import { type GgufFitInput, classifyGgufVariantFit } from "@/lib/gguf-fit";
 
 export function ggufVariantDisplayLabel(
   variant: Pick<GgufVariantDetail, "display_label" | "quant">,
@@ -22,11 +18,34 @@ export function ggufVariantDownloadSizeBytes(
   return variant.download_size_bytes ?? variant.size_bytes;
 }
 
+type GgufVariantTransfer = Pick<
+  GgufVariantDetail,
+  "download_size_bytes" | "size_bytes" | "download_remaining_bytes" | "partial"
+>;
+
+/** What starting this variant now would transfer. On a partial that is the
+ * remainder the backend measured; everywhere else it is the full size. An
+ * unmeasured partial falls back to the total, the costlier of the two. */
+export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
+  const total = ggufVariantDownloadSizeBytes(variant);
+  if (!variant.partial) return total;
+  const remaining = variant.download_remaining_bytes;
+  return typeof remaining === "number" && remaining >= 0 ? remaining : total;
+}
+
+/** Labelled form of the above. A partial says what is LEFT: the full size there
+ * reads as "this downloads all over again", which is only true for a one-file
+ * quant. */
+export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
+  const label = formatBytes(ggufVariantTransferBytes(variant));
+  return variant.partial ? `${label} left` : label;
+}
+
 export function ggufVariantFitRank(
   variant: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
-  switch (classifyGgufFit(variant.size_bytes, resources)) {
+  switch (classifyGgufVariantFit(variant, resources)) {
     case "fits":
       return 0;
     case "marginal":
@@ -42,7 +61,7 @@ export function ggufVariantFitRank(
 export function compareGgufVariantFitAndSize(
   a: GgufVariantDetail,
   b: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
   const aFit = ggufVariantFitRank(a, resources);
   const bFit = ggufVariantFitRank(b, resources);
@@ -60,7 +79,7 @@ export function ggufVariantDownloadStatusRank(
 
 export function sortDownloadableGgufVariants(
   variants: readonly GgufVariantDetail[],
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
     const statusDelta =
@@ -72,7 +91,7 @@ export function sortDownloadableGgufVariants(
 
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
-  options: GgufVariantResources & {
+  options: GgufFitInput & {
     activeGgufVariant?: string | null;
     defaultVariant?: string | null;
   },

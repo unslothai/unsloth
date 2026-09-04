@@ -4,6 +4,7 @@
 import { ownerOf, repoOf } from "../lib/format";
 import { looksLikeLocalPath } from "../lib/local-path";
 import { isGgufLike } from "../lib/model-identifiers";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import type {
   BackendModelCapabilities,
   LocalModelInfo,
@@ -31,13 +32,6 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
     default:
       return "Local model";
   }
-}
-
-export function normalizeTimestamp(value?: number | null): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 export function formatLocalUpdated(value?: number | null): string {
@@ -159,14 +153,35 @@ export function normalizeCapabilities(
   };
 }
 
+export function cachedInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `cache:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
+export function optimisticInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `download:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
 export function buildCachedInventoryRow(
   row: {
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
+    load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    partial_resumable?: boolean;
+    has_variant_state?: boolean;
     pipeline_tag?: string | null;
+    task?: string | null;
+    audio_type?: string | null;
+    single_file?: boolean;
+    companion?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -176,6 +191,8 @@ export function buildCachedInventoryRow(
     runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
+    last_modified?: number | null;
+    optimistic?: boolean;
   },
   fallbackFormat: ModelInventoryFormat,
 ): CachedInventoryRow {
@@ -185,12 +202,23 @@ export function buildCachedInventoryRow(
   const inferredFromEndpoint =
     rawModelFormat === "unknown" && modelFormat !== "unknown";
   const requiresVariant = modelFormat === "gguf";
+  const capabilities = normalizeCapabilities(
+    inferredFromEndpoint ? null : row.capabilities,
+    modelFormat,
+    row.partial ?? false,
+    requiresVariant,
+  );
+  if (row.optimistic) {
+    capabilities.canChat = false;
+  }
   return {
     kind: "cache",
     id:
-      !inferredFromEndpoint && row.inventory_id
-        ? row.inventory_id
-        : `cache:${modelFormat}:${row.repo_id}`,
+      row.optimistic
+        ? optimisticInventoryId(modelFormat, row.repo_id)
+        : !inferredFromEndpoint && row.inventory_id
+          ? row.inventory_id
+          : cachedInventoryId(modelFormat, row.repo_id),
     loadId: row.load_id ?? row.repo_id,
     repoId: row.repo_id,
     owner: row.repo_id.includes("/") ? ownerOf(row.repo_id) : "Hub",
@@ -202,20 +230,24 @@ export function buildCachedInventoryRow(
       modelFormat,
     ),
     formatVariant: row.format_variant ?? null,
-    capabilities: normalizeCapabilities(
-      inferredFromEndpoint ? null : row.capabilities,
-      modelFormat,
-      row.partial ?? false,
-      requiresVariant,
-    ),
+    capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    loadCachePath: row.load_cache_path ?? null,
+    lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    partialResumable: row.partial_resumable === true,
+    hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
+    task: row.task ?? null,
+    audioType: row.audio_type ?? null,
+    singleFile: row.single_file ?? false,
+    companion: row.companion ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
+    optimistic: row.optimistic,
   };
 }
 
@@ -272,6 +304,8 @@ export function buildLocalInventoryRows(
         title,
         source: model.source,
         sourceLabel: localSourceLabel(model.source),
+        modelId: model.model_id ?? null,
+        displayName: model.display_name,
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
@@ -286,7 +320,11 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        partialResumable: model.partial_resumable === true,
+        activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
+        task: model.task ?? null,
+        audioType: model.audio_type ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,
         quantMethod: model.quant_method ?? null,

@@ -10,15 +10,22 @@ import re
 import sys
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import typer
+
+# Canonical speculative-decoding modes, mirroring the backend's _CANONICAL_SPEC_MODES. Named once
+# so the CLI's option annotations, the HTTP payload builders and the in-process loader cannot
+# drift apart; typer reads it at runtime to validate --speculative-type.
+SpeculativeType = Literal[
+    "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off", "ngram-simple"
+]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 _STREAMED_ERROR_PREFIX = "Error: "
 
-# Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
+# Cloudflare (in front of remote Unsloth proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
 _MPI_ENV_PAIRS = (
@@ -36,7 +43,7 @@ _no_redirect_opener = None
 def urlopen_no_redirect(request, timeout):
     """urlopen that errors on any redirect: following a 3xx would send a bearer
     token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Studio's response."""
+    squatter relay a real Unsloth's response."""
     global _no_redirect_opener
     if _no_redirect_opener is None:
         import urllib.error
@@ -52,6 +59,78 @@ def urlopen_no_redirect(request, timeout):
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
+# /api/inference/load and /unload pad their body so a proxy cannot time a slow load out,
+# committing the 200 before the work finishes. A failure found after that travels only in-band
+# under this key, so a client that treats any 200 as success reports a failed load as a
+# successful one.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def raise_for_deferred_error(url: str, body):
+    """Raise the late failure a padded 200 body carries; else return ``body``.
+
+    ``urllib.error.HTTPError`` specifically: it is the class every CLI caller already
+    handles for a plain HTTP failure, so existing ``except`` blocks, messages and exit
+    codes keep working, and ``.read()`` yields the same ``{"detail": ...}`` shape.
+    """
+    if not isinstance(body, dict):
+        return body
+    deferred = body.get(_DEFERRED_ERROR_KEY)
+    if not isinstance(deferred, dict):
+        return body
+
+    import email.message
+    import io
+    import urllib.error
+
+    status = deferred.get("status_code")
+    if not isinstance(status, int) or isinstance(status, bool):
+        status = 500
+    detail = deferred.get("detail")
+    if not isinstance(detail, str) or not detail:
+        detail = "unknown error" if detail is None else json.dumps(detail)
+    headers = email.message.Message()
+    headers["Content-Type"] = "application/json"
+    raise urllib.error.HTTPError(
+        url, status, detail, headers, io.BytesIO(json.dumps({"detail": detail}).encode())
+    )
+
+
+def require_completed_padded_body(url: str, body):
+    """Return ``body``, or raise if it is not the payload a padded route promised.
+
+    A proxy that gives up mid-pad leaves a 200 with an empty or truncated body, so
+    accepting it reports an unfinished load or unload as completed. Only the two padded
+    routes commit their status that early, so only they require a payload; ``{}`` is
+    rejected too, since that is what a blank body decodes to here. Mirrored by
+    ``assertCompletedPaddedBody`` in studio/frontend/src/features/chat/api/padded-response.ts.
+    """
+    if isinstance(body, dict) and body:
+        return body
+    raise RuntimeError(
+        f"{url} did not report completion: the connection closed before the "
+        "server's reply arrived. Check the model's status before retrying."
+    )
+
+
+def read_json_checking_deferred_error(url: str, response):
+    """Drain ``response``, then raise any deferred error its body carries.
+
+    Draining matters on its own: stopping at the headers of a padded /load leaves the
+    load running, so the caller resumes too early. An incomplete JSON payload is a
+    truncated padded reply, not a success (see ``require_completed_padded_body``).
+    """
+    try:
+        raw = response.read()
+    finally:
+        response.close()
+    try:
+        body = json.loads(raw.decode(errors = "replace") or "{}")
+    except ValueError:
+        body = None
+    return require_completed_padded_body(url, raise_for_deferred_error(url, body))
+
+
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
@@ -61,14 +140,18 @@ def ensure_studio_backend_path() -> None:
 def configure_quiet_logging() -> None:
     import logging
 
-    import structlog
-
-    # The CLI never configures structlog, so without this every backend INFO
-    # line prints. LOG_LEVEL is exported so the worker subprocess inherits it.
+    # The CLI never configures structlog, so without this every backend INFO line prints. LOG_LEVEL
+    # is exported so the worker subprocess inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
-    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    # Quieting logs must not fail a command before the import that really needs structlog gets to report itself.
+    try:
+        import structlog
+    except ModuleNotFoundError:
+        return
+    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
 
 
 def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
@@ -98,9 +181,9 @@ def _json_rank_count_from_env(name: str) -> Optional[int]:
         if value.lstrip().startswith(("[", "{")):
             data = json.loads(value)
         else:
-            with open(value, "r") as f:
+            with open(value, "r", encoding = "utf-8") as f:
                 data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if isinstance(data, list):
         return len(data)
@@ -158,7 +241,7 @@ def quiet_if_nonzero_mlx_rank():
     sys.stderr.flush()
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
-    with open(os.devnull, "w") as devnull:
+    with open(os.devnull, "w", encoding = "utf-8") as devnull:
         try:
             os.dup2(devnull.fileno(), 1)
             os.dup2(devnull.fileno(), 2)
@@ -189,8 +272,8 @@ def visible_text(text: str, show_thinking: bool) -> str:
 
 
 def stream_to_stdout(stream, show_thinking: bool) -> str:
-    # Backends yield the full text-so-far on each step (llama.cpp ends with a
-    # metadata dict, skipped); print the growing tail, return the raw text.
+    # Backends yield the full text-so-far on each step (llama.cpp ends with a metadata dict,
+    # skipped); print the growing tail, return the raw text.
     raw = ""
     shown = ""
     for chunk in stream:
@@ -233,9 +316,8 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def raise_on_streamed_error(stream):
-    # Match real backend errors by type (GenStreamError), not the "Error:" text
-    # prefix, so a completion whose text opens with "Error:" is not misread as a
-    # failure that aborts a distributed run.
+    # Match real backend errors by type (GenStreamError), not the "Error:" text prefix, so a
+    # completion whose text opens with "Error:" is not misread as a backend failure.
     try:
         ensure_studio_backend_path()
         from core.inference.orchestrator import GenStreamError
@@ -317,8 +399,8 @@ class ChatBackend:
         return self._backend.generate_chat_response(**gen_kwargs)
 
     def close(self) -> None:
-        # Shut the worker down directly: the graceful unload_model waits for
-        # an ack that compare mode can swallow, hanging exit for minutes.
+        # Shut the worker down directly: the graceful unload_model waits for an ack that compare mode can
+        # swallow, hanging exit for minutes.
         try:
             if self._kind == "gguf":
                 self._backend.unload_model()
@@ -367,40 +449,46 @@ def _load_gguf_backend(
     hf_token,
     max_seq_length,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
     from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
     extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
-    common = dict(
+    intent_fields = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
     )
+    if model_config.gguf_hf_repo:
+        intent_fields.update(hf_repo = model_config.gguf_hf_repo, hf_token = hf_token)
+    else:
+        intent_fields.update(
+            gguf_path = model_config.gguf_file,
+            mmproj_path = model_config.gguf_mmproj_file,
+            mtp_draft_path = model_config.gguf_mtp_file,
+            dspark_draft_path = model_config.gguf_dspark_file,
+            dflash_draft_path = model_config.gguf_dflash_file,
+        )
+    if speculative_type is not None:
+        intent_fields["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        intent_fields["spec_draft_n_max"] = spec_draft_n_max
 
     async def _attempt_gguf_load(
         requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
     ) -> bool:
-        attempt_common = dict(
-            common,
-            tensor_parallel = requested_tensor_parallel,
-            extra_args = attempt_extra_args,
-        )
-        if model_config.gguf_hf_repo:
-            return llama_backend.load_model(
-                hf_repo = model_config.gguf_hf_repo,
-                hf_token = hf_token,
-                **attempt_common,
-            )
         return llama_backend.load_model(
-            gguf_path = model_config.gguf_file,
-            mmproj_path = model_config.gguf_mmproj_file,
-            mtp_draft_path = model_config.gguf_mtp_file,
-            **attempt_common,
+            GgufLoadIntent(
+                **intent_fields,
+                tensor_parallel = requested_tensor_parallel,
+                extra_args = attempt_extra_args,
+            )
         )
 
     loaded = asyncio.run(
@@ -424,6 +512,8 @@ def load_chat_backend(
     max_seq_length: int,
     load_in_4bit: bool,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     model_config = None,
     fresh_backend: bool = False,
@@ -433,7 +523,9 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    with quiet_if_nonzero_mlx_rank():
+    from unsloth_cli._studio_deps import studio_backend_imports
+
+    with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)
@@ -457,6 +549,8 @@ def load_chat_backend(
                 hf_token = hf_token,
                 max_seq_length = max_seq_length,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = llama_extra_args,
             )
 
@@ -523,8 +617,8 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
 
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
-    # Try the concrete loopback addresses in order and return the first that
-    # answers, so the rest of the flow talks to that exact address.
+    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
+    # the flow talks to that exact address.
     for candidate in _loopback_candidate_bases(base):
         request = urllib.request.Request(
             f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
@@ -540,7 +634,7 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
 def is_loopback_url(base: str) -> bool:
     """True only when *base* resolves to loopback. find_studio_server() trusts a
     base after only a health probe, so credentials are auto-sent only to loopback
-    (a local Studio or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
+    (a local Unsloth or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
     from urllib.parse import urlparse
 
     host = (urlparse(base).hostname or "").lower()
@@ -554,7 +648,7 @@ def is_loopback_url(base: str) -> bool:
 
 
 def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
-    """Confirm `base` is really this machine's Studio before sending a secret.
+    """Confirm `base` is really this machine's Unsloth before sending a secret.
 
     Send a random nonce to /api/auth/identity and check the returned HMAC against
     the one computed from the local same-user secret; an endpoint without that
@@ -576,10 +670,9 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     parsed = urlparse(base)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    # Resolve to one concrete address and talk to *that* address, then bind the
-    # proof to (address, port). A name like localhost can resolve to a squatter on
-    # ::1 while the real Studio is on 127.0.0.1; connecting to the resolved IP and
-    # binding to it means a proof relayed from a different address/port won't match.
+    # Resolve to one concrete address and talk to *that* address, then bind the proof to (address,
+    # port). A name like localhost can resolve to a squatter on ::1 while the real Unsloth is on
+    # 127.0.0.1.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
     except Exception:
@@ -592,8 +685,8 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
-        # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
-        # Cap the read: the server is still unverified, so don't trust its length.
+        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect). Cap the read:
+        # the server is still unverified.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
     except Exception:
@@ -623,7 +716,7 @@ def _studio_token() -> Optional[str]:
 
 
 class HttpChatBackend:
-    """Chat against a running Studio server over its OpenAI-compatible API.
+    """Chat against a running Unsloth server over its OpenAI-compatible API.
 
     close() leaves the model loaded on purpose — the next session (or the
     UI) starts instantly.
@@ -664,9 +757,11 @@ class HttpChatBackend:
         max_seq_length,
         load_in_4bit,
         tensor_parallel: bool = False,
+        speculative_type: Optional[SpeculativeType] = None,
+        spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
-        typer.echo(f"Loading {model} on the Studio server", err = True)
+        typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -676,12 +771,17 @@ class HttpChatBackend:
         }
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
+        if speculative_type is not None:
+            payload["speculative_type"] = speculative_type
+        if spec_draft_n_max is not None:
+            payload["spec_draft_n_max"] = spec_draft_n_max
         try:
-            self._request(
-                "POST",
-                "/api/inference/load",
-                payload,
-            ).close()
+            # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
+            # done, so closing here would generate mid-load and discard the only report of a late failure.
+            read_json_checking_deferred_error(
+                self._base + "/api/inference/load",
+                self._request("POST", "/api/inference/load", payload),
+            )
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
@@ -721,8 +821,7 @@ class HttpChatBackend:
         )
 
         def cumulative():
-            # Accumulate SSE deltas into the full-text-so-far convention the
-            # stream helpers expect.
+            # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
             text = ""
             with resp:
                 for raw_line in resp:
@@ -747,8 +846,8 @@ class HttpChatBackend:
                     if not delta:
                         continue
                     text += delta
-                    # An emoji can arrive split across two deltas as lone
-                    # surrogate halves: hold back a trailing half, merge pairs.
+                    # An emoji can arrive split across two deltas as lone surrogate halves: hold back a trailing
+                    # half, merge pairs.
                     visible = text
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
@@ -767,35 +866,37 @@ def connect_studio_server(
     max_seq_length,
     load_in_4bit,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
-    """Backend on a running Studio server, or None (caller loads locally)."""
+    """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
     if not base_url:
         return None
 
-    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to -> fail loudly;
-    # opportunistic local discovery just falls back to a local load.
+    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to means fail loudly; opportunistic
+    # local discovery just falls back to a local load.
     explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
 
     def _refuse(reason: str):
         if not explicit:
             return None
         typer.echo(
-            f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
+            f"Can't attach to the Unsloth server at {base_url}: {reason} Run Unsloth "
             "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
             err = True,
         )
         raise typer.Exit(code = 1)
 
-    # Only hand the self-issued JWT (signed with the local secret) to loopback: a
-    # remote URL is unverified and a real remote Studio would reject it anyway.
+    # Only hand the self-issued JWT (signed with the local secret) to loopback: a remote URL is
+    # unverified and a real remote Unsloth would reject it anyway.
     if not is_loopback_url(base_url):
         return _refuse(
-            "it isn't a local Studio, so a self-issued token can't "
+            "it isn't a local Unsloth, so a self-issued token can't "
             "authenticate to it and must not be sent to it."
         )
-    # Confirm the loopback responder is really our Studio (not a port squatter).
+    # Confirm the loopback responder is really our Unsloth (not a port squatter).
     if not verify_studio_identity(base_url):
         return _refuse(
             "its identity couldn't be verified (it may be running as a "
@@ -803,7 +904,7 @@ def connect_studio_server(
         )
     token = _studio_token()
     if not token:
-        return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
+        return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,
@@ -811,6 +912,8 @@ def connect_studio_server(
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         tensor_parallel = tensor_parallel,
+        speculative_type = speculative_type,
+        spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
     )
     return backend

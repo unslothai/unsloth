@@ -9,17 +9,23 @@ import {
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
+  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { Link, useRouterState } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { TransportConflictDialog } from "../catalog/transport-conflict-dialog";
+import { RESUMABLE_STATES } from "./download-manager-config";
 import {
+  conflictInfoForOwner,
+  type DownloadRequest,
   type ManagedDownload,
   downloadManager,
   hydrateDownloadManager,
@@ -60,6 +66,22 @@ function selectActiveJobCount(state: {
   return count;
 }
 
+function selectResumableJobCount(state: {
+  jobs: Record<string, ManagedDownload>;
+}): number {
+  let count = 0;
+  for (const job of Object.values(state.jobs)) {
+    if (!job.external && RESUMABLE_STATES.has(job.state)) count += 1;
+  }
+  return count;
+}
+
+function showResumeBusyToast(): void {
+  toast.info("This repository is already downloading", {
+    description: "Wait for the active download to finish, then try Resume again.",
+  });
+}
+
 function canUseDownloadManager(pathname: string): boolean {
   if (isTauri) return true;
   if (
@@ -73,7 +95,37 @@ function canUseDownloadManager(pathname: string): boolean {
 }
 
 function variantSuffix(job: ManagedDownload): string {
+  if (job.variant?.startsWith("@")) {
+    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+    // which would otherwise change label mid-download after a restart.
+    const isModelFile =
+      job.checkpoint ??
+      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+  }
   return job.variant ? ` · ${job.variant}` : "";
+}
+
+function resumeRequestFromJob(job: ManagedDownload): DownloadRequest {
+  const scopeId = job.variant?.startsWith("@")
+    ? job.variant.slice(1)
+    : undefined;
+  return {
+    kind: job.kind,
+    repoId: job.repoId,
+    variant: job.variant,
+    expectedBytes: job.expectedBytes,
+    ...(job.inventoryKind !== undefined
+      ? { inventoryKind: job.inventoryKind }
+      : {}),
+    ...(scopeId ? { scopeId } : {}),
+    ...(job.scopedFiles && job.scopedFiles.length > 0
+      ? { files: job.scopedFiles }
+      : {}),
+    ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+  };
 }
 
 function StatusLine({ job }: { job: ManagedDownload }) {
@@ -99,16 +151,47 @@ function StatusLine({ job }: { job: ManagedDownload }) {
 
 function DownloadRow({ jobKey }: { jobKey: string }) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
+  const transportConflict = useDownloadManagerStore(
+    (state) => conflictInfoForOwner(state.conflicts[jobKey], "downloads"),
+  );
+  const mounted = useRef(true);
+  const [resumePending, setResumePending] = useState(false);
+  useEffect(
+    () => {
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+        downloadManager.cancelConflict(jobKey, "downloads");
+      };
+    },
+    [jobKey],
+  );
   if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
+  const resumable = !job.external && RESUMABLE_STATES.has(job.state);
   const terminal =
     job.state === "complete" ||
     job.state === "cancelled" ||
     job.state === "error";
+  const showProgress = active || resumable;
+  const resolveTransportConflict = (action: "resume" | "restart") => {
+    setResumePending(true);
+    const resolution =
+      action === "resume"
+        ? downloadManager.resumeConflict(jobKey, "downloads")
+        : downloadManager.restartConflict(jobKey, "downloads");
+    void resolution
+      .then((outcome) => {
+        if (outcome === "busy" && mounted.current) showResumeBusyToast();
+      })
+      .finally(() => {
+        if (mounted.current) setResumePending(false);
+      });
+  };
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
           {job.repoId}
           <span className="text-muted-foreground">{variantSuffix(job)}</span>
         </span>
@@ -126,12 +209,53 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             className="size-4 shrink-0 text-destructive"
           />
         )}
+        {resumable && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Resume download"
+                disabled={resumePending}
+                onClick={() => {
+                  if (resumePending) return;
+                  setResumePending(true);
+                  void downloadManager
+                    .requestStart(resumeRequestFromJob(job), "downloads")
+                    .then((outcome) => {
+                      if (outcome === "busy" && mounted.current) {
+                        showResumeBusyToast();
+                      }
+                      if (outcome === "conflict" && !mounted.current) {
+                        downloadManager.cancelConflict(jobKey, "downloads");
+                      }
+                    })
+                    .finally(() => {
+                      if (mounted.current) setResumePending(false);
+                    });
+                }}
+                className={cn(
+                  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
+                  "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={PlayIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>
+              Resume download
+            </TooltipContent>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
               aria-label={active ? "Cancel download" : "Dismiss"}
-              disabled={job.state === "cancelling"}
+              disabled={job.state === "cancelling" || resumePending}
               onClick={() =>
                 active
                   ? void downloadManager.cancel(job.key)
@@ -154,7 +278,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
-      {active ? (
+      {showProgress ? (
         <DownloadProgressBar
           progress={{
             expectedBytes: job.expectedBytes,
@@ -162,13 +286,21 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             fraction: job.fraction,
           }}
           bytesPerSec={job.bytesPerSec}
+          cancelling={job.state === "cancelling"}
+          etaSeconds={job.etaSeconds}
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
-        <div className="px-0 text-[11px] text-muted-foreground tabular-nums">
+        <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
       ) : null}
+      <TransportConflictDialog
+        conflict={transportConflict}
+        onCancel={() => downloadManager.cancelConflict(jobKey, "downloads")}
+        onKeepTransport={() => resolveTransportConflict("resume")}
+        onSwitchTransport={() => resolveTransportConflict("restart")}
+      />
     </li>
   );
 }
@@ -178,7 +310,8 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const previousActiveCount = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -188,21 +321,34 @@ export function DownloadManagerPanel({
   const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
   const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
   const activeCount = useDownloadManagerStore(selectActiveJobCount);
+  const resumableCount = useDownloadManagerStore(selectResumableJobCount);
 
-  if (!enabled || jobKeys.length === 0) return null;
+  useEffect(() => {
+    if (activeCount > 0 && previousActiveCount.current === 0) {
+      setCollapsed(false);
+    }
+    previousActiveCount.current = activeCount;
+  }, [activeCount]);
 
+  if (!enabled) return null;
+
+  const attentionCount = activeCount + resumableCount;
   const headerLabel =
     activeCount > 0
       ? `Downloading ${activeCount} ${activeCount === 1 ? "item" : "items"}`
-      : "Downloads";
+      : resumableCount > 0
+        ? `${resumableCount} ${resumableCount === 1 ? "download" : "downloads"} to resume`
+        : "Downloads";
 
   return (
     <div
       className={cn(
         // Standalone: anchor bottom-right. In a shared stack (positioned=false)
         // flow as a right-aligned row so overlays stack instead of overlapping.
+        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
+        // stack would squeeze the update card instead of this list.
         "pointer-events-none",
-        positioned ? "fixed bottom-4 right-4 z-50" : "flex justify-end",
+        positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}
     >
       {collapsed ? (
@@ -219,8 +365,8 @@ export function DownloadManagerPanel({
                 strokeWidth={1.75}
                 className="size-[18px]"
               />
-              {activeCount > 0 && (
-                <span className="hub-download-fab-badge">{activeCount}</span>
+              {attentionCount > 0 && (
+                <span className="hub-download-fab-badge">{attentionCount}</span>
               )}
             </button>
           </TooltipTrigger>
@@ -229,9 +375,9 @@ export function DownloadManagerPanel({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
+        <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
+            <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
             <button
@@ -247,11 +393,27 @@ export function DownloadManagerPanel({
               />
             </button>
           </div>
-          <ul className="max-h-[60vh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
-            {jobKeys.map((jobKey) => (
-              <DownloadRow key={jobKey} jobKey={jobKey} />
-            ))}
-          </ul>
+          {jobKeys.length === 0 ? (
+            <div className="flex flex-col gap-2 px-4 py-3 text-ui-12 text-muted-foreground">
+              <p>
+                No downloads yet. Interrupted transfers stay here so you can
+                resume them.
+              </p>
+              <Link
+                to="/hub"
+                search={{ tab: "downloaded" }}
+                className="text-ui-12p5 font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                Open Model hub
+              </Link>
+            </div>
+          ) : (
+            <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+              {jobKeys.map((jobKey) => (
+                <DownloadRow key={jobKey} jobKey={jobKey} />
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>

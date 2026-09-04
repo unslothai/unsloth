@@ -5,7 +5,7 @@
 
 When a model's ``model_type`` is absent from every installed transformers overlay
 (base 4.57.x plus the .venv_t5_530/550/510 sidecars and, if provisioned, .venv_t5_latest),
-Studio cannot load it today. This module answers, without authentication, code execution,
+Unsloth cannot load it today. This module answers, without authentication, code execution,
 or trust_remote_code:
 
   1. Does the LATEST transformers release on PyPI ship this ``model_type``?
@@ -23,8 +23,9 @@ computed exactly like the local overlay answer.
 
 Results are cached in memory and in a small JSON snapshot under ``studio_root()/cache``
 (ttl ~1 day) so repeated tier resolutions never re-fetch; failures are backed off in
-memory. Every fetch is bounded (<=5s, one retry), so a hung network cannot block model
-loading. Fully offline-safe: offline env vars or the kill switch
+memory. Every fetch is bounded by an explicit wall-clock budget on the transfer (not just
+the socket timeout, which only bounds one read), so a hung or drip-feeding network cannot
+block model loading. Fully offline-safe: offline env vars or the kill switch
 ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1`` make every check return None (current
 behavior preserved).
 
@@ -68,6 +69,14 @@ _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
+# urlopen's timeout bounds each individual read, never the whole transfer.
+# Measured: 12 chunks 1s apart read in 12.0s under timeout=5.0. The transfer gets its own wall-clock budget instead, one
+# for the connect and one for the body.
+_FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
+# One attempt's true worst case: the budget, plus the single socket read already blocking
+# when it runs out (the deadline is only tested between reads).
+_FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
+_READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
@@ -80,6 +89,16 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
+# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
+# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+_fetch_done: threading.Event = threading.Event()
+_fetch_done.set()
+# Derived rather than a literal, so tuning a timeout or retry cannot silently shrink the backstop below what it bounds;
+# giving up early reads as "no upgrade needed" at the Start button.
+# Bounded by the refresh's OWN worst case: the PyPI version plus both auto files at each of the two refs, each allowed
+# its retry at _FETCH_ATTEMPT_SECONDS. The waiter re-waits while the refresh is genuinely in flight (_get_snapshot).
+_REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
+_INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -99,8 +118,30 @@ def _cache_file() -> Path:
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
+def _read_within(resp, deadline: float) -> str | None:
+    """Body of *resp*, or None if the transfer is still running at *deadline*.
+
+    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
+    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
+    returns what has arrived instead of blocking for a full chunk, which is what lets the
+    budget be checked as the body comes in.
+    """
+    read1 = getattr(resp, "read1", None)
+    if read1 is None:
+        # A file-like that hands back the whole body in one go has nothing to dribble.
+        return resp.read().decode("utf-8", "replace")
+    chunks: list[bytes] = []
+    while True:
+        if time.monotonic() >= deadline:
+            return None
+        chunk = read1(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks).decode("utf-8", "replace")
+        chunks.append(chunk)
+
+
 def _fetch_text(url: str) -> str | None:
-    """GET *url* with a bounded timeout and one retry; None on any failure.
+    """GET *url* within a bounded wall-clock budget, one retry; None on any failure.
 
     Returns ``_FETCH_MISSING`` (without retrying) on HTTP 404 so callers can tell
     "absent at this ref" apart from "network flaked".
@@ -109,10 +150,19 @@ def _fetch_text(url: str) -> str | None:
     import urllib.request
 
     for attempt in range(1 + _FETCH_RETRIES):
+        deadline = time.monotonic() + _FETCH_DEADLINE_SECONDS
         try:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode("utf-8", "replace")
+                body = _read_within(resp, deadline)
+            if body is not None:
+                return body
+            logger.debug(
+                "Fetch (attempt %d) for %s outran its %.1fs budget",
+                attempt + 1,
+                url,
+                _FETCH_DEADLINE_SECONDS,
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return _FETCH_MISSING
@@ -236,10 +286,13 @@ def _get_snapshot() -> dict | None:
     """Current support snapshot: memory -> disk -> network, with TTL and failure backoff.
 
     The network refresh runs outside the lock so a slow fetch cannot stall other
-    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes
-    (losers return None, the graceful fallthrough, rather than waiting).
+    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes, and a
+    loser waits (bounded) for the winner's answer rather than stacking a second fetch.
+    Waiting is what makes this safe to gate on: the Configure preview and the Start
+    button both ask, and a loser that answered "no answer" told the start there was no
+    upgrade, so the run launched on a model no installed transformers can load.
     """
-    global _memory_snapshot, _last_failure_at, _is_fetching
+    global _memory_snapshot, _last_failure_at, _is_fetching, _fetch_done
     with _lock:
         if _snapshot_is_fresh(_memory_snapshot):
             return _memory_snapshot
@@ -252,14 +305,28 @@ def _get_snapshot() -> dict | None:
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
         if _is_fetching:
-            return None
-        _is_fetching = True
+            in_flight = _fetch_done
+        else:
+            in_flight = None
+            _is_fetching = True
+            _fetch_done = done = threading.Event()
+    if in_flight is not None:
+        # Wait for the refresh's actual completion, not a clock: an expiry here means "still being fetched", which the
+        # callers above cannot tell from "no upgrade needed".
+        while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
+            with _lock:
+                if not _is_fetching or _fetch_done is not in_flight:
+                    break
+            logger.debug("Still waiting on the in-flight transformers support refresh")
+        with _lock:
+            return _memory_snapshot if _snapshot_is_fresh(_memory_snapshot) else None
     fresh = None
     try:
         fresh = _refresh_snapshot()
     finally:
         with _lock:
             _is_fetching = False
+            done.set()
             if fresh is None:
                 _last_failure_at = time.time()
             else:
@@ -278,9 +345,64 @@ def clear_caches() -> None:
         _memory_snapshot = None
         _last_failure_at = 0.0
         _is_fetching = False
+        _fetch_done.set()
     from utils.transformers_version import end_sidecar_swap
 
     end_sidecar_swap()
+
+
+# What unsloth_zoo strips to reach a bnb repo's full-precision base.
+_MLX_BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
+
+
+def _is_bitsandbytes_config(cfg: dict | None) -> bool:
+    """Whether *cfg* describes a bitsandbytes-quantized checkpoint."""
+    if not isinstance(cfg, dict):
+        return False
+    quant = cfg.get("quantization_config")
+    return isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes"
+
+
+def _mlx_swaps_bnb_repo_for_its_base(model_name: str) -> bool:
+    """Whether the MLX loader replaces this bnb Hub id with its base repo.
+
+    Mirrors unsloth_zoo's ``_remap_unsloth_bnb_hub_id_for_mlx``: only an
+    ``unsloth/`` Hub id is remapped, never a local directory. What it remaps, MLX
+    quantizes itself, so transformers never sees that architecture.
+    """
+    if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
+        return False
+    if os.path.exists(model_name):
+        return False
+    return model_name.endswith(_MLX_BNB_SUFFIXES)
+
+
+def _architecture_cannot_come_from_transformers(
+    model_name: str = "", cfg: dict | None = None
+) -> bool:
+    """Whether this host builds model architectures somewhere other than transformers.
+
+    The inference backend is chosen by hardware, and the MLX branch has no
+    transformers path to fall back to, so on MLX mlx-lm and mlx-vlm decide what
+    loads. Upgrading transformers cannot make an architecture loadable there, so
+    offering the install costs minutes and changes nothing.
+
+    One bitsandbytes repo is the exception. mlx-lm cannot read bnb weights, so the
+    MLX loader dequantizes them through ``AutoModelForCausalLM.from_pretrained``
+    -- transformers building the architecture after all -- and only an
+    ``unsloth/*-bnb-4bit`` Hub id is swapped for its base repo before that. A
+    third-party or local bnb repo therefore still fails inside transformers with
+    the unrecognized-architecture error this offer exists to fix, so it keeps it.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        if get_device() != DeviceType.MLX:
+            return False
+    except Exception:
+        return False
+    if _is_bitsandbytes_config(cfg) and not _mlx_swaps_bnb_repo_for_its_base(model_name):
+        return False
+    return True
 
 
 def latest_transformers_supports(model_type: str) -> dict | None:
@@ -323,6 +445,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
     error. Returns ``{"model_type", "pypi_version", "supported_in_pypi",
     "supported_in_main"}`` when the newest transformers knows the type, else None.
 
+    Also None on a host that does not build architectures through transformers at
+    all -- see ``_architecture_cannot_come_from_transformers``.
+
     Never raises; every network touch is bounded and cached. Offline or with the
     ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS`` kill switch it returns None immediately.
     """
@@ -331,6 +456,8 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
+            return None
+        if _architecture_cannot_come_from_transformers(model_name, cfg):
             return None
         candidates = _model_types_from_config(cfg)
         if not candidates:
@@ -347,8 +474,8 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         ]
         if not missing:
             return None
-        # Latest must load EVERY missing type (wrappers build nested sub-configs
-        # through CONFIG_MAPPING) or the load still fails.
+        # Latest must load EVERY missing type (wrappers build nested sub-configs through CONFIG_MAPPING) or the load
+        # still fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
             s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
@@ -379,15 +506,13 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         return None
 
 
-# --- Dependency compatibility preflight ------------------------------------------------------
 # Sidecars install transformers --no-deps atop the base env. Before installing, compare
 # requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
-
-# Safe to shadow inside the sidecar dir (pure wheels, no torch coupling).
+# --- Dependency compatibility preflight ------------------------------------------------------
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
 # Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}
-# CLI-only; never imported at runtime in Studio's workers.
+# CLI-only; never imported at runtime in Unsloth's workers.
 _IGNORED_DEPS = frozenset({"typer"})
 
 
@@ -538,7 +663,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
         return {
             "success": False,
             "version": version,
-            "message": "Cannot install: Studio is in offline mode.",
+            "message": "Cannot install: Unsloth is in offline mode.",
         }
     # Re-verify against a LIVE snapshot (a release may land inside the cache TTL);
     # fall back to the cached one on fetch failure.
@@ -573,13 +698,13 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Cannot install transformers "
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
-            "A Studio update is required first.",
+            "An Unsloth update is required first.",
         }
     if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
         return {
             "success": False,
             "version": version,
-            "message": f"Installing transformers {version} failed; see the Studio logs.",
+            "message": f"Installing transformers {version} failed; see the Unsloth logs.",
         }
     _invalidate_capability_caches()
     return {

@@ -197,7 +197,7 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
     install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     setup_rows = _sh_name_arch_rows(
         (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
-        var = "_setup_gfx",
+        var = "_sup_gfx_out",
     )
     assert setup_rows, "no name->arch case table found in studio/setup.sh"
     assert install_rows == setup_rows, (
@@ -420,7 +420,7 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "UNSLOTH_SETUP_PYTHON" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_SETUP_PYTHON"
-        # A custom Studio home moves the venv off the default path; it must be
+        # A custom Unsloth home moves the venv off the default path; it must be
         # seeded too or its hipInfo escapes the filter and reopens the gate.
         assert (
             "UNSLOTH_STUDIO_HOME" in text
@@ -429,7 +429,7 @@ def test_ps_installers_gate_amd_smi_on_windows():
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
-    # The probe seeds the venv root from a custom Studio home; a ~\studio form
+    # The probe seeds the venv root from a custom Unsloth home; a ~\studio form
     # must expand to USERPROFILE like the canonical resolver, else GetFullPath
     # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
     text = ps.read_text(encoding = "utf-8")
@@ -439,7 +439,7 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
     block = text[i:j]
     assert "USERPROFILE" in block and ".Substring(1)" in block, (
         f"{ps.name}: the venv-internal probe must expand a leading ~ in the custom "
-        "Studio home before seeding the venv root (mirroring the canonical resolver)"
+        "Unsloth home before seeding the venv root (mirroring the canonical resolver)"
     )
     # The ~ expansion must be guarded on a non-empty USERPROFILE; otherwise
     # Join-Path $env:USERPROFILE throws on a service/SYSTEM account with no profile,
@@ -489,7 +489,11 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
-    window = text[i : i + 600]
+    # Slice up to the fallback's own install command, not a fixed byte count: the commentary
+    # grows and a byte window quietly stops covering the line it checks.
+    _end = text.find("--default-index", i)
+    assert _end != -1, "ROCm->CPU fallback install command not found in install.ps1"
+    window = text[i:_end]
     assert (
         "Invoke-InstallCommandRetry" in window
     ), "the ROCm->CPU fallback torch install must use Invoke-InstallCommandRetry"
@@ -784,7 +788,7 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         assert re.search(
             r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text
         ), f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
-    i = text.find('f"ROCm torch (Windows, {gfx_arch})"')
+    i = text.find("f\"ROCm torch (Windows, {gfx_arch or 'pinned'})\"")
     assert i != -1, "Windows ROCm repair pip call not found"
     # The nearest preceding call must be the nonfatal pip_install_try, not pip_install.
     j = text.rfind("pip_install_try(", 0, i)
@@ -793,9 +797,15 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         k == -1 or j > k
     ), "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
     window = text[i : i + 700]
+    # The trio is built just above the call now (win_arm64 drops torchaudio), but the
+    # requirement is unchanged: the PINNED companions, never bare names.
+    trio = text[max(0, i - 900) : i + 700]
     assert (
-        "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window
+        "_torch_pkg" in trio and "_vision_pkg" in trio and "_audio_pkg" in trio
     ), "Windows ROCm repair must pass the pinned companion trio, not bare names"
+    assert "*_rocm_trio" in window or (
+        "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window
+    ), "the trio the call receives must be the pinned one"
     assert (
         "keeping the existing torch build" in window
     ), "Windows ROCm repair must keep the existing build (nonfatal) when the index fails"

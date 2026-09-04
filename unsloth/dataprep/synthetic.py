@@ -159,6 +159,21 @@ class PipeCapture:
             return "\n".join(list(self.buf)[-n:])
 
 
+def _deadline(timeout):
+    """Monotonic instant `timeout` seconds from now, `None` for never.
+
+    `timeout` arrives here untyped from the caller, and the `Event.wait` this
+    replaced read `None` as an unbounded wait, which is what a first load of a
+    large model over a slow link needs.
+    """
+    return None if timeout is None else time.monotonic() + timeout
+
+
+def _remaining(deadline):
+    """Seconds left, `None` when there is no deadline to run out of."""
+    return None if deadline is None else deadline - time.monotonic()
+
+
 class SyntheticDataKit:
     def __init__(
         self,
@@ -168,7 +183,7 @@ class SyntheticDataKit:
         float8_kv_cache = False,
         conservativeness = 1.0,
         token = None,
-        timeout = 1200,  # maybe this is not enough for large models if we need to download
+        timeout = 1200,
         **kwargs,
     ):
         assert type(model_name) is str
@@ -217,7 +232,6 @@ class SyntheticDataKit:
             elif dtype_val == torch.float32:
                 dtype_val = "float32"
             engine_args["dtype"] = dtype_val
-            # Convert torch dtype to valid CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
@@ -239,9 +253,7 @@ class SyntheticDataKit:
         for key, value in engine_args.items():
             flag = key.replace("_", "-")
             if key == "compilation_config":
-                # [TODO] Unsure why subprocess doesn't process json properly
-                # Also -O3 breaks on T4!
-                # subprocess_commands += ["-O3",]
+                # -O3 breaks on T4.
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
@@ -250,10 +262,8 @@ class SyntheticDataKit:
                     "--" + flag,
                 ]
             elif which == "False":
-                # Ignore flag
                 pass
             elif which == "None":
-                # Ignore flag
                 pass
             else:
                 subprocess_commands += [
@@ -285,34 +295,88 @@ class SyntheticDataKit:
             ready_regex = None,
             text = False,
         )
-        # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
+        # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
 
-        ready = self.stdout_capture.wait_for_ready(timeout = timeout)
-        if not ready:
-            if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
-                print("Stdout stream ended before readiness message detected.")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-            else:
-                print(f"Unsloth: vllm_process failed to load! (timeout={timeout})")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-            terminate_tree(self.vllm_process)
-            return
-        else:
-            print("vLLM Server Ready Detected")
+        self._await_vllm_server(timeout = timeout)
+        print("vLLM Server Ready Detected")
 
-        trial = 0
-        while not self.check_vllm_status():
-            if trial >= 100:
-                print("Unsloth: vllm_process failed to load!")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-                terminate_tree(self.vllm_process)
-                return
-            trial += 1
-            time.sleep(1)
+        self._await_metrics_endpoint()
         return
+
+    def _await_metrics_endpoint(
+        self,
+        timeout = 100.0,
+        poll_interval = 1.0,
+    ):
+        """Block until `/metrics` answers, or raise saying it never did.
+
+        Bounded by the clock, not by a count of attempts: `check_vllm_status`
+        allows each request 5 seconds, so 100 attempts against a stalled server
+        is ten minutes, not the hundred the message promises.
+        """
+        deadline = _deadline(timeout)
+        while not self.check_vllm_status():
+            if deadline is not None and time.monotonic() >= deadline:
+                self._fail_vllm_server(
+                    "printed its readiness line but never answered "
+                    f"http://localhost:8000/metrics (waited {timeout:g} seconds)"
+                )
+            time.sleep(poll_interval)
+
+    def _await_vllm_server(
+        self,
+        timeout,
+        poll_interval = 1.0,
+    ):
+        """Block until the server is ready, or raise saying why it is not.
+
+        The readiness event alone cannot notice the child dying, so a server
+        that failed to import in twenty seconds still burned the whole
+        `timeout`. Poll readiness, exit status and the closed pipe together.
+        """
+        deadline = _deadline(timeout)
+        while True:
+            # Cap each lap at the time left: a flat poll_interval overshoots any shorter timeout, and
+            # readiness inside that overshoot would return success from an expired deadline. No deadline means
+            # full laps, which still notice a dead child where the bare Event.wait(None) this replaced hung.
+            remaining = _remaining(deadline)
+            if remaining is not None and remaining <= 0:
+                self._fail_vllm_server(f"was not ready within {timeout} seconds")
+            wait = poll_interval if remaining is None else min(poll_interval, remaining)
+            if self.stdout_capture.wait_for_ready(timeout = wait):
+                return
+            returncode = self.vllm_process.poll()
+            if returncode is not None:
+                self._fail_vllm_server(f"exited with code {returncode} before it was ready")
+            if self.stdout_capture.has_closed():
+                self._fail_vllm_server("closed its stdout before it was ready")
+            # Expiry is checked at the top, so a dead or closed child keeps its own message rather than being
+            # reported as a timeout.
+
+    def _fail_vllm_server(self, what_happened):
+        """Terminate the server and raise, quoting what it managed to say.
+
+        This used to print and `return`, handing back a kit with no server.
+        Every `synthetic-data-kit` step then wrote no file and still exited 0,
+        so the first error to stop the notebook was a FileNotFoundError five
+        cells later, with the real traceback scrolled away.
+        """
+        stdout_tail = self.stdout_capture.tail(50)
+        stderr_tail = self.stderr_capture.tail(50)
+        terminate_tree(self.vllm_process)
+        raise RuntimeError(
+            f"Unsloth: the vLLM server behind SyntheticDataKit "
+            f"{what_happened}.\n"
+            f"Nothing after this point can work: `synthetic-data-kit` reaches "
+            f"the model over http://localhost:8000/v1, so ingest/create/"
+            f'save-as would each report "VLLM server not available", write '
+            f"no file, and leave the failure to surface as a FileNotFoundError "
+            f"much later on.\n"
+            f"The cause is almost always in the server's own output below "
+            f"rather than in this process.\n"
+            f"\n--- vLLM stdout (last 50 lines) ---\n{stdout_tail}\n"
+            f"\n--- vLLM stderr (last 50 lines) ---\n{stderr_tail}"
+        )
 
     @staticmethod
     def from_pretrained(
@@ -337,10 +401,11 @@ class SyntheticDataKit:
     @staticmethod
     def check_vllm_status():
         try:
-            response = requests.get("http://localhost:8000/metrics")
-            if response.status_code == 200:
-                return True
-        except requests.exceptions.ConnectionError:
+            # requests has no default timeout, so a stalled server hung here.
+            response = requests.get("http://localhost:8000/metrics", timeout = 5)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
             return False
 
     def cleanup(self):
@@ -372,7 +437,6 @@ class SyntheticDataKit:
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Delete vLLM module as well
         if hasattr(self, "_delete_vllm"):
             self._delete_vllm(llm = None)
 
@@ -404,8 +468,8 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
-            # A non-positive stride (max_tokens - overlap) makes the n_chunks
-            # computation below divide by zero or go negative, so reject it.
+            # A non-positive stride (max_tokens - overlap) makes the n_chunks computation below divide by zero
+            # or go negative.
             raise RuntimeError(
                 f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
@@ -416,21 +480,16 @@ class SyntheticDataKit:
         # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
-            # The whole document fits in one chunk window, so emit it as a single
-            # chunk. Routing it through the multi-chunk path below would drop it
-            # (the linspace/stack pairing emits one fewer range than boundary
-            # points) or, for a document shorter than the overlap, slice the wrong
-            # tokens via negative start indices. Empty doc -> no chunk.
+            # The whole document fits one chunk window: the multi-chunk path below would drop it (the
+            # linspace/stack pairing emits one fewer range than boundary points) or, for a document shorter
+            # than the overlap, slice the wrong tokens via negative start indices.
             boundaries = [[0, length]] if length > 0 else []
         else:
-            # length > max_tokens > overlap here, so length - overlap > 0 and the
-            # linspace boundaries below are always non-negative.
-            # Minimal count: overlapping chunks cover `length` in
-            # ceil((length - overlap) / stride) chunks, not ceil(length / stride)
-            # which over-splits just past a stride multiple.
+            # Minimal count: overlapping chunks cover `length` in ceil((length - overlap) / stride) chunks, not
+            # ceil(length / stride), which over-splits just past a stride multiple.
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # n_chunks + 1 points: [:-1]/[1:] pairing yields n_chunks ranges; using
-            # n_chunks points gave one fewer, oversized chunk (over max_tokens).
+            # n_chunks + 1 points: the [:-1]/[1:] pairing yields n_chunks ranges; n_chunks points gave one
+            # fewer, oversized chunk (over max_tokens).
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()

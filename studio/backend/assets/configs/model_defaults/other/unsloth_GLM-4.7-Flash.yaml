@@ -35,6 +35,7 @@ lora:
     - "out_proj"
   use_rslora: false
   use_loftq: false
+  use_dora: false
 
 logging:
   enable_wandb: false

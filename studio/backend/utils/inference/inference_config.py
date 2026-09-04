@@ -5,15 +5,18 @@
 
 from pathlib import Path
 from typing import Dict, Any, Optional
+from functools import lru_cache
 import json
+import math
+import os
 import yaml
 import structlog
 from loggers import get_logger
 
 from utils.models.model_config import load_model_defaults
-from utils.paths import is_local_path, normalize_path
 
 logger = get_logger(__name__)
+
 
 # ── Family-based inference defaults (loaded once, cached) ──────────────
 
@@ -68,38 +71,26 @@ def get_family_inference_params(model_id: str) -> Dict[str, Any]:
 
 
 def _has_specific_yaml(model_identifier: str) -> bool:
-    """Check if a model has its own YAML config (not just default.yaml)."""
-    from utils.models.model_config import _REVERSE_MODEL_MAPPING
+    """Check if a model has its own YAML config (not just default.yaml).
+
+    Shares defaults_lookup_names with load_model_defaults so this answer cannot disagree with
+    the config it actually loaded -- disagreeing would let family defaults override a model's
+    own inference params.
+    """
+    from utils.models.model_config import _REVERSE_MODEL_MAPPING, defaults_lookup_names
 
     script_dir = Path(__file__).parent.parent.parent
     defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
 
-    if model_identifier.lower() in _REVERSE_MODEL_MAPPING:
+    names = defaults_lookup_names(model_identifier)
+    if any(name.lower() in _REVERSE_MODEL_MAPPING for name in names):
         return True
 
-    # For local paths, normalize backslashes so Path().parts splits correctly,
-    # then match the last 1-2 components against the registry (mirrors load_model_defaults).
-    _is_local = is_local_path(model_identifier)
-    _normalized = normalize_path(model_identifier) if _is_local else model_identifier
-
-    if _is_local:
-        parts = Path(_normalized).parts
-        for depth in (2, 1):
-            if len(parts) >= depth:
-                suffix = "/".join(parts[-depth:])
-                if suffix.lower() in _REVERSE_MODEL_MAPPING:
-                    return True
-        _lookup = Path(_normalized).name
-    else:
-        _lookup = model_identifier
-
-    # Exact filename match (basename for local paths; absolute paths break rglob on Windows).
-    model_filename = _lookup.replace("/", "_") + ".yaml"
-    for config_path in defaults_dir.rglob(model_filename):
-        if config_path.is_file():
-            return True
-
-    return False
+    return any(
+        config_path.is_file()
+        for name in names
+        for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml")
+    )
 
 
 def load_inference_config(model_identifier: str) -> Dict[str, Any]:
@@ -160,3 +151,130 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
     }
 
     return inference_config
+
+
+# field -> (env var, static default, min, max, is_int)
+# Precedence per field: an operator pin via UNSLOTH_SAMPLING_* wins even over an explicit client value, then the client
+# value, then the per-model recommendation, then the static schema default.
+# ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
+_SAMPLING_FIELDS = {
+    "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),
+    "top_p": ("UNSLOTH_SAMPLING_TOP_P", 0.95, 0.0, 1.0, False),
+    "top_k": ("UNSLOTH_SAMPLING_TOP_K", 20, -1, 100, True),
+    "min_p": ("UNSLOTH_SAMPLING_MIN_P", 0.01, 0.0, 1.0, False),
+    "repetition_penalty": ("UNSLOTH_SAMPLING_REPETITION_PENALTY", 1.0, 1.0, 2.0, False),
+    "presence_penalty": ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", 0.0, 0.0, 2.0, False),
+}
+
+# Public, ordered tuple of the sampling fields callers resolve.
+SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
+
+# The five fields the Chat UI's mergeBackendRecommendedInference seeds, auto-recommended here for
+# request parity. repetition_penalty stays manual-only (client-sent or an operator pin), matching
+# the UI where it is never auto-filled per model.
+# The frontend seeder is mergeBackendRecommendedInference in presets/preset-policy.ts, and the manual pin is
+# UNSLOTH_SAMPLING_REPETITION_PENALTY.
+_UI_RECOMMENDED_FIELDS = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
+
+
+def _clean_sampling_value(field: str, val: Any):
+    """Coerce ``val`` to the field's numeric type when it is a finite, in-range number, else None.
+
+    Rejects bool, non-numeric, NaN/inf, and out-of-range values so neither a bad operator env
+    var nor a malformed model recommendation can reach llama-server. NaN matters because
+    ``nan < lo`` and ``nan > hi`` are both False, so a plain range check would let it through.
+    Coerce before the finiteness check: ``math.isfinite`` and ``float()`` raise ``OverflowError``
+    on an int too big for a C double (an oversized UNSLOTH_SAMPLING_TOP_K would otherwise 500 the
+    request), while an in-range int is range-checked exactly and ``int()`` rejects a NaN/inf that
+    reached an int field.
+    """
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    _env, _default, lo, hi, is_int = _SAMPLING_FIELDS[field]
+    try:
+        val = int(val) if is_int else float(val)
+    except (ValueError, OverflowError):
+        # int(nan)/int(inf) and float(oversized_int) raise; treat them as unusable.
+        return None
+    # After coercion an int is always finite; only a float can still be NaN/inf.
+    if isinstance(val, float) and not math.isfinite(val):
+        return None
+    if val < lo or val > hi:
+        return None
+    return val
+
+
+def _operator_sampling_override(field: str):
+    """Operator-pinned value for a sampling field from UNSLOTH_SAMPLING_*, or None.
+
+    An unparseable, non-finite, or out-of-range value is ignored so a bad env var can never
+    reach llama-server; the field then falls back to the client / recommended value.
+    """
+    _env, _default, _lo, _hi, is_int = _SAMPLING_FIELDS[field]
+    raw = os.environ.get(_env)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        val = int(raw) if is_int else float(raw)
+    except (TypeError, ValueError):
+        return None
+    return _clean_sampling_value(field, val)
+
+
+@lru_cache(maxsize = 128)
+def _recommended_sampling(model_id: str) -> Dict[str, Any]:
+    """Per-model recommended sampling, resolved through the SAME path the Unsloth Chat UI uses.
+
+    The Chat UI seeds its sampling from the ``.inference`` block of the load/status responses,
+    which is exactly :func:`load_inference_config` (model-specific YAML -> family defaults
+    (inference_defaults.json) -> default.yaml). Sourcing recommendations here keeps the values
+    the server applies to a request identical to what the UI shows for the same model. Only the
+    fields the UI actually adopts (:data:`_UI_RECOMMENDED_FIELDS`) are recommended; each value
+    is validated (finite + in range) before use. Cached by model id.
+    """
+    if not model_id:
+        return {}
+    try:
+        cfg = load_inference_config(model_id) or {}
+    except Exception as e:
+        logger.debug(f"Could not load recommended sampling for '{model_id}': {e}")
+        return {}
+    recommended: Dict[str, Any] = {}
+    for field in _UI_RECOMMENDED_FIELDS:
+        cleaned = _clean_sampling_value(field, cfg.get(field))
+        if cleaned is not None:
+            recommended[field] = cleaned
+    return recommended
+
+
+def resolve_effective_sampling(
+    model_id: Optional[str],
+    explicit: Dict[str, Any],
+    *,
+    fill_defaults: bool = True,
+) -> Dict[str, Any]:
+    """Resolve the effective sampling params for a request.
+
+    ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent
+    value, or ``None`` when the client omitted it. Precedence (highest first): an
+    operator ``UNSLOTH_SAMPLING_*`` pin, then the client's explicit value, then the
+    per-model recommendation, then the static schema default.
+
+    When ``fill_defaults`` is False a field with no operator pin, client value, or
+    per-model recommendation is omitted from the result instead of set to the static
+    schema default, so a raw proxy body (``/v1/completions``) keeps llama-server's own
+    default for that field rather than being forced onto this schema's value.
+    """
+    recommended = _recommended_sampling(model_id or "")
+    effective: Dict[str, Any] = {}
+    for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
+        override = _operator_sampling_override(field)
+        if override is not None:
+            effective[field] = override
+        elif explicit.get(field) is not None:
+            effective[field] = explicit[field]
+        elif field in recommended:
+            effective[field] = recommended[field]
+        elif fill_defaults:
+            effective[field] = default
+    return effective

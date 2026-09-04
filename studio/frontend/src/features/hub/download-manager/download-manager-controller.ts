@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DOWNLOAD_KIND } from "./constants";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_MARK_KEY,
+  AUTH_SESSION_STORED_EVENT,
+  AUTH_TOKEN_KEY,
+} from "@/features/auth";
+import { isTauri } from "@/lib/api-base";
 import {
   createDownloadManagerInitialState,
-  jobKeyOf,
   removeJob,
-  selectActiveJob,
   setState,
   useDownloadManagerStore,
 } from "./download-manager-state";
@@ -34,17 +38,45 @@ export {
   useDownloadManagerStore,
 } from "./download-manager-state";
 export type {
+  ConflictOwner,
   DownloadRequest,
   JobListeners,
   ManagedDownload,
 } from "./download-manager-types";
+export { conflictInfoForOwner } from "./download-manager-types";
 export { hydrateDownloadManager };
 
-export function __resetDownloadManagerForTests(): void {
+function resetDownloadManagerState(): void {
   runtimeRegistry.reset();
   resetDownloadApiAdapterState();
   resetHydrationState();
   setState(createDownloadManagerInitialState());
+}
+
+export function __resetDownloadManagerForTests(): void {
+  resetDownloadManagerState();
+}
+
+function clearWebSessionDownloads(): void {
+  if (isTauri) return;
+  resetDownloadManagerState();
+  // Clearing after the state reset also cancels the throttled empty-state write.
+  void useDownloadManagerStore.persist.clearStorage();
+}
+
+function handleAuthStorageChange(event: StorageEvent): void {
+  if (
+    event.key === AUTH_SESSION_MARK_KEY ||
+    (event.key === AUTH_TOKEN_KEY && event.newValue === null)
+  ) {
+    clearWebSessionDownloads();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearWebSessionDownloads);
+  window.addEventListener(AUTH_SESSION_STORED_EVENT, clearWebSessionDownloads);
+  window.addEventListener("storage", handleAuthStorageChange);
 }
 
 export interface DownloadManagerController {
@@ -69,28 +101,18 @@ export const downloadManager: DownloadManagerController = {
   dismiss: removeJob,
 };
 
-/** Cancel the in-flight download for a staged model pick. No-op when nothing is
- *  downloading (e.g. a native/local file that was never fetched). Lets non-React
- *  callers (the chat store's abandon paths) stop a staged transfer without the
- *  useRepoDownload hook. */
-export function cancelStagedModelDownload(
-  pending: { id: string; ggufVariant?: string | null } | null,
-): void {
-  if (!pending) return;
-  const variant = pending.ggufVariant ?? null;
-  const activeJob = selectActiveJob(
-    useDownloadManagerStore.getState(),
-    DOWNLOAD_KIND.MODEL,
-    pending.id,
-    variant,
-  );
-  void downloadManager.cancel(
-    activeJob?.key ?? jobKeyOf(DOWNLOAD_KIND.MODEL, pending.id, variant),
-  );
-}
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    window.removeEventListener(
+      AUTH_SESSION_CLEARED_EVENT,
+      clearWebSessionDownloads,
+    );
+    window.removeEventListener(
+      AUTH_SESSION_STORED_EVENT,
+      clearWebSessionDownloads,
+    );
+    window.removeEventListener("storage", handleAuthStorageChange);
     __resetDownloadManagerForTests();
   });
 }

@@ -22,12 +22,17 @@ export function ProjectSwitcher({
   isLoading,
   onSelectProject,
   onViewAllProjects,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   currentProject: ProjectRecord | null;
   projects: ProjectRecord[];
   isLoading: boolean;
   onSelectProject: (projectId: string) => void;
   onViewAllProjects: () => void;
+  /** Supplied by the page so the "Open project picker" chord can open it. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }): ReactElement {
   const showLoadingRow = isLoading && projects.length === 0;
   const showEmptyRow = !isLoading && projects.length === 0;
@@ -35,7 +40,9 @@ export function ProjectSwitcher({
 
   // Controlled so the body-portaled dropdown can't linger over another tab off-route.
   const active = useChatActive();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = onOpenChange ?? setUncontrolledOpen;
 
   return (
     <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>
@@ -57,7 +64,7 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="flex min-w-0 flex-1 items-baseline">
-            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
               {label}
             </span>
           </span>
@@ -75,8 +82,11 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 max-h-72 font-heading"
+        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 font-heading"
       >
+        {/* Scroll the list here, not the container, so the rounded corners on
+            the scrollbar side are not squared off. */}
+        <div className="max-h-72 overflow-y-auto">
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">
             Loading…
@@ -117,6 +127,7 @@ export function ProjectSwitcher({
         <DropdownMenuItem onSelect={onViewAllProjects}>
           View all projects
         </DropdownMenuItem>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

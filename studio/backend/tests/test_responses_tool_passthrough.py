@@ -43,11 +43,14 @@ from pydantic import ValidationError
 from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
+    ResponsesCustomToolCallInputItem,
+    ResponsesCustomToolCallOutputInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesFunctionTool,
     ResponsesInputMessage,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputTextContent,
@@ -62,15 +65,30 @@ from routes.inference import (
     _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
+    _build_openai_passthrough_body,
     _chat_tool_calls_to_responses_output,
+    _extract_response_format,
     _extract_responses_reasoning,
     _normalise_responses_input,
+    _responses_custom_tool_input,
     _responses_tool_output_content,
     _responses_non_streaming,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
     _translate_responses_tools_to_chat,
 )
+
+
+def _codex_apply_patch_tool():
+    return {
+        "type": "custom",
+        "name": "apply_patch",
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": 'start: "*** Begin Patch" LF hunk+ "*** End Patch" LF?',
+        },
+    }
 
 
 # =====================================================================
@@ -120,7 +138,7 @@ class TestResponsesRequestTools:
     def test_builtin_tool_type_passes_validation(self):
         """Non-function built-in tools (web_search, file_search, mcp, ...)
         must not raise at validation so SDKs that default to them don't
-        fail on Studio; they're filtered out during translation."""
+        fail on Unsloth; they're filtered out during translation."""
         req = ResponsesRequest(
             input = "hi",
             tools = [{"type": "web_search_preview"}],
@@ -184,6 +202,26 @@ class TestResponsesMultiTurnInput:
         )
         assert isinstance(item.output, list)
 
+    def test_custom_tool_call_items(self):
+        req = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ]
+        )
+
+        assert isinstance(req.input[0], ResponsesCustomToolCallInputItem)
+        assert isinstance(req.input[1], ResponsesCustomToolCallOutputInputItem)
+
 
 # =====================================================================
 # Translators — tools, tool_choice
@@ -229,6 +267,66 @@ class TestToolsTranslation:
         assert len(out) == 1
         assert out[0]["function"]["name"] == "search"
 
+    def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
+        grammar = (
+            'start: "*** Begin Patch" LF add_hunk "*** End Patch" LF?\n'
+            'add_hunk: "*** Add File: " filename LF add_line+\n'
+            'add_line: "+" /(.*)/ LF'
+        )
+        out = _translate_responses_tools_to_chat(
+            [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "freeform",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": grammar},
+                }
+            ]
+        )
+
+        assert out == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "description": (
+                        "Edit files by passing one complete patch in the input field. "
+                        "Every added content line must start with +. Example:\n"
+                        "*** Begin Patch\n"
+                        "*** Add File: path/to/file.txt\n"
+                        "+first line\n"
+                        "*** End Patch\n\n"
+                        "The input must match this Lark grammar:\n" + grammar
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": "A complete patch matching the tool grammar.",
+                            }
+                        },
+                        "required": ["input"],
+                        "additionalProperties": False,
+                    },
+                    "strict": False,
+                },
+            }
+        ]
+
+    def test_unrelated_custom_tools_stay_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat(
+                [{"type": "custom", "name": "code_exec", "description": "raw input"}]
+            )
+            is None
+        )
+
+    def test_apply_patch_without_the_codex_grammar_stays_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat([{"type": "custom", "name": "apply_patch"}]) is None
+        )
+
     def test_empty_returns_none(self):
         assert _translate_responses_tools_to_chat(None) is None
         assert _translate_responses_tools_to_chat([]) is None
@@ -262,6 +360,19 @@ class TestToolChoiceTranslation:
             {"type": "function", "name": "get_weather"}
         ) == {"type": "function", "function": {"name": "get_weather"}}
 
+    def test_forced_apply_patch_custom_tool_converted(self):
+        assert _translate_responses_tool_choice_to_chat(
+            {"type": "custom", "name": "apply_patch"}, {"apply_patch"}
+        ) == {"type": "function", "function": {"name": "apply_patch"}}
+
+    def test_forced_apply_patch_without_valid_catalog_passes_through(self):
+        choice = {"type": "custom", "name": "apply_patch"}
+        assert _translate_responses_tool_choice_to_chat(choice, set()) is choice
+
+    def test_unrelated_custom_tool_choice_passes_through(self):
+        choice = {"type": "custom", "name": "code_exec"}
+        assert _translate_responses_tool_choice_to_chat(choice) is choice
+
     def test_already_chat_nested_shape_passes_through(self):
         """A client sending the Chat Completions nested shape isn't
         double-wrapped."""
@@ -274,6 +385,17 @@ class TestToolChoiceTranslation:
 
 
 class TestBuildChatRequest:
+    def test_seed_reaches_the_llama_passthrough_policy(self):
+        payload = ResponsesRequest(input = "hi", seed = 3407)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert chat_req.seed == 3407
+        assert body["seed"] == 3407
+        assert body["cache_prompt"] is False
+
     def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
         payload = ResponsesRequest(
             input = "hi",
@@ -291,6 +413,62 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = True)
 
         assert chat_req.parallel_tool_calls is False
+
+    def test_text_format_json_schema_becomes_response_format(self):
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        payload = ResponsesRequest(
+            input = "hi",
+            text = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Person",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {
+            "type": "json_schema",
+            "json_schema": {"name": "Person", "schema": schema, "strict": True},
+        }
+
+    def test_text_format_json_object_becomes_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {"type": "json_object"}
+
+    def test_text_format_text_carries_no_response_format(self):
+        # Codex and the Agents SDK send this on ordinary requests; constraining
+        # them would route every call onto the schema path.
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_verbosity_only_carries_no_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"verbosity": "low"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_format_json_schema_without_schema_is_ignored(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_schema"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
 
     def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
         payload = ResponsesRequest(
@@ -381,6 +559,67 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].role == "tool"
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
+
+    def test_custom_tool_call_round_trip_maps_to_local_function(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ],
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        messages = _normalise_responses_input(payload)
+
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        call = messages[0].tool_calls[0]
+        assert call["id"] == "call_patch"
+        assert call["function"]["name"] == "apply_patch"
+        assert json.loads(call["function"]["arguments"]) == {"input": patch}
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_patch"
+        assert messages[1].content == "Done!"
+
+    def test_unrelated_custom_tool_replay_stays_ignored(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_code",
+                    "name": "code_exec",
+                    "input": "print('hidden')",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_code",
+                    "output": "hidden output",
+                },
+            ],
+            tools = [
+                {
+                    "type": "custom",
+                    "name": "code_exec",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: /.+/",
+                    },
+                }
+            ],
+        )
+
+        assert _normalise_responses_input(payload) == []
 
     def test_instructions_plus_developer_message_are_merged(self):
         """Codex CLI sends `instructions` (system prompt) AND a developer
@@ -728,6 +967,51 @@ class TestChatToolCallsToResponsesOutput:
         )
         assert items[0]["arguments"] == ""
 
+    def test_apply_patch_function_is_restored_to_a_custom_tool_call(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": json.dumps({"input": patch}),
+                    },
+                }
+            ],
+            {"apply_patch"},
+        )
+
+        assert items[0]["type"] == "custom_tool_call"
+        assert items[0]["call_id"] == "call_patch"
+        assert items[0]["name"] == "apply_patch"
+        assert items[0]["input"] == patch
+
+    def test_regular_function_named_apply_patch_stays_a_function_call(self):
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {"name": "apply_patch", "arguments": '{"path":"x"}'},
+                }
+            ]
+        )
+
+        assert items[0]["type"] == "function_call"
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ('{"input":"patch"', '{"input":"patch"'),
+            ('{"other":"value"}', '{"other":"value"}'),
+            (None, ""),
+        ],
+    )
+    def test_malformed_custom_arguments_are_not_hidden(self, arguments, expected):
+        assert _responses_custom_tool_input(arguments) == expected
+
 
 # =====================================================================
 # Non-streaming Responses adapter
@@ -744,14 +1028,19 @@ class TestResponsesNonStreamingAdapter:
         message,
         payload = None,
         llama_backend = None,
+        finish_reason = None,
     ):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             return JSONResponse(
                 content = {
                     "model": "test-model",
-                    "choices": [{"message": message}],
+                    "choices": [{"message": message, "finish_reason": finish_reason}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
@@ -770,6 +1059,52 @@ class TestResponsesNonStreamingAdapter:
 
         return asyncio.run(run())
 
+    def test_a_truncated_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": "half an ans",
+                "reasoning_content": "partial plan",
+                "tool_calls": [
+                    {
+                        "id": "call_partial",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q":"x"'},
+                    }
+                ],
+            },
+            finish_reason = "length",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "max_output_tokens"}
+        assert [item["status"] for item in body["output"]] == [
+            "incomplete",
+            "incomplete",
+            "incomplete",
+        ]
+
+    def test_a_natural_stop_is_still_completed(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "a whole answer"},
+            finish_reason = "stop",
+        )
+
+        assert body["status"] == "completed"
+        assert body["incomplete_details"] is None
+
+    def test_a_content_filtered_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "filtered partial output"},
+            finish_reason = "content_filter",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "content_filter"}
+        assert [item["status"] for item in body["output"]] == ["incomplete"]
+
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
@@ -785,6 +1120,34 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
+        payload = ResponsesRequest(
+            input = "edit the file",
+            tools = [_codex_apply_patch_tool()],
+        )
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": json.dumps({"input": patch}),
+                        },
+                    }
+                ],
+            },
+            payload = payload,
+        )
+
+        assert len(body["output"]) == 1
+        assert body["output"][0]["type"] == "custom_tool_call"
+        assert body["output"][0]["input"] == patch
+
     def test_unclosed_think_block_extracts_as_reasoning(self):
         reasoning, visible = _extract_responses_reasoning(
             "<think>partial plan",
@@ -798,7 +1161,11 @@ class TestResponsesNonStreamingAdapter:
         import routes.inference as inf_mod
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -834,10 +1201,154 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
 
+    @staticmethod
+    def _run_in_process_completion(
+        monkeypatch,
+        monitor,
+        timings,
+        *,
+        observations = None,
+    ):
+        """Drive the wrapper over an in-process chat completion: its own monitor row is
+        suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
+        import routes.inference as inf_mod
+        from models.inference import (
+            ChatCompletion,
+            CompletionChoice,
+            CompletionMessage,
+            CompletionUsage,
+        )
+
+        usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
+
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
+            assert request.state.skip_api_monitor is True
+            # monitor_id is None here: this call's own row is the suppressed one.
+            if observations is not None:
+                observations["perf_callback"] = inf_mod._monitor_perf_callback(None, 4096)
+            inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            if observations is not None:
+                observations["live_entries"] = monitor.snapshot()
+            return inf_mod._model_json_response(
+                ChatCompletion(
+                    model = "test-model",
+                    choices = [
+                        CompletionChoice(
+                            index = 0,
+                            message = CompletionMessage(content = "answer"),
+                            finish_reason = "stop",
+                        )
+                    ],
+                    usage = CompletionUsage(**usage),
+                )
+            )
+
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(
+                ResponsesRequest(input = "hi"),
+                [ChatMessage(role = "user", content = "hi")],
+                request,
+            )
+            return json.loads(response.body.decode())
+
+        return asyncio.run(run())
+
+    def test_in_process_engine_timings_reach_the_monitor(self, monkeypatch):
+        """A local non-streamed /v1/responses never reached the Throughput tile: the
+        wrapper read decode_ms off the body, which a ChatCompletion cannot carry."""
+        from models.inference import ChatCompletion
+
+        # Asserted, not assumed: pydantic drops undeclared fields, so a body lookup finds nothing.
+        assert "timings" not in json.loads(
+            ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
+        )
+
+        monitor = ApiMonitor(max_entries = 3)
+        body = self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+        )
+
+        assert body["output"][0]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["completion_tokens"] == 50
+        assert entry["decode_ms"] == 1000
+        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
+    def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {
+                "prompt_per_second": 90.0,
+                "predicted_ms": 1000.0,
+                "predicted_per_second": 50.0,
+            },
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is not None
+        [entry] = observations["live_entries"]
+        assert entry["status"] == "running"
+        assert entry["prompt_tok_per_sec"] == 90.0
+        assert entry["tok_per_sec"] == 50.0
+        assert entry["decode_ms"] == 1000
+        assert entry["ttft_ms"] is None
+
+    def test_disabled_monitor_does_not_install_responses_perf_callback(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3, enabled = False)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_per_second": 90.0, "predicted_per_second": 50.0},
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is None
+        assert observations["live_entries"] == []
+        assert monitor.snapshot() == []
+
+    def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
+        """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
+        monitor = ApiMonitor(max_entries = 3)
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"predicted_ms": 1000.0},
+        )
+        self._run_in_process_completion(monkeypatch, monitor, None)
+
+        newest, previous = monitor.snapshot()
+        assert previous["decode_ms"] == 1000
+        assert newest["decode_ms"] is None
+
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -892,7 +1403,11 @@ class TestResponsesNonStreamingAdapter:
     def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             raise asyncio.CancelledError()
 
@@ -1174,6 +1689,44 @@ class TestResponsesStreamAdapter:
         assert entry["completion_tokens"] == 3
         assert entry["total_tokens"] == 5
         assert entry["context_length"] == 4096
+
+    def test_final_chunk_timings_reach_the_monitor(self, monkeypatch):
+        """Responses recorded usage but never timings, so a local request never reached
+        the Throughput tile. The final chunk can carry timings with no usage of its own."""
+        import routes.inference as inf_mod
+
+        chunks = [
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 50}},
+            {"choices": [], "timings": {"prompt_ms": 9000.0, "predicted_ms": 1000.0}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["decode_ms"] == 1000
+        assert entry["completion_tokens"] == 50
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod
@@ -1610,6 +2163,115 @@ class TestResponsesStreamAdapter:
             "message",
         ]
 
+    def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
+        arguments = json.dumps({"input": patch}, ensure_ascii = False)
+        split = len(arguments) // 2
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": arguments[:split],
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": arguments[split:]},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.function_call_arguments.delta") == []
+        assert self._payloads(lines, "response.function_call_arguments.done") == []
+        done = self._payloads(lines, "response.output_item.done")
+        assert len(done) == 1
+        assert done[0]["item"] == {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": "call_patch",
+            "name": "apply_patch",
+            "input": patch,
+        }
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"] == [done[0]["item"]]
+
+    def test_regular_apply_patch_function_stream_stays_a_function_call(self, monkeypatch):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": '{"path":"x"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [{"type": "function", "name": "apply_patch"}],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        done = self._payloads(lines, "response.output_item.done")
+        assert done[0]["item"]["type"] == "function_call"
+        assert self._payloads(lines, "response.function_call_arguments.done")
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1738,6 +2400,17 @@ class TestResponsesOutputFunctionCall:
         assert d["call_id"] == "call_1"
         assert d["status"] == "completed"
         assert d["id"].startswith("fc_")
+
+    def test_custom_tool_call_construction(self):
+        call = ResponsesOutputCustomToolCall(
+            call_id = "call_patch",
+            name = "apply_patch",
+            input = "*** Begin Patch\n*** End Patch",
+        ).model_dump()
+
+        assert call["type"] == "custom_tool_call"
+        assert call["id"].startswith("ctc_")
+        assert call["status"] == "completed"
 
     def test_response_with_tool_call_output(self):
         resp = ResponsesResponse(
@@ -2279,3 +2952,219 @@ class TestResponsesStreamHealing:
         ]
         assert len(calls) == 1
         assert calls[0]["item"]["name"] == "lookup"
+
+
+def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
+    # Healed output bypasses append_reply, so a text-form tool call would go untimed
+    # until the item closes near end-of-stream.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    assert stamped, "a healed tool call is output the client already received"
+
+
+def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
+    # A response that is only an unclosed tool block heals in finalize() after the
+    # chunk loop, so nothing before it stamped; the item closes several yields later.
+    from core.inference.api_monitor import api_monitor
+
+    unclosed = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}'
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": unclosed}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    # The call really was promoted, so the stamp covers a function_call the client saw.
+    assert any("response.function_call_arguments.delta" in line for line in lines)
+    assert stamped, "a finalized healed call is output the client already received"
+
+
+def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
+    # The upstream chunk still says "stop" while this adapter emitted a function_call,
+    # so the monitor would disagree with the chat stream's synthetic finish line.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "tool_calls"
+
+
+def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
+    # Nothing was promoted, so the upstream reason still describes the response.
+    from core.inference.api_monitor import api_monitor
+
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "plain text"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_truncated_responses_stream_ends_on_response_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_healed_truncated_tool_call_remains_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == finish_reason
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.incomplete") == []
+    completed = TestResponsesStreamAdapter._payloads(lines, "response.completed")[0]
+    assert completed["response"]["status"] == "completed"
+    assert completed["response"]["incomplete_details"] is None
+    assert [item["status"] for item in completed["response"]["output"]] == ["completed"]

@@ -201,7 +201,7 @@ async fn exchange_desktop_secret(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AuthError::StaleResponder(
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
     }
@@ -226,16 +226,17 @@ async fn exchange_desktop_secret(
 
 async fn provision_desktop_auth() -> Result<(), String> {
     let bin = crate::process::resolve_backend_binary()?;
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(["studio", "provision-desktop-auth"])
-        .stdout(std::process::Stdio::null())
+    let mut cmd = crate::process::build_managed_cli_command_tokio(
+        &bin,
+        &["studio", "provision-desktop-auth"],
+    )
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
+    crate::process::apply_managed_cli_context_tokio(&mut cmd)
+        .map_err(|error| format!("Desktop auth provisioning failed: {}", error))?;
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
     // Scrub so provisioning writes match what the Rust auth code reads.
@@ -247,7 +248,11 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
+    let child = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
         .await
         .map_err(|_| "Desktop auth provisioning timed out after 30s".to_string())?
         .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
@@ -335,9 +340,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
@@ -364,7 +367,7 @@ async fn desktop_auth_inner(
     }
 
     Err(
-        "Desktop auth failed. Update or repair the managed Studio install, then restart Studio."
+        "Desktop auth failed. Update or repair the managed Unsloth install, then restart Unsloth."
             .to_string(),
     )
 }
@@ -465,7 +468,7 @@ mod tests {
             .message();
         assert_eq!(
             error,
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
     }
 }

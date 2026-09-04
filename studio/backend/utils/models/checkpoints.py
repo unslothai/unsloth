@@ -37,7 +37,7 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
 
 
 def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Studio run metadata."""
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
     checkpoint_name = checkpoint_dir.name
     resolved_checkpoint_dir = str(checkpoint_dir.resolve())
 
@@ -129,7 +129,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     if not trainer_state.exists():
         return None
     try:
-        with open(trainer_state) as f:
+        with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
         log_history = state.get("log_history", [])
         if log_history:
@@ -174,18 +174,18 @@ def scan_checkpoints(
             metadata: dict = {}
             try:
                 if adapter_config.exists():
-                    cfg = json.loads(adapter_config.read_text())
+                    cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
                 elif config_file.exists():
-                    cfg = json.loads(config_file.read_text())
+                    cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
                 # Detect BNB quantization from config.json
                 if config_file.exists():
                     if "cfg" not in dir():
-                        cfg = json.loads(config_file.read_text())
+                        cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     quant_cfg = cfg.get("quantization_config")
                     if (
                         isinstance(quant_cfg, dict)

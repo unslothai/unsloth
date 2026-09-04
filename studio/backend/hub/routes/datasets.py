@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
-from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest,
     AiAssistMappingResponse,
@@ -18,9 +18,12 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    LocalDatasetOptionsRequest,
+    LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDatasetDownloadRequest,
@@ -31,16 +34,18 @@ from hub.schemas.downloads import (
     DownloadDatasetRequest,
     TransportStatusResponse,
 )
-from hub.services.datasets import cache_inventory, downloads, formatting, local
+from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
 
 router = APIRouter()
 
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile, current_subject: str = Depends(get_current_subject)
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file)
+    return await local.upload_dataset_response(file, native_path_lease)
 
 
 @router.get("/local", response_model = LocalDatasetsResponse)
@@ -59,18 +64,27 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
     return await cache_inventory.list_cached_datasets_response()
 
 
+@router.post("/local-options", response_model = LocalDatasetOptionsResponse)
+def get_local_dataset_options(
+    request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
+) -> LocalDatasetOptionsResponse:
+    return local_options.local_dataset_options(request)
+
+
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
 async def delete_cached_dataset(
-    repo_id: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    repo_id: str = Body(..., embed = True),
+    cache_path: Optional[str] = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
 ):
-    return await cache_inventory.delete_cached_dataset_response(repo_id)
+    return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
 @router.get("/download-progress", response_model = DownloadProgressResponse)
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_dataset_download_progress_response(
@@ -84,9 +98,14 @@ async def get_dataset_download_progress(
 async def download_dataset(
     body: DownloadDatasetRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_dataset_response(body, hf_token)
+    return await downloads.download_dataset_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDatasetDownloadResponse, status_code = 202)
@@ -123,7 +142,7 @@ async def get_dataset_transport_status(
 @router.post("/check-format", response_model = CheckFormatResponse)
 def check_format(
     request: CheckFormatRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.check_format_response(request, hf_token)
@@ -132,7 +151,7 @@ def check_format(
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.ai_assist_mapping_response(request, hf_token)

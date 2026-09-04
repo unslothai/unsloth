@@ -10,6 +10,9 @@ interface ConfirmArgs {
   upgrade: TransformersUpgradeInfo | null | undefined;
   /** When no release is installable, offer continuing into the caller's custom-code gate. */
   trustRemoteCodeFallback?: boolean;
+  /** The caller already confirmed the swap's "stop N chats" prompt: carry it into
+   *  the install, which otherwise 409s on those same chats with no way forward. */
+  forceCancelActive?: boolean;
 }
 
 /** Pause a load needing a newer transformers on the consent dialog and run the install.
@@ -18,11 +21,13 @@ export async function confirmTransformersUpgradeIfNeeded({
   modelName,
   upgrade,
   trustRemoteCodeFallback,
+  forceCancelActive,
 }: ConfirmArgs): Promise<boolean> {
   if (!upgrade) return true;
   return useTransformersUpgradeDialogStore
     .getState()
     .requestConsent(modelName, upgrade, {
       trustRemoteCodeFallback: Boolean(trustRemoteCodeFallback),
+      forceCancelActive: Boolean(forceCancelActive),
     });
 }

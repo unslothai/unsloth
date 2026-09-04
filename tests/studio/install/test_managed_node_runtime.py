@@ -3,7 +3,7 @@
 
 """Tests for the runtime managed-Node resolver (studio/backend/utils/node_runtime.py).
 
-The Studio frontend installer may provision an isolated Node under
+The Unsloth frontend installer may provision an isolated Node under
 ``<UNSLOTH_HOME>/node`` that is never added to the user's PATH. The backend OXC
 validator must still find a usable Node at runtime: a version-adequate system
 Node, else the managed isolated one. These tests pin that resolution and the
@@ -125,7 +125,7 @@ def test_resolve_falls_back_to_managed_when_no_system(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     managed = nr.managed_node_binary()
     managed.parent.mkdir(parents = True, exist_ok = True)
-    managed.write_text("#!/bin/sh\necho v24.17.0\n")
+    managed.write_text("#!/bin/sh\necho v24.17.0\n", encoding = "utf-8")
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: str(exe) == str(managed))
     assert nr.resolve_node_executable() == str(managed)
@@ -136,7 +136,7 @@ def test_resolve_prefers_managed_over_unsuitable_system(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     managed = nr.managed_node_binary()
     managed.parent.mkdir(parents = True, exist_ok = True)
-    managed.write_text("fake")
+    managed.write_text("fake", encoding = "utf-8")
     monkeypatch.setattr(nr.shutil, "which", lambda name: "/old/node")
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: str(exe) == str(managed))
     assert nr.resolve_node_executable() == str(managed)
@@ -167,7 +167,7 @@ def test_negative_result_is_not_cached(monkeypatch, tmp_path):
 
     managed = nr.managed_node_binary()
     managed.parent.mkdir(parents = True, exist_ok = True)
-    managed.write_text("now-installed")
+    managed.write_text("now-installed", encoding = "utf-8")
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: str(exe) == str(managed))
     assert nr.resolve_node_executable() == str(managed)
 

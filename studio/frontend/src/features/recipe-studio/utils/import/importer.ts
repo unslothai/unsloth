@@ -404,6 +404,10 @@ export function importRecipePayload(
     uiSeedSourceTypeRaw === "unstructured"
       ? uiSeedSourceTypeRaw
       : undefined;
+  const payloadSeedSourceIsUnstructured =
+    isRecord(recipe.seed_config) &&
+    isRecord(recipe.seed_config.source) &&
+    recipe.seed_config.source.seed_type === "unstructured";
   const uiSeedColumns = Array.isArray(ui?.seed_columns)
     ? ui.seed_columns
         .map((value) => (typeof value === "string" ? value.trim() : ""))
@@ -478,7 +482,17 @@ export function importRecipePayload(
     nextId += 1;
     const seedConfig = parseSeedConfig(recipe.seed_config, id, {
       preferredSourceType: uiSeedSourceType,
-      seed_columns: uiSeedColumns,
+      drop:
+        payloadSeedSourceIsUnstructured && payloadSeedDropColumns.length > 0,
+      // Payload-only unstructured recipes have no preview metadata, but their
+      // generated rows always expose these fields. Keep the imported drop
+      // processor usable until a real preview replaces this fallback.
+      seed_columns:
+        (uiSeedColumns?.length ?? 0) > 0
+          ? uiSeedColumns
+          : uiSeedSourceType === "unstructured" || payloadSeedSourceIsUnstructured
+            ? ["chunk_text", "source_file"]
+            : uiSeedColumns,
       seed_drop_columns:
         uiSeedDropColumns && uiSeedDropColumns.length > 0
           ? uiSeedDropColumns

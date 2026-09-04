@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--cloudflare/--no-cloudflare` Studio flag.
+"""Tests for the `--cloudflare/--no-cloudflare` Unsloth flag.
 
 Pins the typer Option (tri-state, default off / None) on both `unsloth studio`
 and `unsloth studio run`, and that the chosen polarity reaches the re-exec'd
@@ -112,24 +112,32 @@ def _invoke_run(monkeypatch, args):
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
         # child venv (old default: --cloudflare on) can't re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+def test_run_reexec_forwards_cloudflare_polarity(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    assert f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"' in (
+        _REPO_ROOT / "studio/backend/run.py"
+    ).read_text(encoding = "utf-8")
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected} in child argv; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── re-exec forwarding: plain `unsloth studio` ───────────────────────
@@ -171,25 +179,30 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
         # back to an older studio-venv run.py (default on), so a mixed install must
         # not re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
+def test_studio_default_reexec_forwards_cloudflare(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected}; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── in-venv path forwards cloudflare into run_server ─────────────────
@@ -205,11 +218,14 @@ class _RunServerCaptured(SystemExit):
     "user_flag,expected",
     [(None, None), ("--cloudflare", True), ("--no-cloudflare", False)],
 )
-def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, expected):
+def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, tmp_path, user_flag, expected):
     import types
 
     studio_mod = _studio()
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
@@ -239,6 +255,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -255,14 +272,17 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     assert captured.get("cloudflare") is expected, captured
 
 
-def test_run_display_host_and_url_helpers_cover_ipv6_wildcard():
+def test_run_display_host_delegates_wildcard_aliases_to_the_backend():
     import types
 
     studio_mod = _studio()
-    run_mod = types.SimpleNamespace(_resolve_external_ip = lambda: "198.51.100.7")
+    aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0"}
+    run_mod = types.SimpleNamespace(
+        _display_host_for_bind = lambda host: "198.51.100.7" if host in aliases else host
+    )
 
-    assert studio_mod._display_host_for_bind(run_mod, "0.0.0.0") == "198.51.100.7"
-    assert studio_mod._display_host_for_bind(run_mod, "::") == "198.51.100.7"
+    for host in aliases:
+        assert studio_mod._display_host_for_bind(run_mod, host) == "198.51.100.7"
     assert studio_mod._url_host("2001:db8::7") == "[2001:db8::7]"
     assert studio_mod._url_host("127.0.0.1") == "127.0.0.1"
 
@@ -291,15 +311,25 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     ]
 
     calls.clear()
+    studio_mod._emit_run_cloudflare_notice(run_mod, "::ffff:0.0.0.0", "198.51.100.7", 8888, False)
+    assert calls == [
+        ("verify", "198.51.100.7", 8888),
+        ("print", {"secure": False, "loopback_host": "127.0.0.1"}),
+    ]
+
+    calls.clear()
     studio_mod._emit_run_cloudflare_notice(run_mod, "127.0.0.1", "127.0.0.1", 8888, False)
     assert calls == []
 
 
-def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
+def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
@@ -324,12 +354,16 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     class _App:
         class state:
             server_port = 8888
+            server_request_host = "127.0.0.1"
             cloudflare_url = "https://x.trycloudflare.com"
 
     calls = []
     backend = types.ModuleType("studio.backend.run")
     backend.run_server = lambda **_kwargs: _App()
     backend._resolve_external_ip = lambda: "198.51.100.7"
+    backend._display_host_for_bind = lambda host: (
+        backend._resolve_external_ip() if host == "0.0.0.0" else host
+    )
     backend._verify_global_reachability = lambda host, port: calls.append(("verify", host, port))
     backend._print_cloudflare_line = lambda **kw: calls.append(("print", kw))
     backend._server = object()
@@ -341,16 +375,24 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
 
-    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: True)
+    monkeypatch.setattr(
+        studio_mod,
+        "_wait_for_server",
+        lambda port, **kwargs: calls.append(("health", port, kwargs)) or True,
+    )
     monkeypatch.setattr(studio_mod, "_create_api_key_inprocess", lambda name: "sk-test")
     monkeypatch.setattr(
         studio_mod,
         "_load_model_via_http",
-        lambda **_kwargs: {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096},
+        lambda **kwargs: (
+            calls.append(("load", kwargs))
+            or {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096}
+        ),
     )
 
     import typer as _typer
@@ -361,13 +403,14 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     )(studio_mod.run)
     result = CliRunner().invoke(
         app,
-        _BASE + ["--silent", "-H", "0.0.0.0"],
+        _BASE + ["--silent", "-H", "localhost"],
         catch_exceptions = True,
     )
 
     assert result.exit_code == 0, result.output
-    assert ("verify", "198.51.100.7", 8888) in calls
-    assert ("print", {"secure": False, "loopback_host": "127.0.0.1"}) in calls
+    assert ("health", 8888, {"request_host": "127.0.0.1"}) in calls
+    assert next(entry[1] for entry in calls if entry[0] == "load")["request_host"] == "127.0.0.1"
+    assert all(entry[0] not in {"verify", "print"} for entry in calls)
 
 
 # ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─
@@ -391,11 +434,14 @@ def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, fla
 # ── run() tears the server + tunnel down if startup aborts ───────────
 
 
-def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
+def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
@@ -426,6 +472,7 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
     tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 
     # Force the health check to fail so startup aborts after run_server().
@@ -443,11 +490,14 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"
 
 
-def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
+def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
@@ -481,6 +531,7 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda value: calls.append(("policy", value))
+    tp_mod.set_tool_policy_default = lambda value: calls.append(("policy_default", value))
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -496,4 +547,5 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
 
     assert result.exit_code == 1, result.output
-    assert calls[:2] == [("policy", False), ("run_server", None)]
+    # Default first, then the explicit override, both before the server starts.
+    assert calls[:3] == [("policy_default", True), ("policy", False), ("run_server", None)]

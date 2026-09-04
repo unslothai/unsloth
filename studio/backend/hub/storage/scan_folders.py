@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
@@ -31,8 +32,8 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
-        # so include the /private variants to avoid bypasses.
+        # realpath() resolves /etc -> /private/etc and /tmp -> /private/tmp on macOS, so include the
+        # /private variants to avoid bypasses.
         return [
             "/System",
             "/Library",
@@ -115,8 +116,8 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    """Add a readable directory for the local OS user; not a multi-user sandbox."""
+def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+    """Add a readable scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(normalize_path(path.strip())))
@@ -125,11 +126,9 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path does not exist")
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
-    if not os.access(normalized, os.R_OK | os.X_OK):
-        raise ValueError("Path is not readable")
     if is_local_filesystem_root(normalized):
-        # A local fs root ("/", "C:\\") would expose denied system dirs via browse;
-        # a UNC share root (\\server\share) has none under it and stays registerable.
+        # A local fs root would expose denied system dirs via browse; a UNC share root has none under it and
+        # stays registerable.
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
@@ -141,6 +140,10 @@ def add_scan_folder(path: str) -> dict:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             raise ValueError(f"Path under {prefix} is not allowed")
+
+    # Last, so a denied path is never opened. Mirrors studio_db.py.
+    if not is_readable_dir(normalized):
+        raise ValueError("Path is not readable")
 
     conn = get_connection()
     try:
@@ -157,13 +160,15 @@ def add_scan_folder(path: str) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing)
+            return dict(existing), False
+        inserted = False
         try:
             conn.execute(
                 "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
                 (normalized, now),
             )
             conn.commit()
+            inserted = True
         except sqlite3.IntegrityError:
             pass
         fallback_sql = (
@@ -174,19 +179,26 @@ def add_scan_folder(path: str) -> dict:
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
             raise ValueError("Folder was concurrently removed")
-        return dict(row)
+        return dict(row), inserted
     finally:
         conn.close()
 
 
-def remove_scan_folder(id: int) -> None:
+def add_scan_folder(path: str) -> dict:
+    """Add a readable directory for the local OS user; not a multi-user sandbox."""
+    row, _ = add_scan_folder_with_status(path)
+    return row
+
+
+def remove_scan_folder(id: int) -> bool:
     # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist.
     if not -(2**63) <= id < 2**63:
-        return
+        return False
     conn = get_connection()
     try:
         _ensure_schema(conn)
-        conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
+        cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()

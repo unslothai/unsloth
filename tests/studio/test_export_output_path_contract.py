@@ -32,7 +32,7 @@ def _return_tuple_arity(fn):
 
 
 def test_export_methods_return_three_tuple_annotation():
-    tree = ast.parse(EXPORT.read_text())
+    tree = ast.parse(EXPORT.read_text(encoding = "utf-8"))
     for fn_name in EXPORT_FNS:
         fn = _find_method(tree, "ExportBackend", fn_name)
         assert fn is not None, f"missing ExportBackend.{fn_name}"
@@ -46,7 +46,7 @@ def test_export_methods_return_three_tuple_annotation():
 
 
 def test_export_methods_return_three_element_tuples():
-    tree = ast.parse(EXPORT.read_text())
+    tree = ast.parse(EXPORT.read_text(encoding = "utf-8"))
     for fn_name in EXPORT_FNS:
         fn = _find_method(tree, "ExportBackend", fn_name)
         assert fn is not None
@@ -57,7 +57,7 @@ def test_export_methods_return_three_element_tuples():
 
 
 def test_local_save_assigns_output_path():
-    tree = ast.parse(EXPORT.read_text())
+    tree = ast.parse(EXPORT.read_text(encoding = "utf-8"))
     for fn_name in EXPORT_FNS:
         fn = _find_method(tree, "ExportBackend", fn_name)
         assert fn is not None
@@ -74,7 +74,7 @@ def test_local_save_assigns_output_path():
 
 
 def test_gpu_save_method_bound_for_hub_only():
-    tree = ast.parse(EXPORT.read_text())
+    tree = ast.parse(EXPORT.read_text(encoding = "utf-8"))
     fn = _find_method(tree, "ExportBackend", "export_merged_model")
     assert fn is not None
     found_pre_save_method = False
@@ -103,7 +103,7 @@ def test_gpu_save_method_bound_for_hub_only():
 
 
 def test_mlx_hub_only_uses_temp_directory():
-    src = EXPORT.read_text()
+    src = EXPORT.read_text(encoding = "utf-8")
     assert (
         src.count("tempfile.TemporaryDirectory") >= 3
     ), "expected TemporaryDirectory in merged, base, and lora hub-push paths"
@@ -111,7 +111,7 @@ def test_mlx_hub_only_uses_temp_directory():
 
 
 def test_is_mlx_imported_from_unsloth():
-    src = EXPORT.read_text()
+    src = EXPORT.read_text(encoding = "utf-8")
     assert "from unsloth import" in src
     head = src.split("class ExportBackend")[0]
     assert "_IS_MLX" in head

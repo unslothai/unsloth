@@ -70,8 +70,7 @@ def get_dataset_snapshot_metadata_cached(
             size, hashes, restricted, cached_fp, ts = cached
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
-            # A gated/private repo's metadata is only served back to the token
-            # that fetched it; another token may have no access at all.
+            # A gated or private repo's metadata is only served back to the token that fetched it.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes
@@ -144,9 +143,16 @@ def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownlo
 
 
 async def download_dataset_response(
-    body: DownloadDatasetRequest, hf_token: Optional[str] = None
+    body: DownloadDatasetRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
 ) -> dict:
-    """Start a background download for a HuggingFace dataset."""
+    """Start a background download for a HuggingFace dataset.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for
+    repos named over the API rather than chosen here.
+    """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -157,26 +163,52 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
+    # makes that outlast its 3s budget while every other request waits behind it.
+    use_xet, transport_reason = await asyncio.to_thread(
+        download_lifecycle.resolve_requested_use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
 
     claimed, claim_state = _registry.claim(
         key,
         transport,
         repo_type = "dataset",
         repo_id = repo_id,
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # Pollable when rejected by this repo's own in-flight job; an
-        # in-progress delete leaves no job, so flag it via ``adoptable``.
+        # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
+        # repo attached to anything.
+        adoptable = _registry.adoptable(key)
         return {
             "repo_id": repo_id,
             "state": claim_state,
-            "accepted": _registry.adoptable(key),
+            "accepted": adoptable,
+            "attached": adoptable,
             "generation": generation,
+            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
+            # the one it asked for.
+            "transport": _registry.job_transport(key),
+            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
+            # partial.
+            "cancel_transport": _registry.job_cancel_transport(key),
         }
-    download_manifest.clear_cancel_marker("dataset", repo_id, None)
+    download_manifest.clear_cancel_marker(
+        "dataset",
+        repo_id,
+        None,
+        hub_cache = cache_paths.hub_cache,
+    )
 
     state = download_lifecycle.launch_worker(
         _registry,
@@ -185,8 +217,11 @@ async def download_dataset_response(
             ["--repo-id", repo_id, "--dataset"],
             hf_token,
             use_xet = use_xet,
+            cache_env = cache_env,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
         label = repo_id,
         log_prefix = "Dataset download",
         logger = logger,
@@ -200,7 +235,10 @@ async def download_dataset_response(
         "repo_id": repo_id,
         "state": state,
         "accepted": True,
+        "attached": False,
         "generation": generation,
+        # See models: the resolved transport, which a downgrade can make different from the one requested.
+        "transport": transport,
     }
 
 

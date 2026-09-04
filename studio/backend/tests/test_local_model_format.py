@@ -15,6 +15,8 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -40,10 +42,299 @@ def _touch(path: Path) -> Path:
     return path
 
 
+def _empty_compat_sources(tmp_path: Path):
+    empty = tmp_path / "empty"
+    return models_route._CompatLocalInventorySources(
+        empty / "active",
+        empty / "legacy",
+        empty / "default",
+        (),
+        (),
+    )
+
+
+def test_compat_inventory_groups_custom_gguf_variants(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_distinct_custom_ggufs(tmp_path):
+    root = tmp_path / "custom"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {Path(row.path) for row in rows} == {first, second}
+
+
+def test_compat_inventory_dedupes_overlapping_custom_roots(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_dedupes_nested_quant_root(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-a-Q4_K_M.gguf")
+    quant_dir = model / "Q8_0"
+    _touch(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(quant_dir)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_nested_independent_model_root(tmp_path):
+    root = tmp_path / "custom"
+    parent = root / "parent"
+    _touch(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    _touch(child / "child-Q8_0.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(child)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("custom", parent),
+        ("custom", child),
+    }
+
+
+def test_compat_inventory_keeps_custom_section_copy(tmp_path):
+    root = tmp_path / "models"
+    model = root / "publisher"
+    q4 = _touch(model / "model-Q4_K_M.gguf")
+    q8 = _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [{"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", model),
+        ("custom", q4),
+        ("custom", q8),
+    }
+
+
+def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
+    root = tmp_path / "models"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(lm_dirs = (root,))
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", holder),
+        ("lmstudio", first),
+        ("lmstudio", second),
+    }
+
+
+def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
+    root = tmp_path / "ollama"
+    digest = "sha256-model"
+    _touch(root / "blobs" / digest)
+    manifest = json.dumps(
+        {
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": digest.replace("-", ":", 1),
+                }
+            ]
+        }
+    )
+    tags = root / "manifests" / "registry.ollama.ai" / "library" / "model"
+    tags.mkdir(parents = True)
+    for tag in ("latest", "v1"):
+        (tags / tag).write_text(manifest, encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {row.model_id for row in rows} == {"ollama/model:latest", "ollama/model:v1"}
+
+
+def test_compat_inventory_preserves_same_ollama_tag_from_distinct_stores(tmp_path):
+    roots = [tmp_path / "ollama-one", tmp_path / "ollama-two"]
+    for index, root in enumerate(roots):
+        digest = f"sha256-model-{index}"
+        _touch(root / "blobs" / digest)
+        tag = root / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+        tag.parent.mkdir(parents = True)
+        tag.write_text(
+            json.dumps(
+                {
+                    "layers": [
+                        {
+                            "mediaType": "application/vnd.ollama.image.model",
+                            "digest": digest.replace("-", ":", 1),
+                        }
+                    ]
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)} for root in roots],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [row.model_id for row in rows] == ["ollama/model:latest"] * 2
+    assert len({Path(row.path).resolve() for row in rows}) == 2
+
+
+def test_compat_inventory_dedupes_lmstudio_publisher_named_ollama(tmp_path):
+    root = tmp_path / "lmstudio"
+    model = root / "ollama" / "foo"
+    _touch(model / "foo-Q4_K_M.gguf")
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
+def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    base = tmp_path / "whisper-base"
+    _touch(base / "model.safetensors")
+    (base / "config.json").write_text(
+        '{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}'
+    )
+    adapter = tmp_path / "whisper-adapter"
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+
+    rows = _classify_local_path(adapter, "custom")
+
+    assert len(rows) == 1
+    assert rows[0].base_model == str(base)
+    assert models_route._local_model_can_chat(rows[0]) is False
+
+
 def test_dir_model_format_gguf_only(tmp_path):
     d = tmp_path / "model"
     _touch(d / "model-Q4_K_M.gguf")
     assert models_route._dir_model_format(d) == "gguf"
+
+
+def test_dir_model_format_mmproj_only_is_not_gguf(tmp_path):
+    # A lone vision adapter has nothing servable: the variant selector drops mmproj.
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    assert models_route._dir_model_format(d) is None
+
+
+def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    _touch(d / "model-Q4_K_M.gguf")
+    assert models_route._dir_model_format(d) == "gguf"
+
+
+def test_dir_model_format_recursive_sees_split_quant_subdirs(tmp_path):
+    # HF cache snapshots keep split quants in per-quant subdirs. A flat glob reports
+    # no GGUF there, which would hide every sharded repo from the GGUF pickers.
+    d = tmp_path / "snapshot"
+    _touch(d / "UD-Q4_K_XL" / "model-00001-of-00002.gguf")
+    assert models_route._dir_model_format(d) is None
+    assert models_route._dir_model_format(d, recursive = True) == "gguf"
+
+
+def test_dir_model_format_recursive_ignores_mmproj_only_subdirs(tmp_path):
+    d = tmp_path / "snapshot"
+    _touch(d / "mmproj" / "mmproj-F16.gguf")
+    assert models_route._dir_model_format(d, recursive = True) is None
+
+
+def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
+    # Same rule as _dir_model_format, applied by the parallel ./models scanner.
+    _touch(tmp_path / "vision" / "mmproj-F16.gguf")
+    _touch(tmp_path / "real" / "model-Q4_K_M.gguf")
+    formats = {m.display_name: m.model_format for m in models_route._scan_models_dir(tmp_path)}
+    assert formats["vision"] is None
+    assert formats["real"] == "gguf"
+
+
+def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
+    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must
+    # not be offered as a model the way a loose primary GGUF is.
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_standalone_mmproj_file(tmp_path):
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
+    # LM Studio's publisher/model.gguf layout classifies on a separate branch.
+    _touch(tmp_path / "Publisher" / "mmproj-F16.gguf")
+    _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
 
 
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
@@ -115,3 +406,510 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
     assert row.path == str(root)
     assert row.model_format == "gguf"
+
+
+def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
+    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root) is loadable, so the scan
+    # must surface it or it never reaches the On Device picker. Not a GGUF, so model_format stays None.
+    root = tmp_path / "models"
+    pipe = root / "my-pipeline"
+    _touch(pipe / "model_index.json")
+    _touch(pipe / "transformer" / "config.json")
+    _touch(pipe / "transformer" / "diffusion_pytorch_model.safetensors")
+    _touch(pipe / "vae" / "diffusion_pytorch_model.safetensors")
+
+    rows = {Path(m.path).name: m for m in models_route._scan_models_dir(root)}
+
+    assert "my-pipeline" in rows
+    assert rows["my-pipeline"].model_format is None
+
+
+def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
+    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects; without admitting it the scan surfaces component subdirs and hides the pipeline.
+    root = tmp_path / "my-local-pipeline"
+    _touch(root / "model_index.json")
+    _touch(root / "transformer" / "config.json")
+    _touch(root / "transformer" / "diffusion_pytorch_model.safetensors")
+    _touch(root / "vae" / "diffusion_pytorch_model.safetensors")
+
+    rows = models_route._scan_models_dir(root)
+
+    assert [r.path for r in rows] == [str(root)]
+    assert rows[0].model_format is None
+
+
+def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
+    # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose .safetensors). The child loop
+    # admits that shape and the images route reinterprets it via resolve_local_single_file, so the root must be surfaced too.
+    root = tmp_path / "qwen-image-2509"
+    _touch(root / "qwen-image-2509.safetensors")
+
+    rows = models_route._scan_models_dir(root)
+
+    assert [r.path for r in rows] == [str(root)]
+    assert rows[0].model_format is None
+
+
+def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
+    # A stray loose .safetensors at a models ROOT must not collapse the scan to one row: the root fallback applies only when nothing else matched.
+    root = tmp_path / "models"
+    _touch(root / "stray.safetensors")
+    _touch(root / "llama" / "config.json")
+    _touch(root / "llama" / "model.safetensors")
+
+    assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
+
+
+# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
+from models.models import LocalModelInfo  # noqa: E402
+
+
+def _local(
+    path,
+    *,
+    model_format = None,
+    model_id = None,
+    display_name = "m",
+    id = "m",
+):
+    return LocalModelInfo(
+        id = id,
+        display_name = display_name,
+        path = str(path),
+        source = "models_dir",
+        model_id = model_id,
+        model_format = model_format,
+    )
+
+
+def test_windows_cloud_recall_attributes_are_not_local():
+    from utils.paths.path_utils import file_contents_available_locally
+
+    # Synology Drive exposes an online-only GGUF as 0x400020 through Python's
+    # os.stat(), and as 0x401620 through directory enumeration. Keep the individual
+    # Windows recall flags too so another cloud provider cannot regress unnoticed.
+    for attributes in (
+        0x00400020,
+        0x00401620,
+        0x00001000,
+        0x00040000,
+        0x00400000,
+    ):
+        assert not file_contents_available_locally(
+            "unused", types.SimpleNamespace(st_file_attributes = attributes)
+        )
+
+    # A hydrated Synology file remains a reparse point (0x420), and UNPINNED is
+    # user intent rather than proof that bytes are absent. Both must retain real
+    # architecture, context, and projector reads.
+    for attributes in (0x00000420, 0x00100000):
+        assert file_contents_available_locally(
+            "unused", types.SimpleNamespace(st_file_attributes = attributes)
+        )
+
+
+def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
+    """Fully present files retain architecture-based task detection."""
+    from hub.services.models import catalog_classification as classification
+
+    gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
+    reads = []
+    monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: True)
+    monkeypatch.setattr(
+        classification,
+        "_gguf_architecture",
+        lambda path: reads.append(path) or "llama",
+    )
+
+    model = _local(
+        gguf,
+        model_format = "gguf",
+        display_name = "generic",
+        id = "generic-file-id",
+    )
+
+    assert models_route._local_model_task(model) == "text-generation"
+    assert reads == [str(gguf)]
+
+
+def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
+    """Cloud placeholders stay discoverable by name without opening their data."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("local GGUF listing touched placeholder contents")
+
+    monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: False)
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
+    model = _local(
+        gguf,
+        model_format = "gguf",
+        display_name = "generic",
+        id = "generic-file-id",
+    )
+
+    assert models_route._local_model_task(model) is None
+
+
+def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypatch):
+    """The whole probe, not just the task half.
+
+    ``_local_model_classification`` falls through to the audio-type probe whenever the task
+    comes back None, which for a placeholder is every time, and that probe reads an
+    architecture of its own. Asserting on ``_local_model_task`` alone leaves the listing
+    hydrating exactly the files it stopped classifying, a folder row once per sibling."""
+    from hub.services.models import catalog_classification as classification
+    from utils.models import gguf_metadata
+
+    single = _touch(tmp_path / "single" / "generic-Q4_K_M.gguf")
+    folder = tmp_path / "generic-GGUF"
+    for quant in ("Q4_K_M", "Q8_0"):
+        _touch(folder / f"generic-{quant}.gguf")
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        gguf_metadata,
+        "read_gguf_architecture",
+        lambda path: opened.append(path) or "llama",
+    )
+
+    for path in (single, folder):
+        model = _local(path, model_format = "gguf", display_name = "generic", id = str(path))
+        assert classification._local_model_classification(model) == (None, None)
+    assert opened == []
+
+
+def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
+    from hub.services.models import catalog_classification as classification
+
+    repo = tmp_path / "models--unsloth--csm-1b"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "added_tokens_decoder": {
+                    "0": {"content": "<|AUDIO|>"},
+                    "1": {"content": "<|audio_eos|>"},
+                }
+            }
+        ),
+        encoding = "utf-8",
+    )
+    model = LocalModelInfo(
+        id = "unsloth/csm-1b",
+        display_name = "csm-1b",
+        path = str(repo),
+        source = "hf_cache",
+        model_id = "unsloth/csm-1b",
+    )
+
+    assert classification._local_model_classification(model) == ("text-to-speech", "csm")
+
+
+def test_local_task_probes_the_hf_cache_pipeline_snapshot(tmp_path):
+    repo = tmp_path / "models--hf-internal-testing--tiny-sdxl-pipe"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionXLPipeline"}),
+        encoding = "utf-8",
+    )
+    model = LocalModelInfo(
+        id = "hf-internal-testing/tiny-sdxl-pipe",
+        display_name = "tiny-sdxl-pipe",
+        path = str(repo),
+        source = "hf_cache",
+        model_id = "hf-internal-testing/tiny-sdxl-pipe",
+    )
+
+    assert models_route._local_model_task(model) == "text-to-image"
+
+
+def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path, monkeypatch):
+    """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
+    is not reachable from the one page whose pick would pull it down, and lists in Chat
+    instead. The filename carries the family, and it is read without opening the file."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("placeholder contents were read to classify it")
+
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    for name, expected in (
+        ("flux1-dev-Q4_K_M.gguf", "text-to-image"),
+        ("z-image-turbo-Q4_K_M.gguf", "text-to-image"),
+        ("ltx-video-2b-Q4_K_M.gguf", "text-to-video"),
+        # No family in the name: unknown, which keeps the row in Chat where a GGUF with
+        # nothing but a name belongs, rather than guessing it into a media page.
+        ("qwen3-4b-instruct-Q4_K_M.gguf", None),
+    ):
+        gguf = _touch(tmp_path / name)
+        model = _local(gguf, model_format = "gguf", display_name = name, id = name)
+        assert models_route._local_model_task(model) == expected, name
+
+
+def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkeypatch):
+    """A filesystem row's id is its whole path, and family detection matches a keyword in any
+    segment of it. With an architecture that mismatch only picks the wrong family; for a
+    placeholder the name is the entire case, so a shelf named after a family would file every
+    chat GGUF stored under it as an image or video model."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("placeholder contents were read to classify it")
+
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    for relative in (
+        "FLUX.1-dev-GGUF/extra/qwen3-4b/qwen3-Q4_K_M.gguf",
+        "ltx-2/qwen3-4b/qwen3-Q4_K_M.gguf",
+    ):
+        gguf = _touch(tmp_path / relative)
+        model = _local(gguf, model_format = "gguf", display_name = gguf.name, id = str(gguf))
+        assert models_route._local_model_task(model) is None, relative
+
+    # The control, and the shape a scanned GGUF folder actually takes: the row IS the
+    # directory, so its own leaf names it and the family survives.
+    folder = tmp_path / "FLUX.1-dev-GGUF"
+    _touch(folder / "diffusion_model-Q4_K_M.gguf")
+    row = _local(folder, model_format = "gguf", display_name = folder.name, id = str(folder))
+    assert models_route._local_model_task(row) == "text-to-image"
+
+
+def test_local_task_tags_family_named_pipeline_dir(tmp_path):
+    # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it and the Images picker keeps it.
+    d = tmp_path / "flux-pipeline"
+    _touch(d / "model_index.json")
+    _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
+    assert (
+        models_route._local_model_task(_local(d, model_id = "black-forest-labs/FLUX.1-dev"))
+        == "text-to-image"
+    )
+
+
+def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
+    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the Images load resolves no family and 400s after eviction, so it stays untagged.
+    d = tmp_path / "my-local-pipeline"
+    _touch(d / "model_index.json")
+    _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
+    assert models_route._local_is_diffusers(_local(d)) is True
+    assert models_route._local_model_task(_local(d)) is None
+
+
+def test_local_task_tags_diffusers_by_family_id(tmp_path):
+    # A single-file / safetensors image checkpoint ships no model_index.json, so fall back to the id resolving to a known family.
+    d = tmp_path / "flux-checkpoint"
+    _touch(d / "flux1-dev.safetensors")
+    assert (
+        models_route._local_model_task(_local(d, model_id = "black-forest-labs/FLUX.1-dev"))
+        == "text-to-image"
+    )
+
+
+def test_local_task_none_for_plain_llm(tmp_path):
+    # A plain non-GGUF LLM checkpoint (no pipeline, no image family) stays untagged.
+    d = tmp_path / "llama"
+    _touch(d / "config.json")
+    _touch(d / "model.safetensors")
+    assert models_route._local_model_task(_local(d, model_id = "meta-llama/Llama-3.1-8B")) is None
+
+
+def test_local_task_tags_minimax_music3_modular_pipeline(tmp_path):
+    d = tmp_path / "music3"
+    d.mkdir()
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+
+    assert models_route._local_model_task(_local(d, model_format = "safetensors")) == (
+        "text-to-speech"
+    )
+
+
+def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch, tmp_path):
+    models_dir = tmp_path / "models"
+    d = models_dir / "music3"
+    d.mkdir(parents = True)
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    sources = models_route._CompatLocalInventorySources(
+        hf_cache_dir = models_dir,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        known_hf_caches = (),
+    )
+
+    def scan(_models_root, *, custom_folders, sources):
+        return [_local(d, model_format = "safetensors", id = str(d))]
+
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(models_route, "collect_local_models", scan)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    response = asyncio.run(
+        models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
+    )
+
+    assert response.models[0].task == "text-to-speech"
+    assert response.models[0].audio_type == "minimax_music3"
+
+
+def test_local_task_tags_video_pipeline_dir(tmp_path):
+    # A local diffusers pipeline whose id resolves to a VIDEO family must be tagged text-to-video so it surfaces in the Video On-Device picker.
+    d = tmp_path / "wan-local"
+    _touch(d / "model_index.json")
+    _touch(d / "transformer" / "diffusion_pytorch_model.safetensors")
+    assert (
+        models_route._local_model_task(_local(d, model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"))
+        == models_route._VIDEO_GEN_TASK
+    )
+
+
+def test_local_task_tags_video_single_file_checkpoint(tmp_path):
+    # A video-family dir holding a bare single-file .safetensors is loadable (as a single_file), so it must be tagged text-to-video, not hidden.
+    d = tmp_path / "ltx-loose"
+    _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
+    assert (
+        models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2"))
+        == models_route._VIDEO_GEN_TASK
+    )
+
+
+def test_local_task_tags_single_file_by_checkpoint_filename(tmp_path):
+    # A folder holding one checkpoint whose FILENAME identifies the family is loadable via resolve_local_single_file, so tag it from the filename or the picker hides it.
+    d = tmp_path / "downloads"
+    _touch(d / "qwen-image-2509.safetensors")  # family only in the filename, no model_index.json
+    m = _local(d, id = str(d), display_name = "downloads")
+    assert models_route._local_is_diffusers(m) is True
+    assert models_route._local_model_task(m) == "text-to-image"
+
+
+def test_local_task_tags_video_single_file_by_checkpoint_filename(tmp_path):
+    # Same, for a video family whose token lives only in the sole checkpoint's filename.
+    d = tmp_path / "clips"
+    _touch(d / "ltx-2.3-distilled.safetensors")  # ltx family only in the filename
+    m = _local(d, id = str(d), display_name = "clips")
+    assert models_route._local_model_task(m) == models_route._VIDEO_GEN_TASK
+
+
+def test_local_task_ignores_family_token_in_parent_path(tmp_path):
+    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher treats any path segment as a hint, so a token in
+    # a PARENT dir must NOT tag an unrelated single-file as text-to-image and evict the GPU owner. Detection is scoped to the leaf name.
+    d = tmp_path / "misc"
+    _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
+    m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")
+    assert models_route._local_is_diffusers(m) is False
+    assert models_route._local_model_task(m) is None
+    # Regression guard: a leaf name that itself carries a family hint is still tagged.
+    d2 = tmp_path / "z-image-turbo"
+    _touch(d2 / "model.safetensors")
+    m2 = _local(d2, id = str(d2), display_name = "z-image-turbo")
+    assert models_route._local_is_diffusers(m2) is True
+
+
+def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
+    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json``, which is the pair the video loader accepts. Recognising only the
+    conventional index hid such a root from the picker and let the publisher walk descend into it
+    and offer its components as separate, unusable models. The hub scanner
+    (``local_inventory._is_diffusers_pipeline_dir``) makes the same test and has its own case."""
+    from routes.models import _local_pipeline_index
+
+    modular = tmp_path / "modular"
+    (modular / "transformer").mkdir(parents = True)
+    (modular / "modular_model_index.json").write_text("{}")
+    assert _local_pipeline_index(modular) is True
+    assert (
+        models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
+        is True
+    )
+
+    conventional = tmp_path / "conventional"
+    conventional.mkdir()
+    (conventional / "model_index.json").write_text("{}")
+    assert _local_pipeline_index(conventional) is True
+
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    assert _local_pipeline_index(neither) is False
+
+
+def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
+    """_local_is_diffusers asks detect_video_family; _repo_is_diffusers must ask it too.
+
+    A cached single-file video checkpoint with no pipeline index gets no task from
+    _cached_repo_task (it returns None for an untrusted or unbuildable video family), so if
+    the diffusers flag is also missing, an inconclusive transformer config leaves can_chat
+    set -- and that is every gate the chat picker has. The video weights would be offered to
+    the text loader.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.video_families import detect_video_family
+    from hub.services.models import catalog_classification as classification
+
+    repo_id = "Lightricks/LTX-Video"
+    assert detect_video_family(repo_id) is not None, "fixture assumes a known video family"
+
+    info = SimpleNamespace(repo_id = repo_id, repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(info) is True
+    # A plain chat repo must not be swept up by the same rule.
+    chat = SimpleNamespace(repo_id = "unsloth/Qwen3-0.6B", repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(chat) is False
+
+
+def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
+    """An adapter listed from a legacy or previously configured root has its base cached in
+    that SAME root. Probing only the active root answered None, and None is inconclusive,
+    which leaves the adapter chat-capable -- so a Whisper LoRA reached the chat picker.
+    """
+    import json
+
+    from hub.services.models.common import _base_transformers_can_chat, _hub_cache_root_of
+
+    root = tmp_path / "legacy_hub"
+    base_snapshot = root / "models--Org--WhisperBase" / "snapshots" / ("b" * 40)
+    base_snapshot.mkdir(parents = True)
+    (base_snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            }
+        )
+    )
+    (root / "models--Org--WhisperBase" / "refs").mkdir(parents = True)
+    (root / "models--Org--WhisperBase" / "refs" / "main").write_text("b" * 40)
+
+    adapter_snapshot = root / "models--Org--SpeechLora" / "snapshots" / ("a" * 40)
+    adapter_snapshot.mkdir(parents = True)
+
+    assert _hub_cache_root_of(adapter_snapshot) == root
+    assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False

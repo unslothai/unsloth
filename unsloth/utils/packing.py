@@ -17,8 +17,12 @@
 
 from __future__ import annotations
 
+import copy
+import inspect
 import logging
+import os
 from collections import OrderedDict
+from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
 
 import torch
@@ -34,7 +38,7 @@ except Exception:
         _XFormersBlockMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int], Any] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -52,12 +56,61 @@ def _window_cache_key(sliding_window: Optional[int]) -> int:
     return int(sliding_window)
 
 
-def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[int]):
+def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
+    """Return an xFormers attention bias whose tensor metadata is on ``device``."""
+    if attn_bias is None:
+        return None
+
+    device = torch.device(device)
+    seqinfos = [
+        (name, seqinfo)
+        for name in ("q_seqinfo", "k_seqinfo")
+        if (seqinfo := getattr(attn_bias, name, None)) is not None
+    ]
+    if seqinfos:
+        if all(
+            getattr(getattr(seqinfo, "seqstart", None), "device", None) == device
+            for _, seqinfo in seqinfos
+        ):
+            return attn_bias
+
+        # Move the device-bearing metadata instead of the top-level mask: older xFormers versions demote
+        # causal masks in their inherited `to` method, and copies also keep later model shards from
+        # rewriting masks retained for backward.
+        moved_bias = copy.copy(attn_bias)
+        moved_seqinfos = {}
+        for name, seqinfo in seqinfos:
+            source_id = id(seqinfo)
+            if source_id not in moved_seqinfos:
+                moved_seqinfo = copy.copy(seqinfo)
+                move = getattr(moved_seqinfo, "to", None)
+                if callable(move):
+                    moved = move(device)
+                    if moved is not None:
+                        moved_seqinfo = moved
+                moved_seqinfos[source_id] = moved_seqinfo
+            setattr(moved_bias, name, moved_seqinfos[source_id])
+        return moved_bias
+
+    # Biases without sequence metadata can safely use their own move protocol.
+    moved_bias = copy.copy(attn_bias)
+    move = getattr(moved_bias, "to", None)
+    if callable(move):
+        moved = move(device)
+        if moved is not None:
+            moved_bias = moved
+    return moved_bias
+
+
+def _get_cached_block_mask(
+    lengths: Tuple[int, ...], sliding_window: Optional[int], device: torch.device
+):
     if _XFormersBlockMask is None:
         return None
 
+    device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (lengths, window_key)
+    cache_key = (device, lengths, window_key)
     cached = _XFORMERS_MASK_CACHE.get(cache_key)
     if cached is not None:
         _XFORMERS_MASK_CACHE.move_to_end(cache_key)
@@ -66,6 +119,7 @@ def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[in
     mask = _XFormersBlockMask.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
         mask = mask.make_local_attention(window_size = window_key)
+    mask = move_xformers_attention_bias(mask, device)
 
     _XFORMERS_MASK_CACHE[cache_key] = mask
     if len(_XFORMERS_MASK_CACHE) > _XFORMERS_MASK_CACHE_MAXSIZE:
@@ -159,13 +213,19 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent
+            # Fallback: infer lengths from tokenized inputs when metadata is absent.
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
+                # Boundary labels are NOT masked here: unsloth_zoo's _unsloth_get_batch_samples counts
+                # num_items_in_batch off this batch and discounts the N-1 boundary targets itself, idempotently,
+                # zeroing those slots rather than subtracting a constant, so the count is unaffected by upstream
+                # masking (TRL >= 0.24's labels[position_ids == 0] = -100, completion-only masking,
+                # assistant_masks). Labels are left alone because the guard that needs these positions runs in the
+                # forward, off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -208,6 +268,8 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
+            # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
+            # this batch and the zoo's discount of the boundary targets is idempotent.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -216,6 +278,295 @@ def enable_padding_free_metadata(model, trainer):
 
     collator.torch_call = torch_call_with_padding_free_metadata
     collator._unsloth_padding_free_lengths_wrapped = True
+
+
+# Experimental correct packing / padding-free for hybrid linear-attention: Qwen3.5 / Qwen3-Next
+# mix a gated-delta recurrence with a causal conv1d, and packing flattens the batch so both leak
+# state across sequence boundaries unless seq_idx (conv) and cu_seqlens (scan) are passed. Only
+# the accelerated kernels accept these, so it fails closed on the pure-torch fallbacks, behind an
+# env flag, and overrides only the per-module prefill kernels (causal_conv1d_fn /
+# chunk_gated_delta_rule), leaving decode untouched.
+_HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
+_HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
+_HYBRID_WARNED: set = set()
+
+
+def _hybrid_packing_enabled() -> bool:
+    # Read at call time so setting the flag after `import unsloth` still takes effect.
+    return os.environ.get(_HYBRID_PACKING_ENV_VAR, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _hybrid_reject(reason: str) -> bool:
+    # One deduped diagnostic explaining why hybrid packing stayed on the padded path.
+    if reason not in _HYBRID_WARNED:
+        _HYBRID_WARNED.add(reason)
+        _HYBRID_LOGGER.warning(
+            "Unsloth: hybrid linear-attention packing disabled (padded path): %s.",
+            reason,
+        )
+    return False
+
+
+def _iter_gated_delta_modules(model):
+    modules, seen = [], set()
+    for module in model.modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        if type(module).__name__.endswith("GatedDeltaNet") and hasattr(module, "conv1d"):
+            modules.append(module)
+    return modules
+
+
+def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
+    """None if every module can use the accelerated varlen path, else a short
+    reason string. All modules are validated before any are mutated; signatures
+    are read off the captured originals when already wrapped.
+
+    Dispatch (the mixer actually calling self.causal_conv1d_fn /
+    self.chunk_gated_delta_rule) is verified at RUNTIME by the forward-wrapper
+    handshake, not statically: Unsloth's compile-disable shim hides it from
+    inspect.getsource, and every supported transformers release dispatches
+    through the instance attribute."""
+    if not gated_delta_modules:
+        return "no gated-delta modules found"
+    for module in gated_delta_modules:
+        conv = getattr(module, "_unsloth_varlen_orig_conv", None) or getattr(
+            module,
+            "causal_conv1d_fn",
+            None,
+        )
+        scan = getattr(module, "_unsloth_varlen_orig_scan", None) or getattr(
+            module,
+            "chunk_gated_delta_rule",
+            None,
+        )
+        if conv is None or scan is None:
+            return "accelerated kernels missing (install causal_conv1d and fla)"
+        if getattr(scan, "__name__", "").startswith("torch_") or getattr(
+            conv,
+            "__name__",
+            "",
+        ).startswith("torch_"):
+            return "pure-torch kernel fallback in use"
+        try:
+            if "seq_idx" not in inspect.signature(conv).parameters:
+                return "conv kernel does not accept seq_idx"
+            if "cu_seqlens" not in inspect.signature(scan).parameters:
+                return "scan kernel does not accept cu_seqlens"
+        except (TypeError, ValueError):
+            return "kernel signature not introspectable"
+    return None
+
+
+def _varlen_from_position_ids(position_ids):
+    """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
+    batch, else None. Padding-free position_ids reset to 0 at each sequence start;
+    accepts only a validated single-row pack (normal batch or single sequence ->
+    None). Fallback used only when packed_seq_lengths is absent: it assumes
+    right-packed reset position_ids and would mis-segment a left-padded row, which
+    is why packed_seq_lengths is always preferred."""
+    if position_ids is None:
+        return None
+    pos = position_ids
+    if pos.dim() == 3:  # MRoPE [n_planes, 1, T] -> text plane is index 0
+        pos = pos[0]
+    if pos.dim() != 2 or pos.shape[0] != 1:
+        return None
+    row = pos[0]
+    total = row.shape[0]
+    starts = (row == 0).nonzero(as_tuple = False).flatten()
+    if starts.numel() <= 1 or int(starts[0].item()) != 0:
+        return None
+    cu_seqlens = torch.cat(
+        [
+            starts.to(torch.int32),
+            torch.tensor([total], dtype = torch.int32, device = row.device),
+        ]
+    )
+    return _seq_idx_from_cu_seqlens(cu_seqlens, total)
+
+
+def _seq_idx_from_cu_seqlens(cu_seqlens, total):
+    """(cu_seqlens int32[n+1], seq_idx int32[1,total]) partitioning [0, total),
+    else None. Appends a trailing segment for pad_to_multiple_of zero tokens so the
+    boundaries always cover the full flattened length the kernels see."""
+    if cu_seqlens is None or cu_seqlens.numel() < 2 or int(cu_seqlens[0].item()) != 0:
+        return None
+    boundaries = cu_seqlens.to(torch.int32)
+    last = int(boundaries[-1].item())
+    if last > total:
+        return None
+    if last < total:  # trailing pad tokens -> one final segment
+        boundaries = torch.cat(
+            [
+                boundaries,
+                torch.tensor([total], dtype = torch.int32, device = boundaries.device),
+            ]
+        )
+    lengths = boundaries[1:] - boundaries[:-1]
+    if not bool((lengths > 0).all()):
+        return None
+    seq_idx = torch.repeat_interleave(
+        torch.arange(lengths.numel(), dtype = torch.int32, device = boundaries.device),
+        lengths.to(torch.int64),
+    ).unsqueeze(0)
+    return boundaries, seq_idx
+
+
+def _hybrid_varlen_metadata(kwargs):
+    """Boundary metadata (cu_seqlens, seq_idx) for one flattened packed forward,
+    else None. Prefers the authoritative packed_seq_lengths, falls back to
+    reset-style position_ids. Returns None for cached forwards and non-packed
+    batches so decode / eval / normal batches are a strict no-op."""
+    if kwargs.get("use_cache"):
+        return None
+    if kwargs.get("past_key_values") is not None or kwargs.get("cache_params") is not None:
+        return None
+    total, device = None, None
+    for key in ("input_ids", "inputs_embeds", "position_ids"):
+        tensor = kwargs.get(key)
+        if tensor is not None and hasattr(tensor, "shape"):
+            total = tensor.shape[1] if key == "inputs_embeds" else tensor.shape[-1]
+            device = tensor.device
+            break
+    if total is None:
+        return None
+    psl = kwargs.get("packed_seq_lengths")
+    if psl is not None and getattr(psl, "numel", lambda: 1)() > 0:
+        info = get_packed_info_from_kwargs(kwargs, device)
+        if info is not None:
+            _, cu_seqlens, _ = info
+            built = _seq_idx_from_cu_seqlens(cu_seqlens, total)
+            if built is not None:
+                return built
+    return _varlen_from_position_ids(kwargs.get("position_ids"))
+
+
+def patch_hybrid_linear_attention_varlen(model) -> bool:
+    """Feed seq_idx / cu_seqlens to the gated-delta conv + scan so packing and
+    padding-free reset state at sequence boundaries. Gated by
+    UNSLOTH_EXPERIMENTAL_HYBRID_PACKING and fail-closed. Returns True when the
+    varlen path is active, so the caller may allow packing for the model.
+    Idempotent: repeat calls on an already-patched model return True."""
+    if not _hybrid_packing_enabled():
+        return False
+    gated_delta_modules = _iter_gated_delta_modules(model)
+
+    # Idempotency: an already fully-patched model stays active without re-validation.
+    if (
+        getattr(model, "_unsloth_varlen_forward_wrapped", False)
+        and gated_delta_modules
+        and all(getattr(m, "_unsloth_varlen_wrapped", False) for m in gated_delta_modules)
+    ):
+        return True
+
+    reason = _hybrid_varlen_kernels_available(gated_delta_modules)
+    if reason is not None:
+        return _hybrid_reject(reason)
+
+    # Transactional: every module validated above, now wrap each and stash originals.
+    for module in gated_delta_modules:
+        if getattr(module, "_unsloth_varlen_wrapped", False):
+            continue
+        conv_orig, scan_orig = module.causal_conv1d_fn, module.chunk_gated_delta_rule
+        module._unsloth_varlen_orig_conv = conv_orig
+        module._unsloth_varlen_orig_scan = scan_orig
+
+        @wraps(conv_orig)
+        def conv_fn(
+            *args,
+            _orig = conv_orig,
+            _module = module,
+            **kwargs,
+        ):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None:
+                _module._unsloth_varlen_conv_hit = True  # runtime dispatch handshake
+                if kwargs.get("seq_idx") is None:
+                    kwargs["seq_idx"] = varlen[1]
+            return _orig(*args, **kwargs)
+
+        @wraps(scan_orig)
+        def scan_fn(
+            *args,
+            _orig = scan_orig,
+            _module = module,
+            **kwargs,
+        ):
+            varlen = getattr(_module, "_unsloth_varlen", None)
+            if varlen is not None:
+                _module._unsloth_varlen_scan_hit = True
+                if kwargs.get("cu_seqlens") is None:
+                    kwargs["cu_seqlens"] = varlen[0]
+            return _orig(*args, **kwargs)
+
+        module.causal_conv1d_fn = conv_fn
+        module.chunk_gated_delta_rule = scan_fn
+        module._unsloth_varlen = None
+        module._unsloth_varlen_wrapped = True
+
+    # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
+    # recompute so it stays valid for recomputed inner forwards.
+    if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
+        forward_orig = model.forward
+        try:
+            forward_sig = inspect.signature(forward_orig)
+        except (TypeError, ValueError):
+            forward_sig = None
+
+        @wraps(forward_orig)
+        def forward_with_varlen(*args, **kwargs):
+            try:
+                bound = dict(kwargs)
+                if forward_sig is not None and args:
+                    bound.update(forward_sig.bind_partial(*args).arguments)
+                varlen = _hybrid_varlen_metadata(bound)
+            except Exception:
+                varlen = None
+            first_pack = varlen is not None and not getattr(
+                model,
+                "_unsloth_varlen_handshake_done",
+                False,
+            )
+            for module in gated_delta_modules:
+                module._unsloth_varlen = varlen
+                if first_pack:
+                    module._unsloth_varlen_conv_hit = False
+                    module._unsloth_varlen_scan_hit = False
+            out = forward_orig(*args, **kwargs)
+            # Runtime dispatch handshake: on the first packed forward, confirm BOTH boundary kernels ran for
+            # EVERY module.
+            if first_pack:
+                model._unsloth_varlen_handshake_done = True
+                missing = [
+                    type(m).__name__
+                    for m in gated_delta_modules
+                    if not (
+                        getattr(m, "_unsloth_varlen_conv_hit", False)
+                        and getattr(m, "_unsloth_varlen_scan_hit", False)
+                    )
+                ]
+                if missing:
+                    for m in gated_delta_modules:
+                        m._unsloth_varlen = None
+                    _hybrid_reject("varlen conv/scan not both dispatched (dispatch changed?)")
+                    raise RuntimeError(
+                        "Unsloth: experimental hybrid packing cannot continue because the "
+                        "varlen conv/scan wrappers were not both invoked for "
+                        f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
+                        "to train these models on the padded path."
+                    )
+            return out
+
+        model.forward = forward_with_varlen
+        model._unsloth_varlen_forward_wrapped = True
+    return True
 
 
 def get_packed_info_from_kwargs(
@@ -262,7 +613,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
-        mask = _get_cached_block_mask(lengths, sliding_window)
+        mask = _get_cached_block_mask(lengths, sliding_window, device)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
@@ -365,8 +716,51 @@ def mask_packed_sequence_boundaries(
     return True
 
 
+def mask_packed_boundary_labels(
+    labels: Optional[torch.Tensor],
+    seq_lengths: Any,
+    *,
+    ignore_index: int = -100,
+) -> Optional[torch.Tensor]:
+    """Same guard as :func:`mask_packed_sequence_boundaries`, but on RAW (unshifted)
+    labels and out-of-place, for fused cross-entropy paths that shift internally.
+
+    The shift maps target slot ``i`` to ``labels[i + 1]``, so masking shift slot
+    ``cumsum - 1`` is exactly masking ``labels[cumsum]``, the first token of each
+    following document.
+
+    Returns ``labels`` unchanged when ``seq_lengths`` is absent or empty, else a NEW
+    tensor; the caller's batch is never mutated. Idempotent, and a no-op on TRL's
+    padding-free collator output (``labels[position_ids == 0] = -100``).
+
+    Contract: ``sum(seq_lengths) <= labels.numel()``. Out-of-range entries (the final
+    cumsum, or malformed lengths) redirect to index 0, which the shift discards and so
+    is never a CE target; this avoids device syncs and data-dependent shapes in the
+    compiled fused-CE path.
+    """
+    if labels is None or not isinstance(labels, torch.Tensor):
+        return labels
+    lengths = _normalize_packed_lengths(seq_lengths, device = labels.device)
+    if lengths is None:
+        return labels
+
+    total_tokens = labels.numel()
+    if total_tokens == 0:
+        return labels
+
+    positions = torch.cumsum(lengths, dim = 0)
+    positions = torch.where(
+        positions < total_tokens,
+        positions,
+        torch.zeros_like(positions),
+    )
+    flat = labels.reshape(-1).index_fill(0, positions, ignore_index)
+    return flat.view(labels.shape)
+
+
 def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
+    _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
@@ -377,10 +771,12 @@ __all__ = [
     "configure_padding_free",
     "enable_sample_packing",
     "enable_padding_free_metadata",
+    "move_xformers_attention_bias",
     "mark_allow_overlength",
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
+    "mask_packed_boundary_labels",
     "clear_packed_caches",
 ]

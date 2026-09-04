@@ -3,6 +3,14 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
+import {
+  signalRunningLlamaJob,
+  subscribeToLlamaJobStarted,
+} from "@/lib/llama-job-events";
+import {
+  llamaUpdateAdoptsRunningJob,
+  llamaUpdatePresentation,
+} from "@/lib/llama-job-lifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -15,6 +23,8 @@ const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
+  operation: "update" | "switch" | null;
+  requested_backend: "auto" | "cpu" | "cuda" | "rocm" | "vulkan" | null;
   message: string;
   from_tag: string | null;
   to_tag: string | null;
@@ -22,6 +32,8 @@ export interface LlamaUpdateJob {
   error: string | null;
   // Download fraction while running, 1 on success.
   progress: number | null;
+  // Identifies the accepted job when notifying other surfaces and tabs.
+  started_at: string | null;
   // Set once the job leaves "running"; identifies a completed job so a
   // repeated fetch of the same success can be told apart from the next one.
   finished_at: string | null;
@@ -30,6 +42,8 @@ export interface LlamaUpdateJob {
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  source_build: boolean;
+  component: "llama.cpp" | "whisper.cpp";
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -41,6 +55,18 @@ function parseJob(value: unknown): LlamaUpdateJob {
   const job = (value ?? {}) as Record<string, unknown>;
   return {
     state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
+    operation:
+      job.operation === "update" || job.operation === "switch"
+        ? job.operation
+        : null,
+    requested_backend:
+      job.requested_backend === "auto" ||
+      job.requested_backend === "cpu" ||
+      job.requested_backend === "cuda" ||
+      job.requested_backend === "rocm" ||
+      job.requested_backend === "vulkan"
+        ? job.requested_backend
+        : null,
     message: typeof job.message === "string" ? job.message : "",
     from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
     to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
@@ -48,6 +74,7 @@ function parseJob(value: unknown): LlamaUpdateJob {
       typeof job.reload_required === "boolean" ? job.reload_required : null,
     error: typeof job.error === "string" ? job.error : null,
     progress: typeof job.progress === "number" ? job.progress : null,
+    started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
   };
 }
@@ -55,13 +82,29 @@ function parseJob(value: unknown): LlamaUpdateJob {
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
   if (!value || typeof value !== "object") return null;
   const s = value as Record<string, unknown>;
+  const component =
+    s.update_component === "whisper" ? "whisper.cpp" : "llama.cpp";
+  const whisper =
+    s.whisper && typeof s.whisper === "object"
+      ? (s.whisper as Record<string, unknown>)
+      : null;
+  // Legacy top-level version fields intentionally retain their llama meaning.
+  // A whisper-only update must display the nested whisper release instead of
+  // presenting equal llama tags as a new llama update.
+  const details = component === "whisper.cpp" && whisper ? whisper : s;
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
-    installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
-    latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    source_build: s.source_build === true,
+    component,
+    installed_tag:
+      typeof details.installed_tag === "string" ? details.installed_tag : null,
+    latest_tag:
+      typeof details.latest_tag === "string" ? details.latest_tag : null,
     update_size_bytes:
-      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+      typeof details.update_size_bytes === "number"
+        ? details.update_size_bytes
+        : null,
     job: parseJob(s.job),
   };
 }
@@ -162,9 +205,15 @@ export function useLlamaUpdateCheck({
   // (the job came back embedded in a "not started" response) so none of them
   // can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
-    (job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">) => {
+    (
+      job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">,
+    ) => {
+      // "error" is included for partial chained updates: the llama phase can
+      // land (and unload the server) before a later phase fails, and the
+      // backend keeps reload_required set in exactly that case. Without the
+      // resync the chat UI would keep pointing at the unloaded model.
       if (
-        job.state === "success" &&
+        (job.state === "success" || job.state === "error") &&
         job.reload_required &&
         job.finished_at !== reloadNotifiedForRef.current
       ) {
@@ -184,11 +233,12 @@ export function useLlamaUpdateCheck({
         const s = await fetchStatus();
         if (!s) return;
         setStatus(s);
-        if (s.job.state === "running") return;
+        const presentation = llamaUpdatePresentation(s.update_available, s.job);
+        setApplying(presentation.applying);
+        setVisible(presentation.visible);
+        if (presentation.running) return;
         clearPollTimer();
-        setApplying(false);
         if (s.job.state === "success") {
-          setVisible(false);
           void refreshHardwareInfo();
           // The update unloads the running model server-side, so the chat
           // runtime still points at a model that now 400s on send. Let the
@@ -202,7 +252,9 @@ export function useLlamaUpdateCheck({
             reloadRequired: s.job.reload_required,
           });
         } else if (s.job.state === "error") {
-          // Keep the banner visible so retry is available.
+          // Keep the banner visible so retry is available. A partial chained
+          // update can still have unloaded the llama server before failing.
+          notifyReloadIfNeeded(s.job);
           onDone?.({ ok: false, error: s.job.error });
         } else {
           onDone?.({ ok: false, error: "update did not complete" });
@@ -216,10 +268,13 @@ export function useLlamaUpdateCheck({
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
       setStatus(next);
-      if (next.job.state === "running") {
-        // Another tab is applying; show progress here too.
-        setApplying(true);
-        setVisible(true);
+      const presentation = llamaUpdatePresentation(
+        next.update_available,
+        next.job,
+      );
+      setApplying(presentation.applying);
+      setVisible(presentation.visible);
+      if (presentation.running) {
         if (!pollTimer.current) startJobPoll();
         return;
       }
@@ -228,9 +283,6 @@ export function useLlamaUpdateCheck({
       // hourly and misses both the running and just-finished moments) still
       // needs to resync here, not just from the poll path above.
       notifyReloadIfNeeded(next.job);
-      if (next.update_available) {
-        setVisible(true);
-      }
     },
     [startJobPoll, notifyReloadIfNeeded],
   );
@@ -238,8 +290,6 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     if (!enabled) {
       // Re-enabling will rediscover any still-running job.
-      setVisible(false);
-      setApplying(false);
       return;
     }
     let canceled = false;
@@ -288,6 +338,13 @@ export function useLlamaUpdateCheck({
     return () => window.removeEventListener("storage", onStorage);
   }, [enabled, surfaceIfAvailable]);
 
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeToLlamaJobStarted(() => {
+      fetchStatus().then(surfaceIfAvailable);
+    });
+  }, [enabled, surfaceIfAvailable]);
+
   const dismiss = useCallback(() => {
     setVisible(false);
   }, []);
@@ -327,17 +384,26 @@ export function useLlamaUpdateCheck({
       return { ok: false, error: String(e) };
     }
 
-    // Non-started jobs stay idle; already_running is tracked below.
+    const actionJob = parseJob(action?.job);
+    // The response job is authoritative. Signal both a newly accepted update
+    // and an already-running job this tab discovered through the POST, so every
+    // open Settings surface disables and follows the same install immediately.
+    signalRunningLlamaJob(actionJob);
+
+    // Non-started jobs stay idle; an already-running update is tracked below.
+    // A backend switch is not: it shares this job but installs no new release,
+    // so following it here would toast an update that never happened. The
+    // shared background listener still follows the switch itself.
     if (
       action &&
       action.started === false &&
-      action.reason !== "already_running"
+      !llamaUpdateAdoptsRunningJob(action.reason, actionJob)
     ) {
       // A stale banner's click can land after another tab already applied the
       // update (e.g. "up_to_date"): the response still carries that tab's
       // completed job, so process reload_required here too, not just from the
       // poll path -- otherwise this rejection silently drops it.
-      notifyReloadIfNeeded(parseJob(action.job));
+      notifyReloadIfNeeded(actionJob);
       setApplying(false);
       return {
         ok: false,
@@ -353,7 +419,7 @@ export function useLlamaUpdateCheck({
   return {
     status: enabled ? status : null,
     visible: enabled && visible,
-    applying,
+    applying: enabled && applying,
     apply,
     dismiss,
     snooze,

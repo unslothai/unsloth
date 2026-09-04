@@ -10,7 +10,12 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { toolOutputKey, useToolPaneScope } from "@/features/chat";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import {
+  toolOutputKey,
+  useToolPaneScope,
+  useUnresolvedToolPaneScope,
+} from "@/features/chat/tool-output-scope";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -23,6 +28,7 @@ import {
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -58,11 +64,29 @@ function ToolGroupRoot({
   ...props
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined`
+  // whenever it is not forcing the group open, so this uncontrolled state is
+  // what is on screen for most of a group's life -- without the sync, a group
+  // expanded by hand stays open while every card inside it closes.
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const [uncontrolledState, setUncontrolledState] = useState(() => ({
+    collapseByDefault,
+    open: defaultOpen && !collapseByDefault,
+  }));
+  const syncedUncontrolledState = syncToolActivityPreference(
+    uncontrolledState,
+    collapseByDefault,
+    defaultOpen,
+  );
+  if (syncedUncontrolledState !== uncontrolledState) {
+    setUncontrolledState(syncedUncontrolledState);
+  }
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
+  const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -70,11 +94,11 @@ function ToolGroupRoot({
         lockScroll();
       }
       if (!isControlled) {
-        setUncontrolledOpen(open);
+        setUncontrolledState({ collapseByDefault, open });
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (
@@ -211,11 +235,13 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
-  const containsArtifactTool = useAuiState(({ message }) =>
+  const containsUngroupedTool = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
       .some(
-        (part) => part.type === "tool-call" && part.toolName === "render_html",
+        (part) =>
+          part.type === "tool-call" &&
+          (part.toolName === "render_html" || part.toolName === "python"),
       ),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
@@ -236,33 +262,48 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
   // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
+  const unresolvedScope = useUnresolvedToolPaneScope();
   const hasLiveOutput = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
       .some(
         (part) =>
           part.type === "tool-call" &&
-          Object.prototype.hasOwnProperty.call(
+          // Either scope: a first turn writes under the unresolved one for its whole
+          // life, even after the autosave assigns the id (see useToolOutputFor).
+          (Object.prototype.hasOwnProperty.call(
             toolLiveOutput,
             toolOutputKey(paneScope, part.toolCallId),
-          ),
+          ) ||
+            Object.prototype.hasOwnProperty.call(
+              toolLiveOutput,
+              toolOutputKey(unresolvedScope, part.toolCallId),
+            )),
       ),
   );
   // Keep the group open once a confirmation or live output forced it (so an
   // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
+  // Only latch what could have forced it open: a latch set while collapsed is
+  // a force nobody saw, and turning the preference off would snap them all open.
   const forcedOpenRef = useRef(false);
-  if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
+  if (hasPendingConfirmation || (hasLiveOutput && !collapseByDefault)) {
+    forcedOpenRef.current = true;
+  }
   const forceOpen =
     hasPendingConfirmation ||
-    (hasLiveOutput && messageRunning) ||
-    (forcedOpenRef.current && messageRunning);
+    (!collapseByDefault &&
+      ((hasLiveOutput && messageRunning) ||
+        (forcedOpenRef.current && messageRunning)));
 
-  // Render single tool calls and canvases directly so cards never hide in a
-  // collapsed group.
-  if (toolCount <= 1 || containsArtifactTool) {
+  // Render single calls, canvases, and Python scripts directly so their
+  // persistent content never hides in a collapsed group.
+  if (toolCount <= 1 || containsUngroupedTool) {
     return <>{children}</>;
   }
 

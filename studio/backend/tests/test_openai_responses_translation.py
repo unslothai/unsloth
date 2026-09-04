@@ -20,6 +20,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -59,6 +60,39 @@ def _responses_sse(events: list[dict]) -> bytes:
     chunks.append("data: [DONE]")
     chunks.append("")
     return ("\n".join(chunks) + "\n").encode("utf-8")
+
+
+def _capture_responses_body(monkeypatch, model: str) -> dict:
+    """The outbound /v1/responses body for one model, with the sampling
+    defaults ChatCompletionRequest fills in when the caller sets nothing."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "Hi"}],
+            model = model,
+            temperature = 0.6,
+            top_p = 0.95,
+            max_tokens = 32,
+            enable_thinking = None,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
 
 
 def test_responses_request_body_uses_input_and_instructions(monkeypatch):
@@ -101,8 +135,7 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models (gpt-5.x / o3 / gpt-4.5 — the only
-    # OpenAI ids the registry allowlist exposes) rejects these as `Unsupported
+    # Responses API on reasoning-class models rejects these as `Unsupported
     # parameter`. Never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
@@ -110,6 +143,98 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert "frequency_penalty" not in body
     assert "top_k" not in body
     assert "messages" not in body
+
+
+def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
+    # ChatCompletionRequest defaults these to 0.6 / 0.95 and the UI hides both
+    # sliders for OpenAI, so anything forwarded is a value the user never
+    # chose -- and reasoning ids no prefix catches, like codex-mini-latest,
+    # reject them outright.
+    for model in (
+        "gpt-5.6-sol",
+        "gpt-5.5",
+        "gpt-5",
+        "gpt-4.5-preview",
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-3.5-turbo",
+        "o1",
+        "o3-mini",
+        "o4-mini",
+        "codex-mini-latest",
+        "chatgpt-4o-latest",
+    ):
+        body = _capture_responses_body(monkeypatch, model)
+        assert "temperature" not in body, (model, body)
+        assert "top_p" not in body, (model, body)
+
+
+def test_responses_sends_extended_cache_retention_only_where_supported(monkeypatch):
+    # Documented for the gpt-5 line and gpt-4.1 only; every other model 400s
+    # the turn with "prompt_cache_retention is not supported on this model".
+    for model in ("gpt-5", "gpt-5.1", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1"):
+        body = _capture_responses_body(monkeypatch, model)
+        assert body.get("prompt_cache_retention") == "24h", (model, body)
+
+    for model in (
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o1",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+        "chatgpt-4o-latest",
+        "codex-mini-latest",
+    ):
+        body = _capture_responses_body(monkeypatch, model)
+        assert "prompt_cache_retention" not in body, (model, body)
+
+
+def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _responses_sse(
+                [
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": "resp_failed_123",
+                            "status": "failed",
+                            "error": None,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    error_line = next(line for line in lines if '"error"' in line)
+    error = json.loads(error_line[len("data:") :].strip())["error"]
+    assert "Unknown error" not in error["message"]
+    assert "resp_failed_123" in error["message"]
 
 
 def test_responses_translates_image_parts(monkeypatch):
@@ -219,7 +344,10 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     finish_reason="tool_calls" (not "stop") so the frontend's accumulator runs
     the function."""
 
+    captured: dict = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
         events = [
             {"type": "response.created"},
             {
@@ -260,7 +388,10 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
                             "name": "get_weather",
                             "parameters": {
                                 "type": "object",
-                                "properties": {"city": {"type": "string"}},
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "options": {"type": "object"},
+                                },
                             },
                         },
                     }
@@ -297,6 +428,9 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
         and p["choices"][0].get("finish_reason") in ("stop", "tool_calls")
     )
     assert terminal["choices"][0]["finish_reason"] == "tool_calls", payloads
+
+    parameters = captured["body"]["tools"][0]["parameters"]
+    assert parameters["properties"]["options"]["properties"] == {}
 
 
 def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
@@ -735,3 +869,64 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         if payload["choices"][0]["delta"]
     )
     assert "<think>plan</think>answer" in combined
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        # OpenAI, Anthropic and Gemini error envelopes.
+        (
+            '{"error": {"message": "You have no credits remaining.",'
+            ' "type": "insufficient_quota", "code": "credit_balance_exhausted"}}',
+            "You have no credits remaining. (credit_balance_exhausted)",
+        ),
+        (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"`temperature` is deprecated for this model."},"request_id":"req_1"}',
+            "`temperature` is deprecated for this model. (invalid_request_error)",
+        ),
+        (
+            '{"error": {"code": 400, "message": "API key not valid.",'
+            ' "status": "INVALID_ARGUMENT"}}',
+            "API key not valid. (INVALID_ARGUMENT)",
+        ),
+        # FastAPI-style bodies from OpenAI-compat backends (vllm, llama.cpp).
+        ('{"detail": "Model unavailable"}', "Model unavailable"),
+        (
+            '{"detail": [{"loc": ["body", "model"], "msg": "field required"},'
+            ' {"msg": "bad temperature"}]}',
+            "field required; bad temperature",
+        ),
+        # Already-friendly text passes through; empty/detail-free bodies fall back.
+        ("Timeout waiting for openai response", "Timeout waiting for openai response"),
+        ("", "openai returned HTTP 500 with no error details."),
+        ('{"error": {}}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": []}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": {"weird": 1}}', "openai returned HTTP 500 with no error details."),
+    ),
+)
+def test_upstream_error_body_reduced_to_its_message(body, expected):
+    assert ep_mod._readable_provider_error(500, body, "openai") == expected
+
+
+def test_error_sse_line_carries_no_json_blob(monkeypatch):
+    """A raw upstream body must not reach the client as nested JSON."""
+    line = ep_mod._error_sse_line(
+        429,
+        '{"error": {"message": "Rate limit reached.", "code": "rate_limit_exceeded"}}',
+        "openai",
+    )
+    error = json.loads(line[len("data:") :].strip())["error"]
+    assert error["message"] == "Rate limit reached. (rate_limit_exceeded)"
+    assert "{" not in error["message"]
+    assert error["code"] == "429"
+
+
+def test_error_sse_line_forwards_retry_after():
+    """The 200 this rides on has no status line left, so the delay has to travel in the body."""
+    body = '{"error": {"message": "Rate limit reached."}}'
+    error = json.loads(ep_mod._error_sse_line(429, body, "openai", "30")[len("data:") :])["error"]
+    assert error["retry_after"] == "30"
+    # Absent upstream, absent here: never invent a delay the provider did not ask for.
+    plain = json.loads(ep_mod._error_sse_line(429, body, "openai")[len("data:") :])["error"]
+    assert "retry_after" not in plain

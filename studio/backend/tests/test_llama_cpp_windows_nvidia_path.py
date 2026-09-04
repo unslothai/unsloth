@@ -3,7 +3,7 @@
 
 """Tests for the Windows pip-nvidia DLL dir resolver.
 
-Studio installs torch with bundled CUDA wheels (nvidia-cuda-runtime-cu13,
+Unsloth installs torch with bundled CUDA wheels (nvidia-cuda-runtime-cu13,
 nvidia-cublas-cu13, etc.) and the prebuilt llama-server.exe must find those
 DLLs at runtime to load CUDA. Mirrors the Linux LD_LIBRARY_PATH block.
 See unslothai/unsloth#5106.
@@ -54,7 +54,15 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 

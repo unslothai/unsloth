@@ -72,7 +72,7 @@ export function CopyableErrorChip({
             onClick={handleCopy}
             aria-label={copied ? "Copied" : "Copy error message"}
             className={cn(
-              "inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               copied && "border-emerald-500/40 text-emerald-600 dark:text-emerald-500",
             )}
           >

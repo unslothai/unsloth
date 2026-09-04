@@ -4,6 +4,8 @@
 """Retrieval + tool tests: RRF fusion, min-score floor, scope, source-map."""
 
 import math
+import threading
+import time
 
 import pytest
 
@@ -192,6 +194,86 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     assert tools.RAG_SOURCES_SENTINEL not in out
 
 
+def test_knowledge_search_honors_cancellation_and_timeout(monkeypatch):
+    from core.inference import tools
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def stalled_search(arguments, rag_scope):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait()
+        return "late"
+
+    monkeypatch.setattr(tools, "_search_knowledge_base", stalled_search)
+    cancel = threading.Event()
+
+    def cancel_after_start():
+        started.wait()
+        cancel.set()
+
+    threading.Thread(target = cancel_after_start, daemon = True).start()
+    began = time.monotonic()
+    try:
+        cancelled = tools.execute_tool(
+            "search_knowledge_base",
+            {"query": "q"},
+            cancel_event = cancel,
+            timeout = 30,
+            rag_scope = {"kb_id": "a"},
+        )
+        assert "cancelled" in cancelled.lower()
+        assert time.monotonic() - began < 1
+
+        started.clear()
+        timed_out = tools.execute_tool(
+            "search_knowledge_base",
+            {"query": "q"},
+            timeout = 0,
+            rag_scope = {"kb_id": "a"},
+        )
+        assert "timed out" in timed_out.lower()
+        assert calls == 1
+    finally:
+        release.set()
+        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 1)
+        tools._RAG_SEARCH_SLOT.release()
+
+
+def test_timed_out_search_keeps_slot_until_worker_exits(monkeypatch):
+    # A search that outlives its caller's timeout still owns the sole RAG slot: the running work
+    # is what consumes the embedding/index/GPU resource, so a second lookup must not enter while
+    # the first worker is alive. The slot frees only when that worker finishes.
+    from core.inference import tools
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def stalled_search(arguments, rag_scope):
+        started.set()
+        release.wait()
+        return "late"
+
+    monkeypatch.setattr(tools, "_search_knowledge_base", stalled_search)
+    try:
+        timed_out = tools._search_knowledge_base_with_budget(
+            {"query": "q"}, {"kb_id": "a"}, timeout = 1
+        )
+        assert "timed out" in timed_out.lower()
+        assert started.is_set()
+        # Worker still stalled -> slot held -> a would-be second search cannot acquire it.
+        assert not tools._RAG_SEARCH_SLOT.acquire(timeout = 0.2)
+        # Once the worker finishes, its finally releases the slot exactly once.
+        release.set()
+        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 2)
+        tools._RAG_SEARCH_SLOT.release()
+    finally:
+        release.set()
+
+
 def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, monkeypatch):
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
 
@@ -244,6 +326,12 @@ def test_search_for_autoinject_bm25_gates_on_dense_probe(rag_conn, bow_embedding
     )
 
 
+def _rag_is_available(monkeypatch, rag_db) -> None:
+    # The import flag, and the connection check the pre-retrieval gate asks.
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    monkeypatch.setattr(rag_db, "rag_available", lambda: True, raising = False)
+
+
 def test_search_for_autoinject_empty_query_or_scope(rag_home):
     assert tool.search_for_autoinject(query = "  ", scope_kb_id = "a") is None
     assert tool.search_for_autoinject(query = "hello") is None  # no scope
@@ -254,7 +342,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
@@ -279,7 +367,7 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
         tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
@@ -292,7 +380,7 @@ def test_build_rag_autoinject_enabled_by_default(monkeypatch):
 
     monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
     monkeypatch.delenv("RAG_AUTOINJECT_MIN_SCORE", raising = False)
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake(**k):
@@ -311,7 +399,7 @@ def test_build_rag_autoinject_caps_top_k(monkeypatch):
 
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
     monkeypatch.setenv("RAG_AUTOINJECT_TOP_K", "4")
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake(**k):
@@ -344,7 +432,9 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "retrieve_lexical",
-        lambda c, s, q, k = None: calls.append(("lex", k)) or [],
+        # The archive's shaped FTS query, accepted and ignored: this test is about which
+        # backends run.
+        lambda c, s, q, k = None, *, match_query = None: calls.append(("lex", k)) or [],
     )
     monkeypatch.setattr(
         retrieval,
@@ -378,7 +468,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake_search(**kw):
@@ -402,7 +492,7 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    _rag_is_available(monkeypatch, rag_db)
     seen: dict = {}
 
     def fake_autoinject(**k):
@@ -427,6 +517,13 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     assert seen["min_dense_score"] == 0.8
     assert seen["mode"] == "dense"
 
-    # Explicit False disables even with the env default on.
+    # The UI's explicit Off sends both flags. autoinject=False on its own is also
+    # used by large-model Auto and must still allow thread-document grounding.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
-    assert tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False}) is None
+    assert (
+        tools.build_rag_autoinject(
+            conv,
+            {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+        )
+        is None
+    )

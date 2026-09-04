@@ -123,7 +123,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
                 ? "Canvas interrupted"
                 : "Canvas unavailable"}
           </span>
-          <span className="truncate text-[11px] leading-none text-muted-foreground">
+          <span className="truncate text-ui-11 leading-none text-muted-foreground">
             {errorText ??
               (isStaleGeneratingArtifact
                 ? "Refresh stopped this preview"

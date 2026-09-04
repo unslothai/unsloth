@@ -118,6 +118,7 @@ export interface ExportRunSummary {
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
+  ggufShardSize?: string | null;
   /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
   mergedFormats: string[];
   destination: ExportDestination;
@@ -141,6 +142,8 @@ export interface RunExportParams {
   quantLevels: string[];
   /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
   useImatrix?: boolean;
+  /** gguf: maximum size for full-precision shards, or "0" for one file. */
+  ggufShardSize?: string | null;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
    *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
@@ -491,8 +494,12 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             quantization_method: params.quantLevels,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            hf_token: params.token,
+            // A local imatrix export resolves the matrix from a Hub repo, so fall back to the load
+            // token when there is no hub-upload token (both are the same HF token).
+            hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            private: params.privateRepo,
+            gguf_shard_size: params.ggufShardSize ?? null,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });

@@ -207,6 +207,40 @@ def test_stdio_enabled_only_for_exact_one(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is True
 
 
+def test_disabled_reason_generic(monkeypatch):
+    _disable(monkeypatch)
+    assert "UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1" in mcp_client.stdio_mcp_disabled_reason()
+
+
+def test_disabled_reason_remote_access(monkeypatch):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is False
+    reason = mcp_client.stdio_mcp_disabled_reason()
+    assert "Remote Access" in reason
+    assert "UNSLOTH_STUDIO_ALLOW_STDIO_MCP" not in reason
+
+
+def test_disabled_reason_tools_disabled(monkeypatch):
+    from state import tool_policy
+
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    tool_policy.set_tool_policy(False)
+    assert mcp_client.stdio_mcp_enabled() is False
+    reason = mcp_client.stdio_mcp_disabled_reason()
+    assert "disable-tools" in reason
+    assert "UNSLOTH_STUDIO_ALLOW_STDIO_MCP" not in reason
+
+
+def test_disabled_reason_explicit_optin_not_suspended(monkeypatch):
+    # An explicit operator =1 is not the loopback auto-default, so no tunnel suspension.
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
 # ── 3b. loopback bind defaults the gate on ──────────────────────────
 
 
@@ -273,6 +307,21 @@ def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is True
     host_policy.apply_stdio_mcp_loopback_default("0.0.0.0")
     assert mcp_client.stdio_mcp_enabled() is False
+
+
+def test_remote_access_suspends_only_automatic_stdio_default(monkeypatch):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is False
+    host_policy.set_remote_connector_active(False)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+    host_policy._reset_loopback_default_state()
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is True
 
 
 @pytest.mark.parametrize("second_host", ["127.0.0.1", "0.0.0.0"])

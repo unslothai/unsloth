@@ -69,10 +69,10 @@ def approval_target_key(targets) -> str:
 def _load() -> dict:
     """Parsed store, or an empty skeleton on any error (fail-safe = re-prompt)."""
     try:
-        with open(_store_path()) as f:
+        with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
-        # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
+        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
+        # crash lookup/record instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -92,7 +92,7 @@ def _save(data: dict) -> None:
     storage_roots.ensure_dir(path.parent)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(data, f, indent = 2)
         try:
             os.chmod(tmp, 0o600)
@@ -130,7 +130,7 @@ def _file_lock():
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except Exception:
-            pass  # locking unavailable; the thread lock still applies
+            pass
         yield
     finally:
         try:
@@ -182,7 +182,7 @@ def record(
         data = _load()
         subjects = data.setdefault("subjects", {})
         subj = subjects.get(subject)
-        if not isinstance(subj, dict):  # tolerate a hand-edited non-dict entry
+        if not isinstance(subj, dict):
             subj = subjects[subject] = {}
         subj[target_key] = {
             "commit_sha": commit_sha,

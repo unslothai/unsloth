@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
@@ -82,6 +83,7 @@ export function LlamaUpdateBanner({
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showBannerPref = useShowLlamaUpdateBanner();
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
   // only runs during an MTP-fallback rebuild), so muting the banner must not
@@ -93,16 +95,17 @@ export function LlamaUpdateBanner({
     });
 
   async function handleUpdate() {
+    const component = status?.component ?? "llama.cpp";
     const result = await apply();
     if (result?.ok) {
       const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
       const reloadHint = result.reloadRequired
         ? " Reload your model to use it."
         : "";
-      toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);
+      toast.success(`${component} updated to ${updatedTag}.${reloadHint}`);
     } else if (result) {
       toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
+        `${component} update failed: ${result.error ?? "unknown error"}`,
       );
     }
   }
@@ -113,6 +116,24 @@ export function LlamaUpdateBanner({
     status != null &&
     (status.update_available || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
+  const component = status?.component ?? "llama.cpp";
+  const latestTag = status?.latest_tag ?? null;
+  const installedTag = status?.installed_tag ?? null;
+  const changelogKey =
+    component === "llama.cpp" && installedTag && latestTag
+      ? `${installedTag}\0${latestTag}`
+      : null;
+  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
+  const changelogOpen =
+    changelogKey !== null && changelogVersion === changelogKey;
+  // Use the same predicate for the panel and its protective height floor.
+  const changelogPanelOpen = Boolean(
+    !applying &&
+      changelogAvailable &&
+      changelogOpen &&
+      installedTag &&
+      latestTag,
+  );
   const sizeLabel =
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
@@ -131,18 +152,25 @@ export function LlamaUpdateBanner({
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-          : "pointer-events-auto w-full",
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          : cn(
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              // Only an open changelog needs a shrinkable height floor.
+              changelogPanelOpen
+                ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+                : "shrink-0",
+            ),
       )}
       data-testid="llama-update-banner"
     >
-      <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      {/* Paint the full floor even when the changelog content is short. */}
+      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
         {applying ? null : (
           <button
             type="button"
             onClick={dismiss}
             className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="Dismiss llama.cpp update notification"
+            aria-label={`Dismiss ${component} update notification`}
           >
             <svg
               aria-hidden="true"
@@ -162,7 +190,7 @@ export function LlamaUpdateBanner({
           </button>
         )}
 
-        <div className="flex min-w-0 items-start gap-4 pr-6">
+        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
           <Download
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
@@ -170,7 +198,9 @@ export function LlamaUpdateBanner({
           />
           <div className="min-w-0">
             <p className="font-heading text-base font-medium text-foreground">
-              {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
+              {applying
+                ? `Updating ${component}...`
+                : `New ${component} update`}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {status?.installed_tag ?? "unknown"} &rarr;{" "}
@@ -178,18 +208,26 @@ export function LlamaUpdateBanner({
                 {status?.latest_tag ?? ""}
               </span>
             </p>
-            <p className="mt-1 text-[11px] text-muted-foreground/70">
+            <p className="mt-1 text-ui-11 text-muted-foreground/70">
               {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
               after update
             </p>
           </div>
         </div>
 
+        {changelogPanelOpen && installedTag && latestTag ? (
+          <LlamaUpdateChangelogPanel
+            installedTag={installedTag}
+            latestTag={latestTag}
+          />
+        ) : null}
+
         {applying ? (
+          // biome-ignore lint/a11y/useFocusableInteractive: a read-only progress indicator must not add a keyboard stop
           <div
             className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
             role="progressbar"
-            aria-label="Updating llama.cpp"
+            aria-label={`Updating ${component}`}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={
@@ -205,25 +243,46 @@ export function LlamaUpdateBanner({
             />
           </div>
         ) : (
-          <div className="mt-2 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
-              onClick={snooze}
-              data-testid="llama-update-snooze-button"
-            >
-              Remind me later
-            </Button>
-            <Button
-              size="sm"
-              // Align pill edge with card padding.
-              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
-              onClick={handleUpdate}
-              data-testid="llama-update-button"
-            >
-              Update
-            </Button>
+          <div
+            className={cn(
+              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
+              changelogAvailable ? "justify-between" : "justify-end",
+            )}
+          >
+            {changelogAvailable ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={() =>
+                  setChangelogVersion(changelogOpen ? null : changelogKey)
+                }
+                aria-expanded={changelogOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {changelogOpen ? "Hide what's new" : "Show what's new"}
+              </Button>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={snooze}
+                data-testid="llama-update-snooze-button"
+              >
+                Remind me later
+              </Button>
+              <Button
+                size="sm"
+                // Align pill edge with card padding.
+                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                onClick={handleUpdate}
+                data-testid="llama-update-button"
+              >
+                Update
+              </Button>
+            </div>
           </div>
         )}
       </div>
