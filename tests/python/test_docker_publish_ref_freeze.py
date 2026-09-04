@@ -285,6 +285,29 @@ OTHER_RUN_DIGEST = "sha256:" + "a" * 64
 THIS_RUN_DIGEST = "sha256:" + "b" * 64
 IMAGE = "docker.io/unsloth/unsloth"
 
+# the per-arch digests this run pushed, one file per digest in /tmp/digests
+ARCH_DIGESTS = ("a" * 64, "c" * 64)
+
+
+def _digests_dir(tmp_path: Path, digests = ARCH_DIGESTS) -> Path:
+    d = tmp_path / "digests"
+    d.mkdir(parents = True, exist_ok = True)
+    for h in digests:
+        (d / h).write_text("", encoding = "utf-8")
+    return d
+
+
+def _docker_stub(bin_dir: Path, body: str) -> None:
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    stub = bin_dir / "docker"
+    stub.write_text("#!/usr/bin/env bash\n" + body, encoding = "utf-8")
+    stub.chmod(0o755)
+
+
+def _raw_index(children = ARCH_DIGESTS) -> str:
+    inner = ",".join('{\\"digest\\":\\"sha256:%s\\"}' % h for h in children)
+    return '{\\"manifests\\":[' + inner + "]}"
+
 
 @pytest.fixture(scope = "module")
 def manifest_digest_step() -> str:
@@ -298,17 +321,14 @@ def manifest_digest_step() -> str:
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
 def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str, tmp_path: Path):
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(parents = True, exist_ok = True)
-    stub = bin_dir / "docker"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
+    _docker_stub(
+        bin_dir,
         'case "$4" in\n'
+        f'  --raw) printf "{_raw_index()}" ;;\n'
         f"  *core-sha-*) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         f"  *) printf '\"{OTHER_RUN_DIGEST}\"' ;;\n"
         "esac\n",
-        encoding = "utf-8",
     )
-    stub.chmod(0o755)
     out = tmp_path / "github_output"
     out.write_text("", encoding = "utf-8")
     env = dict(os.environ)
@@ -325,6 +345,7 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
         text = True,
         env = env,
         timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
     )
     assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
     assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}", (
@@ -336,10 +357,13 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
 def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: str, tmp_path: Path):
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(parents = True, exist_ok = True)
-    stub = bin_dir / "docker"
-    stub.write_text(f"#!/usr/bin/env bash\nprintf '\"{THIS_RUN_DIGEST}\"'\n", encoding = "utf-8")
-    stub.chmod(0o755)
+    _docker_stub(
+        bin_dir,
+        'case "$4" in\n'
+        f'  --raw) printf "{_raw_index()}" ;;\n'
+        f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+    )
     out = tmp_path / "github_output"
     out.write_text("", encoding = "utf-8")
     env = dict(os.environ)
@@ -349,7 +373,57 @@ def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: s
     path = tmp_path / "digest_step.sh"
     path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
     res = subprocess.run(
-        ["bash", "-e", str(path)], capture_output = True, text = True, env = env, timeout = 60
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
     )
     assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
     assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}"
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: str, tmp_path: Path):
+    """:core-sha- is immutable across COMMITS but not across REFS: a branch push and a
+    lightweight v* tag push at one commit produce the same short sha and land in
+    different concurrency groups, so both write this name and neither waits. If the
+    tag resolves to a manifest that does not contain the per-arch digests this run
+    pushed, the step has to fail rather than hand build-studio another run's base."""
+    bin_dir = tmp_path / "bin"
+    # the tag now resolves to a manifest built from somebody else's arches
+    _docker_stub(
+        bin_dir,
+        'case "$4" in\n'
+        f'  --raw) printf "{_raw_index(("d" * 64, "e" * 64))}" ;;\n'
+        f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+    )
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
+    )
+    assert res.returncode != 0, (
+        "the step accepted a manifest that does not contain this run's arches, so an "
+        "overlapping ref at the same commit silently becomes the published base:\n"
+        + res.stdout
+        + res.stderr
+    )
+    assert "digest=" not in out.read_text(
+        encoding = "utf-8"
+    ), "a digest was exported despite the mismatch"

@@ -56,7 +56,12 @@ env:
 # at all. The accepted cost is that two main commits can race to retag :core/:latest,
 # which is self-correcting on the next push, where a cancelled run leaves that commit
 # with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test read the immutable :core-sha- tag, never tags[0].
+# handoff and the smoke test resolve a :core-sha-/:sha- tag rather than tags[0], and
+# then verify that the manifest behind it holds the arches THIS run pushed. That last
+# step is the load-bearing one, because the sha tag is only immutable across COMMITS:
+# a branch push and a lightweight v* tag push at one commit produce the same short
+# sha, and the concurrency group is keyed on the ref, so those two runs never wait for
+# each other and both write that name.
 # tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -320,6 +325,7 @@ jobs:
 
       - name: Export manifest digest
         id: manifest_digest
+        working-directory: /tmp/digests
         run: |
           # NOT tags[0]: metadata-action sorts by priority (raw=200 above sha=100), so
           # on a main push that is the mutable :core, which an unserialised second run
@@ -327,6 +333,23 @@ jobs:
           TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
+          # :core-sha- is immutable across COMMITS, which is the only case the tag
+          # choice above defends against. It is NOT unique across REFS: a branch push
+          # and a lightweight v* tag push at the same commit produce the same short
+          # sha, and the concurrency group is keyed on the ref, so the two runs are
+          # never serialised against each other and both write this name. Confirm the
+          # manifest we are about to hand to build-studio really is the one this run
+          # pushed, because baking another run's base image is silent otherwise.
+          REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          missing=0
+          for d in *; do
+              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
+                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
+                  missing=1
+              }
+          done
+          test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "base manifest: ${TAG} @ ${DIGEST}"
 
@@ -416,6 +439,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.studio_manifest_digest.outputs.digest }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -460,6 +485,29 @@ jobs:
               docker buildx imagetools inspect "$tag"
           done
 
+      - name: Export manifest digest
+        id: studio_manifest_digest
+        working-directory: /tmp/digests
+        run: |
+          # Same reasoning as the base merge: :sha- is shared by every ref sitting on
+          # this commit, so resolve it once here and hand the smoke test an immutable
+          # digest rather than a name another run can retag under it.
+          TAG="$(jq -r '([.tags[] | select(contains(":sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test -n "$DIGEST"
+          REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          missing=0
+          for d in *; do
+              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
+                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
+                  missing=1
+              }
+          done
+          test "$missing" = 0
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "studio manifest: ${TAG} @ ${DIGEST}"
+
   smoke-test:
     needs: [merge, merge-studio]
     if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
@@ -468,56 +516,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep the `enable=` expressions byte-identical to the merge jobs' gates above,
-      # else smoke pulls a previously-published :latest instead of the merged image.
-      - name: Resolve published base tag
-        id: meta_base
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: latest=false
-          tags: |
-            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
-            type=ref,event=tag,prefix=core-
-            type=schedule,pattern=core-nightly
-            type=sha,prefix=core-sha-,format=short
-
+      # Both images are pulled by the digest their merge job resolved and verified, so
+      # there is no tag to re-derive here and no `enable=` expression to keep in step
+      # with the merge jobs' gates.
       - name: Pull and smoke-test the base image
         run: |
-          # not tags[0]: on a main push that is the mutable :core, which an
-          # overlapping run can retag before this pull (see the merge job)
-          TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
-          if [ -z "$TAG" ]; then
-              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:core"
-          fi
-          echo "smoke-testing $TAG"
-          docker pull "$TAG"
-          docker run --rm --gpus all "$TAG" python /workspace/smoke_test.py
-        env:
-          STEPS_META_BASE_JSON: ${{ steps.meta_base.outputs.json }}
-
-      - name: Resolve published studio tag
-        id: meta_studio
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: latest=false
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
-            type=ref,event=tag
-            type=schedule,pattern=nightly
-            type=sha,prefix=sha-,format=short
+          # By digest, not by name. Every ref sitting on this commit publishes the
+          # same :core-sha- tag, and those runs are in different concurrency groups,
+          # so a name resolved here can be another run's image. merge already had to
+          # resolve this digest to hand build-studio a base, and it verified that the
+          # manifest is the one it pushed.
+          REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}"
+          echo "smoke-testing $REF"
+          docker pull "$REF"
+          docker run --rm --gpus all "$REF" python /workspace/smoke_test.py
 
       - name: Boot the full image and probe Studio + Jupyter
         run: |
-          TAG="$(jq -r '([.tags[] | select(contains(":sha-"))] | first) // .tags[0] // ""' <<<"$STEPS_META_STUDIO_JSON")"
-          if [ -z "$TAG" ]; then
-              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          fi
-          echo "booting $TAG"
-          docker pull "$TAG"
-          CID="$(docker run -d --gpus all -p 18000:8000 -p 18888:8888 "$TAG")"
+          REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge-studio.outputs.digest }}"
+          echo "booting $REF"
+          docker pull "$REF"
+          CID="$(docker run -d --gpus all -p 18000:8000 -p 18888:8888 "$REF")"
           trap 'docker logs --tail 100 "$CID"; docker rm -f "$CID"' EXIT
           ok_studio=0; ok_jupyter=0
           for i in $(seq 1 60); do
@@ -531,5 +550,3 @@ jobs:
           [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
           [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
-        env:
-          STEPS_META_STUDIO_JSON: ${{ steps.meta_studio.outputs.json }}
