@@ -742,9 +742,17 @@ _WINDOWS_CUDA_INSTALL_KINDS = ("windows-cuda", "windows-arm64-cuda")
 
 
 def _upstream_arm64_cuda_allowed() -> bool:
-    """May a Windows ARM64 NVIDIA host install the upstream CUDA bundle when the fork
-    publishes no checksum for one? Defaults to yes, because the only other answer is a
-    CPU-only build on a CUDA machine. UNSLOTH_LLAMA_ARM64_CUDA=0/false/no/off opts out."""
+    """May a Windows ARM64 NVIDIA host install a CUDA llama.cpp bundle at all? Defaults
+    to yes, because the only other answer is a CPU-only build on a CUDA machine.
+    UNSLOTH_LLAMA_ARM64_CUDA=0/false/no/off opts out.
+
+    This governs every ARM64 CUDA bundle, published or upstream. It started narrower --
+    only the unverified upstream bundle, since that is the one with a provenance question
+    -- but what the flag promises the user is a CPU bundle, and scoping it to the
+    unverified case meant the escape hatch would switch itself off the day the fork
+    published an approved windows-arm64-cuda artifact. A setting that silently stops
+    working on someone else's release is worse than one that is merely blunt.
+    """
     raw = (os.environ.get("UNSLOTH_LLAMA_ARM64_CUDA") or "").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
@@ -3857,7 +3865,12 @@ def resolve_release_asset_choice(
         # release's approved checksums, so an unlisted archive is never installed. When
         # neither is available this falls through to the CPU bundle below, which is what
         # every Windows ARM64 host got before CUDA bundles existed.
-        if host.has_usable_nvidia:
+        #
+        # The opt-out gates the whole branch, not just the unverified upstream tail below:
+        # gated only there, UNSLOTH_LLAMA_ARM64_CUDA=0 would have stopped delivering a CPU
+        # bundle the moment the fork published an approved windows-arm64-cuda artifact,
+        # because the published branch returns before the tail is ever reached.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
                 host,
@@ -3898,20 +3911,16 @@ def resolve_release_asset_choice(
                     # same provenance `--published-repo ggml-org/llama.cpp` already installs
                     # on every other host. Say so plainly rather than silently. The day the
                     # fork publishes the artifact and its hash, the verified branch above
-                    # wins and this is never reached; UNSLOTH_LLAMA_ARM64_CUDA=0 forces the
-                    # CPU bundle in the meantime.
-                    if _upstream_arm64_cuda_allowed():
-                        log(
-                            "no approved checksum covers a Windows ARM64 CUDA bundle "
-                            f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
-                            f"{upstream_arm64_cuda[0].name} without one. Set "
-                            "UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU bundle instead."
-                        )
-                        return upstream_arm64_cuda
+                    # wins and this is never reached. No opt-out test here: the branch this
+                    # sits in is already gated on it, so a second check could only ever be
+                    # true and would read as though the CPU fallback still lived here.
                     log(
-                        "Windows ARM64 CUDA assets ignored for install planning; using the "
-                        f"CPU bundle instead ({exc})"
+                        "no approved checksum covers a Windows ARM64 CUDA bundle "
+                        f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
+                        f"{upstream_arm64_cuda[0].name} without one. Set "
+                        "UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU bundle instead."
                     )
+                    return upstream_arm64_cuda
         published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")

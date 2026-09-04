@@ -470,7 +470,9 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         assign = text.index("$_effectiveTorchIndexUrl = $_cudaIndexUrl")
         publish = text.index("$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl")
         assert default < assign < publish, "default, then the install, then the publish"
-        assert text.count("$_effectiveTorchIndexUrl = ") == 2, "only the CUDA install may move it"
+        assert text.count("$_effectiveTorchIndexUrl = ") == 2, (
+            "only the CUDA install may move it"
+        )
 
     def test_the_nvidia_channel_publishes_no_flavor_tag(self):
         """
@@ -482,19 +484,15 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         if PWSH is None:
             pytest.skip("pwsh not available")
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        script = "\n".join(
-            [
-                _function_source(text, "Get-TorchIndexLeaf"),
-                _function_source(text, "Test-CudaFamilyLeaf"),
-                "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
-                'Write-Output "$leaf|$(Test-CudaFamilyLeaf $leaf)"',
-            ]
-        )
+        script = "\n".join([
+            _function_source(text, "Get-TorchIndexLeaf"),
+            _function_source(text, "Test-CudaFamilyLeaf"),
+            "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
+            "Write-Output \"$leaf|$(Test-CudaFamilyLeaf $leaf)\"",
+        ])
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
+            capture_output = True, text = True, timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         leaf, is_cuda = done.stdout.strip().splitlines()[-1].split("|")
@@ -505,25 +503,113 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
 class TestTheLlamaArm64CudaOptOut:
     """UNSLOTH_LLAMA_ARM64_CUDA=0, honoured on every path that can reach the branch."""
 
+    @staticmethod
+    def _arm64_nvidia_branches() -> list:
+        """Every `if ...has_usable_nvidia...` whose enclosing branches select ARM64.
+
+        Parsed rather than grepped: the same attribute guards the x64, Linux and macOS
+        paths, which must NOT be gated, so a textual sweep either misses branches or
+        demands gates where they would be wrong.
+        """
+        import ast
+
+        tree = ast.parse(STACK_LLAMA.read_text(encoding = "utf-8"))
+        found = []
+
+        def uses(node, name: str) -> bool:
+            return any(
+                isinstance(n, ast.Attribute) and n.attr == name
+                for n in ast.walk(node)
+            )
+
+        def uses_positively(node, name: str) -> bool:
+            """`not host.has_usable_nvidia` selects the CPU path and is not our business."""
+            negated = {
+                id(n.operand) for n in ast.walk(node)
+                if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+            }
+            return any(
+                isinstance(n, ast.Attribute) and n.attr == name and id(n) not in negated
+                for n in ast.walk(node)
+            )
+
+        def visit(node, arm64: bool):
+            if isinstance(node, ast.If):
+                # `elif` is an If inside orelse, so each one re-decides for itself.
+                here = arm64 or (
+                    uses(node.test, "is_arm64") and not uses(node.test, "is_linux")
+                    and not uses(node.test, "is_macos")
+                )
+                if here and uses_positively(node.test, "has_usable_nvidia"):
+                    found.append((node.lineno, ast.unparse(node.test)))
+                for stmt in node.body:
+                    visit(stmt, here)
+                for stmt in node.orelse:
+                    visit(stmt, arm64)
+                return
+            for child in ast.iter_child_nodes(node):
+                visit(child, arm64)
+
+        visit(tree, False)
+        return found
+
     def test_every_arm64_cuda_branch_is_gated(self):
         """
-        resolve_upstream_asset_choice is reached through resolve_asset_choice on the
-        fallback paths. Ungated, the escape hatch worked in direct_upstream_release_plan
-        and silently did not work here -- which is worse than not having one, because the
-        user has no way to tell which path they took.
+        Three entry points reach ARM64 CUDA independently: direct_upstream_release_plan,
+        resolve_upstream_asset_choice (via resolve_asset_choice's fallbacks), and
+        resolve_asset_choice's own published-artifact branch. An escape hatch honoured on
+        some of them is worse than none, because nothing tells the user which path ran.
+        """
+        branches = self._arm64_nvidia_branches()
+        assert len(branches) >= 3, branches
+        ungated = [b for b in branches if "_upstream_arm64_cuda_allowed" not in b[1]]
+        assert not ungated, f"ungated ARM64 CUDA branch(es): {ungated}"
+
+    def test_the_x64_paths_are_not_gated_by_the_arm64_opt_out(self):
+        """The negative control: this flag must not disable CUDA on ordinary hardware."""
+        import ast
+
+        tree = ast.parse(STACK_LLAMA.read_text(encoding = "utf-8"))
+        arm64_lines = {line for line, _ in self._arm64_nvidia_branches()}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and node.lineno not in arm64_lines:
+                test = ast.unparse(node.test)
+                if "has_usable_nvidia" in test:
+                    assert "_upstream_arm64_cuda_allowed" not in test, test
+
+    def test_the_published_artifact_branch_is_gated_too(self):
+        """
+        A cliff rather than a bug visible today: the published windows-arm64-cuda branch
+        returns before the unverified-upstream tail, so gating only the tail meant
+        UNSLOTH_LLAMA_ARM64_CUDA=0 would keep working right up until the fork published an
+        approved artifact, then silently stop.
         """
         source = STACK_LLAMA.read_text(encoding = "utf-8")
-        branches = [
-            line.strip()
-            for line in source.splitlines()
-            if "host.has_usable_nvidia" in line and line.strip().startswith("if ")
-        ]
-        arm64_branches = [b for b in branches if "_upstream_arm64_cuda_allowed" in b]
-        assert len(branches) >= 2
-        ungated = [b for b in branches if b not in arm64_branches]
-        for branch in ungated:
-            assert "arm64" not in branch.lower()
-        assert any("_upstream_arm64_cuda_allowed" in b for b in branches)
+        start = source.index("def resolve_asset_choice(")
+        body = source[start:]
+        marker = body.index("host.is_windows and host.is_arm64")
+        branch = body[marker : marker + 4000]
+        gate = branch.index("if host.has_usable_nvidia")
+        published = branch.index("published_windows_cuda_attempts(")
+        assert "_upstream_arm64_cuda_allowed()" in branch[gate : gate + 120]
+        assert gate < published, "the gate must precede the published lookup"
+
+    def test_the_now_unreachable_inner_check_is_gone(self):
+        """
+        With the branch gated, a second test inside it could only ever be true. Left in,
+        it reads as though a CPU fallback still lives there and invites someone to
+        "fix" the outer gate away.
+        """
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        start = source.index("def resolve_asset_choice(")
+        assert "if _upstream_arm64_cuda_allowed():" not in source[start:]
+
+    def test_the_docstring_matches_the_scope(self):
+        """The helper documented itself as upstream-only; it now gates every bundle."""
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        start = source.index("def _upstream_arm64_cuda_allowed(")
+        doc = source[start : source.index('"""', source.index('"""', start) + 3)]
+        assert "published or upstream" in doc
 
     def test_the_upstream_resolver_branch_specifically(self):
         source = STACK_LLAMA.read_text(encoding = "utf-8")
@@ -532,6 +618,86 @@ class TestTheLlamaArm64CudaOptOut:
         body = source[start:end]
         marker = body.index("if host.is_windows and host.is_arm64:")
         arm64_block = body[marker : marker + 900]
-        assert (
-            "_upstream_arm64_cuda_allowed()" in arm64_block
-        ), "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
+        assert "_upstream_arm64_cuda_allowed()" in arm64_block, (
+            "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
+        )
+
+
+class TestAMigratedX64VenvIsRebuiltAsArm64:
+    """install.ps1: an upgrade must not leave a WoA NVIDIA host on the emulated stack.
+
+    The migration branches keep a healthy legacy ~/.unsloth/studio/.venv exactly as it is,
+    and on this host those are x64 by design -- every Windows-on-ARM install predating the
+    native stack bootstrapped an emulated x64 interpreter. The venv-platform guard then
+    saw win-amd64 and stood down to that same x64 stack, which is the state this PR exists
+    to replace. Only a SECOND installer run recovered, because migrating makes the layout
+    "new" and the new-layout branch does preserve-and-recreate.
+    """
+
+    INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
+
+    @staticmethod
+    def _text() -> str:
+        return TestAMigratedX64VenvIsRebuiltAsArm64.INSTALL_PS1.read_text(encoding = "utf-8")
+
+    def test_the_rebuild_runs_before_venv_creation(self):
+        """
+        It works by making $VenvPython absent, so the existing creation block builds an
+        ARM64 venv. After that block it would be too late and would need its own copy.
+        """
+        text = self._text()
+        rebuild = text.index("$script:WoaNativeCudaTorch -and $_Migrated")
+        create = text.index('if (-not (Test-Path -LiteralPath $VenvPython)) {')
+        assert rebuild < create
+
+    def test_it_preserves_the_old_environment(self):
+        """Same rollback the new-layout branch uses; the user's packages are recoverable."""
+        text = self._text()
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        assert "Start-StudioVenvRollback -ExistingDir $VenvDir" in block
+
+    def test_a_failed_rollback_keeps_the_old_behaviour(self):
+        """Losing the user's environment is never worth a native stack."""
+        text = self._text()
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        assert "} catch {" in block
+        assert "using the x64 stack instead" in block
+
+    def test_the_rebuild_clears_the_migrated_flag(self):
+        """
+        The regression that would otherwise follow: $_Migrated drives an upgrade-in-place
+        far below, which installs unsloth with --no-deps and --reinstall-package. Against
+        a freshly created, empty venv that produces an unsloth with no dependencies.
+        """
+        text = self._text()
+        block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated"):][:1800]
+        rollback = block.index("Start-StudioVenvRollback")
+        cleared = block.index("$_Migrated = $false")
+        assert rollback < cleared, "cleared only after the environment is safely moved"
+        # And the flag really does still gate that path.
+        assert "if ($_Migrated) {" in text
+
+    def test_it_only_touches_a_venv_this_run_migrated(self):
+        """
+        A new-layout venv was already moved aside above, and a venv created moments ago
+        came from the interpreter this run chose. Rebuilding either would be pointless
+        work at best and a second rollback at worst.
+        """
+        text = self._text()
+        line = text[text.index("if ($script:WoaNativeCudaTorch -and $_Migrated") :].split("\n")[0]
+        assert "$_Migrated" in line
+        assert "Test-Path -LiteralPath $VenvPython" in line
+
+    def test_the_platform_guard_below_still_has_the_final_say(self):
+        """
+        Belt and braces: if the rollback failed, the venv is still x64 and the existing
+        guard must still disable native mode rather than install win_arm64-only specs
+        into it.
+        """
+        text = self._text()
+        rebuild = text.index("$script:WoaNativeCudaTorch -and $_Migrated")
+        guard = text.index('if ($_woaVenvPlatform -ne "win-arm64") {')
+        assert rebuild < guard
+        block = text[guard:][:600]
+        assert "$script:WoaNativeCudaTorch = $false" in block
+        assert "$script:WoaTorchIndexUrl = $null" in block

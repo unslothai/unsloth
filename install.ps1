@@ -4703,6 +4703,41 @@ exit 0
         $_Migrated = $true
     }
 
+    # ── Windows on ARM + NVIDIA: a migrated environment has to be ARM64 too ──
+    # The migration branches above keep a healthy legacy environment exactly as it is, and
+    # on this host those are x64 by design: every Windows-on-ARM install predating the
+    # native stack deliberately bootstrapped an emulated x64 interpreter. The guard below
+    # then saw win-amd64 and stood down to the emulated stack -- the very state this path
+    # exists to replace -- so an upgrade left the user on a Triton that cannot compile for
+    # sm_121, and only a SECOND installer run fixed it: migrating makes the layout "new",
+    # and the new-layout branch does preserve-and-recreate. Do that now instead, with the
+    # same rollback, and let the creation below build an ARM64 venv.
+    #
+    # Only for a venv migrated by THIS run. An existing new-layout venv was already moved
+    # aside above, and a venv created moments ago came from the interpreter this run chose.
+    if ($script:WoaNativeCudaTorch -and $_Migrated -and (Test-Path -LiteralPath $VenvPython)) {
+        $_woaMigPlatform = ""
+        try {
+            $_woaMigPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+        } catch { $_woaMigPlatform = "" }
+        if ($_woaMigPlatform -ne "win-arm64") {
+            $_woaMigLabel = if ($_woaMigPlatform) { $_woaMigPlatform } else { "unknown" }
+            substep "windows on arm: the migrated environment is $_woaMigLabel, not win-arm64 --" "Yellow"
+            substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            try {
+                Start-StudioVenvRollback -ExistingDir $VenvDir
+                # No longer a migration: the packages went with it. Left set, the install
+                # step far below would take the migrated-environment path and upgrade
+                # unsloth with --no-deps into what is now an empty venv.
+                $_Migrated = $false
+            } catch {
+                # Keep the environment and let the guard below take the x64 path, exactly
+                # as before this change. Losing the rollback is not worth a native stack.
+                substep "could not preserve it for rollback -- using the x64 stack instead." "Yellow"
+            }
+        }
+    }
+
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
