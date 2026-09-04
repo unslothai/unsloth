@@ -25846,7 +25846,13 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     # embedding and the limit above would stop meaning anything. Same reason as
     # _drain_pending_worker on the blocking-generation path.
     semaphore = _studio_embed_semaphore()
-    await semaphore.acquire()
+    try:
+        await semaphore.acquire()
+    except asyncio.CancelledError:
+        # Cancelled while queued behind the limit. The monitor row is already open and running
+        # rows are never trimmed, so close it here or it stays in the monitor forever.
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
@@ -25857,6 +25863,9 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     worker.add_done_callback(_release_embed_permit)
     try:
         vectors, identity, prompt_tokens, limit = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
     except HTTPException as exc:
         api_monitor.fail(monitor_id, str(exc.detail))
         raise

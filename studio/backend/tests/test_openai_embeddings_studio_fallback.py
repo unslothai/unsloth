@@ -429,3 +429,38 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
         assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is None
     finally:
         kw._admitted_inference = 0
+
+
+def test_cancelled_request_closes_its_monitor_row(studio_embedder):
+    # api_monitor.start() runs before admission. Running rows are excluded from retention
+    # trimming, so a request cancelled while queued (or mid-encode) must close its own row.
+    closed = []
+    gate = threading.Event()
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(
+        inference_route.api_monitor, "start", lambda **_kwargs: "entry-1"
+    )
+    studio_embedder.setattr(
+        inference_route.api_monitor,
+        "finish",
+        lambda entry_id, *args, **_kw: closed.append((entry_id, args[0] if args else None)),
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "encode_with_identity",
+        lambda texts, **_kw: (gate.wait(timeout = 5), (_vectors(texts), IDENTITY))[1],
+    )
+
+    async def run():
+        request = _Request({"input": "alpha"})
+        request.state.skip_api_monitor = False
+        task = asyncio.create_task(inference_route.openai_embeddings(request, "tester"))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        gate.set()
+
+    asyncio.run(run())
+    assert closed == [("entry-1", "cancelled")]
