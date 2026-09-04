@@ -14,6 +14,7 @@ import {
   useShortcut,
 } from "@/features/settings";
 import {
+  type ReactNode,
   Suspense,
   lazy,
   useCallback,
@@ -38,6 +39,19 @@ function hasOpenDismissibleSurface(): boolean {
 
 const FindBar = lazy(() => import("./find-bar-loader.tsx"));
 
+function FindBarAfterComposition({
+  handoffBlock,
+  children,
+}: {
+  handoffBlock: Promise<void> | null;
+  children: ReactNode;
+}) {
+  if (handoffBlock) {
+    throw handoffBlock;
+  }
+  return children;
+}
+
 function FindBarLoading({
   query,
   setQuery,
@@ -45,6 +59,8 @@ function FindBarLoading({
   focusToken,
   rememberSelection,
   queueStep,
+  beginComposition,
+  endComposition,
 }: {
   query: string;
   setQuery: (query: string) => void;
@@ -52,6 +68,8 @@ function FindBarLoading({
   focusToken: number;
   rememberSelection: (input: HTMLInputElement) => void;
   queueStep: (delta: -1 | 1) => void;
+  beginComposition: () => void;
+  endComposition: () => void;
 }) {
   const t = useT();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +110,8 @@ function FindBarLoading({
         type="text"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
+        onCompositionStart={beginComposition}
+        onCompositionEnd={endComposition}
         onSelect={(event) => rememberSelection(event.currentTarget)}
         onKeyDown={(event) => {
           if (event.key !== "Enter" || isImeComposing(event.nativeEvent))
@@ -130,6 +150,32 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     query: string;
     delta: -1 | 1;
   } | null>(null);
+
+  const [handoffBlock, setHandoffBlock] = useState<Promise<void> | null>(null);
+  const releaseHandoffRef = useRef<(() => void) | null>(null);
+  const beginLoadingComposition = useCallback(() => {
+    if (releaseHandoffRef.current) {
+      return;
+    }
+    let release: () => void = () => undefined;
+    const block = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    releaseHandoffRef.current = release;
+    setHandoffBlock(block);
+  }, []);
+  const endLoadingComposition = useCallback(() => {
+    releaseHandoffRef.current?.();
+    releaseHandoffRef.current = null;
+    setHandoffBlock(null);
+  }, []);
+  useEffect(
+    () => () => {
+      releaseHandoffRef.current?.();
+      releaseHandoffRef.current = null;
+    },
+    [],
+  );
   const originRef = useRef<HTMLElement | null>(null);
   const requestFocus = useCallback(() => {
     const active = document.activeElement;
@@ -214,18 +260,22 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             focusToken={focusToken}
             rememberSelection={rememberLoadingSelection}
             queueStep={queueLoadingStep}
+            beginComposition={beginLoadingComposition}
+            endComposition={endLoadingComposition}
           />
         }
       >
-        <FindBar
-          query={query}
-          setQuery={setQuery}
-          close={close}
-          focusToken={focusToken}
-          restoreSelection={restoreLoadingSelection}
-          pendingStep={pendingStep}
-          clearPendingStep={clearPendingStep}
-        />
+        <FindBarAfterComposition handoffBlock={handoffBlock}>
+          <FindBar
+            query={query}
+            setQuery={setQuery}
+            close={close}
+            focusToken={focusToken}
+            restoreSelection={restoreLoadingSelection}
+            pendingStep={pendingStep}
+            clearPendingStep={clearPendingStep}
+          />
+        </FindBarAfterComposition>
       </Suspense>
     </LazyImportBoundary>
   );

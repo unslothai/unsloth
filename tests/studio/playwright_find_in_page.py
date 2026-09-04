@@ -894,6 +894,34 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
     loading.wait_for(state = "visible", timeout = 5000)
+    field = loading.locator("input")
+    field.dispatch_event("compositionstart", {"data": "u"})
+    page.wait_for_timeout(ENTRY_DELAY_MS + 500)
+    check(
+        engine,
+        mode,
+        "an active IME composition keeps the loading input mounted",
+        loading.count() == 1 and field.evaluate("input => input.isConnected"),
+    )
+    field.dispatch_event("compositionend", {"data": "u"})
+    loading.wait_for(
+        state = "detached",
+        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    check(
+        engine,
+        mode,
+        "the loaded bar takes over after composition ends",
+        page.locator('[role="search"] input').count() == 1,
+    )
+    context.close()
+
+    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    page = new_page(context)
+    page.locator('textarea[placeholder="Message"]').focus()
+    page.keyboard.press("Control+f")
+    loading = page.get_by_test_id("find-in-page-loading")
+    loading.wait_for(state = "visible", timeout = 5000)
     loading.locator("input").dispatch_event(
         "keydown",
         {
