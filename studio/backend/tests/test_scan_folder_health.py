@@ -571,14 +571,31 @@ def test_the_deep_probe_finds_the_denial_in_a_few_opens(tmp_path: Path, monkeypa
         denied.chmod(stat.S_IRWXU)
 
 
-def test_this_file_can_be_collected_without_geteuid(monkeypatch):
-    """Windows has no os.geteuid, and a skipif condition runs at import time."""
+def test_this_file_can_be_collected_without_geteuid():
+    """Windows has no os.geteuid, and a skipif condition runs at import time.
+
+    Restored before the test returns, not by a fixture teardown: pytest formats
+    this test's call report after the body returns but before any teardown, and
+    the terminal writer reads os.name while rendering the location. A still-
+    spoofed value there flips pathlib to Windows flavour (``ValueError: ... is
+    not in the subpath of '\\repo\\...'``) and kills the xdist worker mid-run.
+    """
     source = Path(__file__).read_text(encoding = "utf-8")
-    monkeypatch.delattr(os, "geteuid", raising = False)
-    monkeypatch.setattr(os, "name", "nt")
-    namespace: dict = {"__name__": "windows_collection_probe"}
-    # The module body is what pytest evaluates while collecting.
-    exec(compile(source, __file__, "exec"), namespace)
+    real_name = os.name
+    real_geteuid = getattr(os, "geteuid", None)
+    try:
+        os.name = "nt"
+        if real_geteuid is not None:
+            del os.geteuid
+        namespace: dict = {"__name__": "windows_collection_probe"}
+        # The module body is what pytest evaluates while collecting. pytest and
+        # the stdlib are already imported in this worker, so the re-imports stay
+        # cached and never re-run on the spoofed os.name.
+        exec(compile(source, __file__, "exec"), namespace)
+    finally:
+        os.name = real_name
+        if real_geteuid is not None:
+            os.geteuid = real_geteuid
 
 
 def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
