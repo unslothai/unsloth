@@ -13,13 +13,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { useChatModelRuntime } from "@/features/chat/hooks/use-chat-model-runtime";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
+import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
@@ -29,6 +36,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
+  Download01Icon,
   Delete02Icon,
   Globe02Icon,
   PauseIcon,
@@ -550,6 +558,9 @@ export function ApiMonitorPage(): ReactElement {
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
   const [unloadError, setUnloadError] = useState<string | null>(null);
+  const { selectModel, loadingModel } = useChatModelRuntime();
+  const models = useChatRuntimeStore((state) => state.models);
+  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
@@ -703,6 +714,50 @@ export function ApiMonitorPage(): ReactElement {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Popover open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loadingModel !== null}
+                title={loadingModel ? "Model is loading" : "Load a model"}
+                className="h-9 gap-1.5 rounded-full"
+              >
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+                Load
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[400px]">
+              <ModelSelector.Content
+                open={modelSelectorOpen}
+                models={models}
+                loraModels={[]}
+                externalModels={[]}
+                value=""
+                onSelect={(id, meta) => {
+                  selectModel({
+                    id,
+                    ggufVariant: meta.ggufVariant,
+                    source: meta.source,
+                    isLora: meta.isLora,
+                    isDownloaded: meta.isDownloaded,
+                    expectedBytes: meta.expectedBytes,
+                    isGguf: meta.isGguf,
+                    isDiffusion: meta.isDiffusion,
+                    config: meta.config,
+                    nativePathToken: meta.nativePathToken,
+                    nativePathExpiresAtMs: meta.nativePathExpiresAtMs,
+                  });
+                  setModelSelectorOpen(false);
+                }}
+              />
+            </PopoverContent>
+          </Popover>
           <Button
             type="button"
             variant="outline"
