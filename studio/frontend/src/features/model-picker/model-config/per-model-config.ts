@@ -24,14 +24,14 @@ export interface PerModelConfig {
   mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
-  /** KV cache dtype for the DRAFT context (--spec-draft-type-k/-v), sized and
-   *  quantized independently of kvCacheDtype. Optional so older blobs parse. */
+  /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
+   *  Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
   nParallel: number | null;
   nBatch: number | null;
   nUbatch: number | null;
-  /** --load-mode; null lets the fit decide: `none` when the load fits in VRAM
-   *  (or VRAM plus host RAM), else no flag. Any value set here wins. */
+  /** --load-mode; null lets the fit decide (`none` when the load fits, else no flag).
+   *  Any value set here wins. */
   loadMode?: string | null;
   /** --ctx-checkpoints; null follows the llama.cpp default (32). */
   ctxCheckpoints?: number | null;
@@ -41,20 +41,13 @@ export interface PerModelConfig {
   /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
   disableVision: boolean;
   chatTemplateOverride: string | null;
-  /**
-   * Pass-through llama-server args, one argv token per entry, appended after
-   * Unsloth's own flags.
-   *
-   * Three states, and the difference is load-bearing. `undefined` means this copy
-   * never read the stored value, so a save must leave the server's alone: the
-   * overrides route preserves the field when it is omitted, which is what kept
-   * CLI-set flags alive while the panel had no control for them. `null` means the
-   * user cleared the box, which has to be sent as an explicit `[]` or the clear is
-   * silently dropped. A non-empty list is what to launch with.
-   */
+  /** Pass-through llama-server argv tokens, appended after Unsloth's own flags. Three states:
+   *  `undefined` means this copy never read the stored value, so a save leaves the server's
+   *  alone (this is what kept CLI-set flags alive); `null` means the user cleared the box and
+   *  must be sent as an explicit `[]`; a non-empty list is what to launch with. */
   llamaExtraArgs?: string[] | null;
-  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
-  // selectedGpuIds means automatic. --tensor-split is not remembered: it is bound to the GPU set.
+  // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
+  // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
@@ -85,14 +78,14 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
 
-// Mirrors vram_budget_settings.py VRAM_FRACTION_MIN/MAX/DEFAULT as whole percent
-// (the slider works in integers). Server-wide, so these are only the bounds the
-// control clamps to; the value lives in /api/settings/vram-budget.
+// Mirrors vram_budget_settings.py VRAM_FRACTION_MIN/MAX/DEFAULT as whole percent (the slider is
+// integer). Server-wide, so these only bound the control; the value lives in
+// /api/settings/vram-budget.
 export const VRAM_BUDGET_PERCENT_MIN = 80;
 export const VRAM_BUDGET_PERCENT_MAX = 100;
 export const VRAM_BUDGET_PERCENT_DEFAULT = 97;
 // Tenths: a whole percent is ~245 MiB of context on a 24 GB card. Mirrors
-// VRAM_FRACTION_DECIMALS = 3 in vram_budget_settings.py.
+// VRAM_FRACTION_DECIMALS = 3.
 export const VRAM_BUDGET_PERCENT_STEP = 0.1;
 
 /** Percent for the slider; the fraction is rebuilt at the API boundary. */
@@ -101,16 +94,16 @@ export function vramFractionToPercent(fraction: number): number {
 }
 
 export function vramPercentToFraction(percent: number): number {
-  // Three decimals, so 0.975 cannot come back as 0.9750000000000001 and read as
-  // "changed" after a drag that ended where it began.
+  // Three decimals, so 0.975 cannot return as 0.9750000000000001 and read as "changed" after
+  // a drag that ended where it began.
   return Math.round(percent * 10) / 1000;
 }
 
 // mirrors llama_server_args.py BATCH_MIN/MAX; null = follow the llama.cpp defaults (2048 / 512)
 export const N_BATCH_MIN = 1;
 export const N_BATCH_MAX = 65536;
-// llama.cpp's own --batch-size default (_DEFAULT_LLAMA_N_BATCH), which a blank control
-// runs at: it still caps the micro-batch, so advisories have to reckon with it.
+// llama.cpp's own --batch-size default, which a blank control runs at: it still caps the
+// micro-batch, so advisories have to reckon with it.
 export const N_BATCH_LLAMA_DEFAULT = 2048;
 
 export const MAX_SEQ_LENGTH_MIN = 128;
@@ -128,11 +121,9 @@ const NO_MLX_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** Whether MLX will serve this model, and so whether MLX-only settings apply.
- *
- *  Every non-GGUF model loads through MLX on a working Mac stack, including plain
- *  safetensors repos, so `!isGguf` alone would show these controls to CUDA users.
- */
+/** Whether MLX will serve this model, and so whether MLX-only settings apply. Every non-GGUF
+ *  model loads through MLX on a working Mac stack, so `!isGguf` alone would show these
+ *  controls to CUDA users. */
 export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
@@ -273,14 +264,13 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// Every width mx.quantize supports. By bit width, not a dtype name, hence separate
-// from KV_CACHE_DTYPES.
+// Every width mx.quantize supports. By bit width, not a dtype name, hence separate from KV_CACHE_DTYPES.
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-// llama-server's --load-mode enum, in --help order. "auto" is the default: the UI
-// shows it, storage keeps null and the backend emits no flag, so the fit may pick
-// "none". Never sent verbatim; builds like b10360 reject "auto" as a value.
+// llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it,
+// storage keeps null and the backend emits no flag. Never sent verbatim; builds like
+// b10360 reject "auto" as a value.
 export const LOAD_MODES = [
   "auto",
   "none",
@@ -292,14 +282,14 @@ export const LOAD_MODES = [
 export const LOAD_MODE_DEFAULT = "auto";
 const VALID_LOAD_MODES = new Set<string>(LOAD_MODES);
 
-// --ctx-checkpoints: per-slot snapshots of the sliding-window cache, so the count
-// is small. 0 disables them; the ceiling is a sanity bound, not an upstream one.
+// --ctx-checkpoints: per-slot sliding-window snapshots, so the count is small. 0 disables
+// them; the ceiling is a sanity bound, not an upstream one.
 export const CTX_CHECKPOINTS_MIN = 0;
 export const CTX_CHECKPOINTS_MAX = 256;
 export const CTX_CHECKPOINTS_LLAMA_DEFAULT = 32;
 
-// --cache-ram in MiB: -1 is "no limit" and 0 disables the host prompt cache, so
-// the floor is -1. The 1 TiB ceiling fails a stray keystroke before the child does.
+// --cache-ram in MiB: -1 is "no limit" and 0 disables the host prompt cache, so the floor
+// is -1. The 1 TiB ceiling fails a stray keystroke before the child does.
 export const CACHE_RAM_MIN = -1;
 export const CACHE_RAM_MAX = 1024 * 1024;
 export const CACHE_RAM_LLAMA_DEFAULT = 8192;
@@ -310,16 +300,14 @@ export {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 
-/** Exported so cross-tab listeners can tell this key's storage event from the
- *  dozens of others Studio writes. */
+/** Exported so cross-tab listeners can tell this key's storage event from the dozens of others Studio writes. */
 export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
 const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 added nBatch / nUbatch, v3 llamaExtraArgs, v4 disableVision and v5 the
-// llama-server tuning group (loadMode / specDraftCacheDtype / ctxCheckpoints /
-// cacheRam); a client from before any of them would normalize the field it does
-// not know straight back out of the record.
+// would normalize the unknown field straight back out of the record.
+// v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam); a client from before any of them
 const STORAGE_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
@@ -361,13 +349,9 @@ const STORED_CONFIG_FIELDS = new Set([
   "selectedGpuIndexKind",
 ]);
 
-/**
- * Keep only a list of strings, preserving the three states above.
- *
- * Anything that is not an array is "not loaded" (`undefined`), never "cleared":
- * the wiping case is the one worth being careful about, since the flags it would
- * throw away are invisible in this panel until the row reads them.
- */
+/** Keep only a list of strings, preserving the three states above. Anything that is not an
+ *  array is "not loaded" (`undefined`), never "cleared": the flags a wipe would throw
+ *  away are invisible in this panel until the row reads them. */
 function normalizeLlamaExtraArgs(value: unknown): string[] | null | undefined {
   if (value === null) {
     return null;
@@ -462,18 +446,14 @@ function canonicalizeSpeculativeType(value: string): string | null {
   return null;
 }
 
-/**
- * Canonicalize a stored --load-mode, or null to follow the llama.cpp default.
- *
- * "auto" folds to null like Speculative Decoding's: it IS the default, so storing
- * it would pin a value the build may redefine and read as an override everywhere.
- */
+/** Canonicalize a stored --load-mode, or null to follow the llama.cpp default. "auto" folds
+ *  to null: it IS the default, so storing it would pin a value the build may redefine. */
 export function canonicalizeLoadMode(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
-  // Whitespace and case only: "mmap + mlock" is not a spelling llama-server
-  // accepts, so it is refused rather than repaired.
+  // Whitespace and case only: "mmap + mlock" is not a spelling llama-server accepts, so it is
+  // refused rather than repaired.
   const mode = value.trim().toLowerCase();
   if (!mode || mode === LOAD_MODE_DEFAULT) {
     return null;
@@ -563,8 +543,8 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
-// Whether Run Settings shows its advanced section is a standing preference, not per-model:
-// opening it once keeps it open for every model and quant. Closed until asked for.
+// Whether Run Settings shows its advanced section is a standing preference, not per-model.
+// Closed until asked for.
 export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
 
 function loadAdvancedSettingsOpen(): boolean | null {
@@ -579,23 +559,22 @@ function loadAdvancedSettingsOpen(): boolean | null {
   }
 }
 
-// Set only when a write is refused, so the switch keeps working in a browser with storage
-// disabled or full. Cleared by the next write that sticks. `stored` is what storage held at
-// the time, the one signal that tells a later write by someone else apart.
+// Set only when a write is refused, so the switch keeps working with storage disabled or
+// full. Cleared by the next write that sticks. `stored` is what storage held then, the
+// one signal that tells a later write by someone else apart.
 let unpersisted: { open: boolean; stored: boolean | null } | null = null;
 const advancedOpenListeners = new Set<() => void>();
 
-/** null until the switch is used, so an untouched panel is free to open the
-*  section for a model that carries non-default advanced values.
-*  Read straight from storage rather than cached: a write from another tab while every panel
-*  was unmounted has no listener to catch it, and its storage event is not replayed on mount. */
+/** Null until the switch is used, so an untouched panel may open the section for a model with
+ *  non-default advanced values. Read straight from storage, not cached: a write from
+ *  another tab while every panel was unmounted has no listener and no replayed event. */
 export function readAdvancedSettingsOpen(): boolean | null {
   const stored = loadAdvancedSettingsOpen();
   if (!unpersisted) {
     return stored;
   }
   // Storage moved since the refused write, so a newer choice outranks the fallback. Checked on
-  // read, not on the storage event, so it still holds for an event that landed while unmounted.
+  // read, not on the storage event, so it holds for an event that landed while unmounted.
   if (stored !== unpersisted.stored) {
     unpersisted = null;
     return stored;
@@ -620,8 +599,8 @@ export function saveAdvancedSettingsOpen(open: boolean): void {
   unpersisted = writeAdvancedSettingsOpen(open)
     ? null
     : { open, stored: loadAdvancedSettingsOpen() };
-  // Run Settings is mounted on several surfaces at once, and the sidebar copy stays mounted
-  // while collapsed, so tell them all rather than let them keep a snapshot taken at mount.
+  // Run Settings is mounted on several surfaces at once and the sidebar copy stays mounted
+  // while collapsed, so tell them all rather than let them keep a mount-time snapshot.
   for (const listener of [...advancedOpenListeners]) {
     listener();
   }
@@ -764,9 +743,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     disableVision:
       typeof raw.disableVision === "boolean" ? raw.disableVision : false,
     chatTemplateOverride: null,
-    // Absent, not null: a legacy blob predates the editor, and the server may well
-    // hold flags set from the CLI. Reading that as "cleared" would wipe them on the
-    // first save from this panel.
+    // Absent, not null: a legacy blob predates the editor and the server may hold CLI-set flags.
+    // Reading that as "cleared" would wipe them on the first save from this panel.
     llamaExtraArgs: undefined,
     // Carry legacy GPU Memory knobs; normalizeGpuFields drops anything malformed.
     gpuMemoryMode:
@@ -828,7 +806,8 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
-    // Snapshot existing entries so eviction protects them: importing old load settings must never discard a newer config.
+    // Snapshot existing entries so eviction protects them: importing old load settings must
+    // never discard a newer config.
     const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
@@ -874,9 +853,8 @@ function readMap(): StoredMap {
   return readMapRaw();
 }
 
-/** Fires when any model's saved config changes, in this tab. The browser's own
- *  `storage` event only reaches *other* tabs, so readers that need to react to
- *  an edit made here (the picker's memory bar) have nothing else to listen to. */
+/** Fires when any model's saved config changes, in this tab. The browser's `storage` event
+ *  only reaches OTHER tabs, so readers like the picker's memory bar have nothing else. */
 export const PER_MODEL_CONFIG_UPDATED_EVENT =
   "unsloth-per-model-config-updated";
 
@@ -890,8 +868,8 @@ function writeMap(map: StoredMap): boolean {
     console.warn("Failed to persist per-model config:", err);
     return false;
   }
-  // Best-effort: the write already landed, so a host that cannot dispatch
-  // events must not make a saved config report back as unsaved.
+  // Best-effort: the write already landed, so a host that cannot dispatch events must not make
+  // a saved config report back as unsaved.
   if (typeof window?.dispatchEvent === "function") {
     window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
   }
@@ -930,8 +908,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
       : null;
-  // Tied to the mode like specDraftNMax: a dtype stored under a mode with no
-  // separate drafter shows a row for a context that never exists.
+  // Tied to the mode like specDraftNMax: a dtype stored under a mode with no separate drafter
+  // shows a row for a context that never exists.
   const specDraftCacheDtype =
     speculativeType != null &&
     SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(speculativeType) &&
@@ -997,9 +975,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
   };
 }
 
-/**
-* A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
-* (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
+/** A config in the exact shape storage keeps: the UI carries sentinels storage does not
+ *  (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
 }
@@ -1019,15 +996,10 @@ function normalize(raw: unknown): PerModelConfig {
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   const normalized = normalize(config);
-  // Stamped with the OLDEST version that still understands every field present, so
-  // a record an older client can safely rewrite is not needlessly locked away from
-  // it. Only a record carrying a newer field is put out of that client's reach.
-  // Only a TRUE disableVision needs the v4 stamp. The default is false, which
-  // is what a pre-vision client reconstructs anyway, so a record that merely
-  // carries the key at its default loses nothing by staying in that client's
-  // reach -- and stamping every record v4 would put the whole store out of it.
-  // The tuning group above it follows the same rule: only a record that actually
-  // sets one of the four is put out of a pre-v5 client's reach.
+  // Stamped with the OLDEST version that still understands every field present, so a record an
+  // older client can safely rewrite stays in its reach. Only a TRUE disableVision needs v4:
+  // false is what a pre-vision client reconstructs anyway, and stamping every record v4
+  // would put the whole store out of reach. The tuning group follows the same rule.
   const hasServerTuning =
     normalized.loadMode != null ||
     normalized.specDraftCacheDtype != null ||
@@ -1192,11 +1164,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nParallel == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
-    // The llama-server tuning group, for the same reason as the arguments below:
-    // savePerModelConfig deletes an entry it judges default, so a config whose only
-    // change was one of these was dropped on the way to storage while the settings
-    // page reported that defaults were kept. Compared against null, not truth: 0
-    // checkpoints and a 0 or -1 cache are values, not blanks.
+    // The tuning group, for the same reason as the arguments below: savePerModelConfig deletes
+    // an entry it judges default, so a config changing only these was dropped on the way to
+    // storage. Compared against null, not truth: 0 checkpoints and a 0 or -1 cache are values.
     (config.specDraftCacheDtype ?? null) === null &&
     (config.loadMode ?? null) === null &&
     config.ctxCheckpoints == null &&
@@ -1206,14 +1176,15 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     Boolean(config.disableVision) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.disableVision) &&
     (config.chatTemplateOverride ?? null) === null &&
-    // Or a config whose only change is Extra Arguments reads as default, and
-    // savePerModelConfig deletes the entry it was asked to remember.
+    // Or a config whose only change is Extra Arguments reads as default, and savePerModelConfig
+    // deletes the entry it was asked to remember.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
     gpuFieldsAtDefault(config)
   );
 }
 
-// GPU knobs are "default" when mode is Auto with no explicit choice: gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
+// GPU knobs are "default" when mode is Auto with no explicit choice: gpuLayers < 0 or absent,
+// nCpuMoe 0 or absent, selectedGpuIds null or absent.
 function gpuFieldsAtDefault(config: PerModelConfig): boolean {
   return (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
@@ -1227,10 +1198,9 @@ export function savePerModelConfig(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
-  /**
-  * Receives models dropped to stay inside the storage budget. Eviction is silent and still
-  * reports success, so without this their server overrides would keep applying with nothing
-  * in the UI able to forget them. */
+  /** Receives models dropped to stay inside the storage budget. Eviction is silent and still
+   *  reports success, so without this their server overrides would keep applying with
+   *  nothing in the UI able to forget them. */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
   if (
@@ -1419,8 +1389,9 @@ export function adoptLegacyConfigKey(
     const [key] = storageKeysForModelVariant(modelId, ggufVariant);
     map[key] = toStoredConfig(legacy);
   }
-  // Only the key strings change length, and a repo id is normally shorter than the snapshot path.
-  // If it is not and that tips the map past its byte cap, leave storage as it was: eviction is not undoable.
+  // Only the key strings change length, and a repo id is normally shorter than the snapshot
+  // path. If it is not and that tips the map past its byte cap, leave storage as it was:
+  // eviction is not undoable.
   const bytesAfter = serializedMapSize(map);
   if (
     bytesAfter > bytesBefore &&
@@ -1458,15 +1429,11 @@ export function resolveInitialConfig(
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
 }
 
-/**
-* Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
-*
-* An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
-* paths), so ``model_identifier`` names that path while this model's settings are keyed by its
-* repo id. Reading the raw identifier alone reports the resident model as unremembered, blanking
-* a control it is running with, which the next save writes back over the saved record. Only a
-* namespaced collapse is adopted, per ``residentModelIdMatches``: an HF snapshot collapses onto
-* a repo id naming exactly one model, while other paths collapse onto a shareable stem. */
+/** Remembered settings for the identifier /api/inference/status reports as loaded. An API
+ *  auto-switch hands the loader a concrete snapshot path while settings are keyed by repo
+ *  id, so reading the raw identifier reports the resident model as unremembered and blanks
+ *  a control it is running with. Only a namespaced collapse is adopted, per
+ *  residentModelIdMatches. */
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,

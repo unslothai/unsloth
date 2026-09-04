@@ -12,21 +12,20 @@ import {
   resolveTokenIdentity as tokenIdentity,
 } from "../model-config/estimate-context";
 
-/** Long enough that a slider drag lands one request, not sixty; short enough that
- *  letting go feels immediate. The fetch itself is a header walk, tens of ms. */
+/** Long enough that a slider drag lands one request, not sixty; short enough that letting go
+ *  feels immediate. The fetch itself is a header walk, tens of ms. */
 const ESTIMATE_DEBOUNCE_MS = 250;
 
 export interface MemoryEstimateState {
   estimate: MemoryEstimate | null;
-  /** First fetch for this model, nothing to show yet. A re-price keeps the old
-   *  numbers up and sets `stale` instead, so the row never blinks on a slider step. */
+  /** First fetch for this model, nothing to show yet. A re-price keeps the old numbers up and sets
+   *  `stale` instead, so the row never blinks on a slider step. */
   loading: boolean;
   /** The numbers shown are for older settings; a fresh answer is on its way. */
   stale: boolean;
 }
 
-/** Everything that changes the answer. Settings the backend ignores stay out, or
- *  the row re-fetches for nothing. */
+/** Everything that changes the answer. Settings the backend ignores stay out, or the row re-fetches for nothing. */
 function estimateKey(request: MemoryEstimateRequest | null): string | null {
   if (!request) return null;
   return JSON.stringify([
@@ -53,20 +52,16 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
   ]);
 }
 
-/**
- * Debounced memory estimate for a prospective load. Pass null to stand down.
- *
- * In-flight requests abort when the settings move again, so a slow answer for a
- * context already dragged past cannot overwrite a newer one.
- */
+/** Debounced memory estimate for a prospective load. Pass null to stand down. In-flight requests
+ *  abort when the settings move again, so a slow answer for a context already dragged past
+ *  cannot overwrite a newer one. */
 export function useMemoryEstimate(
   request: MemoryEstimateRequest | null,
 ): MemoryEstimateState {
   const key = estimateKey(request);
-  // Computed during render, not read from a ref the effect updates after paint: the
-  // effect below still clears on a switch, but it runs after React has painted, so a
-  // direct switch between two GGUFs showed the previous model's footprint and fit
-  // colour under the new name for a frame. Both helpers are pure, so this is safe.
+  // Computed during render, not read from a ref the effect updates after paint: the effect below
+  // still clears on a switch, but it runs after React has painted, so a direct switch between
+  // two GGUFs showed the previous model's footprint under the new name for a frame.
   const currentIdentity =
     request == null
       ? null
@@ -82,14 +77,13 @@ export function useMemoryEstimate(
     stale: false,
     identity: null,
   });
-  // Read inside the effect so it depends on the key alone: `request` is a fresh
-  // object every render and would restart the debounce on any keystroke.
+  // Read inside the effect so it depends on the key alone: `request` is a fresh object every
+  // render and would restart the debounce on any keystroke.
   const latestRequest = useRef(request);
   latestRequest.current = request;
-  // Which model the numbers belong to. A switch must clear them: one model's
-  // footprint under another's name is worse than none. The quantization counts as a
-  // switch -- Q4_K_M to F16 on one repository leaves modelPath alone while the
-  // weights quadruple -- so this is the source identity, not the path.
+  // Which model the numbers belong to. A switch must clear them: one model's footprint under
+  // another's name is worse than none. The quantization counts as a switch -- Q4_K_M to F16 on
+  // one repository leaves modelPath alone while the weights quadruple.
   const shownModel = useRef<string | null>(null);
 
   useEffect(() => {
@@ -132,8 +126,7 @@ export function useMemoryEstimate(
     };
   }, [key]);
 
-  // State that belongs to a different source is not shown at all, not even for the
-  // frame before the effect clears it.
+  // State that belongs to a different source is not shown at all, not even for the frame before the effect clears it.
   if (state.identity !== currentIdentity) {
     return { estimate: null, loading: currentIdentity != null, stale: false };
   }
