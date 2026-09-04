@@ -34,9 +34,10 @@ export const MAX_PAINTED_RANGES = 400;
 /** Distance kept from a scroller's edge before a match counts as needing to be scrolled to. */
 const REVEAL_INSET_PX = 24;
 
-type HighlightLike = { priority: number };
+type HighlightLike = { priority: number; clear(): void };
 type HighlightConstructor = new (...ranges: Range[]) => HighlightLike;
 type HighlightRegistry = {
+  get(name: string): HighlightLike | undefined;
   set(name: string, highlight: HighlightLike): void;
   delete(name: string): void;
 };
@@ -214,6 +215,42 @@ export function paintWindow(
   return { from, to: from + cap };
 }
 
+function removeRegisteredHighlight(
+  registry: HighlightRegistry,
+  name: string,
+): boolean {
+  const highlight = registry.get(name);
+  if (!highlight) return false;
+  // WebKit versions shipped by Tauri can remove the registry entry without invalidating its
+  // painted ranges. Emptying the registered set first takes the range-removal repaint path.
+  highlight.clear();
+  registry.delete(name);
+  return true;
+}
+
+/** Flush the last stale WebKit pixels after a highlight set becomes empty.
+ *
+ * WebKitGTK can update the registry and counter but leave highlight edges painted until scrolling
+ * invalidates the layer. A transient, imperceptible opacity change plus a layout read gives that
+ * layer a synchronous reason to repaint. This only runs when registered ranges were actually
+ * removed, not for every character in an unsettled typing burst. */
+function forceHighlightRepaint(): void {
+  if (typeof document === "undefined") return;
+  // The index also includes body-level portals outside the workspace scope, so repaint their shared
+  // document root rather than only the conversation container.
+  const root = document.documentElement ?? resolveFindScope();
+  if (
+    root === null ||
+    typeof HTMLElement === "undefined" ||
+    !(root instanceof HTMLElement)
+  )
+    return;
+  const previous = root.style.opacity;
+  root.style.opacity = previous === "0.999999" ? "0.999998" : "0.999999";
+  void root.offsetHeight;
+  root.style.opacity = previous;
+}
+
 /** Paint `ranges`, with `activeRange` on top. Both registries are replaced wholesale, which is one
  *  write per navigation rather than one per match. */
 export function paintHighlights(
@@ -223,15 +260,20 @@ export function paintHighlights(
   const api = highlightApi();
   if (!api) return;
   const { registry, Highlight } = api;
+  let removed = false;
   if (ranges.length === 0) {
-    registry.delete(FIND_HIGHLIGHT);
+    removed = removeRegisteredHighlight(registry, FIND_HIGHLIGHT);
   } else {
+    removeRegisteredHighlight(registry, FIND_HIGHLIGHT);
     registry.set(FIND_HIGHLIGHT, new Highlight(...ranges));
   }
   if (!activeRange) {
-    registry.delete(FIND_HIGHLIGHT_ACTIVE);
+    removed =
+      removeRegisteredHighlight(registry, FIND_HIGHLIGHT_ACTIVE) || removed;
+    if (removed) forceHighlightRepaint();
     return;
   }
+  removeRegisteredHighlight(registry, FIND_HIGHLIGHT_ACTIVE);
   const active = new Highlight(activeRange);
   // The same text is in both sets, and registration order is not a guarantee the spec makes.
   active.priority = 1;
@@ -242,8 +284,12 @@ export function paintHighlights(
 export function clearHighlights(): void {
   const api = highlightApi();
   if (!api) return;
-  api.registry.delete(FIND_HIGHLIGHT);
-  api.registry.delete(FIND_HIGHLIGHT_ACTIVE);
+  const removedActive = removeRegisteredHighlight(
+    api.registry,
+    FIND_HIGHLIGHT_ACTIVE,
+  );
+  const removedAll = removeRegisteredHighlight(api.registry, FIND_HIGHLIGHT);
+  if (removedActive || removedAll) forceHighlightRepaint();
 }
 
 /** The caret inside a focused text field, so moving the document selection can give it back. */

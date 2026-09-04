@@ -17,7 +17,9 @@ import {
   FIND_HIGHLIGHT,
   FIND_HIGHLIGHT_ACTIVE,
   MAX_PAINTED_RANGES,
+  clearHighlights,
   mutatesSearchableText,
+  paintHighlights,
   paintWindow,
   resolvePortalSurfaces,
   selectRangeFallback,
@@ -1419,6 +1421,120 @@ test("the stylesheet paints the two highlights the code registers", async () => 
   }
 });
 
+test("registered ranges are cleared and repainted before deletion or replacement", () => {
+  const events: string[] = [];
+  class FakeHighlight {
+    priority = 0;
+    constructor(..._ranges: Range[]) {}
+    clear(): void {
+      events.push("clear");
+    }
+  }
+  class FakeElement {
+    private opacity = "";
+    style = {
+      get opacity() {
+        return root.opacity;
+      },
+      set opacity(value: string) {
+        events.push(`opacity:${value}`);
+        root.opacity = value;
+      },
+    };
+    get offsetHeight(): number {
+      events.push("reflow");
+      return 1;
+    }
+  }
+  const root = new FakeElement();
+  const entries = new Map<string, FakeHighlight>([
+    [FIND_HIGHLIGHT, new FakeHighlight()],
+    [FIND_HIGHLIGHT_ACTIVE, new FakeHighlight()],
+  ]);
+  const registry = {
+    get: (name: string) => entries.get(name),
+    set: (name: string, highlight: FakeHighlight) => {
+      events.push(`set:${name}`);
+      entries.set(name, highlight);
+    },
+    delete: (name: string) => {
+      events.push(`delete:${name}`);
+      return entries.delete(name);
+    },
+  };
+  const scope = globalThis as {
+    CSS?: unknown;
+    Highlight?: unknown;
+    HTMLElement?: unknown;
+    document?: unknown;
+  };
+  const saved = {
+    css: scope.CSS,
+    document: scope.document,
+    highlight: scope.Highlight,
+    htmlElement: scope.HTMLElement,
+    hadCss: "CSS" in scope,
+    hadDocument: "document" in scope,
+    hadHighlight: "Highlight" in scope,
+    hadHtmlElement: "HTMLElement" in scope,
+  };
+  scope.CSS = { highlights: registry };
+  scope.Highlight = FakeHighlight;
+  scope.HTMLElement = FakeElement;
+  scope.document = {
+    querySelector: () => root,
+    body: root,
+    documentElement: root,
+  };
+  try {
+    clearHighlights();
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      "opacity:0.999999",
+      "reflow",
+      "opacity:",
+    ]);
+
+    events.length = 0;
+    entries.set(FIND_HIGHLIGHT, new FakeHighlight());
+    entries.set(FIND_HIGHLIGHT_ACTIVE, new FakeHighlight());
+    paintHighlights([{} as Range], {} as Range);
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      `set:${FIND_HIGHLIGHT}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      `set:${FIND_HIGHLIGHT_ACTIVE}`,
+    ]);
+
+    events.length = 0;
+    paintHighlights([], null);
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      "opacity:0.999999",
+      "reflow",
+      "opacity:",
+    ]);
+  } finally {
+    for (const [key, value, had] of [
+      ["CSS", saved.css, saved.hadCss],
+      ["document", saved.document, saved.hadDocument],
+      ["Highlight", saved.highlight, saved.hadHighlight],
+      ["HTMLElement", saved.htmlElement, saved.hadHtmlElement],
+    ] as const) {
+      if (had) Object.assign(scope, { [key]: value });
+      else delete scope[key];
+    }
+  }
+});
+
 test("the bar keeps itself out of the region it searches", async () => {
   const bar = await readFile(
     new URL(
@@ -1684,7 +1800,6 @@ test("a fresh query starts from the scroll container's top, not the window's", a
   assert.match(engine, /top >= scrollViewportTop\(range\)/);
   assert.equal(/top >= 0/.test(engine), false);
 });
-
 
 test("a pending query clears the previous highlight before the next paint", async () => {
   const engine = await readFile(
