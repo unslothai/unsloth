@@ -96,7 +96,7 @@ def test_the_marker_only_hook_would_have_missed_it(compat):
 def test_the_marker_is_used_when_the_cell_pins_nothing_itself(compat, tmp_path):
     marker = Path(os.environ["UNSLOTH_NB_TF_MARKER"])
     marker.parent.mkdir(parents = True, exist_ok = True)
-    marker.write_text(PIN)
+    marker.write_text(PIN, encoding = "utf-8")
     # a cell with no install at all, i.e. the shape the hook always handled
     assert _fire(compat, "import transformers\n") == compat._sidecar_dir
 
@@ -108,7 +108,7 @@ def test_the_cell_pin_outranks_a_stale_marker(compat, sidecar_root, tmp_path):
     stranger's pin. The cell about to run is the better authority either way."""
     marker = Path(os.environ["UNSLOTH_NB_TF_MARKER"])
     marker.parent.mkdir(parents = True, exist_ok = True)
-    marker.write_text("5.5.0")
+    marker.write_text("5.5.0", encoding = "utf-8")
     other = str(sidecar_root / "t_5_5_0")
 
     compat._pre_run_cell(SimpleNamespace(raw_cell = COMBINED_CELL))

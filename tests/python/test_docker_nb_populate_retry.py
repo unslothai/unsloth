@@ -201,3 +201,73 @@ def test_a_first_boot_records_only_what_it_populated(tmp_path: Path):
 
     assert _run(tmp_path, template, dest).returncode == 0
     assert set(_state(dest)) == {"a.ipynb", "sub/b.ipynb"}
+
+
+# Phase 1b restores a notebook the user deleted from the BAKED template, and records
+# the template's hash for it. When the refresh had already moved that notebook past
+# the image, the restore silently walks it backwards -- and phase 2 exits on
+# `remote == last`, so the sync marker has to come off or it stays there until
+# upstream happens to commit again.
+
+UPSTREAM_COMMIT = "b" * 40
+
+
+def _restored_run(tmp_path: Path, template: Path, dest: Path, recorded: str, body: str | None):
+    """State says `recorded` for a.ipynb; `body` is what is on disk, None to delete it."""
+    (dest / ".unsloth_sync_state").write_text(
+        f"{recorded}  a.ipynb\n{_sha256(template / 'sub' / 'b.ipynb')}  sub/b.ipynb\n",
+        encoding = "utf-8",
+    )
+    (dest / ".unsloth_sync_commit").write_text(UPSTREAM_COMMIT + "\n", encoding = "utf-8")
+    if body is None:
+        (dest / "a.ipynb").unlink()
+    else:
+        (dest / "a.ipynb").write_text(body, encoding = "utf-8")
+    return _run(tmp_path, template, dest)
+
+
+@behavioural
+def test_a_notebook_restored_backwards_drops_the_sync_marker(tmp_path: Path):
+    template, dest = _template(tmp_path), tmp_path / "dest"
+    assert _run(tmp_path, template, dest).returncode == 0
+
+    # the refresh had taken a.ipynb past the baked "A"; the user then deletes it
+    run = _restored_run(tmp_path, template, dest, "c" * 64, None)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A", "it was restored"
+    assert not (dest / ".unsloth_sync_commit").is_file(), (
+        "the marker survived a downgrade, so the refresh exits on remote == last and "
+        "the notebook stays on the image's older copy"
+    )
+    assert _state(dest)["a.ipynb"] == _sha256(template / "a.ipynb")
+    assert "1 needing a refresh" in run.stdout, run.stdout
+
+
+@behavioural
+def test_a_restore_that_changes_nothing_keeps_the_marker(tmp_path: Path):
+    """Non-vacuity and the cost control: an ordinary delete of a notebook that never
+    moved past the image must not force a full clone on the next start."""
+    template, dest = _template(tmp_path), tmp_path / "dest"
+    assert _run(tmp_path, template, dest).returncode == 0
+
+    run = _restored_run(tmp_path, template, dest, _sha256(template / "a.ipynb"), None)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A"
+    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT
+    assert "0 needing a refresh" in run.stdout, run.stdout
+
+
+@behavioural
+def test_a_notebook_still_on_disk_is_not_touched(tmp_path: Path):
+    """The restore is only for files that are GONE; a user's edit stays and keeps the
+    marker, because nothing was walked backwards."""
+    template, dest = _template(tmp_path), tmp_path / "dest"
+    assert _run(tmp_path, template, dest).returncode == 0
+
+    run = _restored_run(tmp_path, template, dest, "c" * 64, "MY OWN WORK")
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "MY OWN WORK"
+    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT

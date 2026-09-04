@@ -261,6 +261,7 @@ fi
 
 if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     restored=0
+    downgraded=0
     RS_TMP="$(mktemp)"
     while IFS= read -r line; do
         h="${line%%  *}"; rel="${line#*  }"
@@ -270,16 +271,28 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
             if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
                 # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
                 own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
-                printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$RS_TMP"
+                new_h="$(hash_of "$DEST/$rel")"
+                printf '%s  %s\n' "$new_h" "$rel" >> "$RS_TMP"
                 restored=$((restored + 1))
+                # The record was ahead of the baked copy, so this notebook has just
+                # gone BACKWARDS to whatever the image shipped. The refresh child
+                # exits on remote == last, so leaving the marker alone would strand
+                # it there until upstream happened to commit again.
+                [ "$new_h" != "$h" ] && downgraded=$((downgraded + 1))
                 continue
             fi
         fi
         printf '%s\n' "$line" >> "$RS_TMP"
     done < "$STATE"
     mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+    # Only when one actually went backwards: dropping the marker on every restore
+    # would make an ordinary delete cost a full clone even when the baked copy was
+    # already current, and the marker is re-stamped as soon as the refresh succeeds.
+    if [ "$downgraded" -gt 0 ]; then
+        rm -f "$SYNCED" 2>/dev/null || true
+    fi
     [ "$restored" -gt 0 ] \
-        && echo "[unsloth-nb] restored $restored deleted notebook(s) from the baked set"
+        && echo "[unsloth-nb] restored $restored deleted notebook(s) from the baked set ($downgraded needing a refresh)"
 fi
 
 # 2) Best-effort GitHub refresh, detached because ls-remote + clone can spend 2x
