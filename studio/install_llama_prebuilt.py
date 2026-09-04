@@ -4199,21 +4199,64 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+# ERROR_ACCESS_DENIED. Retried alongside 32/145 because a scanner genuinely can
+# raise it -- ``activate_staged_dir`` documents that on Windows ARM64 -- but it is
+# also what an unreadable ACL looks like, and no amount of waiting clears that one
+# (#9928). Only the reporting distinguishes them, so name both causes.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[str]:
+    """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
+
+    Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
+    unreadable llama.cpp tree (their ``Access denied reading ... restore access with
+    takeown/icacls`` path). The two commands go on their own lines: they are two
+    commands, and a reader who pastes them as one gets ``takeown`` swallowing the
+    rest as arguments.
+    """
+    lines = [
+        "if this was not a scanner, the ACLs on one of these rename paths may be "
+        "unreadable -- even icacls/Get-Acl report access denied in that state",
+        "from an elevated PowerShell, restore access for each affected path, "
+        "then run the update again:",
+    ]
+    # A destination parent needs only its own ACL repaired; resetting it recursively
+    # would also rewrite unrelated sibling installs.
+    for path, recursive in dict.fromkeys(paths):
+        takeown_flags = " /R /D Y" if recursive else ""
+        icacls_flags = " /T /C" if recursive else ""
+        lines.extend(
+            (
+                f'  takeown /F "{path}"{takeown_flags}',
+                f'  icacls "{path}" /reset{icacls_flags}',
+            )
+        )
+    return lines
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    access_denied_paths: tuple[tuple[Path, bool], ...] | None = None,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
-    which clears in a second or two; without a backoff that turns an update
-    into a failure, and on the aside-move of the *existing* install that is the
-    failure this installer most needs to avoid. Mirrors the Node installer's
-    ``_replace_with_retry``. Other errors raise at once, and POSIX never
-    retries because EACCES/EBUSY there mean a permission or mount problem no
-    amount of waiting clears.
+    WinError 32/145 means a scanner still holds a handle inside the tree, which
+    clears in a second or two; without a backoff that turns an update into a
+    failure, and on the aside-move of the *existing* install that is the failure
+    this installer most needs to avoid. Mirrors the Node installer's
+    ``_replace_with_retry``. Other errors raise at once, and POSIX never retries
+    because EACCES/EBUSY there mean a permission or mount problem no amount of
+    waiting clears.
+
+    WinError 5 is retried on the same budget, because a scanner can raise it too,
+    but it is reported differently: it is equally the signature of a tree whose
+    ACLs are corrupt, which is a permission problem the retries cannot clear, and
+    calling it a scanner sends the user hunting the wrong thing (#9928). When the
+    budget runs out on a 5, the takeown/icacls recovery is printed before raising.
     """
     if attempts < 1:
         raise ValueError("replace_with_busy_retry needs at least one attempt")
@@ -4223,12 +4266,21 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
+                if transient and winerror == _ERROR_ACCESS_DENIED:
+                    log(f"rename {src.name} -> {dst.name} still blocked (5) after {attempts} tries")
+                    log_lines(_access_denied_recovery_lines(access_denied_paths or ((src, True),)))
+                    exc._unsloth_acl_recovery_reported = True
                 raise
+            if winerror == _ERROR_ACCESS_DENIED:
+                cause = "a scanner may still hold the install open, or its ACLs are unreadable"
+            else:
+                cause = "a scanner is likely still holding the install open"
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {cause}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -4491,7 +4543,11 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            replace_with_busy_retry(install_dir, rollback_dir)
+            replace_with_busy_retry(
+                install_dir,
+                rollback_dir,
+                access_denied_paths = ((install_dir, True), (rollback_dir.parent, False)),
+            )
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4508,6 +4564,14 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # install; it must not be moved or cleaned up.
             log("existing install could not be moved aside; leaving it in place")
             if is_busy_lock_error(exc):
+                if getattr(exc, "_unsloth_acl_recovery_reported", False):
+                    raise BusyInstallConflict(
+                        "staged prebuilt validation passed but the existing install could not be "
+                        "moved aside because Windows denied access; close any running llama.cpp "
+                        "process or security scanner, or repair unreadable ACLs using the guidance "
+                        "above; previous install left in place "
+                        f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                    ) from exc
                 raise BusyInstallConflict(
                     "staged prebuilt validation passed but the existing install could not be "
                     "moved aside because llama.cpp appears to still be in use; previous install "
@@ -4545,7 +4609,11 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    replace_with_busy_retry(
+                        rollback_dir,
+                        install_dir,
+                        access_denied_paths = ((rollback_dir, True), (install_dir.parent, False)),
+                    )
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
@@ -8281,7 +8349,7 @@ def install_prebuilt(
                         )
                     return
     except BusyInstallConflict as exc:
-        log("prebuilt install path is blocked by an in-use llama.cpp install")
+        log("prebuilt install path is blocked; existing install could not be replaced")
         log(f"prebuilt busy reason: {exc}")
         raise SystemExit(EXIT_BUSY) from exc
     except UnknownBackendRequest as exc:

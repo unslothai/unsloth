@@ -711,11 +711,46 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+# ERROR_ACCESS_DENIED. Kept in the retry set -- a scanner does raise it right after
+# extraction -- but it is also what unreadable ACLs look like, and waiting never clears
+# those (#9928). Duplicated from install_llama_prebuilt.py rather than shared: this
+# module imports nothing but the stdlib on purpose, and mirrors that one by shape.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[str]:
+    """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
+
+    Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
+    unreadable install tree. The two commands go on their own lines: joined, takeown
+    swallows the rest as arguments.
+    """
+    lines = [
+        "if this was not a scanner, the ACLs on one of these rename paths may be "
+        "unreadable -- even icacls/Get-Acl report access denied in that state",
+        "from an elevated PowerShell, restore access for each affected path, "
+        "then run the install again:",
+    ]
+    # A destination parent needs only its own ACL repaired; resetting it recursively
+    # would also rewrite unrelated sibling installs.
+    for path, recursive in dict.fromkeys(paths):
+        takeown_flags = " /R /D Y" if recursive else ""
+        icacls_flags = " /T /C" if recursive else ""
+        lines.extend(
+            (
+                f'  takeown /F "{path}"{takeown_flags}',
+                f'  icacls "{path}" /reset{icacls_flags}',
+            )
+        )
+    return lines
+
+
 def _replace_with_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    access_denied_paths: tuple[tuple[Path, bool], ...] | None = None,
 ) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
@@ -724,6 +759,11 @@ def _replace_with_retry(
     a fresh install, with no existing directory to conflict with). Handles clear in a
     second or two, so a bounded backoff turns the failure into a pause; other errors
     raise immediately rather than stalling on a real problem.
+
+    WinError 5 keeps that budget but is reported differently. ``_swap_into_place`` also
+    calls this to move an EXISTING install aside, and there a 5 is equally the signature
+    of a tree whose ACLs are unreadable -- a permission fault the retries cannot clear,
+    which naming a scanner sends the user away from (#9928).
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -731,13 +771,22 @@ def _replace_with_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
+                if transient and winerror == _ERROR_ACCESS_DENIED:
+                    log(f"rename still blocked (5) after {attempts} attempts")
+                    for line in _access_denied_recovery_lines(
+                        access_denied_paths or ((src, True),)
+                    ):
+                        log(line)
+                    exc._unsloth_acl_recovery_reported = True
                 raise
-            log(
-                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
-                f"-- a scanner is likely still holding the extracted files"
-            )
+            if winerror == _ERROR_ACCESS_DENIED:
+                cause = "a scanner may still hold the files, or the ACLs are unreadable"
+            else:
+                cause = "a scanner is likely still holding the extracted files"
+            log(f"rename blocked ({winerror}), retrying in {delay:.2f}s -- {cause}")
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
 
@@ -748,16 +797,28 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        _replace_with_retry(install_dir, backup)
+        _replace_with_retry(
+            install_dir,
+            backup,
+            access_denied_paths = ((install_dir, True), (install_dir.parent, False)),
+        )
     try:
-        _replace_with_retry(extracted_root, install_dir)
+        _replace_with_retry(
+            extracted_root,
+            install_dir,
+            access_denied_paths = ((extracted_root, True), (install_dir.parent, False)),
+        )
     except OSError:
         # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
         # A plain os.replace would raise over the original error and leave no install_dir at all, so the rollback gets
         # the same backoff and never masks it.
         if backup is not None and not install_dir.exists():
             try:
-                _replace_with_retry(backup, install_dir)
+                _replace_with_retry(
+                    backup,
+                    install_dir,
+                    access_denied_paths = ((backup, True), (install_dir.parent, False)),
+                )
             except OSError as rollback_exc:
                 log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
         raise
@@ -871,6 +932,11 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
+            # Exhausted access-denied renames already printed actionable ACL recovery.
+            # Do not turn them into a silent success: setup.ps1 only displays this
+            # installer's captured output when the exit code is non-zero.
+            if getattr(exc, "_unsloth_acl_recovery_reported", False):
+                raise
             # Transient download/verify failure: keep an existing usable Node, but never keep a same-version
             # install whose recorded digest is not the pin (the artifact the short-circuit above just
             # rejected). A different usable version is still kept for offline resilience.

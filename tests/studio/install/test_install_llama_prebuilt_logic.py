@@ -1072,6 +1072,125 @@ def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
     assert attempts["count"] == 1
 
 
+def _always_denied(winerror: int):
+    """An ``os.replace`` stand-in that always fails with one Windows error code."""
+
+    def replace(src, dst):
+        exc = OSError(errno.EACCES, "Access is denied")
+        exc.winerror = winerror
+        raise exc
+
+    return replace
+
+
+def test_replace_with_busy_retry_names_acl_recovery_when_access_denied_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A WinError 5 that outlasts the budget is reported as a possible ACL fault (#9928).
+
+    The reporter's llama.cpp tree had corrupt ACLs -- icacls and Get-Acl both
+    returned access-denied -- and takeown + icacls /reset fixed it. Retrying said
+    only "a scanner is likely still holding the install open", so the recovery that
+    works was never named.
+    """
+    source = tmp_path / "llama.cpp"
+    source.mkdir()
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", _always_denied(5))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, tmp_path / "llama.cpp.rollback", attempts = 3)
+
+    output = "".join(capsys.readouterr())
+    assert "takeown" in output
+    assert "icacls" in output
+    assert "elevated PowerShell" in output
+    assert str(source) in output, "the recovery has to name the tree that is unreadable"
+    # Two commands, two lines. Joined, takeown swallows the rest as arguments --
+    # the same trap tests/studio/install/test_setup_denied_install_tree.py guards
+    # for the PowerShell copies of this guidance.
+    assert not any("takeown" in line and "icacls" in line for line in output.splitlines()), output
+
+
+def test_replace_with_busy_retry_does_not_blame_a_scanner_for_access_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """The per-retry line for a 5 must not assert the scanner theory as the cause."""
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", _always_denied(5))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 2)
+
+    retry_lines = [
+        line for line in "".join(capsys.readouterr()).splitlines() if "retrying in" in line
+    ]
+    assert retry_lines, "the retry itself must still be logged"
+    for line in retry_lines:
+        assert "is likely still holding" not in line, line
+        assert "ACLs" in line, line
+
+
+def test_replace_with_busy_retry_keeps_the_scanner_message_for_a_sharing_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """WinError 32 is unambiguous, so its wording and quietness are unchanged.
+
+    Parity guard: passes with and without the #9928 change. It exists so the ACL
+    guidance cannot leak onto the one code where a scanner really is the answer.
+    """
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", _always_denied(32))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 2)
+
+    output = "".join(capsys.readouterr())
+    assert "a scanner is likely still holding the install open" in output
+    assert "takeown" not in output
+    assert "icacls" not in output
+
+
+def test_replace_with_busy_retry_still_waits_out_an_access_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """WinError 5 keeps the full retry budget.
+
+    Parity guard: passes with and without the #9928 change, and it is the point of
+    the change that it stays that way. ``activate_staged_dir`` documents a scanner
+    raising 5 transiently on Windows ARM64, so only the reporting was ambiguous --
+    dropping 5 from the retry set would contradict that comment.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def denied_then_ok(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] < 4:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_then_ok)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    replace_with_busy_retry(source, destination)
+
+    assert attempts["count"] == 4
+    assert (destination / "payload.txt").read_text() == "payload\n"
+
+
 def test_remove_tree_logged_clears_read_only_files(tmp_path: Path):
     tree = tmp_path / "tree"
     (tree / "nested").mkdir(parents = True)
@@ -1587,6 +1706,60 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_preserves_busy_exit_with_acl_aware_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", _always_denied(5))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        BusyInstallConflict,
+        match = "close any running llama.cpp process or security scanner",
+    ) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert "appears to still be in use" not in str(excinfo.value)
+    assert "repair unreadable ACLs using the guidance above" in str(excinfo.value)
+    output = "".join(capsys.readouterr())
+    assert "elevated PowerShell" in output
+    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    parent_takeown = f'takeown /F "{staging_dir.parent}"'
+    assert parent_takeown in output
+    assert not any(
+        parent_takeown in line and " /R " in line for line in output.splitlines()
+    ), output
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
+
+
+def test_install_prebuilt_uses_cause_neutral_heading_for_acl_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def denied_install_lock(_path: Path):
+        raise BusyInstallConflict(
+            "Windows denied access; close a process or repair unreadable ACLs using the "
+            "guidance above"
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "install_lock", denied_install_lock)
+
+    with pytest.raises(SystemExit) as excinfo:
+        install_prebuilt(tmp_path / "llama.cpp", "latest", "unslothai/llama.cpp", "")
+
+    assert excinfo.value.code == INSTALL_LLAMA_PREBUILT.EXIT_BUSY
+    output = "".join(capsys.readouterr())
+    assert "prebuilt install path is blocked; existing install could not be replaced" in output
+    assert "blocked by an in-use llama.cpp install" not in output
+    assert "repair unreadable ACLs using the guidance above" in output
 
 
 def test_activate_install_tree_restores_previous_install_when_failed_move_fails(

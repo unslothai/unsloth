@@ -5720,12 +5720,13 @@ if ($LocalLlamaCppSrc) {
             Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
             # A locked/in-use tree can silently survive removal (SilentlyContinue
             # masks it). Don't then junction/copy over a half-present dir; mirror the
-            # prebuilt path's active-process handling and stop with a clear message.
-            # Denied counts as surviving: unreadable is not gone.
+            # prebuilt path's blocked-install handling and stop with a clear message.
+            # Denied counts as surviving: unreadable is not gone -- which is also why
+            # neither line may name a process as the cause (#9928).
             if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
-                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
-                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-                Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+                step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs on $LlamaCppDir, then retry" "Yellow"
+                Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
             }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
@@ -5871,13 +5872,20 @@ if ($LocalLlamaCppLinked) {
                 substep $installedRelease
             }
         } elseif ($prebuiltExit -eq 3) {
-            step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+            # Windows reports an in-use file and an unreadable ACL alike as WinError 5, so
+            # exit 3 cannot name one cause. The helper prints takeown guidance only when
+            # access was denied, so do not reference that guidance for other busy errors.
+            step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-            Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+            if ($prebuiltOutput -match 'takeown /F') {
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs named above, then retry" "Yellow"
+            } else {
+                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
+            }
+            Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
         } elseif ($prebuiltExit -eq 4) {
             step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
