@@ -181,11 +181,15 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     # Scoped to the exported component on purpose. SettingsDialogLoading above it carries its own
     # `if (!active) return null;`, so searching the whole file passes even with the guard under
     # test deleted outright, which is how the first attempt at this assertion was vacuous.
+    #
+    # The condition must be `!active` alone or `!active || ...`, never `!active && ...`. Inactive
+    # has to be sufficient to bail out on its own; an AND would let a previously mounted panel keep
+    # rendering on an auth route, which is the regression this guards.
     mount_body = mount.split("export function SettingsDialogMount", 1)
     assert len(mount_body) == 2, "SettingsDialogMount is no longer declared here"
     assert re.search(
-        r"if \(!active\b[^\n]*\) return null;", mount_body[1]
-    ), "SettingsDialogMount must bail out while inactive"
+        r"if \(!active(?:\s*\|\|[^\n]*)?\) return null;", mount_body[1]
+    ), "SettingsDialogMount must bail out whenever it is inactive, on that alone"
     assert "useSettingsDialogStore.getState().closeDialog();" in root
     # The settings chord must stay inert on the auth routes. That used to be an
     # early return inside a hand-rolled keydown handler; once the chords became
