@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// web_search image results: the backend keeps the URLs and hands out opaque
-// `[[img:<id>]]` tokens, which resolve here against that tool call's envelope.
+// web_search image results: the backend keeps the URLs and hands out opaque `[[img:<id>]]`
+// tokens, resolved here against that tool call's envelope.
 
 import { findCodeBlockRegions, isInRegion } from "../../../lib/latex.ts";
 
@@ -97,10 +97,8 @@ export function searchImagePath(id: string): string {
   return `/api/inference/search-images/${encodeURIComponent(id)}`;
 }
 
-/**
- * `[[img:<id>]]` -> `<search-image token="…">`, skipping code; unknown ids are dropped.
- * `token`, not `id`: rehype-sanitize prefixes `id` values with `user-content-`.
- */
+/** `[[img:<id>]]` -> `<search-image token="...">`, skipping code; unknown ids are dropped.
+ *  `token`, not `id`: rehype-sanitize prefixes `id` values with `user-content-`. */
 export function rewriteSearchImageTokens(
   text: string,
   known: { has(id: string): boolean },
@@ -114,18 +112,15 @@ export function rewriteSearchImageTokens(
   });
 }
 
-/**
- * Drop every `[[img:<id>]]` the model wrote. The tokens are markup for the renderer,
- * so anything that hands the answer to the user as plain text — clipboard, markdown
- * export, read-aloud — has to strip them or they show up verbatim.
- */
+/** Drop every `[[img:<id>]]` the model wrote. The tokens are markup for the renderer, so
+ *  anything handing the answer to the user as plain text -- clipboard, export, read-aloud --
+ *  has to strip them or they show up verbatim. */
 export function stripSearchImageTokens(text: string): string {
   if (!text.includes("[[img:")) return text;
   const codeRegions = findCodeBlockRegions(text);
-  // One pass over the original, so the code-region offsets stay valid. A token sits
-  // in its own block, so the first branch takes the blank line that introduces it
-  // too; dropping the token alone would leave a widening gap. Code is left alone, as
-  // in rewriteSearchImageTokens: there the token is prose about the feature.
+  // One pass over the original, so the code-region offsets stay valid. A token sits in its own
+  // block, so the first branch takes the blank line introducing it too; dropping the token
+  // alone would leave a widening gap. Code is left alone, where the token is prose.
   return text.replace(
     /\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?$)|\[\[img:[0-9a-f]{12}\]\]/g,
     (match, offset: number) => (isInRegion(offset, codeRegions) ? match : ""),
@@ -170,10 +165,9 @@ function firstMatchOutsideCode(
 const LIST_MARKER_RE = /^(\s*(?:[-*+•]|\d{1,2}[.)])\s+)/;
 const HEADING_LINE_RE = /^\s*#{1,6}\s/;
 const BLOCK_BREAK_RE = /^(?:\s*$|\s*(?:[-*+•]|\d{1,2}[.)])\s|\s*#{1,6}\s|\s*(?:```|~~~))/;
-// Display math, which BLOCK_BREAK_RE cannot see: a blank line inside `$$ ... $$`
-// read as the end of the block, and the card was spliced into the equation, so
-// KaTeX got markup instead of LaTeX. Bounded like latex.ts, so an unclosed `$$`
-// cannot run the scan over the whole answer.
+// Display math, which BLOCK_BREAK_RE cannot see: a blank line inside `$$ ... $$` read as the
+// end of the block and the card was spliced into the equation. Bounded like latex.ts, so an
+// unclosed `$$` cannot run the scan over the whole answer.
 const DISPLAY_MATH_RE = /\$\$[\s\S]{0,4096}?\$\$|\\\[[\s\S]{0,4096}?\\\]/g;
 
 function findDisplayMathRegions(text: string): Array<[number, number]> {
@@ -187,10 +181,8 @@ function findDisplayMathRegions(text: string): Array<[number, number]> {
   return regions;
 }
 
-/**
- * End of the block containing `index` — models wrap a list item across several
- * lines, and inserting at the end of the first one splits the sentence in half.
- */
+/** End of the block containing `index`. Models wrap a list item across several lines, and
+ *  inserting at the end of the first one splits the sentence in half. */
 function blockEndFrom(
   text: string,
   index: number,
@@ -216,10 +208,8 @@ function namesSameThing(a: string, b: string): boolean {
   ).test(longer);
 }
 
-/**
- * Put each subject's image under the first line naming it. Subjects the answer never
- * names are left out, tokens the model placed win, and streaming text is untouched.
- */
+/** Put each subject's image under the first line naming it. Subjects the answer never names
+ *  are left out, tokens the model placed win, and streaming text is untouched. */
 export function placeSubjectImages(
   text: string,
   images: ReadonlyMap<string, SearchImageEntry>,
@@ -246,9 +236,9 @@ export function placeSubjectImages(
     codeRegions: findCodeBlockRegions(part),
   }));
   for (const [key, entry] of bySubject) {
-    // Outside code only, the same rule the subject match follows:
-    // rewriteSearchImageTokens leaves a token inside a fence as literal text, so
-    // counting that as "the model already placed it" showed no picture at all.
+    // Outside code only, the same rule the subject match follows: rewriteSearchImageTokens leaves
+    // a token inside a fence as literal text, so counting that as "already placed" showed no
+    // picture at all.
     if (
       messageParts.some(({ text: part, codeRegions: regions }) =>
         tokenPlacedOutsideCode(part, entry.id, regions),
@@ -256,19 +246,18 @@ export function placeSubjectImages(
     ) {
       continue;
     }
-    // On the original text: lowercasing can change length and shift every offset.
-    // Global, so a mention inside code can be stepped over rather than ending the
-    // search: `\`Go\`` in a snippet used to abandon the subject that a later prose
-    // item names, and the picture was silently dropped.
+    // On the original text: lowercasing can change length and shift every offset. Global, so a
+    // mention inside code can be stepped over rather than ending the search: a name in a snippet
+    // used to abandon the subject a later prose item names.
     const pattern = new RegExp(
       `(^|[^\\p{L}\\p{N}])${escapeRegExp(key)}(?![\\p{L}\\p{N}])`,
       "giu",
     );
-    // An earlier text part already carries this subject's card -- unless it only
-    // said so in code, which shows no card and so must not suppress this one.
+    // An earlier text part already carries this subject's card -- unless it only said so in code,
+    // which shows no card and so must not suppress this one.
     if (firstMatchOutsideCode(pattern, alreadyNamed, namedRegions) !== null) continue;
-    // Where the NAME starts, not the boundary char before it: same line either way,
-    // and the code-region test is about the name.
+    // Where the NAME starts, not the boundary char before it: same line either way, and the
+    // code-region test is about the name.
     const at = firstMatchOutsideCode(pattern, text, codeRegions);
     if (at === null) continue;
     const lineStart = text.lastIndexOf("\n", at) + 1;
@@ -280,9 +269,8 @@ export function placeSubjectImages(
       // A heading is a one-line block, so its own end is the insertion point.
       insertions.push({ at: lineEnd, chunk: `\n\n[[img:${entry.id}]]` });
     } else if (marker) {
-      // Indented to the item's content column, so the card is a block inside the
-      // item rather than a lazy continuation of its sentence, and the list keeps
-      // its numbering.
+      // Indented to the item's content column, so the card is a block inside the item rather than a
+      // lazy continuation of its sentence, and the list keeps its numbering.
       insertions.push({
         at: blockEndFrom(text, at, mathRegions),
         chunk: `\n\n${" ".repeat(marker[1].length)}[[img:${entry.id}]]`,
@@ -304,11 +292,9 @@ export function placeSubjectImages(
   return out;
 }
 
-// Split marker from subject, and never let two whitespace quantifiers span the same
-// run: the single-regex form nested `\s+`, `\s*` and a body class that also matched
-// spaces, which backtracked at ~O(n^3.5) -- 250 spaces in one bullet froze the thread
-// for 13s. The body is anchored on non-space edges so the surrounding runs cannot
-// overlap it; `.trim()` below made those edges dead weight anyway.
+// Split marker from subject, and never let two whitespace quantifiers span the same run: the
+// single-regex form backtracked at ~O(n^3.5), so 250 spaces in one bullet froze the thread
+// for 13s. The body is anchored on non-space edges so the surrounding runs cannot overlap.
 const LIST_ITEM_MARKER_RE = /^[ \t]*(?:\d{1,2}[.)]|[-*+•])[ \t]+/;
 const LIST_ITEM_RE =
   /^(?:\*\*|__)?[ \t\r]*([^\s*_\n][^*_\n]{0,58}?[^\s*_\n])(?:[ \t\r]*(?:\*\*|__))?[ \t\r]*(?::|[-–—][ \t\r]|\(|$)/;
@@ -464,10 +450,8 @@ export function precedingTextForMessagePart(
   return answerTextFromParts(parts.slice(0, partIndex));
 }
 
-/**
- * The lead of each listed item or small heading (`1. **German Shepherd:** …`).
- * Short names only; a procedure, a code answer or a single item yields nothing.
- */
+/** The lead of each listed item or small heading. Short names only; a procedure, a code answer
+ *  or a single item yields nothing. */
 export function extractListSubjects(text: string): string[] {
   if (text.includes("```") || text.includes("~~~")) return [];
   const codeRegions = findCodeBlockRegions(text);

@@ -48,8 +48,8 @@ type McpPreset = {
   disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
 };
 
-// Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Manage MCP servers".
+// Keyless remote MCP presets (rate-limited free tiers, no API key). Hugging Face runs
+// anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "unsloth-docs",
@@ -69,8 +69,7 @@ const MCP_PRESETS: readonly McpPreset[] = [
   },
 ] as const;
 
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle
-// reuses its row instead of duplicating.
+// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle reuses its row instead of duplicating.
 function normalizeMcpUrl(url: string): string {
   return (url || "").trim().toLowerCase().replace(/\/+$/, "");
 }
@@ -106,8 +105,8 @@ export function McpComposerButton({
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet,
-  // MCP can still be pre-selected, like the other composer tools.
+  // Grey out only when a loaded model lacks tool support; with no model yet, MCP can still be
+  // pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(
@@ -158,8 +157,8 @@ export function McpComposerButton({
     };
   }, [refresh]);
 
-  // Load the server list on mount, and again when the dialog closes: it can
-  // be opened from the chord as well as from this menu.
+  // Load the server list on mount, and again when the dialog closes: it can be opened from the
+  // chord as well as from this menu.
   useEffect(() => {
     if (dialogOpen) return;
     let cancelled = false;

@@ -4,13 +4,10 @@
 import type { LocalModelInfo } from "@/features/hub";
 import type { LoraModelOption } from "@/features/model-picker";
 
-/** The device-inventory sources Chat lists as local models.
- *
- * Deliberately the same set as the picker's `PICKER_LOCAL_SOURCES`. `/api/hub/local`
- * scans read-only, so an Ollama row's id is an opaque `ollama-manifest:` reference;
- * POST /load resolves it through `materialize_ollama_model_ref`, which creates the
- * `.gguf` link on demand, so the reference is loadable as-is.
- */
+/** The device-inventory sources Chat lists as local models, deliberately the same set as the
+ *  picker's `PICKER_LOCAL_SOURCES`. `/api/hub/local` scans read-only, so an Ollama row's id is an
+ *  opaque `ollama-manifest:` reference; POST /load resolves it through
+ *  `materialize_ollama_model_ref`, which creates the `.gguf` link on demand. */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
   "models_dir",
@@ -31,14 +28,11 @@ function baseModelLabel(source: LocalModelInfo["source"]): string {
   }
 }
 
-/** Chat's local model options, one per load id.
- *
- * The shared inventory keys a row on (format, path), so a directory holding both GGUF and
- * safetensors weights arrives as two rows with distinct `inventory_id` but the SAME `id`.
- * The selector keys on `id` (`key={adapter.id}`, `selected={value === adapter.id}`), so
- * both rows would collide on a React key and render as selected together. The compat
- * endpoint returned one row per directory, so collapsing on `id` keeps that behaviour.
- */
+/** Chat's local model options, one per load id. The shared inventory keys a row on (format, path),
+ *  so a directory holding both GGUF and safetensors weights arrives as two rows with distinct
+ *  `inventory_id` but the SAME `id`. The selector keys on `id`, so both rows would collide on a
+ *  React key and render as selected together. The compat endpoint returned one row per directory,
+ *  so collapsing on `id` keeps that behaviour. */
 export function chatLocalModelOptions(
   rows: readonly LocalModelInfo[],
 ): LoraModelOption[] {
