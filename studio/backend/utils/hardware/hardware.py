@@ -31,6 +31,7 @@ import threading
 import time
 import types
 from contextlib import contextmanager
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
@@ -2850,8 +2851,133 @@ def rocm_windows_free_is_untrusted() -> bool:
     return sys.platform == "win32" and IS_ROCM
 
 
+# Host headroom kept off a unified-memory part's budget: its "VRAM" is system RAM,
+# so a load sized to every last available byte leaves the OS nothing. Same margin as
+# the iGPU reserve on the llama.cpp side, and only ever subtracted.
+_UMA_HOST_RESERVE_BYTES = 1024 * 1024 * 1024
+
+
+def _cuda_driver_library() -> Any:
+    """The CUDA driver, loaded directly, or None when there is none to load.
+
+    Deliberately not torch: the questions below (is this part integrated, how big
+    is its pool) are answered by the driver without creating a primary context,
+    while ``torch.cuda.get_device_properties`` initialises CUDA in this process and
+    keeps a context for its lifetime. On a unified-memory part that context is
+    system RAM the model then cannot have.
+    """
+    import ctypes
+
+    for name in ("nvcuda.dll", "libcuda.so.1", "libcuda.so"):
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            continue
+    return None
+
+
+@lru_cache(maxsize = None)
+def _cuda_device_integrated_and_total(index: int) -> Optional[tuple[bool, int]]:
+    """``(is_integrated, total_bytes)`` for one CUDA device, straight from the driver.
+
+    ``None`` whenever the answer is not certain -- no driver, an error from any
+    call, or ROCm, which reuses the ``torch.cuda`` namespace but is classified by
+    ``_rocm_classify_unified_memory`` instead. Callers keep their discrete-card
+    default on ``None``, so a machine this cannot read behaves exactly as before.
+
+    ``index`` is a driver ordinal, which is what ``CUDA_VISIBLE_DEVICES`` filters,
+    so it matches torch's ordinals rather than physical ids.
+    """
+    if IS_ROCM:
+        return None
+    import ctypes
+
+    lib = _cuda_driver_library()
+    if lib is None:
+        return None
+    try:
+        # cuInit is idempotent and does not create a context. Non-zero means no
+        # usable driver (no device, a version mismatch), which is not our business.
+        if lib.cuInit(0) != 0:
+            return None
+        handle = ctypes.c_int()
+        if lib.cuDeviceGet(ctypes.byref(handle), index) != 0:
+            return None
+        # CU_DEVICE_ATTRIBUTE_INTEGRATED. 1 on the parts whose memory is the host's:
+        # GB10 / N1X ("DGX Spark"), Jetson, and any other on-package design.
+        integrated = ctypes.c_int()
+        if lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, handle) != 0:
+            return None
+        total = ctypes.c_size_t()
+        total_mem = getattr(lib, "cuDeviceTotalMem_v2", None) or lib.cuDeviceTotalMem
+        total_mem.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]
+        if total_mem(ctypes.byref(total), handle) != 0:
+            return None
+        return bool(integrated.value), int(total.value)
+    except Exception as e:
+        logger.debug("CUDA driver integrated-memory probe failed: %s", e)
+        return None
+
+
+def _cuda_ordinal_for(device: Any) -> int:
+    """A ``mem_get_info`` device argument as a plain ordinal.
+
+    ``None`` means the current device, and every caller here is single-device or
+    passes an explicit index; anything unrecognisable falls back to 0 rather than
+    raising, since this only chooses which device to ask about.
+    """
+    if device is None:
+        try:
+            import torch
+
+            return int(torch.cuda.current_device())
+        except Exception:
+            return 0
+    if isinstance(device, bool):
+        return 0
+    if isinstance(device, int):
+        return device
+    index = getattr(device, "index", None)
+    if isinstance(index, int):
+        return index
+    try:
+        return int(str(device).rsplit(":", 1)[-1])
+    except Exception:
+        return 0
+
+
+def cuda_device_is_unified_memory(index: int = 0) -> bool:
+    """Whether this CUDA device's memory is the host's. False when unreadable."""
+    answer = _cuda_device_integrated_and_total(index)
+    return bool(answer and answer[0])
+
+
+def available_system_memory_bytes() -> Optional[int]:
+    """Available system RAM, or None when it cannot be read.
+
+    On a unified-memory part this, not the driver's free figure, is the ceiling
+    that decides whether a load fits: the weights land in the same RAM the OS is
+    using, and the driver counts memory it would have to take from the host.
+    """
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo", encoding = "utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
-    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403).
+    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403), and
+    a unified-memory part's free capped against the RAM the host can actually spare.
 
     Guards that budget against free VRAM (the image activation refusal, llama.cpp
     slot fitting, the video preflight) cannot be handed a figure that says the
@@ -2876,6 +3002,21 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     mod = module if module is not None else torch.cuda
     free_bytes, total_bytes = mod.mem_get_info() if device is None else mod.mem_get_info(device)
     free_bytes, total_bytes = int(free_bytes), int(total_bytes)
+
+    # A unified-memory part reports the whole shared pool as free VRAM, which on this
+    # class of machine is larger than the RAM the host can actually spare -- an N1X
+    # laptop offers 46.3 GiB of CUDA "free" while the OS has 39 GiB available. Sizing
+    # a load to the driver's figure is how a fit that the arithmetic says works pushes
+    # the host into swap. Total is left alone: the pool really is that big, and callers
+    # that reason about capacity rather than this moment's headroom want it.
+    if (
+        mod is getattr(torch, "cuda", None)
+        and cuda_device_is_unified_memory(_cuda_ordinal_for(device))
+    ):
+        available = available_system_memory_bytes()
+        if available is not None:
+            free_bytes = min(free_bytes, max(0, available - _UMA_HOST_RESERVE_BYTES))
+
     if not rocm_windows_free_is_untrusted():
         return free_bytes, total_bytes
     try:

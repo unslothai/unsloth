@@ -1181,14 +1181,42 @@ def unsloth_save_model(
     # check OOMs GPU1+ on a sharded model.
     _max_vram_by_device = {}
 
+    def _merging_on_unified_memory():
+        """Whether this host's GPU memory and its system RAM are the same bytes.
+
+        One definition for the whole package: the safetensors loader classifies the
+        same parts, by the driver's own integrated flag. False on anything it cannot
+        read, so a machine this cannot classify budgets exactly as before.
+        """
+        try:
+            from unsloth.models._uma_safetensors import is_integrated_unified_memory_gpu
+
+            return is_integrated_unified_memory_gpu()
+        except Exception:
+            return False
+
     def _device_vram_budget(dev):
         if dev.type != "cuda":
             return None
         idx = dev.index if dev.index is not None else torch.cuda.current_device()
         if idx not in _max_vram_by_device:
-            _max_vram_by_device[idx] = int(
+            budget = int(
                 torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage
             )
+            # On a unified-memory part (GB10 / N1X, an AMD APU) that "VRAM" IS system
+            # RAM, and `max_ram` above is a budget over the very same bytes. Two budgets
+            # drawn on one pool is how a merge the arithmetic says fits sends the host to
+            # swap: an N1X laptop offers a 45 GiB pool while the OS has 5 GiB spare.
+            # Cap against what can actually be spared; discrete cards are untouched.
+            if _merging_on_unified_memory():
+                try:
+                    budget = min(
+                        budget,
+                        int(psutil.virtual_memory().available * maximum_memory_usage),
+                    )
+                except Exception:
+                    pass
+            _max_vram_by_device[idx] = budget
         return _max_vram_by_device[idx]
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
