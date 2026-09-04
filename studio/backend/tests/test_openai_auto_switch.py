@@ -1891,11 +1891,15 @@ def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
 
 
-def test_hf_cache_entry_keeps_newer_mmproj_for_auto_switch(tmp_path):
-    """The selected weights stay pinned while request and load probes see mmproj."""
+def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeypatch):
+    """Selected weights stay pinned while request and load probes see companions."""
     from pathlib import Path
     from types import SimpleNamespace
-    from utils.models.model_config import ModelConfig, detect_mmproj_file
+    from utils.models import model_config as model_config_module
+    from utils.models.drafters import dflash as dflash_module
+
+    ModelConfig = model_config_module.ModelConfig
+    detect_mmproj_file = model_config_module.detect_mmproj_file
 
     repo = tmp_path / "models--org--Vision-GGUF"
     old = repo / "snapshots" / "weights-revision"
@@ -1905,6 +1909,12 @@ def test_hf_cache_entry_keeps_newer_mmproj_for_auto_switch(tmp_path):
     newer.mkdir(parents = True)
     mmproj = newer / "mmproj-vision-model-F16.gguf"
     mmproj.write_bytes(b"GGUF companion")
+    mtp = newer / "mtp-vision-model-Q4_0.gguf"
+    mtp.write_bytes(b"GGUF drafter")
+    dspark = newer / "dspark-vision-model-Q8_0.gguf"
+    dspark.write_bytes(b"GGUF drafter")
+    dflash = newer / "dflash-kquant.gguf"
+    dflash.write_bytes(b"GGUF drafter")
     os.utime(old, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
 
@@ -1918,6 +1928,11 @@ def test_hf_cache_entry_keeps_newer_mmproj_for_auto_switch(tmp_path):
     roots = resolver.local_gguf_companion_roots(entry.load_path)
     assert tuple(map(Path, roots)) == (old, newer)
     assert detect_mmproj_file(str(old / "vision-model-Q4_K_M.gguf"), search_root = str(newer)) is None
+    monkeypatch.setattr(
+        dflash_module,
+        "read_gguf_architecture",
+        lambda path: "dflash" if Path(path).name == dflash.name else None,
+    )
     assert inference_route._target_accepts_request_input(
         entry.load_path,
         True,
@@ -1935,6 +1950,50 @@ def test_hf_cache_entry_keeps_newer_mmproj_for_auto_switch(tmp_path):
     )
     assert config is not None
     assert config.gguf_mmproj_file == str(mmproj.resolve())
+    assert config.gguf_mtp_file == str(mtp.resolve())
+    assert config.gguf_dspark_file == str(dspark.resolve())
+    assert config.gguf_dflash_file == str(dflash.resolve())
+
+
+def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from utils.models import model_config as model_config_module
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    unreadable = repo / "snapshots" / "unreadable-revision"
+    unreadable.mkdir(parents = True)
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    os.utime(unreadable, (3_000, 3_000))
+
+    entry = resolver._local_gguf_entry(
+        "org/Vision-GGUF",
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo)),
+    )
+    assert entry is not None
+    roots = resolver.local_gguf_companion_roots(entry.load_path)
+    assert tuple(map(Path, roots)) == (old, unreadable, newer)
+
+    original_iter = model_config_module._iter_gguf_files
+
+    def _raise_for_unreadable(directory, recursive = False):
+        if Path(directory).resolve() == unreadable.resolve():
+            raise PermissionError("simulated unreadable snapshot")
+        return original_iter(directory, recursive)
+
+    monkeypatch.setattr(model_config_module, "_iter_gguf_files", _raise_for_unreadable)
+    assert model_config_module.is_vision_model(
+        entry.load_path,
+        gguf_variant = entry.variants[0],
+        gguf_companion_roots = roots,
+    )
 
 
 def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkeypatch):
@@ -1979,6 +2038,43 @@ def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkey
         )._gguf_companion_roots
         == ()
     )
+
+
+def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core.inference import llama_keepwarm as kw
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    backend = _FakeBackend(None)
+    recorder = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = recorder)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        (str(old), "Q4_K_M", "org/Vision-GGUF"),
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL,
+            object(),
+            "tester",
+            require_vision = True,
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
 
 
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):

@@ -8049,9 +8049,7 @@ async def _maybe_auto_switch_model(
             target_id, variant, override_id = resolved
         # Not inferred from the quant: a GGUF loaded from a local directory carries none.
         target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
-        gguf_companion_roots = (
-            local_gguf_companion_roots(target_id) if resolved is not None and target_is_gguf else ()
-        )
+        gguf_companion_roots = local_gguf_companion_roots(target_id) if target_is_gguf else ()
         # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
         if (
             gguf_only

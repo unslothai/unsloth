@@ -1825,7 +1825,11 @@ def detect_mmproj_file(
     candidates: list[Path] = []
     seen_resolved: set[Path] = set()
     for d in scan_order:
-        for f in _iter_gguf_files(d):
+        try:
+            files = list(_iter_gguf_files(d))
+        except OSError:
+            continue
+        for f in files:
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -3922,28 +3926,34 @@ class ModelConfig:
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
-                # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("mtp"),
-                )
+                companion_roots = gguf_companion_roots or (companion_root,)
+
+                def _find_drafter(detector, kind: str) -> Optional[str]:
+                    return next(
+                        (
+                            found
+                            for root in companion_roots
+                            if (
+                                found := detector(
+                                    gguf_file,
+                                    search_root = root,
+                                    accept = _drafter_accept_for(kind),
+                                )
+                            )
+                        ),
+                        None,
+                    )
+
+                # Separate speculative-decoding companions, mirroring mmproj.
+                mtp_file = _find_drafter(detect_mtp_file, "mtp")
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
                 # DSpark and DFlash take the boundary for the same reason, even
                 # though only the DFlash scan opens a candidate: all three are the
                 # same discovery, and a kind that skipped the check would hand the
                 # load route a sidecar it has to reject a second time.
-                dspark_file = detect_dspark_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dspark"),
-                )
-                dflash_file = detect_dflash_file(
-                    gguf_file,
-                    search_root = companion_root,
-                    accept = _drafter_accept_for("dflash"),
-                )
+                dspark_file = _find_drafter(detect_dspark_file, "dspark")
+                dflash_file = _find_drafter(detect_dflash_file, "dflash")
 
                 return cls(
                     identifier = identifier,
