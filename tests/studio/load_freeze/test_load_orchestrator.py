@@ -632,8 +632,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     that reintroduces the sync bug and the load race the lock fix closes."""
     routes_dir = _REPO_ROOT / "studio" / "backend" / "routes"
     offenders = []
-    # Matches both llama_backend.
-    # the model_config free function helper is excluded below.
+    # Matches both llama_backend. and self. prefixes; the model_config free function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
         for i, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):

@@ -36,9 +36,6 @@ NOT_IN_CI = {
     # tens of minutes.
     # The part of it that can go wrong silently, the verdict in harness_failures, is driven without a browser by
     # test_autoscroll_harness_contract.py, which CI does run.
-    # What it asserts that CANNOT go stale silently, the flag wiring and the absence of a measurement in the unmeasured
-    # primitive, is covered without a browser by studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does
-    # run.
     "playwright_thread_weight.py",
     # The same shape as playwright_thread_weight.py: a measurement harness, not a
     # gate. It prints what a collapsible toggle costs against document size, and it

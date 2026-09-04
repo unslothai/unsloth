@@ -731,8 +731,9 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA-on branch, not set for CPU-only builds.
-        # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
+        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The branch also has an early
+        # GGML_CUDA=OFF (undetectable-arch CPU fallback, #5854), so anchor on GGML_CUDA=ON and the final (no-GPU)
+        # GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
         cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
         cuda_on_idx = content.index("'-DGGML_CUDA=ON'")

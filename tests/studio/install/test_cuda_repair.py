@@ -976,7 +976,6 @@ class TestExpectedTorchFlavorSkips:
 
 class TestExpectedTorchFlavorResolution:
     def test_the_manifest_answers_when_the_environment_is_silent(self):
-        # PowerShell 7.5+ keeps an entry assigned "", which must read as "nobody said".
         ok, mock_pip = _run_flavor_invariant(
             expected_env = None,
             recorded = "cu128",
