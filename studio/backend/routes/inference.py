@@ -25736,7 +25736,9 @@ def _studio_embed_semaphore() -> asyncio.Semaphore:
     with _studio_embed_semaphores_guard:
         semaphore = _studio_embed_semaphores.get(loop)
         if semaphore is None:
-            semaphore = _studio_embed_semaphores[loop] = asyncio.Semaphore(_STUDIO_EMBED_CONCURRENCY)
+            semaphore = _studio_embed_semaphores[loop] = asyncio.Semaphore(
+                _STUDIO_EMBED_CONCURRENCY
+            )
         return semaphore
 
 
@@ -25771,7 +25773,6 @@ def _embedding_payload(vector, encoding_format: str):
     if encoding_format == "base64":
         import base64
         import numpy as np
-
         return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
     return [float(x) for x in vector]
 

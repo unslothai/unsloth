@@ -66,7 +66,6 @@ def _call(body):
 
 def _http_error(body):
     from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
     return exc.value
