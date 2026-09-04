@@ -1273,6 +1273,10 @@ def print_table(results: dict) -> None:
 # longer a floor.
 REOPEN_OBSERVATION_FLOOR = 1
 # `<action> wall ms` spans the whole recorder window and normally takes the window's measured `paint_waits`, because
+# for every other action those waits are harness-imposed idle time between driven steps. Reopen is the exception for
+# the reason above: its window holds the close loop and the reopen loop, and on a progressive-mount build the reopen
+# loop's waits are the application's commit frames. The observation floors in that window are the two terminal waits,
+# one per loop.
 WALL_FLOOR_OVERRIDES = {"reopen": 1 + REOPEN_OBSERVATION_FLOOR}
 
 

@@ -150,7 +150,8 @@ def run() -> dict:
         page.wait_for_timeout(800)
         results["seeded"] = page.evaluate("window.__autoscroll.metrics()")
 
-        # Streaming. Clock and counter start and stop together inside the page, so they bracket one interval;
+        # Streaming. Clock and counter start and stop together inside the page, so they
+        # bracket one interval; split across round trips they do not, and the rate drifts.
         before = metrics(cdp)
         streamed = page.evaluate(
             """async ([count, gap, tailMs]) => {

@@ -137,7 +137,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
         except Exception:
             # taskkill missing or timed out; fall through so the stub still dies.
             pass
-    # check=False: a nonzero taskkill does not raise, so fall through as well.
+        # check=False: a nonzero taskkill does not raise, so fall through as well.
     proc.terminate()
 
 

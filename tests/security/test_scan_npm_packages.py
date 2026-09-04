@@ -419,6 +419,8 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
 
 
 def test_obfuscated_blob_key_reopens_on_changed_tail():
+    # A large blob's evidence hash binds the full match (via a digest when the snippet is truncated), so changing only
+    # the payload tail reopens the key.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -445,6 +447,8 @@ def test_obfuscated_blob_key_reopens_on_changed_tail():
 
 
 def test_js_fetch_eval_payload_tail_reopens_key():
+    # The js-fetch-eval evidence digests the full containing line when the shown window truncates it, so a changed
+    # payload tail beyond the window reopens the key instead of riding the unchanged decoder head.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -466,8 +470,8 @@ def test_js_fetch_eval_payload_tail_reopens_key():
 
 
 def test_outbound_host_multiline_options_reopen():
-    # A large blob's evidence hash binds the full match (via a digest when the snippet is truncated), so changing only
-    # the payload tail reopens the key.
+    # A multi-line outbound call binds its option/header lines, so changing the headers/body on a continuation line
+    # reopens the cred-surface-host key.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -493,9 +497,8 @@ def test_outbound_host_multiline_options_reopen():
 
 
 def test_outbound_host_config_multiline_object_reopens():
-    # The js-fetch-eval evidence digests the full containing line when the shown window truncates it, so a changed
-    # A multi-line outbound call binds its option/header lines, so changing the headers/body on a continuation line
     # A host-config object whose `{` is on a prior line still binds the whole object, so changing the path/headers on a
+    # following line reopens the key rather than riding the unchanged hostname line.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",

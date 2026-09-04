@@ -594,15 +594,19 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     # resolves to, that was either newly added by this change OR actually used before.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
-            continue
+            continue  # resolved -> fine
+        # `from __future__ import ...` is a compiler directive, not a runtime binding: the name is
         # never loaded, so it can never "resolve" to a use. Skip it so a legitimately-added future
+        # import (e.g. `annotations`) is not flagged.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
         # A name listed in __all__ in a package __init__ is an intentional public re-export: it is loaded by importers,
         # not by this module, so "no load resolves to it here" is expected.
         # Scoped to __init__.py deliberately: applied to every module defining __all__ it exempts 224 names across 27
+        # non-package modules and disables rename-clash detection for them, one of the two bugs this tool exists to
+        # catch.
         if n in after_exported and _is_package_init(path):
-            continue  # resolved -> fine `from __future__ import ...` is a compiler directive, not a runtime binding:
+            continue
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:

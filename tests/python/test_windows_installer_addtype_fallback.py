@@ -1158,7 +1158,8 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     assert not stale.exists()
     assert fresh.exists()
     assert not link.is_symlink()
-    # 5.1's Remove-Item -Recurse follows a junction and empties what it points at;
+    # 5.1's Remove-Item -Recurse follows a junction and empties what it points at.
+    # Nothing the installer creates here is a reparse point, so one costs only the link.
     assert (precious / "keepme.txt").exists()
 
 

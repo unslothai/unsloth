@@ -313,8 +313,11 @@ def _macos_labels():
             blob = str(job.get("runs-on", ""))
             strategy = job.get("strategy") or {}
             blob += str((strategy.get("matrix") or {}) if isinstance(strategy, dict) else "")
-            # Only things shaped like a GitHub image name.
-            # The loose MACOS pattern used elsewhere in this file also matches build targets that merely contain "macos"
+            # Only things shaped like a GitHub image name. The loose MACOS pattern used elsewhere
+            # in this file also matches build targets that merely contain "macos":
+            # release-desktop's matrix carries `macos-aarch64`, which is a Rust triple's nickname
+            # and never a runner label. Every real macOS image is macos-latest or
+            # macos-<version>[-intel].
             for label in re.findall(r"\bmacos-(?:latest|\d+(?:-intel)?)\b", blob, re.I):
                 found.append((path.name, jid, label.lower()))
     return found

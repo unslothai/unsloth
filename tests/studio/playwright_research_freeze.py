@@ -238,6 +238,8 @@ def run() -> dict:
         before = metrics(cdp)
         page.evaluate("window.__longTasks.length = 0")
         clicks_before_report = page.evaluate("window.__research.clicks()")
+        # The probe does not click: a synthetic element.click() skips hit testing, so it lands
+        # even with `body { pointer-events: none }` stranded, the freeze under test.
         page.evaluate(
             """md => {
                 window.__reportStallMs = 0;
@@ -264,8 +266,7 @@ def run() -> dict:
             report_click_landed = False
             info(f"the click during the report parse never became actionable: {exc!r}")
         page.wait_for_timeout(3000)
-        # The probe does not click: a synthetic element.click() skips hit testing, so it lands even with `body {
-        # pointer-events: none }` stranded, the freeze under test.
+        # Disarm only after the window closes, so a stall at its very end is still sampled.
         page.evaluate(
             """() => {
                 clearTimeout(window.__reportStallProbe);

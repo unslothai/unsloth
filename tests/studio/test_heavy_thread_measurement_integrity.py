@@ -478,6 +478,9 @@ def menu_repetition(open_ms: float | None) -> dict:
 
 
 def test_one_repetition_that_never_opened_the_menu_poisons_the_median() -> None:
+    # Filtering the null out and taking the median of the rest silently changes the sample
+    # population, and the verdict's `openMs is None` check then reads the median of the
+    # repetitions that worked.
     summary = HARNESS.summarise(
         [menu_repetition(80.0), menu_repetition(None), menu_repetition(120.0)]
     )
@@ -493,7 +496,6 @@ def test_a_timing_that_was_null_in_every_repetition_is_still_reported() -> None:
 
 def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
     # The guard above must not cost the normal case its median.
-    # Filtering the null out and taking the median of the rest silently changes the sample population, and the
     summary = HARNESS.summarise(
         [menu_repetition(80.0), menu_repetition(100.0), menu_repetition(120.0)]
     )

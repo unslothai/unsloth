@@ -66,7 +66,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "b
 _CRASH_CALLS = {
     "string_at": {
         "arg0": 0
-    },  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV -> SIGABRT faulthandler._sigsegv()
+    },  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
     "abort": {"owners": ("os", "ctypes", "libc", "CDLL")},  # -> SIGABRT
     "_sigsegv": {},  # faulthandler._sigsegv()
 }

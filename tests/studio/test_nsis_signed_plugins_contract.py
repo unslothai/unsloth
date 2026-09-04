@@ -54,7 +54,8 @@ def _signed_dir_lines(template: str) -> dict[str, int]:
 
 @pytest.mark.parametrize("form", ["env var", "template var"])
 def test_signed_plugin_dir_precedes_every_plugin_use(template: str, form: str) -> None:
-    # !addplugindir after a plugin call raises "conflicts with a plugin in another directory" at compile time, or
+    # !addplugindir after a plugin call raises "conflicts with a plugin in another directory" at
+    # compile time, or silently loses to an already packed default.
     lines = template.splitlines()
     plugin_calls = [
         i

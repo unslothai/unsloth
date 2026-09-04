@@ -442,6 +442,8 @@ class VirusTotalClient:
             return None
         if not isinstance(payload, dict):
             # A 200 whose body did not parse (a proxy error page, a truncated read) proves nothing about whether
+            # VirusTotal holds this file. Returning None would be indistinguishable from a 404 and would upload the
+            # bundle, disclosing an unreleased build. Fail closed instead.
             raise RuntimeError("VirusTotal hash lookup returned a malformed body")
         return payload
 

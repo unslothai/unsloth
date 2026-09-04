@@ -611,7 +611,7 @@ def rule_inst_004_torchcodec_torch(
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        return findings
+        return findings  # unknown torch minor, don't flag
     if c_minor not in allowed:
         findings.append(
             Finding(
@@ -638,7 +638,7 @@ def rule_inst_005_transformers_tokenizers(
     tf = res.get("transformers")
     tok = res.get("tokenizers")
     if not tf or tok is None:
-        return findings  # unknown torch minor — don't flag
+        return findings
     # Find the transformers pin and check for --no-deps.
     transformers_line_no_deps = False
     for inv in iter_pip_invocations(install_cell):

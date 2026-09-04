@@ -700,7 +700,10 @@ def main() -> int:
             # On a pull_request event the checkout is refs/pull/N/merge, which is neither end of the range being judged.
             after = _revision_findings(args.after, str(path))
             if after is None:
-                continue
+                continue  # not present at the head revision (deleted, or renamed away)
+            # Only follow a rename back to a path that was ITSELF Python. Renaming `mod.txt` to
+            # `mod.py` is what makes those definitions active code, so the duplicates in it are
+            # introduced by this branch, not inherited.
             old = renames.get(str(path), str(path))
             before = _revision_findings(args.before, old) if old.endswith(".py") else None
             # A file the branch ADDS has no before side, so every finding in it is new.
@@ -717,7 +720,7 @@ def main() -> int:
                 source = _decode_source(path.read_bytes())
             except (OSError, UnicodeDecodeError) as exc:
                 blocking.append(f"{path}: unreadable ({exc})")
-                continue  # not present at the head revision (deleted, or renamed away) Only follow a rename back to a
+                continue
             for finding in scan_source(source, str(path)):
                 blocking.append(f"{path}:{finding.line}: {finding.message}")
 

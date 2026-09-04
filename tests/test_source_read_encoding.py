@@ -272,7 +272,7 @@ def _import_time_calls(tree: ast.Module):
     """
     # Defs reachable from a scope that executes at import: module body, any class body, and (added when the helper is
     # entered) any def nested inside a helper we follow.
-    # DATA = _load()` runs _load while the class is constructed.
+    # `class F: def _load(): ...; DATA = _load()` runs _load while the class is constructed.
     helpers: dict = {}
 
     def _collect(body):

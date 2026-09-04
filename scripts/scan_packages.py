@@ -1139,8 +1139,9 @@ _MAX_MULTILINE_LINES = 12
 _MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
 _MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
 
-# Cap a single rendered line.
-# a long (e.g.
+# Cap a single rendered line. A short line is shown verbatim; a long (e.g. minified one-liner) line is shown as a
+# bounded prefix plus a sha256 of the full line, so a packed payload cannot dump unbounded content into the evidence
+# and baseline while a change past the cutoff still changes the digest and reopens the finding.
 _MAX_LINE_CHARS = 200
 # Cap on recorded spans in one evidence string; beyond it the remaining spans are
 # folded into a digest so a file with thousands of matching lines cannot build a
@@ -2179,6 +2180,10 @@ def _resolve_per_spec_with_deps(
                 continue
             sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
+        # Has a wheel but the full transitive tree won't co-resolve (ResolutionImpossible), typically a package the
+        # requirement file installs with --no-deps by design (e.g. descript-audio-codec, whose own pins conflict).
+        # Fetch just the package itself with --no-deps so it is still scanned; its conflicting deps are out of scope
+        # here (the file excludes them on purpose). Only a genuine fetch failure is an error.
         nd_cmd = [
             sys.executable,
             "-m",
@@ -2253,8 +2258,8 @@ def _resolve_per_spec_with_deps(
             elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
                 worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
             continue
-        # Has a wheel but the full transitive tree won't co-resolve (ResolutionImpossible)
-        # typically a package the requirement file installs with --no-deps by design (e.g.
+        # Wheel published but its tree won't co-resolve (a sdist-only child).
+        # Fetch the dep alone so it is scanned, then chase its own declared deps.
         nd_cmd = [
             sys.executable,
             "-m",
@@ -2830,7 +2835,10 @@ def _relpath_in_package(filename: str) -> str:
 
 
 # Evidence joins matched spans with " | " and a newline between labelled groups, each span tagged "L<NN>: ".
-# a marker-like "L<NN>:" inside raw code (e.g.
+# Split only on those real delimiters (a " | " before a marker, or a newline), never on a bare "|", since matched
+# code may contain a bitwise-or or union type. The prefix strips only a genuine leading marker, an optional
+# "Label: " then "L<NN>: "; a marker-like "L<NN>:" inside raw code (e.g. a .pth import line) has no leading marker
+# and is left intact.
 _RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
 _RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/+.-]*:\s*)?L\d+:\s?")
 

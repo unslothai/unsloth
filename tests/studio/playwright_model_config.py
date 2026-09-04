@@ -543,7 +543,12 @@ with sync_playwright() as p:
     ):
         # The gear is a sibling of the row, not inside [data-model-picker-option], so scope it by repo id;
         # case-insensitive to match the has_text row lookup.
-        # Every label is "<repo> <quant>", so an unanchored match lets F16 find BF16, and `.first` among variants the
+        #
+        # The quant, when given, is anchored to the end rather than searched for anywhere in
+        # the label. Every label is "<repo> <quant>", so an unanchored match lets F16 find
+        # BF16, and `.first` among variants the expander orders by fit rather than by name
+        # then opens the other one, after which the exact-key storage checks fail on a quant
+        # that was working.
         pattern = f"^Inference settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"

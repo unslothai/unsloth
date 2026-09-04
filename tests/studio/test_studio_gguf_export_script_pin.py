@@ -38,7 +38,9 @@ def _find_pin_try(tree: ast.AST):
     return None
 
 
-# The pin catches Exception, not ImportError:
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises RuntimeError or
+# AttributeError too. Anything that still catches an ImportError counts, so widening the handler
+# again does not break this test.
 _CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
 
 
@@ -111,8 +113,10 @@ def test_warning_handler_gated_on_module_flag():
     assert try_node is not None
     handlers = [h for h in try_node.handlers if _catches_import_error(h)]
     assert handlers
-    # And it has to keep covering the half-built cases, not just the missing-module one.
-    # what #8603 widened the handler for:
+    # And it has to keep covering the half-built cases, not just the missing-module one. That is
+    # what #8603 widened the handler for: an unsloth_zoo that imports but raises RuntimeError or
+    # AttributeError aborts the export otherwise, and a revert to ImportError alone still
+    # satisfies _catches_import_error above.
     covering = [h for h in handlers if _covers_half_built_zoo(h)]
     assert (
         covering

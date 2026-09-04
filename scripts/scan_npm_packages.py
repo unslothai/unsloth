@@ -59,6 +59,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ───────────────────────────────────────────────────────────────────── Hard caps (deliberately conservative;
+# npm tarballs in this repo are all well under these limits, so a packaging spike is noticeable).
 # ───────────────────────────────────────────────────────────────────── Caps calibrated against the real Unsloth
 # frontend transitive closure: - typescript.js is 9.1 MB (TS compiler bundled into one file) - mermaid 11.x
 # dist/mermaid.js.map is ~12 MB (sourcemap) - lightningcss-linux-x64-{gnu,musl}.node is 10 MB - rolldown bindings
@@ -1012,7 +1013,8 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     # Backward: find the line that opens a bracket still unclosed at the match, so a match inside a multi-line object
     # starts from the object opener.
     # Tracking order this way (rather than a single net per line) keeps a trailing opener visible even when leading
-    # closers on the same line net it to <= 0, e.g.
+    # closers on the same line net it to <= 0, e.g. `}); const opts = {`, which a net count would drop,
+    # letting a changed path/headers after such a line ride the unchanged-hostname key.
     start = idx
     depth = 0
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
@@ -1160,9 +1162,11 @@ def _evidence(
 ) -> str:
     # Record every match (not a truncated sample) so an extra match appended to an already-flagged file changes the
     # evidence instead of riding the first few.
+    # Past _MAX_EVIDENCE_MATCHES the remaining matches are folded into one digest (binding their logical-line context)
+    # so the evidence string stays bounded while a changed payload past the cap still reopens.
     # The matches are streamed from finditer rather than materialized into a list: a generated file can repeat a cheap
-    # signal (e.g.
-    # NPM_TOKEN) millions of times, and holding a re.Match per occurrence before applying the cap would stall or OOM the
+    # signal (e.g. NPM_TOKEN) millions of times, and holding a re.Match per occurrence before applying the cap would
+    # stall or OOM the scan.
     it = pat.finditer(text)
     shown_matches = list(itertools.islice(it, _MAX_EVIDENCE_MATCHES))
     if not shown_matches:
@@ -2062,8 +2066,9 @@ def main(argv: list[str] | None = None) -> int:
     }[args.fail_on]
     threshold_rank = _SEVERITY_RANK[threshold]
 
-    # --write-baseline persists the current at/above-threshold set and exits 0.
-    # write-baseline: persist the full current at/above-threshold set as the new allowlist (ignoring any loaded
+    # --write-baseline: persist the full current at/above-threshold set as the new allowlist (ignoring any loaded
+    # baseline), then exit 0. A hard error means the scan was incomplete, so warn: a baseline baked from a partial
+    # run would silently allow whatever failed to download.
     if args.write_baseline:
         if hard_errors:
             print(

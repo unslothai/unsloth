@@ -244,7 +244,7 @@ with sync_playwright() as p:
     if form_err is not None:
         raise form_err
 
-    # Wait for composer mount (no GGUF;
+    # Wait for composer mount (no GGUF; the bug is React state, not inference).
     step("wait for composer to mount")
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
