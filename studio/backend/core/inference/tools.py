@@ -11251,7 +11251,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         # nearer two characters per token) being charged the English four.
         return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
 
-    def _trim(hit_text, hit_sources, max_tokens):
+    def _trim(hit_text, hit_sources, max_tokens, keep_first = 1):
         """Drop passages from the tail until the rendered block fits, else None.
 
         Re-renders only when something is dropped, so an untrimmed result comes
@@ -11262,9 +11262,15 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         the request rather than degrading the answer. Losing the attachment is
         what this branch exists to prevent, but main already loses it here, and
         that beats an error instead of an answer.
+
+        ``keep_first`` is where the tail ends. Ranked retrieval can spend the
+        whole list, so one is the floor there; a whole document ahead of its
+        companions is not a ranking, and eating into it would return part of a
+        file the user attached whole under the name of the whole thing.
         """
+        floor = max(1, keep_first)
         kept, rendered = list(hit_sources), hit_text
-        while len(kept) > 1 and not _fits(rendered, max_tokens):
+        while len(kept) > floor and not _fits(rendered, max_tokens):
             kept = kept[:-1]
             rendered = render_sources(kept)
         return (rendered, kept) if _fits(rendered, max_tokens) else None
@@ -11297,10 +11303,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     proj = None
                 if proj is not None:
                     # Trim the combination against the measured cost, as the fallback
-                    # companion path does; the tail is all project, so the whole
-                    # document survives whatever does not fit beside it.
+                    # companion path does, but only into the project tail: the
+                    # document was admitted whole and stays whole, so a combination
+                    # that will not fit falls back to it alone rather than to a
+                    # truncated copy of it.
                     merged = sources + proj[1]
-                    trimmed = _trim(render_sources(merged), merged, budget)
+                    trimmed = _trim(
+                        render_sources(merged), merged, budget, keep_first = len(sources)
+                    )
                     if trimmed is not None:
                         text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
