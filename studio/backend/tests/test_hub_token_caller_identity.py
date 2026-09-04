@@ -151,15 +151,19 @@ def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
     seen = {}
 
-    def _auth_check(repo_id, *, repo_type = None, token = None, **_k):
+    def _auth_check(
+        repo_id,
+        *,
+        repo_type = None,
+        token = None,
+        **_k,
+    ):
         seen["args"] = (repo_id, repo_type, token)
         raise _gated_hub_error()
 
     monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
 
-    assert (
-        cache_reads_authorized("hf_invalid", repo_id = "org/gated", repo_type = repo_type) is False
-    )
+    assert cache_reads_authorized("hf_invalid", repo_id = "org/gated", repo_type = repo_type) is False
     assert seen["args"] == ("org/gated", repo_type, "hf_invalid")
 
 
