@@ -45,7 +45,7 @@ def require_code_anchor(marker: str, role: str) -> None:
     #10114 trimmed studio/frontend comments and failed 93 tests here over nothing it
     changed. Anchor on the declaration the comment sits above instead.
     """
-    if marker.lstrip().startswith(("//", "/*")):
+    if marker.lstrip().startswith(("//", "/*", "{/*")):
         raise AssertionError(
             f"{role} anchor is a comment, so rewording it breaks this test: {marker!r}"
         )
