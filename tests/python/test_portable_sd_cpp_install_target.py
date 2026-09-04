@@ -120,9 +120,7 @@ def probe(home: Path, prefix: Path, tmp_path: Path, *, mode: str, **env_extra: s
         "_MODE": mode,
     }
     env.update({key: value for key, value in env_extra.items() if value})
-    result = subprocess.run(
-        [sys.executable, "-c", _PROBE], env = env, capture_output = True, text = True
-    )
+    result = subprocess.run([sys.executable, "-c", _PROBE], env = env, capture_output = True, text = True)
     line = next((ln for ln in result.stdout.splitlines() if ln.startswith("__JSON__")), None)
     detail = f"rc={result.returncode}\n{result.stdout[-3000:]}\n{result.stderr[-4000:]}"
     assert line is not None, detail
@@ -146,19 +144,29 @@ def build_layout(tmp_path: Path, layout: str) -> tuple[Path, Path, Path, dict]:
         root = home / ".unsloth" / "studio"
         root.mkdir(parents = True)
         prefix = make_venv(root)
-        return home, prefix, home / ".unsloth" / "stable-diffusion.cpp", {
-            "UNSLOTH_STUDIO_HOME": str(root),
-        }
+        return (
+            home,
+            prefix,
+            home / ".unsloth" / "stable-diffusion.cpp",
+            {
+                "UNSLOTH_STUDIO_HOME": str(root),
+            },
+        )
     if layout == "flat_elsewhere":
         # (b) `install.sh --portable --root /opt/uns`: the venv sits AT the master root.
         master = tmp_path / layout / "opt" / "uns"
         master.mkdir(parents = True)
         prefix = make_venv(master, owned = True)
         (master / PORTABLE_MARKER).write_text("", encoding = "utf-8")
-        return home, prefix, master / "stable-diffusion.cpp", {
-            "UNSLOTH_HOME": str(master),
-            "UNSLOTH_STUDIO_HOME": str(master),
-        }
+        return (
+            home,
+            prefix,
+            master / "stable-diffusion.cpp",
+            {
+                "UNSLOTH_HOME": str(master),
+                "UNSLOTH_STUDIO_HOME": str(master),
+            },
+        )
     if layout == "flat_legacy":
         # (c) `--portable` over UNSLOTH_STUDIO_HOME=~/.unsloth/studio: the LEGACY path is itself
         # the master root, so the ~/.unsloth sibling is outside everything uninstall removes.
@@ -166,10 +174,15 @@ def build_layout(tmp_path: Path, layout: str) -> tuple[Path, Path, Path, dict]:
         root.mkdir(parents = True)
         prefix = make_venv(root, owned = True)
         (root / PORTABLE_MARKER).write_text("", encoding = "utf-8")
-        return home, prefix, root / "stable-diffusion.cpp", {
-            "UNSLOTH_HOME": str(root),
-            "UNSLOTH_STUDIO_HOME": str(root),
-        }
+        return (
+            home,
+            prefix,
+            root / "stable-diffusion.cpp",
+            {
+                "UNSLOTH_HOME": str(root),
+                "UNSLOTH_STUDIO_HOME": str(root),
+            },
+        )
     if layout == "nested_elsewhere":
         # (d) `install.sh --root /opt/uns`: Studio at <master>/studio, record inside it.
         master = tmp_path / layout / "opt" / "uns"
@@ -177,10 +190,15 @@ def build_layout(tmp_path: Path, layout: str) -> tuple[Path, Path, Path, dict]:
         prefix = make_venv(master / "studio")
         (master / PORTABLE_MARKER).write_text("", encoding = "utf-8")
         (master / "studio" / MASTER_ROOT_RECORD).write_text(f"{master}\n", encoding = "utf-8")
-        return home, prefix, master / "studio" / "stable-diffusion.cpp", {
-            "UNSLOTH_HOME": str(master),
-            "UNSLOTH_STUDIO_HOME": str(master / "studio"),
-        }
+        return (
+            home,
+            prefix,
+            master / "studio" / "stable-diffusion.cpp",
+            {
+                "UNSLOTH_HOME": str(master),
+                "UNSLOTH_STUDIO_HOME": str(master / "studio"),
+            },
+        )
     if layout == "nested_legacy":
         # (e) `install.sh --root ~/.unsloth`: the master OWNS ~/.unsloth, so the sibling is
         # contained and the legacy remap must survive.
@@ -189,10 +207,15 @@ def build_layout(tmp_path: Path, layout: str) -> tuple[Path, Path, Path, dict]:
         prefix = make_venv(root)
         (home / ".unsloth" / PORTABLE_MARKER).write_text("", encoding = "utf-8")
         (root / MASTER_ROOT_RECORD).write_text(f"{home / '.unsloth'}\n", encoding = "utf-8")
-        return home, prefix, home / ".unsloth" / "stable-diffusion.cpp", {
-            "UNSLOTH_HOME": str(home / ".unsloth"),
-            "UNSLOTH_STUDIO_HOME": str(root),
-        }
+        return (
+            home,
+            prefix,
+            home / ".unsloth" / "stable-diffusion.cpp",
+            {
+                "UNSLOTH_HOME": str(home / ".unsloth"),
+                "UNSLOTH_STUDIO_HOME": str(root),
+            },
+        )
     raise AssertionError(layout)
 
 
