@@ -1008,11 +1008,15 @@ def test_runtime_gate_handoff_covers_managed_children():
     )
     assert save < set_handoff < autostart < restore
 
-    setup_python = install_source.index("$env:UNSLOTH_SETUP_PYTHON =")
-    setup_save = install_source.index("$previousSetupRuntimeGateHandoff =", setup_python)
+    # The save sits above the try that now covers the whole handoff, not beside
+    # the set: a finally reached before its own $hadPrevious* was assigned reads
+    # an unset flag as "there was nothing here" and clears a value it never set.
+    setup_save = install_source.index("$previousSetupRuntimeGateHandoff =")
+    setup_try = install_source.index("\n    try {\n        $env:SKIP_STUDIO_BASE", setup_save)
+    setup_python = install_source.index("$env:UNSLOTH_SETUP_PYTHON =", setup_try)
     setup_set = install_source.index(
         '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
-        setup_save,
+        setup_python,
     )
     setup_invoke = install_source.index(
         "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs", setup_set
@@ -1022,7 +1026,15 @@ def test_runtime_gate_handoff_covers_managed_children():
         setup_invoke,
     )
     tauri_remove = install_source.index("Remove-Item Env:UNSLOTH_TAURI_MODE", setup_invoke)
-    assert setup_python < setup_save < setup_set < setup_invoke < tauri_remove < setup_restore
+    assert (
+        setup_save
+        < setup_try
+        < setup_python
+        < setup_set
+        < setup_invoke
+        < tauri_remove
+        < setup_restore
+    )
 
     assert (
         studio_source.count(

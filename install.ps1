@@ -720,6 +720,86 @@ function Install-UnslothStudio {
     # able to complete, over a package it will not install.
     if ($SkipTorch) { $PythonSkip = @() }
 
+    # ── How this run was launched ──
+    # "true", "false", or "unknown" when the token cannot be read. An elevated
+    # run writes the install root as Administrators, so the same account cannot
+    # read it back afterwards. Keep in step with studio/setup.ps1.
+    function Get-ElevationState {
+        try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+            if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                return "true"
+            }
+            return "false"
+        } catch {
+            return "unknown"
+        }
+    }
+
+    # Record it either way, and warn only when it will cause the problem. The
+    # marker reaches the desktop support report via install.rs record_diag_marker.
+    function Write-ElevationNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$State,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
+            # $env:UNSLOTH_TAURI_MODE is not set until setup.ps1 is invoked far
+            # below, so the desktop's own --tauri flag is what is readable here.
+            [switch]$Tauri
+        )
+
+        if ($Tauri) {
+            [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
+            [Console]::Out.Flush()
+        }
+        if ($State -ne "true") { return }
+        Write-StudioLine "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-StudioLine "            Anything written to $Root will be owned by Administrators," -ForegroundColor Yellow
+        Write-StudioLine "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-StudioLine "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-StudioLine "            update run normally fails on it." -ForegroundColor Yellow
+        Write-StudioLine "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+
+    # Expand a leading ~ and normalize separators and .. segments, so an override
+    # spelled differently still compares equal to the legacy default. GetFullPath
+    # alone keeps a literal ~ and resolves it against the cwd.
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        return $_p.TrimEnd('\', '/')
+    }
+
+    # The resolver below creates and write-probes a custom root, so warn first or
+    # an elevated run leaves behind the very folder this is about. That means
+    # mirroring its override precedence here rather than reusing $StudioHome.
+    # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
+    # name the parent; a custom root holds every artefact itself.
+    $UnslothRoot = Join-Path $env:USERPROFILE ".unsloth"
+    $ElevationRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+        $env:UNSLOTH_STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+        $env:STUDIO_HOME.Trim()
+    } else {
+        $UnslothRoot
+    }
+    # An override equal to the legacy default is not a custom root downstream:
+    # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+    if ((Get-CanonicalRootPath $ElevationRoot) -ieq
+        (Get-CanonicalRootPath (Join-Path $UnslothRoot "studio"))) {
+        $ElevationRoot = $UnslothRoot
+    }
+    Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
+
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
     # Reject whitespace-only values so " " is treated as unset (matches the
@@ -6161,93 +6241,102 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine "        Re-run the installer to rebuild the environment." -ForegroundColor Yellow
         return (Exit-InstallFailure "managed Python is missing at $VenvPython")
     }
-    # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
-    $env:SKIP_STUDIO_BASE = "1"
-    $env:STUDIO_PACKAGE_NAME = $PackageName
-    $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
-    # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
-    # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
-    # installer put it there -- the migrated-venv arm above installs unsloth only and never
-    # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
-    # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
-    # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
-    $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
-        [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
-    }
-    # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
-    $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
-    # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
-    # a previous --local run in the same PowerShell session.
-    if ($StudioLocalInstall) {
-        $env:STUDIO_LOCAL_INSTALL = "1"
-        $env:STUDIO_LOCAL_REPO = $RepoRoot
-    } else {
-        $env:STUDIO_LOCAL_INSTALL = "0"
-        Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
-    }
-    # Use 'studio setup' (not 'studio update') because 'update' pops
-    # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
-    # and bypass the fast-path version check from PR #4667.
+    # Tell setup.ps1 to skip base package installation (install.ps1 already did it).
+    # Saved and restored below: `irm | iex` runs in the caller's shell, and a
+    # leaked "1" makes a later direct setup or update look like an installer child.
+    # Every capture happens before the try, so the finally always sees a real
+    # answer rather than reading an unset $hadPrevious* as "there was nothing".
+    # The try then opens before the first mutation, so the --with-llama-cpp-dir
+    # bail restores too.
+    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE
+    $hadPreviousSkipStudioBase = ($null -ne $previousSkipStudioBase)
     # Propagate UNSLOTH_STUDIO_HOME only for env-override installs; otherwise
     # an inherited value would put llama.cpp in the wrong place.
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
     $previousTauriMode = $env:UNSLOTH_TAURI_MODE
     $hadPreviousTauriMode = ($null -ne $previousTauriMode)
-    $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
-    if ($StudioRedirectMode -eq 'env') {
-        $env:UNSLOTH_STUDIO_HOME = $StudioHome
-    } else {
-        Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
-    }
-    $studioArgs = @('studio', 'setup')
-    if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    if ($WithLlamaCppDir) {
-        if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
-            Write-StudioLine "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
-            return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
-        }
-        $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
-    }
-    $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
-    # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
-    # resolved and built the venv with, instead of re-probing the system (which
-    # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
-    # though the venv is fine). setup.ps1 Test-Path-guards this before use.
-    $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
-    # Installer already owns the runtime mutex; the child inherits it rather
-    # than deadlocking trying to reacquire it.
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
-    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
-    # The proxy defaults kept out of the discarded profile table, for the duration of the child
-    # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
     $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
     $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
-    # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
-    # standalone update and goes looking through the user's profiles. An empty object says "the
-    # installer looked, and there is none".
-    $env:_UNSLOTH_PS_PROXY_DEFAULTS =
-        if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
-    # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
-    # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
-    # reports "needs repair", the installer rolls back, and the app retries that forever.
-    #
-    # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
-    # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
-    # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
-    # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
-    # come up empty, and nested installers never see it.
     $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
     $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
-    if ($ROCmGfxArch) {
-        $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
-    } else {
-        # Cleared, not left alone: an inherited value from an outer process is not this run's
-        # answer, and handing it down would forward an arch nothing here detected.
-        Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
-    }
     try {
+        $env:SKIP_STUDIO_BASE = "1"
+        $env:STUDIO_PACKAGE_NAME = $PackageName
+        $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+        # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
+        # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
+        # installer put it there -- the migrated-venv arm above installs unsloth only and never
+        # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
+        # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
+        # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
+        $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
+            [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
+        }
+        # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
+        $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
+        # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
+        # a previous --local run in the same PowerShell session.
+        if ($StudioLocalInstall) {
+            $env:STUDIO_LOCAL_INSTALL = "1"
+            $env:STUDIO_LOCAL_REPO = $RepoRoot
+        } else {
+            $env:STUDIO_LOCAL_INSTALL = "0"
+            Remove-Item Env:STUDIO_LOCAL_REPO -ErrorAction SilentlyContinue
+        }
+        # Use 'studio setup' (not 'studio update') because 'update' pops
+        # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
+        # and bypass the fast-path version check from PR #4667.
+        $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
+        if ($StudioRedirectMode -eq 'env') {
+            $env:UNSLOTH_STUDIO_HOME = $StudioHome
+        } else {
+            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+        }
+        $studioArgs = @('studio', 'setup')
+        if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+        if ($WithLlamaCppDir) {
+            if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
+                Write-StudioLine "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+                return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
+            }
+            $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
+        }
+        $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
+        # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
+        # resolved and built the venv with, instead of re-probing the system (which
+        # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
+        # though the venv is fine). setup.ps1 Test-Path-guards this before use.
+        $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
+        # Installer already owns the runtime mutex; the child inherits it rather
+        # than deadlocking trying to reacquire it.
+        $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+        # The proxy defaults kept out of the discarded profile table, for the duration of the child
+        # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
+        #
+        # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
+        # standalone update and goes looking through the user's profiles. An empty object says "the
+        # installer looked, and there is none".
+        $env:_UNSLOTH_PS_PROXY_DEFAULTS =
+            if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
+        # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
+        # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
+        # reports "needs repair", the installer rolls back, and the app retries that forever.
+        #
+        # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
+        # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
+        # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
+        # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
+        # come up empty, and nested installers never see it.
+        if ($ROCmGfxArch) {
+            $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
+        } else {
+            # Cleared, not left alone: an inherited value from an outer process is not this run's
+            # answer, and handing it down would forward an arch nothing here detected.
+            Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
+        }
         Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
@@ -6260,6 +6349,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
             Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSkipStudioBase) {
+            $env:SKIP_STUDIO_BASE = $previousSkipStudioBase
+        } else {
+            Remove-Item Env:SKIP_STUDIO_BASE -ErrorAction SilentlyContinue
         }
         if ($hadPreviousSetupRuntimeGateHandoff) {
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
