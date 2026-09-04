@@ -310,3 +310,100 @@ def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, mo
     assert not (Path(output_path) / "config.json").exists()
     # The card advertises the files, so it must land after them.
     assert calls.index("model_card") > calls.index("upload_folder")
+
+
+def test_gguf_hub_export_leaves_a_stale_modelfile_behind(tmp_path, monkeypatch):
+    """A Modelfile from an earlier export points at another model; only a fresh one ships."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_stale_modelfile_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    save_dir = tmp_path / "shared-export-folder"
+    save_dir.mkdir()
+    (save_dir / "Modelfile").write_text("FROM some-other-model.Q8_0.gguf")
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            # This conversion produces no Modelfile.
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
+    assert (Path(output_path) / "Modelfile").is_file()
+
+
+def test_gguf_hub_export_does_not_publish_appledouble_companions(tmp_path, monkeypatch):
+    """A ._ companion beside a GGUF is Finder metadata, not a model file."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_appledouble_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    save_dir = tmp_path / "export"
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            (output / "._model.Q4_K_M.gguf").write_bytes(b"\x00\x05\x16\x07")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, _path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
+    assert "._model.Q4_K_M.gguf" not in seen["card"]

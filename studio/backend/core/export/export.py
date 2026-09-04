@@ -1163,6 +1163,7 @@ class ExportBackend:
         # What this run actually produced, for the Hub leg: the merged config.json is read
         # here because the temp root holding it is deleted before the upload.
         exported_ggufs: List[str] = []
+        exported_modelfile = False
         exported_config: Optional[bytes] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
@@ -1248,7 +1249,9 @@ class ExportBackend:
                             "GGUF conversion produced no files: no .gguf outputs for "
                             f"{abs_save_dir}"
                         )
-                    exported_ggufs = list(relocated_ggufs)
+                    exported_ggufs = [
+                        str(f) for f in drop_appledouble_metadata(relocated_ggufs)
+                    ]
                     # Kept in memory, not relocated: a config.json in the export folder
                     # would make _is_model_dir read it as a checkpoint directory.
                     merged_config = (
@@ -1270,6 +1273,7 @@ class ExportBackend:
                         # destination must not fail an export whose GGUFs all landed.
                         try:
                             shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            exported_modelfile = True
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         except OSError as exception:
                             logger.warning(f"Could not relocate the Modelfile: {exception}")
@@ -1344,7 +1348,7 @@ class ExportBackend:
                         repo_type = "model",
                         allow_patterns = [
                             *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
-                            "Modelfile",
+                            *(["Modelfile"] if exported_modelfile else []),
                         ],
                     )
                     if exported_config is not None:
