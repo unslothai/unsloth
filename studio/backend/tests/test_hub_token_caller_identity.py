@@ -78,6 +78,7 @@ def test_cache_reads_require_a_credential_that_reaches_the_repo(monkeypatch):
         return False
 
     monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", _probe)
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
 
     assert cache_reads_authorized(False, repo_id = "org/private") is False
     assert cache_reads_authorized(None, repo_id = "org/private") is True
@@ -90,6 +91,7 @@ def test_cache_reads_require_a_credential_that_reaches_the_repo(monkeypatch):
 def test_a_verified_token_may_read_the_host_cache(monkeypatch):
     reset_repo_access_cache()
     monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", lambda *_a, **_k: True)
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
 
     assert cache_reads_authorized("hf_real", repo_id = "org/private") is True
 
