@@ -4270,13 +4270,26 @@ exit 0
         $_Migrated = $true
     }
 
+    $venvDirExistedBeforeCreation = Test-Path -LiteralPath $VenvDir
+    $venvDirHasOwnershipEvidence = Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf
+    $fallbackVenvExit = $null
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
-        if ($venvExit -ne 0) {
-            Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
-            return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
+        $uvVenvReady = ($venvExit -eq 0 -and (Test-VenvPythonReady -PythonExe $VenvPython))
+        if (-not $uvVenvReady) {
+            if ($venvDirExistedBeforeCreation -and -not $venvDirHasOwnershipEvidence) {
+                Write-StudioLine "[ERROR] Refusing to repair an existing directory that is not a managed Studio environment." -ForegroundColor Red
+                Write-StudioLine "        Move $VenvDir aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
+                return (Exit-InstallFailure "Refusing to repair unowned virtual environment directory $VenvDir")
+            }
+            Write-StudioLine "[WARN] uv did not produce a usable virtual environment; repairing with the selected Python." -ForegroundColor Yellow
+            if (-not (Test-VenvPythonReady -PythonExe $DetectedPython.Path)) {
+                $fallbackVenvExit = 1
+            } else {
+                $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv $VenvDir }
+            }
         }
     } else {
         step "venv" "using migrated environment"
@@ -4286,6 +4299,13 @@ exit 0
     # Mark the managed venv before probing so failed installs can be replaced on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+    }
+
+    if ($null -ne $fallbackVenvExit -and $fallbackVenvExit -ne 0) {
+        Write-StudioLine "[ERROR] Failed to repair virtual environment (exit code $fallbackVenvExit)" -ForegroundColor Red
+        Write-StudioLine "        Selected Python: $($DetectedPython.Path)" -ForegroundColor Yellow
+        Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Failed to repair virtual environment (exit code $fallbackVenvExit)" $fallbackVenvExit)
     }
 
     if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
