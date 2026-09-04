@@ -1406,6 +1406,113 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
         assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
 
 
+def test_custom_scan_folder_variant_finds_nested_mtp_drafter(tmp_path):
+    """Custom-folder scan roots are passed with a nested gguf_variant.
+
+    Layout reproduced for this PR (LM Studio nested-quant, not the flat tree
+    described in #8077):
+
+        <scan_root>/unsloth/gemma-4-31b-it/Q4_K_M/gemma-4-31B-it-Q4_K_M.gguf
+        <scan_root>/unsloth/gemma-4-31b-it/mtp-gemma-4-31B-it.gguf
+
+    Companions sit beside the model directory, not at the scan root. Using the
+    selected scan folder as the companion search root would miss them.
+    """
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "unsloth" / "gemma-4-31b-it"
+    quant_dir = model_dir / "Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    weight = quant_dir / "gemma-4-31B-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    drafter = model_dir / "mtp-gemma-4-31B-it.gguf"
+    drafter.write_bytes(b"x")
+
+    assert _local_gguf_companion_search_root(str(scan_root), str(weight)) == str(model_dir)
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_file == str(weight.resolve())
+    assert config.gguf_mtp_file == str(drafter.resolve())
+
+
+def test_custom_scan_folder_variant_finds_nested_dspark_sidecar(tmp_path):
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "deepseek"
+    quant_dir = model_dir / "UD-Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    weight = quant_dir / "DeepSeek-V4-Flash-0731-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    dspark_dir = model_dir / "dspark"
+    dspark_dir.mkdir()
+    sidecar = dspark_dir / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"x")
+
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "UD-Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_dspark_file == str(sidecar.resolve())
+
+
+def test_companion_search_root_falls_back_when_weight_outside_selection(tmp_path):
+    """A symlinked weight outside the selected tree keeps the selected scan root."""
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "publisher" / "model"
+    model_dir.mkdir(parents = True)
+    external = tmp_path / "external"
+    external.mkdir()
+    weight = external / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    model_dir.joinpath("model-Q4_K_M.gguf").symlink_to(weight)
+
+    assert _local_gguf_companion_search_root(
+        str(scan_root), str(model_dir / "model-Q4_K_M.gguf")
+    ) == str(scan_root)
+
+
+def test_custom_scan_folder_flat_layout_finds_mtp_beside_gguf(tmp_path):
+    """#8077 as written: sidecar beside the GGUF, or in MTP/ next to it.
+
+    detect_mtp_file already scans the weight directory, so a custom-folder
+    load of this tree should succeed even when the companion search root is
+    still the scan folder. This PR is not what makes this layout work.
+    """
+    scan_root = tmp_path / "oobabooga" / "models"
+    model_dir = scan_root / "lmstudio-community" / "gemma-4-31b-it-GGUF"
+    model_dir.mkdir(parents = True)
+    weight = model_dir / "gemma-4-31B-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    beside = model_dir / "mtp-gemma-4-31B-it.gguf"
+    beside.write_bytes(b"x")
+
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_file == str(weight.resolve())
+    assert config.gguf_mtp_file == str(beside.resolve())
+
+    mtp_dir = model_dir / "MTP"
+    mtp_dir.mkdir()
+    subdir = mtp_dir / "mtp-gemma-4-31B-it-Q8_0.gguf"
+    subdir.write_bytes(b"x")
+    beside.unlink()
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "Q4_K_M")
+    assert config and config.gguf_mtp_file == str(subdir.resolve())
+
+
+def test_custom_scan_folder_variant_finds_nested_mmproj(tmp_path):
+    """mmproj shares the companion search root with MTP/DSpark sidecars."""
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "unsloth" / "gemma-4-31b-it"
+    quant_dir = model_dir / "Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    weight = quant_dir / "gemma-4-31B-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    mmproj = model_dir / "mmproj-gemma-4-31B-it-F16.gguf"
+    mmproj.write_bytes(b"x")
+
+    assert _local_gguf_companion_search_root(str(scan_root), str(weight)) == str(model_dir)
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_mmproj_file == str(mmproj.resolve())
+
+
 # ── DSpark drafters (DeepSeek V4 Flash) ──────────────────────────────
 
 DEEPSEEK_SIBLINGS = [
