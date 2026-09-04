@@ -400,12 +400,27 @@ def find_binary_script(candidates: List[str]) -> str:
     return checks + " echo MISSING; exit 1"
 
 
+def launch_files(argv: List[str], gguf_path: str) -> List[str]:
+    """Every file the launch names: the weights plus any absolute path that is a file
+    here (mmproj, drafter, adapters). The replica needs all of them at the same path."""
+    files = [gguf_path]
+    for arg in argv[1:]:
+        if arg != gguf_path and osp.isabs(arg) and osp.isfile(arg):
+            files.append(arg)
+    return files
+
+
+# Node-local state the replica must not share or need: the slot KV save directory is a
+# cache on this node's disk and llama-server refuses a path that does not exist.
+_REPLICA_DROPPED_FLAGS = ("--port", "--host", "--slot-save-path")
+
+
 def replica_argv(local_argv: List[str], *, binary: str, host: str, port: int) -> List[str]:
     """The peer's llama-server argv: the local launch, re-pointed.
 
     Same flags, same model path, same slots, same context and cache types, because a
     replica that differs from the primary would answer the same request differently.
-    Only the binary, ``--host`` and ``--port`` change.
+    Only the binary, ``--host`` and ``--port`` change, and node-local paths are dropped.
     """
     out: List[str] = [binary]
     skip = 0
@@ -413,10 +428,10 @@ def replica_argv(local_argv: List[str], *, binary: str, host: str, port: int) ->
         if skip:
             skip -= 1
             continue
-        if arg in ("--port", "--host"):
+        if arg in _REPLICA_DROPPED_FLAGS:
             skip = 1
             continue
-        if arg.startswith(("--port=", "--host=")):
+        if arg.startswith(tuple(f"{flag}=" for flag in _REPLICA_DROPPED_FLAGS)):
             continue
         out.append(arg)
     out += ["--host", host, "--port", str(port)]
@@ -822,16 +837,19 @@ class SparkServing:
             )
             logger.warning("spark serving: %s", self.reason)
             return
-        rc, out, _ = await ssh_run(
-            peer, f"test -f {shlex.quote(str(gguf_path))} && echo YES || echo NO", timeout = 25.0
-        )
+        # Every file the launch names (weights, mmproj, drafter, adapters) must exist at
+        # the same path on the peer, since the replica is launched with the same argv.
+        needed = launch_files(argv, str(gguf_path))
+        checks = " && ".join(f"test -f {shlex.quote(p)}" for p in needed)
+        rc, out, _ = await ssh_run(peer, f"{checks} && echo YES || echo NO", timeout = 25.0)
         self.peer_model_present = rc == 0 and out.strip().endswith("YES")
         if not self.peer_model_present:
             self.topology, self.reason = (
                 "single",
                 (
-                    f"peer {peer} does not have {gguf_path}; copy it over the cluster link "
-                    f"(rsync -a <file> {peer}:<same path>) to enable replicas"
+                    f"peer {peer} does not have {gguf_path} (or a sidecar the launch names); "
+                    f"copy it over the cluster link (rsync -a <file> {peer}:<same path>) to "
+                    f"enable replicas"
                 ),
             )
             logger.warning("spark serving: %s", self.reason)

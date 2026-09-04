@@ -215,6 +215,8 @@ def test_replica_argv_repoints_only_host_and_port():
         "/m.gguf",
         "--port",
         "41234",
+        "--slot-save-path",
+        "/home/u/.unsloth/studio/cache/llama-slots",
         "--parallel",
         "16",
         "-c",
@@ -535,3 +537,24 @@ def test_after_load_records_single_below_the_replica_threshold(cluster, monkeypa
     assert not started and ss.state().topology == "single"
     assert ss.state().reason == "stub says single"
     assert cluster.planner_calls[-1]["users"] == 2
+
+
+def test_launch_files_names_every_sidecar_the_launch_uses(tmp_path):
+    weights = tmp_path / "m.gguf"
+    mmproj = tmp_path / "mmproj.gguf"
+    weights.write_bytes(b"w")
+    mmproj.write_bytes(b"p")
+    argv = [
+        "/b/llama-server",
+        "-m",
+        str(weights),
+        "--mmproj",
+        str(mmproj),
+        "--slot-save-path",
+        str(tmp_path),
+        "--alias",
+        "unsloth/demo",
+        "-c",
+        "4096",
+    ]
+    assert ss.launch_files(argv, str(weights)) == [str(weights), str(mmproj)]
