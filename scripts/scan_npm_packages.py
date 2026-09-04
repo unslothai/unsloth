@@ -69,12 +69,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Text files (JS/TS/JSON/etc) keep the tight cap because the pattern scanner runs over them and a 9.1 MB typescript.js
 # is the legitimate ceiling.
 # 256 MiB compressed 16 MiB per text file 256 MiB per .node etc 512 MiB cumulative entries per tarball per request
-HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024
-HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024
-HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024
-HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024
-HARD_MAX_MEMBERS = 50_000
-HARD_HTTP_TIMEOUT_S = 60
+HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
+HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
+HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per tarball
+HARD_HTTP_TIMEOUT_S = 60  # per request
 
 # Native-binary / compiled-asset suffixes that bypass the text cap.
 # This is the SUFFIX shortlist;
@@ -123,27 +123,27 @@ _VERSIONED_LIB = re.compile(
 
 # Magic numbers at offset 0 that identify common executable formats.
 _BINARY_MAGICS = (
-    b"\x7fELF",  # ELF (Linux executable / .so) PE / .exe / .dll (DOS header prefix) Mach-O 32 BE Mach-O 64 BE Mach-O 32
-    b"MZ",
-    b"\xfe\xed\xfa\xce",
-    b"\xfe\xed\xfa\xcf",
-    b"\xce\xfa\xed\xfe",
-    b"\xcf\xfa\xed\xfe",
-    b"\xca\xfe\xba\xbe",
-    b"\x00asm",
-    b"PK\x03\x04",
-    b"PK\x05\x06",
-    b"\x1f\x8b",
-    b"BZh",
-    b"\xfd7zXZ",
-    b"7z\xbc\xaf\x27\x1c",
-    b"\x89PNG",
-    b"\xff\xd8\xff",
-    b"GIF8",
-    b"RIFF",
-    b"\x00\x00\x01\x00",
-    b"OggS",
-    b"\x1aE\xdf\xa3",
+    b"\x7fELF",  # ELF (Linux executable / .so)
+    b"MZ",  # PE / .exe / .dll (DOS header prefix)
+    b"\xfe\xed\xfa\xce",  # Mach-O 32 BE
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64 BE
+    b"\xce\xfa\xed\xfe",  # Mach-O 32 LE
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64 LE
+    b"\xca\xfe\xba\xbe",  # Mach-O fat / Java class (also starts with this)
+    b"\x00asm",  # WASM
+    b"PK\x03\x04",  # ZIP / JAR / nupkg / xpi
+    b"PK\x05\x06",  # ZIP (empty)
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ",  # xz
+    b"7z\xbc\xaf\x27\x1c",  # 7zip
+    b"\x89PNG",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF8",  # GIF
+    b"RIFF",  # WAV / WEBP / AVI container
+    b"\x00\x00\x01\x00",  # ICO
+    b"OggS",  # Ogg
+    b"\x1aE\xdf\xa3",  # Matroska / WebM
 )
 
 
@@ -179,11 +179,11 @@ _SEVERITY_RANK = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3}
 @dataclass
 class Finding:
     severity: str
-    package: str
-    filename: str
-    pattern: str
-    evidence: str = ""
-    detail: str = ""
+    package: str  # name@version
+    filename: str  # relative path inside the tarball
+    pattern: str  # what matched
+    evidence: str = ""  # short surrounding snippet
+    detail: str = ""  # human-readable description
 
     def __str__(self) -> str:
         head = f"  [{self.severity}] {self.package} :: {self.filename}"
@@ -917,8 +917,8 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
     literal spanning several lines or a ``/)/`` regex -- which a per-line regex
     cannot blank. Escapes are honoured."""
     out: list[str] = []
-    in_back = False  # inside a multi-line `template` literal last significant non-space char (for regex-vs-division)
-    prev_sig = ""
+    in_back = False  # inside a multi-line `template` literal
+    prev_sig = ""  # last significant non-space char (for regex-vs-division)
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -1231,7 +1231,7 @@ def _slash_is_regex(prev_tok: str) -> bool:
         return True
     last = prev_tok[-1]
     if last.isalnum() or last in "_$)]":
-        return False  # previous token ends a value -> division operators, punctuation, `{`, `}` -> regex (safe bias)
+        return False  # previous token ends a value -> division
     return True
 
 

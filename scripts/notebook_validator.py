@@ -128,7 +128,7 @@ class Finding:
     file: str
     cell: int | None = None
     line: int | None = None
-    severity: str = "error"
+    severity: str = "error"  # error | warning
     message: str = ""
     hint: str = ""
 
@@ -255,9 +255,9 @@ def cmp_versions(a: str, b: str) -> int:
 
 @dataclasses.dataclass
 class PipInvocation:
-    tool: str  # "pip" | "uv-pip" {'--no-deps', '--upgrade', '--force-reinstall', ...} raw package specifiers (e.g.
-    flags: set[str]
-    packages: list[str]
+    tool: str  # "pip" | "uv-pip"
+    flags: set[str]  # {'--no-deps', '--upgrade', '--force-reinstall', ...}
+    packages: list[str]  # raw package specifiers (e.g. 'transformers==5.5.0')
     raw: str
     line_no: int = 0
 
@@ -352,7 +352,7 @@ OP_VERSION_RE = re.compile(r"(==|>=|<=|!=|~=|>|<)\s*([0-9][^,;\s]*)")
 @dataclasses.dataclass
 class SpecParts:
     name: str
-    pins: list[tuple[str, str]]
+    pins: list[tuple[str, str]]  # list of (op, version)
     raw: str
 
 
@@ -638,7 +638,7 @@ def rule_inst_005_transformers_tokenizers(
     tf = res.get("transformers")
     tok = res.get("tokenizers")
     if not tf or tok is None:
-        return findings  # unknown torch minor - don't flag
+        return findings  # unknown torch minor, don't flag
     # Find the transformers pin and check for --no-deps.
     transformers_line_no_deps = False
     for inv in iter_pip_invocations(install_cell):

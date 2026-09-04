@@ -97,7 +97,7 @@ def test_fast_inference():
             fast_inference = True,
             max_lora_rank = LORA_RANK,
             gpu_memory_utilization = GPU_MEMORY_UTILIZATION,
-            enforce_eager = True,
+            enforce_eager = True,  # skip CUDA graph capture for fast startup
             compilation_config = COMPILATION_CONFIG,
         )
     assert hasattr(model, "vllm_engine"), "fast_inference=True did not attach a vLLM engine"

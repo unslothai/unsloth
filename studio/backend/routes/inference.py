@@ -34373,7 +34373,7 @@ async def _generate_openai_images(
             )
             if want_b64:
                 encoded = image_gallery.image_b64(record["id"])
-                if encoded is None:  # vanished between write and read - fail the call
+                if encoded is None:  # vanished between write and read — fail the call
                     raise RuntimeError("generated image could not be read back for encoding")
                 items.append(ImageGenerationData(b64_json = encoded))
             else:

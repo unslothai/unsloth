@@ -217,7 +217,7 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
         from torch.nn.functional import ScalingType
 
         with pytest.raises(RuntimeError):
-            ScalingType.DYNAMIC
+            ScalingType.DYNAMIC  # still refuses to be used
     finally:
         for n in _TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
@@ -303,9 +303,9 @@ def test_the_mlx_call_cannot_break_the_import():
             "0.18.0+cu130",
             True,
         ),  # wheels carry a local version a dev build of a later release still has it future
-        ("0.19.0.dev20260801", True),
-        ("1.0.0", True),
-        ("0.17.0", False),
+        ("0.19.0.dev20260801", True),  # a dev build of a later release still has it
+        ("1.0.0", True),  # future majors, until upstream fixes it
+        ("0.17.0", False),  # guards its own import
         ("0.17.0+cu130", False),
         ("0.13.0", False),  # the floor in pyproject
     ],

@@ -463,7 +463,7 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         # Any such line BEYOND the first warning is an injected command.
         return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
 
-    injected_bad = "%inject\n::error::bad"
+    injected_bad = "%inject\n::error::bad"  # contains %, \n, and ::
     env_a = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_bad}
     proc_a = subprocess.run(
         [

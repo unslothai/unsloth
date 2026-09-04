@@ -279,9 +279,9 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
             "2.9.1+rocm7.2.0.lw.git7e1940d4",
             (0, 24, 1),
         ),  # Radeon Linux extra Radeon Windows extra built from source
-        ("2.9.1+rocmsdk20260116", (0, 24, 1)),
-        ("2.7.0+git1a2b3c", (0, 22, 0)),
-        ("2.12.0.dev20260801+cpu", (0, 27, 0)),
+        ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
+        ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
+        ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
         ("2.11.0a1+cu128", (0, 26, 0)),
         ("2.11.0b2+cu128", (0, 26, 0)),
         ("2.7.0rc1", (0, 22, 0)),

@@ -330,7 +330,7 @@ class ClassifyCase:
     pkg: str
     file: str
     content: str
-    expected_kind: str | None
+    expected_kind: str | None  # None means "no detection"
 
 
 CLASSIFY_CASES: list[ClassifyCase] = [
@@ -1168,7 +1168,7 @@ class EnumCase:
     add_deps: dict[str, str]
     add_dev_deps: dict[str, str]
     field_patch: dict
-    extra_file: tuple[str, str] | None
+    extra_file: tuple[str, str] | None  # (relative_path, content) or None
     expected_unused: set[str]
     expected_used: set[str]
     expected_orphan_types: set[str]
@@ -1338,7 +1338,7 @@ class WrapperCase:
     id: str
     desc: str
     raw_cmd: str
-    expected_bin: str | None  # None means "no real bin (e.g.
+    expected_bin: str | None  # None means "no real bin (e.g. unwrappable)"
 
 
 WRAPPER_CASES: list[WrapperCase] = [

@@ -22,20 +22,20 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("unsloth_zoo")
 
-_TESTS_DIR = Path(__file__).resolve().parents[2]
+_TESTS_DIR = Path(__file__).resolve().parents[2]  # tests/
 
 # gfx -> (expected llama.cpp target, expected ROCm bundle family).
 _ARCHES = {
-    "gfx1030": (("rocm", "gfx1030"), "gfx103X"),
+    "gfx1030": (("rocm", "gfx1030"), "gfx103X"),  # RDNA2
     "gfx1031": (("rocm", "gfx1031"), "gfx103X"),
     "gfx1032": (("rocm", "gfx1032"), "gfx103X"),
     "gfx1034": (("rocm", "gfx1034"), "gfx103X"),
-    "gfx1100": (("rocm", "gfx1100"), "gfx110X"),
+    "gfx1100": (("rocm", "gfx1100"), "gfx110X"),  # RDNA3
     "gfx1101": (("rocm", "gfx1101"), "gfx110X"),
     "gfx1102": (("rocm", "gfx1102"), "gfx110X"),
-    "gfx1150": (("rocm", "gfx1150"), "gfx1150"),
+    "gfx1150": (("rocm", "gfx1150"), "gfx1150"),  # RDNA3.5 APU (self-family)
     "gfx1151": (("rocm", "gfx1151"), "gfx1151"),
-    "gfx1200": (("rocm", "gfx1200"), "gfx120X"),
+    "gfx1200": (("rocm", "gfx1200"), "gfx120X"),  # RDNA4
     "gfx1201": (("rocm", "gfx1201"), "gfx120X"),
 }
 

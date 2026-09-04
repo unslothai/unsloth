@@ -316,8 +316,8 @@ def test_text_only_key_mapping_targets_published_prefixes():
         assert mapping is None
     else:
         assert isinstance(mapping, dict)
-        assert mapping.get(r"^language_model\.model\.") == "model."
-        assert mapping.get(r"^model\.language_model\.") == "model."
+        assert mapping.get(r"^language_model\.model\.") == "model."  # gemma3
+        assert mapping.get(r"^model\.language_model\.") == "model."  # gemma3n
         assert mapping.get(r"^language_model\.lm_head\.") == "lm_head."
 
 

@@ -14,9 +14,9 @@ from unsloth.utils import attention_dispatch as ad
     "capability, probe_result, expect_disabled",
     [
         ((8, 9), None, False),  # Ada: below sm_120, never probed, always kept
-        ((9, 0), None, False),
-        ((10, 0), None, False),
-        ((12, 0), True, False),
+        ((9, 0), None, False),  # Hopper: below sm_120, kept
+        ((10, 0), None, False),  # Blackwell B200 (sm_100): below sm_120, kept
+        ((12, 0), True, False),  # sm_120 where the kernel runs: keep xformers
         (
             (12, 0),
             False,
@@ -73,7 +73,7 @@ def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_d
 
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", supports_bf16)
     monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
-    ad._xformers_runs_on_device()  # RuntimeError is swallowed;
+    ad._xformers_runs_on_device()  # RuntimeError is swallowed; only the dtype matters
     assert captured["dtype"] is expected_dtype
 
 
@@ -93,7 +93,7 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
     monkeypatch.setattr(ad.torch, "zeros", lambda *a, **k: object())
     monkeypatch.setattr(ad, "xformers", type("X", (), {"attn_bias": _bias}))
-    monkeypatch.setattr(ad, "xformers_attention", lambda *a, **k: None)
+    monkeypatch.setattr(ad, "xformers_attention", lambda *a, **k: None)  # "succeeds"
 
     def deferred_cuda_error():
         raise RuntimeError("CUDA error: an illegal memory access was encountered")

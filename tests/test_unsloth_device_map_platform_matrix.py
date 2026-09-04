@@ -434,7 +434,7 @@ def test_a_zoo_without_the_shared_skip_list_still_loads_in_4bit(host, four_bit, 
     list" rather than take the load down with an ImportError."""
     build = _planner_quantization_kwargs()
 
-    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
+    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")  # no SKIP_QUANTIZATION_MODULES
     saved = sys.modules.get("unsloth_zoo.peft_utils")
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
     try:

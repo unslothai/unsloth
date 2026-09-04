@@ -83,7 +83,7 @@ def patched_sft(_cpu_only_torch):
     in `_gpu_init`'s order: the codegen swaps `trl.SFTTrainer` out wholesale, so
     the `__init__` wrapper has to go on afterwards. Both are no-ops once applied.
     """
-    global torch
+    global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
 
     # Through the module's MonkeyPatch: `import unsloth` reinstalls the real torch.compile over the passthrough, and
@@ -1514,7 +1514,7 @@ def _packing_aware_stub():
 
     seen = {}
 
-    class Base:
+    class Base:  # transformers.Trainer
         def get_eval_dataloader(self, eval_dataset = None):
             seen["dataloader"] = (
                 self.eval_dataset[eval_dataset]
@@ -1533,10 +1533,10 @@ def _packing_aware_stub():
             override = eval_dataset is not None
             return self.get_eval_dataloader(eval_dataset if override else self.eval_dataset)
 
-    class Stub(Base):
+    class Stub(Base):  # trl >= 1.7 SFTTrainer
         def _prepare_dataset(self, dataset, *a, **kw):
             seen["prepared"] = dataset
-            return dataset.map(lambda e: e)
+            return dataset.map(lambda e: e)  # packing always yields a NEW object
 
         def evaluate(
             self,

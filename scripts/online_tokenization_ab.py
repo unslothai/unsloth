@@ -169,7 +169,7 @@ def main() -> int:
     started = trainer.start_training(
         dataset = dataset,
         eval_dataset = eval_dataset,
-        output_dir = f"ab_{args.arm}",
+        output_dir = f"ab_{args.arm}",  # resolved under Unsloth's outputs root
         num_epochs = 1,
         max_steps = args.max_steps,
         batch_size = args.batch_size,

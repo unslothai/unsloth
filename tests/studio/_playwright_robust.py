@@ -143,7 +143,7 @@ def _arm_teardown_signals() -> None:
         try:
             _PREV_HANDLERS[signum] = signal.signal(signum, _handle_fatal_signal)
         except (ValueError, OSError):
-            _PREV_HANDLERS.clear()
+            _PREV_HANDLERS.clear()  # not the main thread; leave signals alone
             return
 
 

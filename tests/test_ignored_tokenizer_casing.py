@@ -35,8 +35,8 @@ def _fake_auto_tokenizer():
 
 
 def test_ignored_tokenizer_name_matched_case_insensitively():
-    name = "unsloth/Qwen2.5-Coder-7B-Instruct"
-    assert name.lower() in tu.IGNORED_TOKENIZER_NAMES
+    name = "unsloth/Qwen2.5-Coder-7B-Instruct"  # name.lower() is in IGNORED_TOKENIZER_NAMES
+    assert name.lower() in tu.IGNORED_TOKENIZER_NAMES  # guard the test's own premise
 
     with (
         patch.object(tu, "AutoTokenizer", _fake_auto_tokenizer()),

@@ -95,7 +95,7 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef):
             continue
-        for stmt in func.body:
+        for stmt in func.body:  # top level of the function only, no if/else nesting
             if _installs_pin(stmt):
                 found = True
     assert found, (

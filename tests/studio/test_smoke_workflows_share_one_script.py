@@ -68,7 +68,7 @@ def test_a_divergent_second_run_is_a_failure_not_a_warning(script):
     fine and weakening it is not.
     """
     clean = ["1 is 2", "you asked about 2", "paris", "paris"]
-    script.check("ok", clean, list(clean))
+    script.check("ok", clean, list(clean))  # the baseline passes, or nothing below means anything
 
     with pytest.raises(AssertionError, match = "non-deterministic"):
         script.check("drift", clean, ["1 is 2", "you asked about 2", "paris", "london"])
@@ -190,7 +190,7 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
 
     def flips_once():
         calls["n"] += 1
-        if calls["n"] == 2:
+        if calls["n"] == 2:  # the second replay of the first attempt
             return ["58 + 27 = 95", "the answer was 95", "paris", "paris!"]
         return list(clean)
 

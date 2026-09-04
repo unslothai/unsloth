@@ -280,7 +280,7 @@ def test_complete_install_verifies_ok(install_root, req_root):
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
-    assert state["deps_ok"] is False
+    assert state["deps_ok"] is False  # the fake dist is intentionally absent
     assert state["reason"] == "studio_deps_missing"
     assert "unsloth-definitely-not-a-real-package" in state["missing"]
 

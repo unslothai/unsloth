@@ -453,7 +453,7 @@ def test_functional_equivalence_bicodec_match():
         tok_response_map = {
             "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1],  # whisper fails Gemma 3n arm fails ...
+            "<|startoftranscript|>": [0, 1],  # whisper fails
             "<audio_soft_token>": [0, 1],
             "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0],

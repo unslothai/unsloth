@@ -168,7 +168,7 @@ def main(argv = None) -> int:
             except Exception as exc:  # noqa: BLE001
                 note += f" [compile FAILED {type(exc).__name__}]"
         print(f"  [{tag}]{note}", flush = True)
-        _gen(pipe, steps, seed, res)
+        _gen(pipe, steps, seed, res)  # warmup / compile
         dts = []
         img = None
         for _ in range(args.iters):

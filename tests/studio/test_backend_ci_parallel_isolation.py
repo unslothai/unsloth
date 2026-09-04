@@ -448,9 +448,9 @@ def test_the_scan_finds_all_three_shapes():
         for path in sorted(BACKEND_TESTS.glob("*.py"))
         if _fragile_timing_asserts(path)
     }
-    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found
-    assert "test_tool_xml_strip.py" in found, found
-    assert "test_diffusion_checkpoint_resume.py" in found, found
+    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found  # named
+    assert "test_tool_xml_strip.py" in found, found  # named
+    assert "test_diffusion_checkpoint_resume.py" in found, found  # helper, relative
 
     # The inline form, which the suite currently uses only at 0.2s, above the threshold.
     inline = ast.parse(

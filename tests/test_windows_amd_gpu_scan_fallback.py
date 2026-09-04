@@ -36,9 +36,9 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU -> gfx1151 RDNA 4 discrete -> gfx1201 Phoenix iGPU ->
-_RX9070 = "AMD Radeon RX 9070 XT"
-_R780M = "AMD Radeon 780M Graphics"
+_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
+_RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
+_R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
 _R9700 = "AMD Radeon AI PRO R9700"  # RDNA 4 workstation -> gfx1201 (#7624, #7307)
 _ARC = "Intel(R) Arc(TM) A770 Graphics"
 

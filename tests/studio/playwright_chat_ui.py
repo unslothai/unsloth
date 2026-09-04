@@ -1478,7 +1478,7 @@ with sync_playwright() as p:
                 s = sliders.nth(idx)
                 s.scroll_into_view_if_needed()
                 s.focus()
-                page.keyboard.press("Home")
+                page.keyboard.press("Home")  # -> min
                 page.wait_for_timeout(80)
             except Exception as exc:
                 info(f"  slider[{idx}] focus/Home failed: {exc!r}")

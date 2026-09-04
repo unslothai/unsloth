@@ -91,7 +91,7 @@ def test_no_colon_returns_none_variant(model_arg):
         ".",
         "C:\\Users\\me\\model.gguf",
         "C:/Users/me/model.gguf",
-        "D:/data/model:Q4",  # Windows drive + colon-suffixed filename:
+        "D:/data/model:Q4",  # Windows drive + colon-suffixed filename: drive wins
     ],
 )
 def test_local_path_passthrough(local_path):

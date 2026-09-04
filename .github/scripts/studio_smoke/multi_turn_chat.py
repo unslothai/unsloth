@@ -62,7 +62,7 @@ def _server() -> tuple[str, str]:
     """Where to talk and what to send. The only thing that differs per caller: each
     workflow boots its server on its own port. Read here rather than at import, so the
     checking half of this file can be exercised without a server or the SDKs."""
-    return os.environ["BASE_URL"], os.environ["TOKEN"]
+    return os.environ["BASE_URL"], os.environ["TOKEN"]  # a JWT is accepted as Bearer
 
 
 def _read_backend_status() -> dict:

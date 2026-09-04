@@ -66,7 +66,7 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename = name, date_time = _ZIP_DOS_EPOCH)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = (0o644 & 0xFFFF) << 16
-    info.create_system = 3
+    info.create_system = 3  # Unix
     zf.writestr(info, data)
 
 

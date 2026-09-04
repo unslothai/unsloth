@@ -325,14 +325,14 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     inputs = loaded_tokenizer.apply_chat_template(
         messages,
         tokenize = True,
-        add_generation_prompt = True,
+        add_generation_prompt = True,  # required for generation
         return_tensors = "pt",
     ).to("cuda")
 
     outputs = loaded_model.generate(
         input_ids = inputs,
         max_new_tokens = 64,
-        use_cache = False,
+        use_cache = False,  # avoid cache issues
         temperature = 1.5,
         min_p = 0.1,
         do_sample = True,

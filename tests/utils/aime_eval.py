@@ -96,7 +96,7 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
                         "original_id": data.get("original_id", data.get("id", line_num)),
                         "source_dataset": data.get("source_dataset", "unknown"),
                         "problem": data["problem"],
-                        "answer": str(data["answer"]),
+                        "answer": str(data["answer"]),  # Ensure answer is string
                         "solution": data.get("solution", ""),
                         "url": data.get("url", ""),
                         "prompt": [
@@ -140,7 +140,7 @@ def extract_aime_answer(response: str) -> str:
         r"\\boxed\{(\d{1,3})\}",
         r"\$\\boxed\{(\d{1,3})\}\$",
         r"(?:answer|result):\s*(\d{1,3})",
-        r"(?:^|\n)\s*(\d{1,3})\s*(?:\n|$)",
+        r"(?:^|\n)\s*(\d{1,3})\s*(?:\n|$)",  # Standalone number
     ]
 
     response_lower = response.lower().strip()
@@ -221,7 +221,7 @@ def evaluate_model_aime(
         temperature = temperature,
         top_p = top_p,
         max_tokens = max_tokens,
-        n = n_sampling,
+        n = n_sampling,  # Multiple samples per question
         seed = seed,
     )
 
@@ -445,7 +445,7 @@ def compare_aime_results(all_results):
         print("IMPROVEMENT ANALYSIS")
         print(f"{'='*50}")
 
-        base_result = all_results[0]
+        base_result = all_results[0]  # first is the base model
 
         for i, result in enumerate(all_results[1:], 1):
             print(f"\n{result['model_type']} vs {base_result['model_type']}:")

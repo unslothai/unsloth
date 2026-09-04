@@ -170,7 +170,7 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
 
 def test_legacy_stem_escaped_to_the_base_model_drive(monkeypatch, tmp_path):
     """Pin the #7897 failure mode: the pre-fix stem relocated the output to D:."""
-    legacy_stem = _WINDOWS_BASE.split("/")[-1]
+    legacy_stem = _WINDOWS_BASE.split("/")[-1]  # the old derivation
     harness = _run(monkeypatch, tmp_path, legacy_stem, _EXPORT_DIR)
 
     assert harness.quantize_calls
@@ -183,7 +183,7 @@ def test_trailing_separator_no_longer_yields_a_hidden_gguf(monkeypatch, tmp_path
     """OS-agnostic half of the bug: a trailing sep gave an empty stem."""
     assert "".join(_WINDOWS_BASE.rsplit("\\", 1)[1:]) == "MyModel"
     legacy_stem = "/home/u/models/MyModel/".split("/")[-1]
-    assert legacy_stem == ""
+    assert legacy_stem == ""  # the old behaviour
 
     stem = save_mod._model_basename("/home/u/models/MyModel/")
     export_dir = str(tmp_path / "exports" / "run")

@@ -38,7 +38,7 @@ def _extract_mixed_precision_code() -> str:
     while lines[k].strip() != ")":
         body.append(lines[k])
         k += 1
-    return eval("(\n" + "\n".join(body) + "\n)")
+    return eval("(\n" + "\n".join(body) + "\n)")  # only string literals + comments
 
 
 CODE = _extract_mixed_precision_code()
@@ -62,7 +62,7 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
     uzu = types.ModuleType("unsloth_zoo.utils")
     uzu._get_dtype = lambda x: x
     uzd = types.ModuleType("unsloth_zoo.device_type")
-    uzd.device_is_bf16_supported = lambda: bf16_supported
+    uzd.device_is_bf16_supported = lambda: bf16_supported  # device-aware signal stub
 
     env_keys = (
         "UNSLOTH_FORCE_FLOAT32",

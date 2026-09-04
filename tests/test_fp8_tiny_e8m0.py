@@ -32,7 +32,7 @@ def test_tiny_non_tileable_forward_backward_matches_reference():
 
     torch.manual_seed(0)
     block = [128, 128]
-    m, n = 8, 8  # non-tileable, in-dim % 128 != 0 (out=m, in=n)
+    m, n = 8, 8  # non-tileable, in-dim % 128 != 0
     weight = torch.randn(m, n, device = dev, dtype = torch.bfloat16)
     scale = torch.rand(1, 1, device = dev, dtype = torch.float32) + 0.5
     X = torch.randn(4, n, device = dev, dtype = torch.bfloat16, requires_grad = True)
@@ -99,7 +99,7 @@ def test_e8m0_scale_preserves_non_default_block_size_attr():
     weight = torch.randn(m, n, device = dev, dtype = torch.bfloat16)
     scale_f = torch.rand(2, 2, device = dev) + 1.0
     scale = scale_f.to(torch.float8_e8m0fnu)
-    scale.block_size = block
+    scale.block_size = block  # attribute lives on the scale, not the weight
     X = torch.randn(4, n, device = dev, dtype = torch.bfloat16, requires_grad = True)
 
     # With [128, 128] this raises "not compatible with block size"; success proves the [64, 64] attribute survived the

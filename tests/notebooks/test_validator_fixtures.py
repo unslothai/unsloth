@@ -225,7 +225,7 @@ def test_environment_classifier(path, expected):
 def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
     if candidates is None:
         candidates = [
-            Path(__file__).resolve().parents[3] / "notebooks",
+            Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
             Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
         ]
     for p in candidates:

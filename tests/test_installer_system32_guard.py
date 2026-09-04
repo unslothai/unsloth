@@ -497,8 +497,8 @@ def _cd_line(message: str, shell: str) -> str:
     "profile_name",
     [
         "me",
-        "Jane Doe",  # space: `cd C:\Users\Jane Doe` binds 'Doe' as a second argument apostrophe:
-        "O'Brien",
+        "Jane Doe",  # space: `cd C:\Users\Jane Doe` binds 'Doe' as a second argument
+        "O'Brien",  # apostrophe: single quotes must be escaped by doubling
     ],
 )
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")

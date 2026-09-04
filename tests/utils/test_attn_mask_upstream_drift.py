@@ -250,7 +250,7 @@ def test_vendored_module_has_not_drifted_from_upstream():
         5,
         0,
     )  # xpu gate forward-ported from 5.x 0-dim inversion forward-ported from 4.53.0
-    relax_inversion = version < (4, 53)
+    relax_inversion = version < (4, 53)  # 0-dim inversion forward-ported from 4.53.0
 
     upstream = _symbols(upstream_src, relax_device, relax_inversion)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), relax_device, relax_inversion)

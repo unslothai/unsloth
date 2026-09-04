@@ -139,7 +139,7 @@ def test_dispatched_move_failure_redispatches_and_returns_none(_fake_accelerate)
 
     model = _MoveFails(device_map = device_map, devices = ("cuda:0", "cuda:1"))
     token = ns["_offload_model_for_quantize_subprocess"](model)
-    assert token is None  # offload aborted hooks were removed...
+    assert token is None  # offload aborted
     assert _fake_accelerate["removed"] == [model]
     assert _fake_accelerate["dispatched"] == [(model, device_map)]
 
@@ -250,7 +250,7 @@ def test_restore_failure_warns_instead_of_raising(_fake_accelerate):
 
     model = _ExplodingModel(devices = ("cuda:0",))
     ns["_restore_model_after_quantize_subprocess"](model, ("device", "cuda:0"))
-    assert fake_logger.warnings
+    assert fake_logger.warnings  # warned, did not raise
 
 
 def test_lora_merge_budgets_per_device():
@@ -443,7 +443,7 @@ def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate
     mlp._old_forward = (
         stock_forward  # captured by accelerate at dispatch time installed by unsloth afterwards
     )
-    mlp.forward = fused_forward
+    mlp.forward = fused_forward  # installed by unsloth afterwards
 
     snapshot = ns["_snapshot_dispatch_state"](root)
 
@@ -517,8 +517,8 @@ def test_meta_tensors_never_form_tie_groups(_fake_accelerate):
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     _hooks, places, _attrs, ties, _grads = ns["_snapshot_dispatch_state"](root)
 
-    assert ties == []
-    assert "b.weight" in places
+    assert ties == []  # nothing is tied here
+    assert "b.weight" in places  # still tracked for placement
 
 
 def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):

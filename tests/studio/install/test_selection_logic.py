@@ -2442,8 +2442,8 @@ class TestWindowsCudaAttemptCoversBlackwell:
                 120,
                 True,
             ),  # native Blackwell build 12.8 toolkit app bundle reaches sm120 12.4
-            ("newer", "cuda12", 120, True),
-            ("older", "cuda12", 89, False),
+            ("newer", "cuda12", 120, True),  # 12.8 toolkit app bundle reaches sm120
+            ("older", "cuda12", 89, False),  # 12.4 toolkit app bundle stops at Ada
         ],
     )
     def test_attempt_covers_blackwell_app_bundle(self, profile, runtime_line, max_sm, covers):
@@ -2819,7 +2819,7 @@ class TestResolveReleaseAssetChoicePin:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
-        checksums = self._checksums(["12.4"])  # 3 gated off for a 13.1 driver
+        checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
         host = make_host(
             system = "Windows",
             machine = "AMD64",
@@ -3482,7 +3482,7 @@ class TestPinnedMacosReleaseTag:
 class TestResolveSimpleMacosPin:
     """Pre-26 upstream macOS resolves b9415; macOS 26 keeps latest."""
 
-    TAGS = ["b9442", "b9430", "b9428", "b9415"]
+    TAGS = ["b9442", "b9430", "b9428", "b9415"]  # newest-first feed
 
     def _feed(self, monkeypatch):
         calls = []
@@ -4144,7 +4144,7 @@ class TestExactSourceAssetUrl:
     commit archive and the whole prebuilt install fails to a source build.
     """
 
-    COMMIT = "c4fca6de" + "a" * 32
+    COMMIT = "c4fca6de" + "a" * 32  # 40-char sha
     INSTALL_TAG = "b9616-mix-17e50db"
 
     def _artifact(self, *, repo):

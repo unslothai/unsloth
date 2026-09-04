@@ -219,7 +219,7 @@ def _dict_keys(node: ast.AST, helpers: dict[str, set[str]]) -> set[str]:
     if not isinstance(node, ast.Dict):
         return keys
     for key, value in zip(node.keys, node.values):
-        if key is None:
+        if key is None:  # **spread
             call = value
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
                 keys |= helpers.get(call.func.id, set())

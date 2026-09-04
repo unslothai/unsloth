@@ -439,7 +439,7 @@ def _selftest() -> int:
     rng = np.random.default_rng(0)
     base = rng.integers(0, 256, (128, 128, 3), dtype = np.uint8)
     a = Image.fromarray(base)
-    b = Image.fromarray(base)
+    b = Image.fromarray(base)  # identical
     noisy = Image.fromarray(
         np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8)
     )

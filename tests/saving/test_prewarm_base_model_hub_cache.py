@@ -319,7 +319,7 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
     # A model whose config is None must skip silently, not fall into the outer exception handler that prints a
     # misleading "Could not pre-cache" warning.
     fn, stubs = _build_env(monkeypatch, tmp_path)
-    model = _FakePeftModel()
+    model = _FakePeftModel()  # a PeftModel instance so the isinstance guard passes
     model.config = None
     fn(model, save_method = "merged_16bit")
     assert stubs.determine_base_model_source.calls == []

@@ -47,9 +47,9 @@ def test_hf_resolve_url_parts_valid():
 @pytest.mark.parametrize(
     "url",
     [
-        "https://github.com/owner/repo/releases/download/x.gguf",
-        "https://huggingface.co/owner/repo",
-        "https://huggingface.co/owner/repo/blob/main/x.gguf",
+        "https://github.com/owner/repo/releases/download/x.gguf",  # not huggingface
+        "https://huggingface.co/owner/repo",  # no /resolve/<rev>/
+        "https://huggingface.co/owner/repo/blob/main/x.gguf",  # /blob/ not /resolve/
         "not even a url",
     ],
 )
@@ -69,7 +69,7 @@ def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
         patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-hf"
-    assert fake_hf.called
+    assert fake_hf.called  # hf path was taken, urllib not needed
 
 
 def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
@@ -80,7 +80,7 @@ def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
         patch.object(prebuilt, "download_bytes", return_value = b"GGUF-via-urllib") as dl,
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-urllib"
-    assert dl.called
+    assert dl.called  # fell back to the direct URL download
 
 
 # ── run_capture amd-smi RunAsInvoker injection ───────────────────────────────
@@ -163,7 +163,7 @@ def _sh_name_arch_rows(text, var = "_gpu_disp_gfx"):
 
 def _sh_resolve(rows, name):
     for tokens, arch in rows:
-        if any(tok in name for tok in tokens):
+        if any(tok in name for tok in tokens):  # bash *"X"* == substring
             return arch
     return None
 
@@ -186,7 +186,7 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
     for name, expect in cases.items():
         sh = _sh_resolve(sh_rows, name)
         assert sh == expect, f"install.sh: {name!r} -> {sh!r}, expected {expect!r}"
-        if expect is not None:
+        if expect is not None:  # cross-check bash agrees with the PowerShell table
             ps = next((a for p, a in ps_rows if re.search(p, name)), None)
             assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
 
@@ -310,7 +310,7 @@ def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
     sdk_bin = tmp_path / "hipsdk" / "bin"
     sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
-    path = str(venv_scripts) + os.pathsep + str(sdk_bin)
+    path = str(venv_scripts) + os.pathsep + str(sdk_bin)  # venv copy first
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
@@ -588,7 +588,7 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
     sdk_bin = tmp_path / "hip sdk" / "bin"
     sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
-    quoted = '"' + str(sdk_bin) + '"'
+    quoted = '"' + str(sdk_bin) + '"'  # the literal quotes Windows can leave on PATH
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
@@ -803,7 +803,7 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     # survives the index failure with the existing (CPU) torch intact.
     try:
         ps = _load_pystack()
-    except Exception as exc:
+    except Exception as exc:  # minimal CI without backend deps
         pytest.skip(f"install_python_stack deps unavailable: {exc}")
     calls = {"try": [], "fatal": 0, "bnb": 0}
     monkeypatch.setattr(ps, "IS_WINDOWS", True)

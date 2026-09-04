@@ -166,7 +166,7 @@ def _post(
 
 @dataclass(frozen = True)
 class Sample:
-    t: float
+    t: float  # seconds since the poller started, i.e. since just before boot
     token_sent: bool
     body: dict
 

@@ -213,7 +213,7 @@ def _load_plain():
     try:
         tok = AutoTokenizer.from_pretrained(_MODEL)
         model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
-    except OSError as e:
+    except OSError as e:  # hub unreachable / model missing
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token

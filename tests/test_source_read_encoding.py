@@ -308,7 +308,7 @@ def _import_time_calls(tree: ast.Module):
                     stack.append(node.generators[0].iter)
                 continue
             if _is_main_guard(node):
-                stack.extend(node.orelse)
+                stack.extend(node.orelse)  # the else arm runs at import
                 continue
             live = _live_branches(node)
             if live is not None:
@@ -324,7 +324,7 @@ def _import_time_calls(tree: ast.Module):
                     if not _is_generator(helper) or id(node) in consumed:
                         entered.add(func.id)
                         body = list(helper.body)
-                        _collect(body)
+                        _collect(body)  # a def nested here is now callable
                         frontier.append(body)
             stack.extend(ast.iter_child_nodes(node))
 

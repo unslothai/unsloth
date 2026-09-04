@@ -136,7 +136,7 @@ def _prequant(steps, seed, res):
             f"[prequant] {len(leftover)} meta leftovers (non-persistent buffers): {leftover[:4]}",
             flush = True,
         )
-        t = t.to_empty(device = "cuda")
+        t = t.to_empty(device = "cuda")  # fallback path; re-loads sd below
         t.load_state_dict(sd, strict = False, assign = True)
     t = t.to(torch.bfloat16).to("cuda")
     load_peak = torch.cuda.max_memory_allocated() / 1e9

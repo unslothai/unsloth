@@ -498,10 +498,10 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     saved_mod = sys.modules.get("huggingface_hub.constants")
     saved_val = getattr(saved_mod, "HF_HUB_OFFLINE", None) if saved_mod else None
     try:
-        sys.modules.pop("huggingface_hub.constants", None)
+        sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
         with L._force_hf_offline():
             import huggingface_hub.constants as hfc_in
-            assert hfc_in.HF_HUB_OFFLINE is True
+            assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
         import huggingface_hub.constants as hfc_after
 
         assert hfc_after.HF_HUB_OFFLINE is False  # restored, not pinned True
@@ -945,7 +945,7 @@ def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):
     def fake(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            model = _BuiltModel()
+            model = _BuiltModel()  # already allocated by the weight load
             witness["ref"] = weakref.ref(model)
             try:
                 model, tokenizer = _patch_tokenizer(model, object())

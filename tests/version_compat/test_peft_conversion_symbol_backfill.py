@@ -941,7 +941,7 @@ def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():
     protect.
     """
     stand_in = F._UnavailableConversionPatternMap().copy()
-    stand_in["mixtral"] = "mixtral"
+    stand_in["mixtral"] = "mixtral"  # peft's own line, and it must keep working
 
     for model_type in (
         "deepseek_v3",

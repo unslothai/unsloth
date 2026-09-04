@@ -647,7 +647,7 @@ def _decode_like_install_rs(raw: bytes) -> str:
     """
     records = raw.split(b"\n")
     if records and records[-1] == b"":
-        records.pop()
+        records.pop()  # read_until returning Ok(0) at EOF, not an empty line
     return "\n".join(r.rstrip(b"\r\n").decode("utf-8", errors = "replace") for r in records)
 
 

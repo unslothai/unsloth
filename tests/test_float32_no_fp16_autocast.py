@@ -129,7 +129,7 @@ def _run(
     utils = types.ModuleType("unsloth_zoo.utils")
     utils._get_dtype = _get_dtype
     parent = types.ModuleType("unsloth_zoo")
-    parent.__path__ = []
+    parent.__path__ = []  # make it a package, not a plain module
     parent.device_type = mod
     parent.utils = utils
     names = ("unsloth_zoo", "unsloth_zoo.device_type", "unsloth_zoo.utils")

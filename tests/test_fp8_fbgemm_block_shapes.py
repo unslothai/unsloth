@@ -219,7 +219,7 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
     assert X.grad is not None and torch.isfinite(X.grad).all()
 
 
-@pytest.mark.parametrize("block", [[128, 64], [64, 128]])
+@pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
 @pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
 def test_transposed_weight_swaps_block_axes(block, N, K):
     # fast_lora's backward passes downW.t(), whose block axes are swapped too.

@@ -662,7 +662,7 @@ class TestMalformedUploadAcknowledgement:
             "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
         )
         assert client.upload(bundle) == "an-2"
-        assert state["n"] == 2
+        assert state["n"] == 2  # a second, fresh signed URL was fetched
 
     def test_malformed_ack_on_the_last_attempt_raises(self, tmp_path):
         bundle = tmp_path / "big.exe"

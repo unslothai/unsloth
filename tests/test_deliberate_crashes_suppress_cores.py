@@ -67,8 +67,8 @@ _CRASH_CALLS = {
     "string_at": {
         "arg0": 0
     },  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV -> SIGABRT faulthandler._sigsegv()
-    "abort": {"owners": ("os", "ctypes", "libc", "CDLL")},
-    "_sigsegv": {},
+    "abort": {"owners": ("os", "ctypes", "libc", "CDLL")},  # -> SIGABRT
+    "_sigsegv": {},  # faulthandler._sigsegv()
 }
 
 _CRASH_MARKERS = ("string_at(0)", "os.abort()", "_sigsegv(")
@@ -493,7 +493,7 @@ def _child_paths(scope, certain):
     elif isinstance(scope, (ast.For, ast.AsyncFor, ast.comprehension)):
         always = (scope.iter,)  # the iterable is evaluated before the first pass
     elif isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        always = scope.generators[:1]  # the outermost clause runs;
+        always = scope.generators[:1]  # the outermost clause runs; its body may not
     else:
         always = ()
     for child in ast.iter_child_nodes(scope):

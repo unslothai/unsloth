@@ -546,7 +546,7 @@ EXPECTED_AUTH_ENDPOINTS = [
     ("GET", "/api/system/gpu-visibility"),
     ("GET", "/api/auth/api-keys"),
     ("POST", "/api/inference/load"),
-    ("POST", "/api/shutdown"),
+    ("POST", "/api/shutdown"),  # don't actually fire it!
 ]
 for method, path in EXPECTED_AUTH_ENDPOINTS:
     if (method, path) in PUBLIC:

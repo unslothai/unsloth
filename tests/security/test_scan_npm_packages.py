@@ -254,7 +254,7 @@ def test_strip_preserves_assigned_base64_payload():
 
 def test_strip_fails_open_on_unterminated_block_comment():
     src = "code(); /* never closed"
-    assert snp._strip_js_noncode(src) == src
+    assert snp._strip_js_noncode(src) == src  # fail open: unchanged, still fully scanned
 
 
 def test_strip_only_applies_to_js_family():
@@ -284,7 +284,7 @@ _PKG = snp.PackageEntry(
     integrity = "sha512-z",
     lockfile_key = "node_modules/x",
 )
-_BLOB = "QWxhZGRpbg" * 240
+_BLOB = "QWxhZGRpbg" * 240  # ~2.4 KiB base64-ish
 
 
 def test_real_payload_still_flags_after_stripping():
@@ -301,7 +301,7 @@ def test_real_payload_still_flags_after_stripping():
 def test_payload_entirely_in_comment_is_suppressed():
     src = f'/* var f = new Function("{_BLOB}"); */ var ok = 1;'
     js = snp.scan_text_blob(_PKG, "m.js", src)
-    assert js == []  # blanked -> clean Control: same bytes as non-JS (unstripped) WOULD flag.
+    assert js == []  # blanked -> clean
     txt = snp.scan_text_blob(_PKG, "m.txt", src)
     assert any(f.pattern == "obfuscated-blob" for f in txt)
 
@@ -383,10 +383,10 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     findings = [
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
-        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),
+        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),  # below thresh
     ]
     n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
-    assert n == 1
+    assert n == 1  # dedup + MEDIUM excluded
     keys = snp._load_baseline(str(bl))
     assert snp._finding_key(findings[0]) in keys
     # MEDIUM below HIGH threshold -> not written.
@@ -589,7 +589,7 @@ def test_outbound_host_multiple_contexts_all_bind():
 
 
 def test_outbound_host_config_opener_after_unmatched_closer_binds():
-    pre = "callback(arg);\n});\n"
+    pre = "callback(arg);\n});\n"  # stray closer; the matching opener is out of view
     obj = pre + "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
     assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
         _host_finding(obj % "/evil")
@@ -723,7 +723,7 @@ def test_evidence_streams_overflow_count_is_exact():
     import re as _re
 
     m = _re.search(r"\(\+(\d+) more\)", ev)
-    assert m and int(m.group(1)) == extra
+    assert m and int(m.group(1)) == extra  # every over-cap match counted
     assert ev.count(" | ") <= snp._MAX_EVIDENCE_MATCHES
 
 

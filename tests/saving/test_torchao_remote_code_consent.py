@@ -135,7 +135,7 @@ def test_compressed_and_gguf_lora_paths_drop_auto_map_trust():
     # trust into one flag.
     assert 'bool(getattr(model.config, "auto_map", None))' not in _SRC
     assert "_loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)" not in _SRC
-    assert "if _loaded_via_remote_code(model):" in _SRC
+    assert "if _loaded_via_remote_code(model):" in _SRC  # GGUF-LoRA converter flag
 
 
 def test_compressed_export_keeps_model_and_tokenizer_trust_separate():

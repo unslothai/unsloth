@@ -66,8 +66,8 @@ def test_reinstall_with_live_hook_preserves_seen():
 
     _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
-    assert marker["seen"] is True
-    assert marker["hook"] is hook
+    assert marker["seen"] is True  # evidence kept
+    assert marker["hook"] is hook  # same hook, not double-registered
 
 
 def test_reinstall_after_teardown_resets_and_reregisters():
@@ -75,7 +75,7 @@ def test_reinstall_after_teardown_resets_and_reregisters():
     _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
     marker["seen"] = True
-    marker.pop("hook").remove()
+    marker.pop("hook").remove()  # simulate teardown (what the reset does)
 
     _unsloth_install_pretrain_detector(m)
     assert marker["seen"] is False
@@ -147,5 +147,5 @@ def test_reset_walks_wrapper_chain_to_reach_a_nested_marker():
         warnings.simplefilter("ignore")
         _unsloth_reset_stray_compile_cache(trainer)
 
-    assert "hook" not in inner._unsloth_pretrain_marker
+    assert "hook" not in inner._unsloth_pretrain_marker  # found and torn down through the chain
     assert inner._unsloth_pretrain_marker["seen"] is False

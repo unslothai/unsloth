@@ -582,9 +582,9 @@ def test_that_repair_is_reachable_with_no_readable_rocm_version(monkeypatch):
 @pytest.mark.parametrize(
     "family, gfx",
     [
-        ("gfx1152", ("gfx1152",)),
-        ("gfx110x-all", ("gfx1103",)),
-        (None, ("gfx1100",)),
+        ("gfx1152", ("gfx1152",)),  # already on its own leaf
+        ("gfx110x-all", ("gfx1103",)),  # already on the leaf this GPU needs
+        (None, ("gfx1100",)),  # generic wheels do carry kernels for it
     ],
 )
 def test_a_healthy_rocm_install_still_keeps_the_fast_path(monkeypatch, family, gfx):

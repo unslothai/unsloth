@@ -96,7 +96,7 @@ class Phase:
             f"peak_gpu={peak_gpu:.2f}GB peak_rss={peak_rss:.2f}GB ===",
             flush = True,
         )
-        return False
+        return False  # don't swallow exceptions
 
 
 def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, float]:

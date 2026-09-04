@@ -29,8 +29,8 @@ print(f"{'='*80}")
 
 model, tokenizer = FastModel.from_pretrained(
     model_name = "unsloth/whisper-large-v3",
-    dtype = None,
-    load_in_4bit = False,
+    dtype = None,  # Leave as None for auto detection
+    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
     auto_model = WhisperForConditionalGeneration,
     whisper_language = "English",
     whisper_task = "transcribe",

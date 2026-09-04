@@ -363,7 +363,7 @@ def hidden_states_on(monkeypatch):
 @pytest.mark.parametrize("accepts", ["logits_to_keep", "num_logits_to_keep"])
 def test_the_wrapper_asks_for_one_position_not_the_whole_sequence(hidden_states_on, accepts):
     model = _Recorder(accepts = accepts)
-    assert _install(model) is not False or True
+    assert _install(model) is not False or True  # install, whatever it returns
     model.forward(input_ids = "x")
     assert model.projected_positions == 1, (
         f"projected {model.projected_positions} of {model.seq} positions over the "

@@ -342,11 +342,11 @@ _PKG_JSON_OPAQUE_KEYS = {
     "engines",  # node/npm version constraints
     "engineStrict",  # bool
     "packageManager",  # `pnpm@9.0.0` -- the package manager binary
-    "volta",
-    "files",
-    "directories",
-    "publishConfig",
-    "config",
+    "volta",  # version pins for node/npm/yarn
+    "files",  # paths included in publish
+    "directories",  # paths
+    "publishConfig",  # registry / access config
+    "config",  # generic npm config values
     "main",
     "module",
     "browser",
@@ -356,8 +356,8 @@ _PKG_JSON_OPAQUE_KEYS = {
     "exports",
     "imports",
     "bin",
-    "man",
-    "scripts",
+    "man",  # author-side fields (not consumer refs)
+    "scripts",  # handled separately via scripts_bin_refs()
     "repository",
     "bugs",
     "homepage",
@@ -372,7 +372,7 @@ _PKG_JSON_OPAQUE_KEYS = {
     "description",
     "private",
     "sideEffects",
-    "workspaces",
+    "workspaces",  # paths/globs, NOT pkg names
 }
 
 

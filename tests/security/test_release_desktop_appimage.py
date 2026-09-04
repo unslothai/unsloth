@@ -385,10 +385,10 @@ def _write_foreign_arch_elf(path: Path) -> None:
 
     header = bytearray(52)
     header[0:8] = b"\x7fELF\x01\x01\x01\x00"
-    header[16:18] = (3).to_bytes(2, "little")
-    header[18:20] = (3).to_bytes(2, "little")
-    header[20:24] = (1).to_bytes(4, "little")
-    header[40:42] = (52).to_bytes(2, "little")
+    header[16:18] = (3).to_bytes(2, "little")  # e_type = ET_DYN
+    header[18:20] = (3).to_bytes(2, "little")  # e_machine = EM_386
+    header[20:24] = (1).to_bytes(4, "little")  # e_version
+    header[40:42] = (52).to_bytes(2, "little")  # e_ehsize
     path.write_bytes(bytes(header))
 
 

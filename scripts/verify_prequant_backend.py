@@ -127,7 +127,7 @@ def run(mode, steps, seed, res):
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         marker = getattr(transformer, "_unsloth_runtime_quant", None)
         print(f"[prequant] load_gpu_peak={load_peak:.1f} GB  marker={marker}", flush = True)
-    else:
+    else:  # runtime
         transformer = transformer_cls.from_pretrained(
             BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
         ).to("cuda")

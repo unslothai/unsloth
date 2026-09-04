@@ -116,7 +116,7 @@ def test_an_inherited_value_is_not_trusted(monkeypatch):
     payload = "all;None;None;pass;import os; os.system('touch /tmp/pwned')"
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", payload)
     got, trusted = trusted_custom_dtype()
-    assert got == payload
+    assert got == payload  # dtype fields still readable
     assert not trusted
 
 

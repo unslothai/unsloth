@@ -521,10 +521,10 @@ class TestMergeSizing:
     @pytest.mark.parametrize(
         "save_method,expected_gb",
         [
-            ("fp8", 15),
+            ("fp8", 15),  # 16-bit merge + an 8-bit sibling
             ("mxfp8", 15),
             ("int8", 15),
-            ("mxfp4", 12.5),
+            ("mxfp4", 12.5),  # 16-bit merge + a 4-bit sibling
             ("nvfp4", 12.5),
             ("w4a16", 12.5),
         ],
@@ -2324,8 +2324,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
 
     AGGREGATE = 141 * GB
     AGGREGATE_WITH_CACHE = 204 * GB
-    MERGE_PHASE = 123 * GB
-    QUANT_PHASE = 78 * GB
+    MERGE_PHASE = 123 * GB  # merge + intermediate, before reclamation
+    QUANT_PHASE = 78 * GB  # intermediate + quants, after it
 
     @pytest.fixture
     def phases(self, monkeypatch, tmp_path):
@@ -3352,7 +3352,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
 
     def test_the_wrong_dtype_undercounts_a_whole_checkpoint(self, monkeypatch):
         """The zoo estimator, transcribed at the top of this file, priced for real."""
-        n = 8_190_735_360
+        n = 8_190_735_360  # Qwen3-8B logical parameters
 
         def estimate(
             model = None,
@@ -3612,8 +3612,8 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
     """
 
     N = 8_190_735_360
-    BASE = 2 * N  # the 16-bit base the pre-warm downloads:
-    CONVERSION = 4 * N
+    BASE = 2 * N  # the 16-bit base the pre-warm downloads: 15.3GB
+    CONVERSION = 4 * N  # an f32 intermediate: 30.5GB, two base copies
     WORK = "/work"
     CACHE = "/home/u/.cache/huggingface"
 

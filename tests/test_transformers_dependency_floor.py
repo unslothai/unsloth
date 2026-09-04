@@ -407,7 +407,7 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
     for stub in (types.ModuleType("transformers"), types.SimpleNamespace()):
         monkeypatch.setitem(sys.modules, "transformers", stub)
         with pytest.raises(ValueError):
-            importlib.util.find_spec("transformers")  # __spec__ None / not set must not raise
+            importlib.util.find_spec("transformers")  # __spec__ None / not set
         IF.check_transformers_dependency_versions()  # must not raise
         assert _warnings(caplog) == []
 

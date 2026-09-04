@@ -469,8 +469,8 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
     print(f"  Running brute-force independent scan (fmt={fmt!r}, {len(ds)} rows)...")
     brute_bad = _brute_force_bad_rows(ds, fmt)
 
-    missed = brute_bad - module_bad
-    extra = module_bad - brute_bad
+    missed = brute_bad - module_bad  # brute-force found, module missed
+    extra = module_bad - brute_bad  # module flagged, brute-force didn't
 
     no_misses = len(missed) == 0
     snippet = ""
@@ -644,7 +644,7 @@ def main():
         print(f"Log:      {LOG_PATH}")
         print(f"JSON:     {json_path}")
 
-        sys.stdout = sys.stdout.stdout
+        sys.stdout = sys.stdout.stdout  # restore
 
 
 if __name__ == "__main__":

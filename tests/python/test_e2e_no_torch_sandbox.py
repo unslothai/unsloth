@@ -1081,7 +1081,7 @@ class TestLiveServerStartup:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}{ep}", timeout = 5)
             except urllib.error.HTTPError:
-                pass
+                pass  # 4xx/5xx fine -- server didn't crash
             except urllib.error.URLError:
                 pytest.fail(f"Server stopped responding at {ep}")
 

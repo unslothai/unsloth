@@ -85,9 +85,9 @@ model_comparison_results = {}
 model, tokenizer = FastVisionModel.from_pretrained(
     model_name = "unsloth/Qwen2-VL-7B-Instruct",
     max_seq_length = 2048,
-    load_in_4bit = True,
-    load_in_8bit = False,
-    full_finetuning = False,
+    load_in_4bit = True,  # 4 bit quantization to reduce memory
+    load_in_8bit = False,  # [NEW!] A bit more accurate, uses 2x memory
+    full_finetuning = False,  # [NEW!] We have full finetuning now!
 )
 
 model_name = "Unsloth Base model"
@@ -99,24 +99,24 @@ ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
 model = FastVisionModel.get_peft_model(
     model,
-    finetune_vision_layers = True,
-    finetune_language_layers = True,
-    finetune_attention_modules = True,
-    finetune_mlp_modules = True,
-    r = 16,
+    finetune_vision_layers = True,  # Turn off for just text!
+    finetune_language_layers = True,  # Should leave on!
+    finetune_attention_modules = True,  # Attention good for GRPO
+    finetune_mlp_modules = True,  # Should leave on always!
+    r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     lora_alpha = 32,
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = "unsloth",
+    lora_dropout = 0,  # Supports any, but = 0 is optimized
+    bias = "none",  # Supports any, but = "none" is optimized
+    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
     random_state = 3407,
-    use_rslora = False,
-    loftq_config = None,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None,  # And LoftQ
 )
 
 from unsloth import is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
 
-FastVisionModel.for_training(model)
+FastVisionModel.for_training(model)  # Enable for training!
 model.config.use_cache = False
 
 
@@ -130,7 +130,7 @@ trainer = SFTTrainer(
         gradient_accumulation_steps = 4,
         gradient_checkpointing = True,
         gradient_checkpointing_kwargs = {"use_reentrant": False},
-        max_grad_norm = 0.3,
+        max_grad_norm = 0.3,  # QLoRA paper
         warmup_ratio = 0.03,
         max_steps = 60,
         learning_rate = 2e-4,
@@ -143,7 +143,7 @@ trainer = SFTTrainer(
         lr_scheduler_type = "linear",
         seed = 3407,
         output_dir = "unsloth-qwen2-7vl-french-ocr-checkpoints",
-        report_to = "none",
+        report_to = "none",  # For Weights and Biases
         remove_unused_columns = False,
         dataset_text_field = "",
         dataset_kwargs = {"skip_prepare_dataset": True},

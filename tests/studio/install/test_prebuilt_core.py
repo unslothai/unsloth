@@ -71,7 +71,7 @@ class Component:
     def __init__(self, descriptor):
         self.descriptor = descriptor
         self.namespace = core.component_namespace(descriptor)
-        self.namespace["log"] = lambda message: None
+        self.namespace["log"] = lambda message: None  # keep test output quiet
         self.ops = core.ModuleOps(self.namespace)
 
     @property
@@ -319,7 +319,7 @@ def test_macos_min_os_accepts_bare_version_format(component):
         manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label = "m"
     )
     host = _arm_mac_host(component, (13, 0))
-    assert component.ops.select_artifact(manifest, host, "metal") is None
+    assert component.ops.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
 
 
 def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
@@ -327,8 +327,8 @@ def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
     assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
     assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
-    assert component.ops.macos_min_os_ok(host14, "13.3") is True
-    assert component.ops.macos_min_os_ok(host14, None) is True
+    assert component.ops.macos_min_os_ok(host14, "13.3") is True  # bare also parses
+    assert component.ops.macos_min_os_ok(host14, None) is True  # unknown -> defer
     host_unknown = _arm_mac_host(component, None)
     assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
 
@@ -704,7 +704,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
         linked_from = "/llama/build/bin",
         linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
     )
-    assert slim.fingerprint() == selection.fingerprint()
+    assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
 
     fat_dir, slim_dir = tmp_path / "fat", tmp_path / "slim"
     fat_dir.mkdir(), slim_dir.mkdir()
@@ -779,9 +779,9 @@ def test_normalize_compute_cap(value, expected):
 @pytest.mark.parametrize(
     "values,expected",
     [
-        (["8.6", "86", "8.6"], ["86"]),
-        (["9.0", "7.5", "8.6"], ["75", "86", "90"]),
-        (["8.6", "bad", "", "7.5"], ["75", "86"]),
+        (["8.6", "86", "8.6"], ["86"]),  # deduplication
+        (["9.0", "7.5", "8.6"], ["75", "86", "90"]),  # numeric sort
+        (["8.6", "bad", "", "7.5"], ["75", "86"]),  # drops invalid
         ([], []),
     ],
 )
@@ -829,15 +829,15 @@ _GPU_ROWS = [
 @pytest.mark.parametrize(
     "visible,expected_indices",
     [
-        (None, [0, 1, 2]),
+        (None, [0, 1, 2]),  # no filter returns all
         ([], []),
         (
             ["0", "2"],
             [0, 2],
         ),  # filter by index UUID match is case insensitive same device requested twice is
-        (["gpu-bbb"], [1]),
-        (["0", "0"], [0]),
-        (["99"], []),
+        (["gpu-bbb"], [1]),  # UUID match is case insensitive
+        (["0", "0"], [0]),  # same device requested twice is deduplicated
+        (["99"], []),  # unknown token matches nothing
     ],
 )
 def test_select_visible_gpu_rows(visible, expected_indices):
@@ -852,7 +852,7 @@ def test_select_visible_gpu_rows(visible, expected_indices):
         ((11, 8), []),
         ((12, 4), ["cuda12"]),
         ((13, 0), ["cuda13", "cuda12"]),
-        ((14, 0), ["cuda14", "cuda13", "cuda12"]),
+        ((14, 0), ["cuda14", "cuda13", "cuda12"]),  # future major derives lines
     ],
 )
 def test_compatible_linux_runtime_lines(driver, expected):
@@ -879,23 +879,23 @@ def _caps_host(caps):
 
 
 def test_host_is_blackwell_includes_datacenter_parts():
-    assert core.host_is_blackwell(_caps_host(["10.0"])) is True
-    assert core.host_is_blackwell(_caps_host(["10.3"])) is True
-    assert core.host_is_blackwell(_caps_host(["12.0"])) is True
-    assert core.host_is_blackwell(_caps_host(["12.1"])) is True
-    assert core.host_is_blackwell(_caps_host(["9.0"])) is False
-    assert core.host_is_blackwell(_caps_host(["8.0"])) is False
-    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True
+    assert core.host_is_blackwell(_caps_host(["10.0"])) is True  # B200 sm_100
+    assert core.host_is_blackwell(_caps_host(["10.3"])) is True  # B300 sm_103
+    assert core.host_is_blackwell(_caps_host(["12.0"])) is True  # RTX 50 sm_120
+    assert core.host_is_blackwell(_caps_host(["12.1"])) is True  # DGX Spark sm_121
+    assert core.host_is_blackwell(_caps_host(["9.0"])) is False  # Hopper
+    assert core.host_is_blackwell(_caps_host(["8.0"])) is False  # Ampere
+    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True  # highest cap wins
 
 
 def test_blackwell_min_toolkit_is_sm_aware():
     # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
     f = core.blackwell_min_toolkit_for_host
-    assert f(_caps_host(["10.0"])) == (12, 8)
-    assert f(_caps_host(["12.0"])) == (12, 8)
-    assert f(_caps_host(["10.3"])) == (12, 9)
-    assert f(_caps_host(["12.1"])) == (12, 9)
-    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)
+    assert f(_caps_host(["10.0"])) == (12, 8)  # B200
+    assert f(_caps_host(["12.0"])) == (12, 8)  # RTX 50
+    assert f(_caps_host(["10.3"])) == (12, 9)  # B300
+    assert f(_caps_host(["12.1"])) == (12, 9)  # DGX Spark
+    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
 # The ops seam ──

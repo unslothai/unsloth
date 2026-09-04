@@ -14,8 +14,8 @@ from tests.version_compat._fetch import fetch_text, first_match, has_def
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
     "0.45.5",
-    "0.47.0",  # skip 0.46.0 (broken) skip 0.48.0 (broken)
-    "0.49.2",
+    "0.47.0",  # skip 0.46.0 (broken)
+    "0.49.2",  # skip 0.48.0 (broken)
     "main",
 ]
 

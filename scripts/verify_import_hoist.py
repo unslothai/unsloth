@@ -87,7 +87,7 @@ _BUILTINS = set(dir(builtins)) | {
 @dataclass
 class Binding:
     kind: str
-    target: str | None = None
+    target: str | None = None  # canonical import target id, else None
 
 
 @dataclass
@@ -161,7 +161,7 @@ class _Builder(ast.NodeVisitor):
             try:
                 inner = ast.parse(node.value.strip(), mode = "eval").body
             except (SyntaxError, ValueError):
-                return  # Prose, as in Annotated[int, "docs"].
+                return  # Prose, as in Annotated[int, "docs"]. Nothing to credit.
             self._visit_annotation(inner, scope, _depth + 1, _lineno or node.lineno)
             return
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
@@ -926,7 +926,7 @@ def main() -> int:
             print(f"SKIP {path}: not found at {args.after}")
             continue
         if before is None:
-            before = ""
+            before = ""  # new file
         findings = compare(before, after, path)
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]

@@ -22,18 +22,18 @@ STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 @dataclass
 class HardwareProfile:
     name: str
-    system: str  # platform.system() value platform.machine() value torch.cuda.is_available() value torch.version.hip;
-    machine: str
-    cuda_available: bool
-    hip_version: Optional[str]
-    xpu_available: bool
-    has_mlx: bool
-    mps_available: bool
+    system: str  # platform.system() value
+    machine: str  # platform.machine() value
+    cuda_available: bool  # torch.cuda.is_available() value
+    hip_version: Optional[str]  # torch.version.hip; None for NVIDIA, "6.1" etc. for ROCm
+    xpu_available: bool  # torch.xpu.is_available() value
+    has_mlx: bool  # whether to inject a fake mlx into sys.modules
+    mps_available: bool  # torch.backends.mps.is_available() value
 
-    expect_is_mlx: bool  # unsloth._IS_MLX Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU") Unsloth
-    expect_device_type: str
-    expect_is_rocm: bool
-    expect_apple_silicon: bool
+    expect_is_mlx: bool  # unsloth._IS_MLX
+    expect_device_type: str  # Unsloth DeviceType (uppercased name: "CUDA"/"XPU"/"MLX"/"CPU")
+    expect_is_rocm: bool  # Unsloth IS_ROCM
+    expect_apple_silicon: bool  # Unsloth is_apple_silicon()
     extra_notes: str = ""
 
 

@@ -59,8 +59,8 @@ def test_none_and_existing_dict_are_left_unchanged():
     mixer._tied_weights_keys = original
     originals = _coerce_tied_weights_keys_to_dict(root)
     assert root._tied_weights_keys is None
-    assert mixer._tied_weights_keys is original
-    assert originals == []
+    assert mixer._tied_weights_keys is original  # untouched, not rebuilt
+    assert originals == []  # nothing to restore
 
 
 def test_model_without_modules_method_does_not_raise():

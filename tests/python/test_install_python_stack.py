@@ -991,7 +991,7 @@ class TestDuplicateCoreMetadataRepair:
         """
         unreadable = tmp_path / "unsloth-2026.8.12.dist-info"
         unreadable.mkdir()
-        (unreadable / "METADATA").write_bytes(b"\xff\xfe")
+        (unreadable / "METADATA").write_bytes(b"\xff\xfe")  # no RECORD beside it
 
         monkeypatch.setattr(
             ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]

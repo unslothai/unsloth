@@ -266,7 +266,7 @@ def test_the_guard_is_outside_the_version_branch():
     found = []
     for node in ast.walk(ns):
         if isinstance(node, ast.FunctionDef) and node.name == "new_init":
-            for stmt in node.body:
+            for stmt in node.body:  # top level of new_init only
                 for sub in ast.walk(stmt):
                     if (
                         isinstance(sub, ast.Call)

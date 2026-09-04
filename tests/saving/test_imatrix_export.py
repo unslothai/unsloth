@@ -229,7 +229,7 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     imat = str(
         tmp_path / "imatrix it.dat"
     )  # space in path -> must be shell-quoted quantize_gguf validates the
-    with open(imat, "wb") as f:
+    with open(imat, "wb") as f:  # quantize_gguf validates the imatrix exists before running
         f.write(b"\x00")
     L.quantize_gguf(
         input_gguf = str(tmp_path / "in.gguf"),

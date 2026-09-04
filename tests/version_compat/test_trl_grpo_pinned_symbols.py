@@ -30,22 +30,22 @@ TRL_TAGS = [
     "v0.21.0",
     "v0.22.0",
     "v0.22.1",
-    "v0.22.2",
+    "v0.22.2",  # anchor
     "v0.23.0",
     "v0.23.1",
-    "v0.24.0",
+    "v0.24.0",  # current pyproject cap
     "v0.25.0",
     "v0.25.1",
     "v0.26.0",
     "v0.26.1",
     "v0.26.2",
     "v0.27.0",
-    "v0.27.1",
+    "v0.27.1",  # anchor
     "v0.27.2",
     "v0.28.0",
     "v0.29.0",
     "v0.29.1",
-    "v1.0.0",
+    "v1.0.0",  # anchor
     "v1.1.0",
     "v1.2.0",
     "v1.3.0",
@@ -53,12 +53,12 @@ TRL_TAGS = [
     "v1.5.0",
     "v1.5.1",
     "v1.6.0",
-    "v1.7.0",
+    "v1.7.0",  # anchor: first release unsloth's TRL>=1.7.0 GRPO patch targets
     "v1.7.1",
     "v1.8.0",
     "v1.9.0",
     "v1.9.1",
-    "v1.9.2",
+    "v1.9.2",  # current PyPI latest
     "main",
 ]
 
@@ -503,7 +503,7 @@ def test_trl_truncate_with_protected_tokens_optional(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
     has_it = "truncate_with_protected_tokens" in src
-    _ = has_it
+    _ = has_it  # informational; pass either way.
 
 
 # 24-27.

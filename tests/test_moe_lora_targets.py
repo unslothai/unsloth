@@ -192,7 +192,7 @@ def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
         "up_proj",
         "down_proj",
     ]
-    scoped_regex = r".*self_attn.*proj"
+    scoped_regex = r".*self_attn.*proj"  # unused: original list is preferred
     selected = _select_moe_detection_targets(
         original_list,
         scoped_regex,

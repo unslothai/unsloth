@@ -18,13 +18,13 @@ from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 # 4.57.6 floor + every 5.x minor since 5.0.0, up to the current PyPI latest, + main.
 TRANSFORMERS_TAGS = [
-    "v4.57.6",
+    "v4.57.6",  # anchor (must work)
     "v5.0.0",
     "v5.1.0",
     "v5.2.0",
     "v5.3.0",
     "v5.4.0",
-    "v5.5.0",
+    "v5.5.0",  # anchor (must work)
     "v5.5.4",
     "v5.6.2",
     "v5.7.0",
@@ -43,7 +43,7 @@ TRANSFORMERS_TAGS = [
     "v5.13.0",
     "v5.13.1",
     "v5.14.0",
-    "v5.14.1",
+    "v5.14.1",  # current PyPI latest
     "main",
 ]
 

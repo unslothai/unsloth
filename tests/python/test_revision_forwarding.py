@@ -79,8 +79,8 @@ def test_fast_llama_model_reads_its_revision_argument():
 @pytest.mark.parametrize(
     "callee, minimum",
     [
-        ("AutoConfig", 2),
-        ("AutoModelForCausalLM", 2),
+        ("AutoConfig", 2),  # checkpoint probe + main config
+        ("AutoModelForCausalLM", 2),  # user-config and plain branches
         ("AutoModelForSequenceClassification", 1),
         ("load_correct_tokenizer", 1),
     ],
@@ -177,9 +177,9 @@ def test_revision_survives_when_the_repo_is_unchanged():
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
-        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),
-        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),
-        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),
+        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),  # prequant mirror
+        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),  # suffix strip
+        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),  # fp8 temp dir
     ],
 )
 def test_revision_is_dropped_once_the_repo_is_remapped(model_name, old_model_name):
@@ -262,7 +262,7 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             assert probe.lineno > early.lineno, "the gate must precede the config probes"
             keyword = _revision_kwarg(probe)
             if keyword is None:
-                continue  # the PEFT base-model probe deliberately pins nothing adapter_revision is the same gated
+                continue  # the PEFT base-model probe deliberately pins nothing
             assert getattr(keyword.value, "id", None) in (
                 "base_revision",
                 "adapter_revision",

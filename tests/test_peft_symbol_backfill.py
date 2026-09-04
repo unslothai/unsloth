@@ -76,7 +76,7 @@ def test_backfilled_pattern_supports_copy_like_peft_does():
     pattern = sys.modules[CONV]._MODEL_TO_CONVERSION_PATTERN
     assert isinstance(pattern, dict)
     copied = pattern.copy()
-    copied["llama"] = object()  # peft assigns by key at module top copy must not alias
+    copied["llama"] = object()  # peft assigns by key at module top
     assert pattern == {}  # copy must not alias
 
 

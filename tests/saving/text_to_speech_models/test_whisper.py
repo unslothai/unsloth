@@ -66,16 +66,16 @@ model.generation_config.forced_decoder_ids = None
 
 model = FastModel.get_peft_model(
     model,
-    r = 64,
+    r = 64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     target_modules = ["q_proj", "v_proj"],
     lora_alpha = 64,
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = "unsloth",
+    lora_dropout = 0,  # Supports any, but = 0 is optimized
+    bias = "none",  # Supports any, but = "none" is optimized
+    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
     random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA And LoftQ ** MUST set this for Whisper **
-    loftq_config = None,
-    task_type = None,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None,  # And LoftQ
+    task_type = None,  # ** MUST set this for Whisper **
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -116,7 +116,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'=' * 80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")
+    warnings.simplefilter("error")  # Treat warnings as errors
     try:
         model.save_pretrained_merged("whisper", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")

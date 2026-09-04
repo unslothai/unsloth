@@ -79,7 +79,7 @@ def _run_llama_capped(
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
     try:
-        out = proc.stdout.read(max_bytes)
+        out = proc.stdout.read(max_bytes)  # returns at max_bytes or EOF (kill -> EOF)
     finally:
         killer.cancel()
         proc.kill()
@@ -213,7 +213,7 @@ def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
 # -- imatrix IQ low-bit export -------------------------------------------------------------
 # A base whose upstream unsloth/<base>-GGUF ships an imatrix, so imatrix_file=True is exercised.
 IMATRIX_MODEL = os.environ.get("UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-1B-Instruct")
-IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]
+IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]  # both were previously disabled; imatrix unlocks them
 
 
 @pytest.fixture(scope = "module")

@@ -303,7 +303,7 @@ def test_install_produces_colocated_layout_and_marker(tmp_path, monkeypatch):
     server = install_dir / "build" / "bin" / "whisper-server"
     assert server.is_file()
     if sys.platform != "win32":
-        assert server.stat().st_mode & 0o111
+        assert server.stat().st_mode & 0o111  # +x, POSIX only
     assert (install_dir / "build" / "bin" / "libwhisper.so").is_file()
     assert (install_dir / "build" / "bin" / "libggml-base.so").is_file()
     marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
@@ -405,10 +405,10 @@ def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
     rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
     assert rc == M.EXIT_SUCCESS
     captured = capsys.readouterr()
-    payload = json.loads(captured.out.strip())
+    payload = json.loads(captured.out.strip())  # exactly one JSON line, parseable
     assert payload["asset"] == SLIM_ASSET
-    assert "[whisper-prebuilt]" not in captured.out
-    assert "slim_selection:" in captured.err
+    assert "[whisper-prebuilt]" not in captured.out  # no log noise on stdout
+    assert "slim_selection:" in captured.err  # diagnostics routed to stderr
 
 
 def test_main_maps_prebuilt_fallback_to_exit_error(tmp_path, monkeypatch):
@@ -581,7 +581,7 @@ def test_installed_llama_runtime_reads_marker(tmp_path):
     root = tmp_path / "llama.cpp"
     bin_dir = root / "build" / "bin"
     if sys.platform == "win32":
-        bin_dir = bin_dir / "Release"
+        bin_dir = bin_dir / "Release"  # the layout installed_llama_runtime resolves on nt
     bin_dir.mkdir(parents = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"release_tag": SLIM_LLAMA_TAG, "bundle_profile": "cuda13-newer"})
@@ -968,12 +968,12 @@ NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
 @pytest.mark.parametrize(
     "installed,required,pairs",
     [
-        (SLIM_LLAMA_TAG, SLIM_LLAMA_TAG, True),
-        (NEWER_LLAMA_TAG, SLIM_LLAMA_TAG, True),
-        ("b10069-mix-0000000", SLIM_LLAMA_TAG, False),
-        (SLIM_LLAMA_TAG, None, False),
-        ("b10069", "b10069", True),
-        ("b10070", "b10069", False),
+        (SLIM_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # exact tag
+        (NEWER_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # newer build, same ggml commit
+        ("b10069-mix-0000000", SLIM_LLAMA_TAG, False),  # same build, different ggml
+        (SLIM_LLAMA_TAG, None, False),  # no requirement recorded
+        ("b10069", "b10069", True),  # tag without -mix-, exact only
+        ("b10070", "b10069", False),  # tag without -mix-, no shared key
     ],
 )
 def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs):
@@ -1272,7 +1272,7 @@ def test_link_ggml_runtime_copy_fallback(tmp_path, monkeypatch):
     assert len(M.link_ggml_runtime(bin_dir, whisper_bin)) == 4
     dest = whisper_bin / "libggml.so.0"
     assert dest.read_bytes() == (bin_dir / "libggml.so.0").read_bytes()
-    assert dest.stat().st_nlink == 1
+    assert dest.stat().st_nlink == 1  # a copy, not a link
 
 
 def test_link_ggml_runtime_hardlinks_dylibs(tmp_path):
@@ -1600,8 +1600,8 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
         (["rocblas"], True),  # gfx1030 and friends: #8364
         ([], False),  # rocblas is load-bearing, never optional
         (["hipblaslt"], False),
-        (["rocblas", "unexpected"], False),
-        ("rocblas", False),
+        (["rocblas", "unexpected"], False),  # not a catalog this installer wires
+        ("rocblas", False),  # not a list: hand-edited or truncated marker
     ],
 )
 def test_existing_rocm_install_accepts_the_catalogs_the_target_has(
@@ -1740,7 +1740,7 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
         assert dest.stat().st_ino == (llama_bin / name).stat().st_ino
 
     marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
-    assert marker["backend"] == "cuda"
+    assert marker["backend"] == "cuda"  # the accel identity, not "slim"
     assert marker["asset"] == SLIM_ASSET
     assert marker["install_kind"] == "slim"
     assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
@@ -1828,7 +1828,7 @@ def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
         path.unlink()
     (llama_bin / "libggml.so.0").write_bytes(b"ggml-NEW")
 
-    assert whisper_lib.stat().st_ino == old_inode
+    assert whisper_lib.stat().st_ino == old_inode  # old inode survives the swap
     assert whisper_lib.read_bytes() == old_content
     assert whisper_lib.stat().st_nlink == 1  # the llama side is gone; ours remains
 

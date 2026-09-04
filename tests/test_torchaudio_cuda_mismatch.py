@@ -137,7 +137,7 @@ def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
     )
 
     _stage(monkeypatch, fresh, MISMATCH)
-    assert tf_iu.is_speech_available() is True
+    assert tf_iu.is_speech_available() is True  # warmed, as a live process would be
     with pytest.warns(UserWarning, match = "torchaudio cannot initialise"):
         fresh.disable_torchaudio_if_cuda_mismatched()
     assert tf_iu.is_torchaudio_available() is False

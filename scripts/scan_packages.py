@@ -142,12 +142,12 @@ RE_OBFUSCATION = re.compile(
     r"|\bzlib\s*\.\s*decompress\b"
     r"|\blzma\s*\.\s*decompress\b"
     r"|\bbz2\s*\.\s*decompress\b"
-    r"|\bbytearray\s*\(\s*\[.*?\]\s*\)"  # bytearray([104,101,...]) chr() obfuscation chains dynamic import
-    r"|\bchr\s*\(\s*\d+\s*\).*chr\s*\(\s*\d+\s*\)"
-    r"|\b__import__\s*\("
-    r"|\bgetattr\s*\(\s*__builtins__"
-    r"|\brotate\s*=.*\blambda\b.*\bchr\b"
-    r"|\b(?:b64decode|decodebytes)\s*\(.*(?:b64decode|decodebytes)\s*\(",
+    r"|\bbytearray\s*\(\s*\[.*?\]\s*\)"  # bytearray([104,101,...])
+    r"|\bchr\s*\(\s*\d+\s*\).*chr\s*\(\s*\d+\s*\)"  # chr() obfuscation chains
+    r"|\b__import__\s*\("  # dynamic import
+    r"|\bgetattr\s*\(\s*__builtins__"  # getattr(__builtins__, ...)
+    r"|\brotate\s*=.*\blambda\b.*\bchr\b"  # rotation ciphers
+    r"|\b(?:b64decode|decodebytes)\s*\(.*(?:b64decode|decodebytes)\s*\(",  # double base64
     re.DOTALL,
 )
 
@@ -163,13 +163,13 @@ RE_EMBEDDED_KEYS = re.compile(
 RE_PEM_BLOCK = re.compile(r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL)
 
 RE_CLOUD_METADATA = re.compile(
-    r"169\.254\.169\.254"  # AWS/Azure/GCP IMDS GCP metadata AWS ECS task metadata Alibaba Cloud metadata AWS IMDS path
-    r"|metadata\.google\.internal"
-    r"|169\.254\.170\.2"
-    r"|100\.100\.100\.200"
-    r"|/latest/meta-data"
-    r"|/metadata/instance"
-    r"|/metadata/identity"
+    r"169\.254\.169\.254"  # AWS/Azure/GCP IMDS
+    r"|metadata\.google\.internal"  # GCP metadata
+    r"|169\.254\.170\.2"  # AWS ECS task metadata
+    r"|100\.100\.100\.200"  # Alibaba Cloud metadata
+    r"|/latest/meta-data"  # AWS IMDS path
+    r"|/metadata/instance"  # GCP metadata path
+    r"|/metadata/identity"  # Azure managed identity
     r"|\bIMDSv[12]\b",
 )
 
@@ -184,8 +184,8 @@ RE_PERSISTENCE = re.compile(
     r"|/Library/LaunchAgents"
     r"|~/\.config/autostart"
     r"|~/.local/share/systemd"
-    r"|~/\.config/systemd/user/"  # user-level systemd Windows registry autorun
-    r"|HKEY_LOCAL_MACHINE.*\\\\Run"
+    r"|~/\.config/systemd/user/"  # user-level systemd
+    r"|HKEY_LOCAL_MACHINE.*\\\\Run"  # Windows registry autorun
     r"|HKEY_CURRENT_USER.*\\\\Run"
     r"|\\\\Start Menu\\\\Programs\\\\Startup"
     r"|schtasks\s",  # Windows scheduled tasks
@@ -317,11 +317,11 @@ RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
 RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 RE_REMOTE_CODE = re.compile(
-    r"\bexec\s*\(\s*(?:urllib|requests|httpx|urlopen)"
+    r"\bexec\s*\(\s*(?:urllib|requests|httpx|urlopen)"  # exec(requests.get(...))
     r"|\bexec\s*\([^)]*\.(?:text|content|read)\s*\("
     r"|\beval\s*\([^)]*\.(?:text|content|read)\s*\("
-    r"|\bimportlib\s*\.\s*import_module\s*\([^)]*\+"
-    r"|\b__import__\s*\([^)]*\+",
+    r"|\bimportlib\s*\.\s*import_module\s*\([^)]*\+"  # dynamic import with concatenation
+    r"|\b__import__\s*\([^)]*\+",  # __import__ with concatenation
     re.DOTALL,
 )
 
@@ -373,16 +373,16 @@ RE_DEV_TOOL_HIJACK = re.compile(
 # Hard-coded credential / API-token regexes embedded in source.
 # Packages that ship regexes for OTHER people's secrets are nearly always stealers.
 RE_TOKEN_REGEX = re.compile(
-    r"\bgh[psoru]_[A-Za-z0-9_]{20,}"
+    r"\bgh[psoru]_[A-Za-z0-9_]{20,}"  # GitHub PAT/OAuth/etc.
     r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
-    r"|\bnpm_[A-Za-z0-9]{30,}"
-    r"|\bsk-[A-Za-z0-9]{20,}"
-    r"|\bxox[bpaesr]-"
-    r"|\bAIza[0-9A-Za-z_-]{20,}"
-    r"|\bAKIA[0-9A-Z]{16}"
-    r"|\bASIA[0-9A-Z]{16}"
+    r"|\bnpm_[A-Za-z0-9]{30,}"  # npm token
+    r"|\bsk-[A-Za-z0-9]{20,}"  # OpenAI / Anthropic
+    r"|\bxox[bpaesr]-"  # Slack
+    r"|\bAIza[0-9A-Za-z_-]{20,}"  # Google API key
+    r"|\bAKIA[0-9A-Z]{16}"  # AWS access key id
+    r"|\bASIA[0-9A-Z]{16}"  # AWS STS
     r"|\bgithub.com/login/oauth/access_token"
-    r"|\bglpat-[0-9A-Za-z_-]{20,}",
+    r"|\bglpat-[0-9A-Za-z_-]{20,}",  # GitLab PAT
 )
 
 # Mini Shai-Hulud May-12 2026 wave indicators. `transformers.pyz` dropper name is high-confidence; the host + slogans
@@ -397,7 +397,7 @@ RE_MAY12_IOC = re.compile(
 RE_JS_OBFUSCATION = re.compile(
     r"_0x[a-f0-9]{4,6}\s*=\s*function"
     r"|var\s+_0x[a-f0-9]{4,6}\b"
-    r"|(?:\\x[0-9a-f]{2}){10,}"
+    r"|(?:\\x[0-9a-f]{2}){10,}"  # \x-escape strings
     r"|String\.fromCharCode\s*\(\s*\d+\s*(?:,\s*\d+\s*){10,}\)",
 )
 
@@ -577,7 +577,7 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
     spans: list[
         tuple[int, int, int, int]
     ] = []  # (srow, scol, erow, ecol) start-of-file behaves like a new line
-    prev_significant = tokenize.NEWLINE
+    prev_significant = tokenize.NEWLINE  # start-of-file behaves like a new line
     n = len(toks)
     for i, tok in enumerate(toks):
         ttype = tok.type
@@ -1136,8 +1136,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
 
 _MAX_MULTILINE_LINES = 12
-_MAX_CALL_LINES = 40
-_MAX_CALL_HARD_LINES = 200
+_MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
+_MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
 
 # Cap a single rendered line.
 # a long (e.g.
@@ -1184,7 +1184,7 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     in_triple: str | None = (
         None  # active ''' or \"\"\" delimiter, or None active ' or " continued via a trailing
     )
-    in_string: str | None = None
+    in_string: str | None = None  # active ' or " continued via a trailing backslash
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -1224,7 +1224,7 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
                 else:
                     i = n
                     if not _ends_with_odd_backslash(line):
-                        in_string = None  # unterminated without continuation;
+                        in_string = None  # unterminated without continuation; stop
                 continue
             ch = line[i]
             if ch in "'\"":
@@ -1644,9 +1644,9 @@ def check_workflow_file(content: str, filename: str, package: str) -> list[Findi
 
 
 # Tarbomb caps mirrored from scripts/scan_npm_packages.py::safe_extract; duplicated to stay standalone, so keep in sync.
-HARD_MAX_FILE_BYTES = 64 * 1024 * 1024
-HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024
-HARD_MAX_MEMBERS = 50_000
+HARD_MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB per member
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per archive
 
 
 def _refuse_unsafe_member_name(name: str) -> str | None:
@@ -2526,7 +2526,7 @@ def version_sort_key(v: str) -> tuple:
     elif suffix_lower.startswith("post"):
         suffix_rank = 1
     else:
-        suffix_rank = 0
+        suffix_rank = 0  # stable
 
     return (epoch, tuple(parts), suffix_rank, suffix)
 
@@ -2668,7 +2668,7 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
     for line_num, new_text in updates.items():
         idx = line_num - 1
         if 0 <= idx < len(lines):
-            ending = "\n" if lines[idx].endswith("\n") else ""
+            ending = "\n" if lines[idx].endswith("\n") else ""  # preserve line ending
             lines[idx] = new_text + ending
 
     dirpath = os.path.dirname(os.path.abspath(filepath)) or "."

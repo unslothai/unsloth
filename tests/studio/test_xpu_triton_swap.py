@@ -252,8 +252,8 @@ class TestXpuTritonSwap:
                 "pytorch-triton-xpu==3.5.0",
                 "",
             ),  # nothing shadowing it torch is not the +xpu wheel torch declares no
-            ("triton==3.7.1", "3.7.1"),
-            ("", "3.7.1"),
+            ("triton==3.7.1", "3.7.1"),  # torch is not the +xpu wheel
+            ("", "3.7.1"),  # torch declares no triton at all
         ],
     )
     def test_leaves_a_healthy_venv_alone(self, monkeypatch, tmp_path, spec, generic):
@@ -427,14 +427,14 @@ class TestADeadDriverIsNotAFlavourMismatch:
             ("2.6.0+xpu", True),
             ("2.9.1+xpu", True),
             ("2.10.0+xpu", True),
-            ("2.5.1+xpu", False),  # below the floor unsloth raises at past the tested ceiling
-            ("2.11.0+xpu", False),
+            ("2.5.1+xpu", False),  # below the floor unsloth raises at
+            ("2.11.0+xpu", False),  # past the tested ceiling
             ("3.0.0+xpu", False),
             ("2.9.1+cu128", False),
             ("2.9.1+rocm6.4", False),
             ("2.9.1", False),
             ("", False),
-            (None, False),
+            (None, False),  # no torch on disk at all
         ],
     )
     def test_the_supported_range_matches_the_probe(self, monkeypatch, tmp_path, label, supported):

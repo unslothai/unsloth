@@ -938,7 +938,7 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
         return int(found[0]) / 100.0
 
     studio_spend = 760 * rate(studio) * 0.75
-    notebook_spend = 231 * rate(notebook) * 0.25
+    notebook_spend = 231 * rate(notebook) * 0.25  # busy week, the pessimistic end
     assert studio_spend > notebook_spend
     assert studio_spend + notebook_spend <= 50.0
     # And with margin, because the ceiling is enforced by a quota read that only sees the account AFTER the hours are

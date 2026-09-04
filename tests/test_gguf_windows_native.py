@@ -58,8 +58,8 @@ def test_posix_basename_would_not_have_fixed_it():
     """os.path.basename is correct here but wrong on the Linux CI that tests it."""
     import posixpath
 
-    assert os.path.basename(r"D:\M\MyModel") == "MyModel"  # ntpath: fine posix:
-    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"
+    assert os.path.basename(r"D:\M\MyModel") == "MyModel"  # ntpath: fine
+    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"  # posix: broken
 
 
 # The fix, on real paths.

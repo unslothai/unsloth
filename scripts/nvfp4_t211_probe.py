@@ -80,7 +80,7 @@ def _bench_linear(K, N, M, cfg, iters, compile_):
     fn = torch.compile(m, fullgraph = True, dynamic = False) if compile_ else m
     x = torch.randn(M, K, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        for _ in range(3):
+        for _ in range(3):  # warmup / compile
             fn(x)
         torch.cuda.synchronize()
         dts = []
@@ -213,7 +213,7 @@ def e2e(steps, res, seed, iters, mf):
                 print(
                     f"    [{tag}] compile failed: {type(exc).__name__}: {str(exc)[:90]}", flush = True
                 )
-        _gen(pipe, steps, seed, res)
+        _gen(pipe, steps, seed, res)  # warmup / compile
         dts, img = [], None
         for _ in range(iters):
             img, dt = _gen(pipe, steps, seed, res)

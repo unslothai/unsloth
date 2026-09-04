@@ -301,7 +301,7 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     install_dir.mkdir()
     version = M.pinned_default_version(M.load_pins())
     asset = M.node_asset_name(version, _host("linux", "x64"))
-    pin = M.pinned_sha256(M.load_pins(), version, asset)
+    pin = M.pinned_sha256(M.load_pins(), version, asset)  # short-circuit now needs the pin
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
@@ -437,7 +437,7 @@ def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
     # the isolated install_dir and drops an inherited NODE_PATH, so a stray `npm
     # -g` can never write to the user's system Node/npm.
     install_dir = tmp_path / "node"
-    monkeypatch.setenv("NPM_CONFIG_PREFIX", "/usr/local")
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", "/usr/local")  # user's own global prefix
     monkeypatch.setenv("NODE_PATH", "/usr/lib/node_modules")
     captured = {}
 
@@ -463,7 +463,7 @@ def test_ensure_npm_floor_scopes_upgrade_to_install_dir(tmp_path: Path, monkeypa
     M._ensure_npm_floor(install_dir, _host("linux", "x64"))
     assert len(calls) == 1
     target_dir, args = calls[0]
-    assert target_dir == install_dir
+    assert target_dir == install_dir  # upgrade scoped to the isolated dir
     assert args[-3:] == ["install", "-g", f"npm@^{M.NPM_MIN_MAJOR}"]
 
 
@@ -492,8 +492,8 @@ ALL_SUPPORTED_HOSTS = [
 def test_load_pins_exposes_valid_default_version():
     pins = M.load_pins()
     version = M.pinned_default_version(pins)
-    assert M._version_tuple(version)
-    assert M._meets_node_floor(version)
+    assert M._version_tuple(version)  # parses as a real version
+    assert M._meets_node_floor(version)  # the pinned default clears the build floor
 
 
 def test_pinned_manifest_covers_every_supported_asset():
@@ -581,7 +581,7 @@ def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     asset = M.node_asset_name(version, _host("linux", "x64"))
-    pin = M.pinned_sha256(pins, version, asset)
+    pin = M.pinned_sha256(pins, version, asset)  # kept only if the recorded digest is the pin
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
@@ -590,7 +590,7 @@ def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path
     def boom(*a, **k):
         raise AssertionError("default channel must not hit nodejs.org when the install matches")
 
-    monkeypatch.setattr(M, "fetch_json", boom)
+    monkeypatch.setattr(M, "fetch_json", boom)  # no index.json
     monkeypatch.setattr(M, "download_file", boom)
     monkeypatch.setattr(M, "download_bytes", boom)
     rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
@@ -692,7 +692,7 @@ def test_install_prebuilt_optin_takes_remote_shasums_path(tmp_path: Path, monkey
     monkeypatch.setattr(M, "download_file_verified", reached)
     with pytest.raises(_ReachedDownload):
         M.install_prebuilt(install_dir, channel = "latest", min_major = 24, force = False)
-    assert shasums_fetched["n"] == 1
+    assert shasums_fetched["n"] == 1  # the opt-in path fetched the remote SHASUMS
 
 
 def test_pins_manifest_ships_next_to_installer():
@@ -748,7 +748,7 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     # version-only short-circuit.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)
+    M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)  # not the pin
     monkeypatch.setattr(M, "detect_host", lambda: host)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
@@ -802,7 +802,7 @@ def test_replace_does_not_retry_a_genuine_error(monkeypatch, tmp_path):
 
     def hard_fail(src, dst):
         calls["n"] += 1
-        raise _oserror(17)
+        raise _oserror(17)  # ERROR_NOT_SAME_DEVICE
 
     monkeypatch.setattr(M.os, "replace", hard_fail)
     with pytest.raises(OSError):

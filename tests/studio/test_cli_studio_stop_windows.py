@@ -99,7 +99,7 @@ def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
         **decode_kwargs,
     ):
         assert cmd[0] == "tasklist"
-        assert "/FI" in cmd
+        assert "/FI" in cmd  # filtered by PID
         if raises:
             raise OSError("boom")
         if returns_pid is None:

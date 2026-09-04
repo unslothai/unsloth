@@ -35,7 +35,7 @@ def _make_fake_xpu(
     total_gb: float = 16.0,
     used_gb: float = 1.0,
     device_name: str = "Intel(R) Arc(TM) B580 Graphics (spoofed)",
-    mem_get_info: str = "ok",
+    mem_get_info: str = "ok",  # "ok" | "raise" | "absent"
     is_initialized: bool = False,
 ):
     """Build a fake torch.xpu namespace + a call counter for synchronize/empty_cache.
@@ -104,8 +104,8 @@ def spoof_xpu(monkeypatch):
     def _apply(
         *,
         cuda_available: bool = False,
-        cuda_visible: str = "",  # "" hides CUDA; None unsets;
-        ze_mask: str = "0,1",
+        cuda_visible: str = "",  # "" hides CUDA; None unsets; else passthrough
+        ze_mask: str = "0,1",  # None unsets the mask
         force_xpu: bool = False,
         xpu_version = "2.7",
         **xpu_kwargs,

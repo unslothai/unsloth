@@ -71,8 +71,8 @@ _MATRIX = [
     ("unsloth", False, "unsloth"),  # the #4735 case: args=False must NOT win
     (True, False, True),
     (False, True, False),  # user turned GC off; args=True must NOT re-enable it
-    (None, True, None),
-    (_MISSING, True, True),
+    (None, True, None),  # explicit None is restored, not treated as "unrecorded"
+    (_MISSING, True, True),  # nothing recorded -> fall back to args
     (_MISSING, False, False),
 ]
 

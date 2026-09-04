@@ -94,7 +94,7 @@ def test_flash_request_still_falls_back_when_disabled():
 
 
 def test_resolver_honors_explicit_sdpa_when_not_supported_and_flash_disabled():
-    config = {"model_type": "test", "head_dim": 512}
+    config = {"model_type": "test", "head_dim": 512}  # head_dim > 256 disables flash
     result = resolve_attention_implementation(
         model_class = None,
         config = config,

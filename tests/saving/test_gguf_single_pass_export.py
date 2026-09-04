@@ -30,12 +30,12 @@ import unsloth.save as save_mod
 @pytest.mark.parametrize(
     "methods, model_dtype, expected",
     [
-        (["q8_0"], "f16", "q8_0"),  # default "fast_quantized" path:
-        (["q8_0", "q8_0"], "bf16", "q8_0"),
-        (["f32"], "f16", "f32"),
+        (["q8_0"], "f16", "q8_0"),  # default "fast_quantized" path: single pass
+        (["q8_0", "q8_0"], "bf16", "q8_0"),  # duplicates collapse to a single pass
+        (["f32"], "f16", "f32"),  # 16/32-bit outputs convert directly too
         (["bf16"], "bf16", "bf16"),
-        (["q4_k_m"], "f16", "f16"),  # k-quants need a 16-bit base mixes need the shared base
-        (["q4_k_m", "q8_0"], "bf16", "bf16"),
+        (["q4_k_m"], "f16", "f16"),  # k-quants need a 16-bit base
+        (["q4_k_m", "q8_0"], "bf16", "bf16"),  # mixes need the shared base
         (["q8_0", "f16"], "f16", "f16"),
     ],
 )
@@ -142,7 +142,7 @@ def test_q8_0_only_is_single_pass(monkeypatch, tmp_path):
 
 def test_fast_quantized_alias_is_single_pass(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path)
-    _run(tmp_path, "fast_quantized")
+    _run(tmp_path, "fast_quantized")  # the default of save_pretrained_gguf
     assert h.convert_calls[0]["quantization_type"] == "q8_0"
     assert h.quantize_calls == []
 
@@ -223,7 +223,7 @@ def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
     assert h.max_concurrency == 2, "quantize passes should overlap, bounded at 2"
     quant_names = [os.path.basename(l) for l in locations if "F16" not in l]
     assert quant_names == [
-        "testmodel.Q6_K.gguf",
+        "testmodel.Q6_K.gguf",  # list is reversed by the cleanup block, as before
         "testmodel.Q5_K_M.gguf",
         "testmodel.Q4_K_M.gguf",
     ]

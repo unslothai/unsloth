@@ -23,7 +23,7 @@ for _up in _iso.parents:
     if _candidate.is_file():
         _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
         _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
+        _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
 # --- shared test helpers on sys.path -----------------------------------------------

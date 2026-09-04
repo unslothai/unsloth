@@ -76,9 +76,9 @@ def _stage(monkeypatch, tmp_path, pythonpath):
     [
         os.pathsep
         + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset PYTHONPATH=/opt/lib:$PYTHONPATH, unset
-        "/opt/lib" + os.pathsep,
-        "/opt/a" + os.pathsep + os.pathsep + "/opt/b",
-        os.pathsep,
+        "/opt/lib" + os.pathsep,  # PYTHONPATH=/opt/lib:$PYTHONPATH, unset
+        "/opt/a" + os.pathsep + os.pathsep + "/opt/b",  # interior empty
+        os.pathsep,  # separator only
     ],
 )
 def test_empty_components_survive(monkeypatch, tmp_path, before):

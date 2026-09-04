@@ -85,9 +85,9 @@ try:
     model, tokenizer = FastVisionModel.from_pretrained(
         model_name = "unsloth/Qwen2-VL-7B-Instruct",
         max_seq_length = 2048,
-        load_in_4bit = True,
-        load_in_8bit = False,
-        full_finetuning = False,
+        load_in_4bit = True,  # 4 bit quantization to reduce memory
+        load_in_8bit = False,  # [NEW!] A bit more accurate, uses 2x memory
+        full_finetuning = False,  # [NEW!] We have full finetuning now!
     )
 except Exception as e:
     print(f"❌ Failed to load base model: {e}")
@@ -97,18 +97,18 @@ print("\n🔧 Setting up LoRA configuration...")
 try:
     model = FastVisionModel.get_peft_model(
         model,
-        finetune_vision_layers = True,
-        finetune_language_layers = True,
-        finetune_attention_modules = True,
-        finetune_mlp_modules = True,
-        r = 16,
+        finetune_vision_layers = True,  # Turn off for just text!
+        finetune_language_layers = True,  # Should leave on!
+        finetune_attention_modules = True,  # Attention good for GRPO
+        finetune_mlp_modules = True,  # Should leave on always!
+        r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
         lora_alpha = 32,
-        lora_dropout = 0,
-        bias = "none",
-        use_gradient_checkpointing = "unsloth",
+        lora_dropout = 0,  # Supports any, but = 0 is optimized
+        bias = "none",  # Supports any, but = "none" is optimized
+        use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
         random_state = 3407,
-        use_rslora = False,
-        loftq_config = None,
+        use_rslora = False,  # We support rank stabilized LoRA
+        loftq_config = None,  # And LoftQ
     )
     print("✅ LoRA configuration applied successfully!")
     print(f"   🎯 LoRA rank (r): 16")
@@ -125,7 +125,7 @@ print("=" * 80 + "\n")
 
 
 print("🏋️ Preparing trainer...")
-FastVisionModel.for_training(model)
+FastVisionModel.for_training(model)  # Enable for training!
 
 try:
     trainer = SFTTrainer(
@@ -138,7 +138,7 @@ try:
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
             gradient_checkpointing_kwargs = {"use_reentrant": False},
-            max_grad_norm = 0.3,
+            max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
             warmup_ratio = 0.03,
             max_steps = 10,
             learning_rate = 2e-4,
@@ -151,7 +151,7 @@ try:
             lr_scheduler_type = "linear",
             seed = 3407,
             output_dir = "checkpoints",
-            report_to = "none",
+            report_to = "none",  # For Weights and Biases
             remove_unused_columns = False,
             dataset_text_field = "",
             dataset_kwargs = {"skip_prepare_dataset": True},

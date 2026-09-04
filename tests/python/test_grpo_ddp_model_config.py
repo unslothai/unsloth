@@ -55,7 +55,7 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
     planner = __import__("importlib").import_module("unsloth_zoo.device_map_planner")
     detect = getattr(planner, "detect_logit_transforms", None)
     if detect is None:
-        return
+        return  # older unsloth_zoo: the fallback branch is in use
 
     class _Inner(torch.nn.Module):
         def __init__(self):

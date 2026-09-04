@@ -185,7 +185,7 @@ def test_non_block_divisible_shape():
     model = nn.Module()
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
-    model.layer = _bf16_linear(3, 4, raw)
+    model.layer = _bf16_linear(3, 4, raw)  # weight shape [3, 4]
 
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})
@@ -200,7 +200,7 @@ def test_transposed_scale_layout():
     """A scale stored in the transposed block grid is transposed before use."""
     if _FP8 is None:
         return
-    raw = torch.randn(4, 2, dtype = torch.bfloat16)
+    raw = torch.randn(4, 2, dtype = torch.bfloat16)  # weight [4, 2] -> grid (2, 1)
     scale_correct = torch.rand(2, 1, dtype = torch.float32) + 0.1
     scale_stored = scale_correct.t().contiguous()  # stored transposed as (1, 2)
 

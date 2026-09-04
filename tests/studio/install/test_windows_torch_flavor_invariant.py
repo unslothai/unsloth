@@ -86,11 +86,11 @@ class TestSetupPs1NoWipeEscape:
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         for clause in (
-            "-not $InstallerManagedSetup",  # install.ps1 repairs in place instead a cpu index PIN is deliberate and
-            "-not $_pinnedIdx",
-            "Test-CudaFamilyLeaf $installedTorchTag",
-            "-not $HasNvidiaSmi",
-            '$expectedTorchTag -eq "cpu"',
+            "-not $InstallerManagedSetup",  # install.ps1 repairs in place instead
+            "-not $_pinnedIdx",  # a cpu index PIN is deliberate and still rebuilds
+            "Test-CudaFamilyLeaf $installedTorchTag",  # only a cu* wheel is preserved
+            "-not $HasNvidiaSmi",  # only when the NVIDIA probe gave no answer
+            '$expectedTorchTag -eq "cpu"',  # ... and that is why the expectation collapsed
         ):
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
@@ -316,10 +316,10 @@ class TestStepTotals:
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),
-            ({"NO_TORCH": True}, 13),
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),
-            ({"IS_MACOS": True}, 12),
+            ({}, 16),  # Linux, torch
+            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
+            ({"IS_MACOS": True}, 12),  # Intel Mac
         ],
     )
     def test_the_other_platforms_are_unchanged(self, flags, total):

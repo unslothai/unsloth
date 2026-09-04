@@ -231,7 +231,7 @@ class TestCudaRepairFires:
         # to match the pin, so the pin is enforced with a reinstall.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
-            torch_state = "cuda",
+            torch_state = "cuda",  # marker cuda, empty installed cu
             cuda_version = "12.8",
         )
         assert mock_pip.call_count == 1

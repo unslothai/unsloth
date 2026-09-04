@@ -9,8 +9,8 @@ import textwrap
 
 import pytest
 
-_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent
-_REPO_ROOT = _TESTS_DIR.parent
+_TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
+_REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 _SETUP_SH = _REPO_ROOT / "studio" / "setup.sh"

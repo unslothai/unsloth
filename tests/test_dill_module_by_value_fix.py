@@ -174,7 +174,7 @@ def _run_on_hostile_tree(
     omit_metadata = False,
 ):
     """Build the tree OUTSIDE any sys prefix and run the driver against it."""
-    overlay = tmp_path / "overlay_leg"
+    overlay = tmp_path / "overlay_leg"  # deliberately not "site-packages"
     overlay.mkdir()
     for name, body in _HOSTILE_TREE.items():
         target = overlay / name
@@ -331,7 +331,7 @@ def test_the_widening_only_covers_modules_that_import_back():
 
     # Every call now carries the install ROOTS and the names installed there, because the widening is scoped to both;
     package_dir = os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or ""))
-    roots = (os.path.dirname(package_dir),)
+    roots = (os.path.dirname(package_dir),)  # the package's install root
     installed = frozenset({os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"})
     real = sys.modules["json"]
     assert _dill_module_is_importable_by_name(real, installed)

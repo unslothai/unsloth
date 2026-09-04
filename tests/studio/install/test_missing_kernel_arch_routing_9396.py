@@ -136,9 +136,9 @@ def _run_install(
 @pytest.mark.parametrize(
     "gfx, leaf",
     [
-        ("gfx1103", "gfx110X-all"),  # Radeon 780M / 760M / 740M
-        ("gfx1032", "gfx103X-all"),
-        ("gfx1034", "gfx103X-all"),
+        ("gfx1103", "gfx110X-all"),  # Radeon 780M / 760M / 740M -- the reported card
+        ("gfx1032", "gfx103X-all"),  # RX 6650 / 6600
+        ("gfx1034", "gfx103X-all"),  # RX 6500 / 6400 / 6300
     ],
 )
 def test_an_arch_with_no_generic_kernels_routes_to_the_amd_index(gfx, leaf):
@@ -1129,7 +1129,7 @@ def test_a_named_arch_resolves_an_ordering_no_probe_can():
             "gfx1200",
             "gfx120X-all",
         ),  # RDNA 4, and the generic wheel lists it Strix Halo, reached here when the version
-        ("gfx1151", "gfx1151"),
+        ("gfx1151", "gfx1151"),  # Strix Halo, reached here when the version is unreadable
     ],
 )
 def test_the_torch_floor_applies_to_the_family_not_to_the_missing_kernel_gate(gfx, leaf):

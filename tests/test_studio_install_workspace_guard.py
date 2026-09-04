@@ -532,7 +532,7 @@ def test_check_health_rejects_non_unsloth_service():
 
 def test_check_health_handles_arbitrary_id_token():
     """A fully arbitrary 64-char hex install id must round-trip cleanly (hex-only, no JSON escapes)."""
-    expected_id = "f0" + ("ed" * 31)
+    expected_id = "f0" + ("ed" * 31)  # 64 hex chars, not derived from any path
     rc = _run_check_health(
         expected_id,
         f'{{"status":"healthy","service":"Unsloth UI Backend","studio_root_id":"{expected_id}"}}',

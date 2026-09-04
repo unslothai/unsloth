@@ -309,7 +309,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         try:
             backend.unload()
-        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             print(f"  warn: unload failed: {exc}", flush = True)
 
     return {

@@ -171,5 +171,5 @@ def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
 
     real = sys.modules.get("bitsandbytes.functional")
     if real is None:
-        return  # bitsandbytes not importable here;
+        return  # bitsandbytes not importable here; the fallback has nothing to read
     assert probe.native_kernels_ready(bnb, "cuda") in (True, False)

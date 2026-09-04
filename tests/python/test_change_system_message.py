@@ -27,7 +27,7 @@ def _load_change_system_message():
     return namespace["_change_system_message"]
 
 
-CUSTOM = "mycustom"
+CUSTOM = "mycustom"  # no predefined default
 
 
 def test_custom_template_fills_placeholder():

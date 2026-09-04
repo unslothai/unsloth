@@ -389,7 +389,7 @@ def _fake_macos_releases(tags):
 class TestMacosReleasePin:
     """Pre-26 upstream macOS pins the last loadable ggml-org release."""
 
-    TAGS = [f"b{n}" for n in range(9442, 9400, -1)]
+    TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 
     def _patch_releases(self, monkeypatch):
         def fake_iter(repo, published_release_tag, requested_tag):
@@ -420,7 +420,7 @@ class TestMacosReleasePin:
             "",
         )
         assert tag == "latest"
-        assert plans[0].release_tag == self.TAGS[0]
+        assert plans[0].release_tag == self.TAGS[0]  # newest release
         assert len(plans) == ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
 
     def test_unknown_macos_host_uses_default(self, monkeypatch):
@@ -462,11 +462,11 @@ class TestForwardsBackwardsCompat:
     @pytest.mark.parametrize(
         "host_version, expected",
         [
-            ((13, 0), "b8300"),  # older host takes the older prebuilt backwards:
-            ((14, 7), "b9415"),
+            ((13, 0), "b8300"),  # older host takes the older prebuilt
+            ((14, 7), "b9415"),  # backwards: skip 26/27, take newest that loads
             ((15, 5), "b9415"),
-            ((26, 0), "b9450"),  # unchanged: newest <= host forwards:
-            ((27, 1), "b9600"),
+            ((26, 0), "b9450"),  # unchanged: newest <= host
+            ((27, 1), "b9600"),  # forwards: future host takes the future build
         ],
     )
     def test_selects_newest_loadable(self, tmp_path, host_version, expected):

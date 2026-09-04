@@ -249,7 +249,7 @@ def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
     loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
     loose.mkdir()
     os.chmod(loose, 0o777)
-    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)  # silently ignored
 
     with pytest.raises(RuntimeError, match = "group- or world-writable"):
         IF._subprocess_fix_directory()
@@ -524,7 +524,7 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     monkeypatch.delenv("PYTHONPATH", raising = False)
     try:
-        assert IF.fix_torchao_torch_symbol_skew() is True
+        assert IF.fix_torchao_torch_symbol_skew() is True  # the _gpu_init order
         directory = IF.propagate_torchao_fix_to_subprocesses()
         assert (
             directory is not None

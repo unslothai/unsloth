@@ -424,7 +424,7 @@ def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
     real_stat = Path.stat
 
     def slow_stat(self, *args, **kwargs):
-        clock["now"] += 1.0
+        clock["now"] += 1.0  # a second per stat, as a stalled mount would
         return real_stat(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", slow_stat)

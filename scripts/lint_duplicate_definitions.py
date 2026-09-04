@@ -311,8 +311,8 @@ def _import_duplicates(body, scope, out) -> None:
     the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path in
     its key too, since `import urllib.parse` beside `import urllib.request` is correct.
     """
-    seen_implicit: dict = {}
-    seen_explicit: dict = {}
+    seen_implicit: dict = {}  # (bound name, source) -> line; a name nobody chose
+    seen_explicit: dict = {}  # bound name -> line; a name the author wrote after `as`
     for node in body:
         if isinstance(node, ast.ImportFrom):
             # `level` carries the leading dots, so `from .a` and `from ..a` stay distinct.
@@ -508,7 +508,7 @@ _SELF_TEST_CASES = [
     (0, "from a import x\nfrom b import x\n"),
     (0, "NAMES = ['a']\nNAMES = frozenset(n.lower() for n in NAMES)\n"),
     (0, "COUNT: int = 1\nCOUNT = COUNT + 1\n"),
-    (0, "REGISTRY: dict\nREGISTRY = {}\n"),
+    (0, "REGISTRY: dict\nREGISTRY = {}\n"),  # a bare annotation binds nothing
     (0, "from m import x\nfrom m import x as other\n"),
     (0, "ROWS = (1,)\nROWS = ROWS + (2,)\n"),
     # A tuple self-transform is decided per name, so a swap exempts both sides.

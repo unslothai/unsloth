@@ -74,8 +74,8 @@ def test_stale_pin_fails_check_and_fix_repairs():
         write_fixture(
             tmp,
             {
-                "@biomejs/biome@1.9.4": True,  # stale, bumped to 1.9.9 stale denial, bumped to 2.15.0 bare:
-                "msw@2.14.3": False,
+                "@biomejs/biome@1.9.4": True,  # stale, bumped to 1.9.9
+                "msw@2.14.3": False,  # stale denial, bumped to 2.15.0
                 "fsevents": True,  # bare: never stale
                 "ghost@9.9.9": True,
                 "weird@*": True,
@@ -87,7 +87,7 @@ def test_stale_pin_fails_check_and_fix_repairs():
         got = json.loads((tmp / "package.json").read_text())["allowScripts"]
         assert got == {
             "@biomejs/biome@1.9.9": True,
-            "msw@2.15.0": False,
+            "msw@2.15.0": False,  # value and key order preserved
             "fsevents": True,
             "ghost@9.9.9": True,
             "weird@*": True,

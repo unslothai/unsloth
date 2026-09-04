@@ -67,8 +67,8 @@ def _body(name: str) -> str:
             0,
             0,
         ),  # CPU-only is a real request, not "unset" Auto slider defers to the runner Unsloth mode
-        ("manual", -1, None),
-        ("auto", 8, None),
+        ("manual", -1, None),  # Auto slider defers to the runner
+        ("auto", 8, None),  # Unsloth mode ignores a stale layer count
         ("auto", -1, None),
     ],
 )
@@ -202,11 +202,11 @@ def _in_target_state(llama_cpp, b, *, mode, layers):
             True,
         ),  # auto -> auto inert manual preference must not loop a real split must reload
         (-1, None, "manual", -1, True),  # inert manual preference must not loop
-        (-1, None, "manual", 8, False),
-        (8, 8, "manual", 8, True),
-        (8, 8, "manual", 4, False),
-        (8, 8, "auto", -1, False),
-        (0, 0, "manual", 0, True),
+        (-1, None, "manual", 8, False),  # a real split must reload
+        (8, 8, "manual", 8, True),  # same split dedupes
+        (8, 8, "manual", 4, False),  # a split change reloads
+        (8, 8, "auto", -1, False),  # manual -> auto reloads
+        (0, 0, "manual", 0, True),  # CPU-only split dedupes with itself
         # No --ngl: -1 runs but 20 was the ask; comparing on the ask stops a reload loop.
         (-1, 20, "manual", 20, True),
         (-1, 20, "manual", 8, False),
@@ -251,8 +251,8 @@ def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
     [
         ('ap.add_argument("--ngl", type=int)', True),
         ("ap.add_argument('--ngl', type=int)", True),  # quoting must not matter
-        ('# someday: support "--ngl"', False),
-        ('"""usage: --ngl N"""', False),
+        ('# someday: support "--ngl"', False),  # a comment is not support
+        ('"""usage: --ngl N"""', False),  # nor is a docstring
         ('ap.add_argument("--maxtok", type=int)', False),
     ],
 )
@@ -271,7 +271,7 @@ def test_probe_accepts_an_uppercase_extension(llama_cpp, tmp_path):
 
 def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, tmp_path):
     shim = tmp_path / "shim.py"
-    shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")
+    shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")  # syntax error
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
 
 
@@ -342,10 +342,10 @@ def test_training_guard_mirrors_shim_support():
             30,
             5.0,
         ),  # a third of the layers -> a third of the footprint all layers -> unchanged over-ask
-        (15.0, 30, 30, 15.0),
-        (15.0, 99, 30, 15.0),
-        (15.0, 10, None, 15.0),
-        (15.0, 10, 0, 15.0),
+        (15.0, 30, 30, 15.0),  # all layers -> unchanged
+        (15.0, 99, 30, 15.0),  # over-ask clamps to all layers
+        (15.0, 10, None, 15.0),  # unknown layer count stays conservative
+        (15.0, 10, 0, 15.0),  # degenerate header value stays conservative
     ],
 )
 def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_layers, expected):
@@ -377,11 +377,11 @@ def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     assert (
         _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True
     )  # shim still old zoo upgraded in this
-    b.diffusion_split_supported = lambda: True
-    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is False
+    b.diffusion_split_supported = lambda: True  # zoo upgraded in this session
+    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is False  # now applies
     b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)
     b2.diffusion_split_supported = lambda: True
-    assert _in_target_state(llama_cpp, b2, mode = "manual", layers = 20) is True
+    assert _in_target_state(llama_cpp, b2, mode = "manual", layers = 20) is True  # applied: rest
 
 
 # ── the dropped split must reach the client ──

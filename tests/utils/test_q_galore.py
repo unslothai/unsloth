@@ -75,7 +75,7 @@ class TestGaLoreProjector:
     def test_project_and_back_wide(self):
         """Project → project_back preserves shape for wide matrices."""
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
-        grad = torch.randn(8, 16)
+        grad = torch.randn(8, 16)  # wide
         low = proj.project(grad, step = 0)
         assert low.shape == (4, 16)
 
@@ -93,7 +93,7 @@ class TestGaLoreProjector:
         assert proj.svd_count == 1
 
         proj.project(grad, step = 100)
-        assert proj.svd_count == 2
+        assert proj.svd_count == 2  # Recomputed
 
     def test_quantized_projection(self):
         """Quantized projection matrix stores and restores with bounded error."""
@@ -221,7 +221,7 @@ class TestParamGroupHelper:
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
         assert len(galore_group["params"]) == 2
-        assert len(non_galore_group["params"]) == 3
+        assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
 
     def test_custom_target_modules(self):
         """Custom target_modules narrows GaLore scope."""
@@ -245,7 +245,7 @@ class TestParamGroupHelper:
     def test_bias_excluded_from_galore(self):
         """1-D bias params matching target names must be excluded (project needs 2-D grads)."""
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias = True)
+        model.q_proj = nn.Linear(64, 64, bias = True)  # has .weight AND .bias
         model.embed = nn.Embedding(100, 64)
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
@@ -309,7 +309,7 @@ class TestQGaLoreIntegration:
                     low = proj.project(p.grad, step)
                     p._saved = p.data.clone()
                     update = torch.zeros_like(low)
-                    update.add_(low)
+                    update.add_(low)  # Simplified update
                     full_update = proj.project_back(update)
                     p.grad.copy_(full_update)
 
@@ -322,7 +322,7 @@ class TestQGaLoreIntegration:
         torch.manual_seed(42)
         u = torch.randn(32, 4)
         v = torch.randn(4, 16)
-        grad = u @ v
+        grad = u @ v  # rank-4 gradient
 
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 1.0)
         low = proj.project(grad, step = 0)
@@ -370,7 +370,7 @@ class TestQGaLoreIntegration:
             embed_params = []
             other_params = []
             for p in group["params"]:
-                if p.shape[0] == 100:
+                if p.shape[0] == 100:  # embedding
                     embed_params.append(p)
                 else:
                     other_params.append(p)
@@ -409,7 +409,7 @@ class TestQGaLoreIntegration:
         p._saved_data = (
             torch.ones(4, 4) * 2.0
         )  # Pre-update weights Simulate project-back: p.data = p._saved_data +
-        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)
+        p.data = p._saved_data.add_(torch.ones(4, 4) * 1.0)  # p.data is now 3.0
 
         group = {"weight_decay": 0.1, "lr": 1.0, "_wd_saved": 0.1}
 
@@ -475,7 +475,7 @@ class TestQGaLoreIntegration:
         # Hook should restore float weights on forward.
         handles = install_hook(linear)
         x = torch.randn(2, 16)
-        out = linear(x)
+        out = linear(x)  # triggers pre-hook
 
         assert linear.weight.data.shape == (8, 16), "weight shape not restored"
         assert linear.weight.data.is_floating_point(), "weight not float after hook"

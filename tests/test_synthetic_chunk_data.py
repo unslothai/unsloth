@@ -76,8 +76,8 @@ def test_chunk_data_empty_document_yields_no_chunks():
 
 
 def test_chunk_data_short_document_is_not_split_into_fragments():
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)
-    out, contents = _chunk("word " * 50, kit = kit)
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)  # max_tokens = 80
+    out, contents = _chunk("word " * 50, kit = kit)  # 50 tokens < overlap (would be 4 chunks)
     assert len(out) == 1, f"sub-overlap doc should yield 1 chunk, got {len(out)}"
     assert contents[0].split() == [
         f"w{i}" for i in range(50)
@@ -85,7 +85,7 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
 
 
 def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 950, overlap = 64)
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 950, overlap = 64)  # max_tokens = 20
     with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
         f.write("word " * 50)
         path = f.name

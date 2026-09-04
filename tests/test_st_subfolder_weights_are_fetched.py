@@ -103,10 +103,10 @@ def test_a_repo_without_modules_json_is_not(modules_json):
         "{ not json",
         json.dumps({"not": "a list"}),
         json.dumps([None, 3, "x"]),
-        json.dumps([{"path": "2_Dense"}]),
-        json.dumps([{"type": "...Dense"}]),
-        json.dumps([{"path": "  ", "type": "...Dense"}]),
-        json.dumps([{"path": "/", "type": "...Dense"}]),
+        json.dumps([{"path": "2_Dense"}]),  # no type
+        json.dumps([{"type": "...Dense"}]),  # no path
+        json.dumps([{"path": "  ", "type": "...Dense"}]),  # blank path
+        json.dumps([{"path": "/", "type": "...Dense"}]),  # root, slash only
     ],
 )
 def test_malformed_modules_json_falls_back_to_the_old_behaviour(modules_json, payload):

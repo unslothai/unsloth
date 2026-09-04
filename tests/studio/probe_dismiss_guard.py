@@ -617,7 +617,7 @@ async def run(engine: str, cases: list[str]) -> dict:
             )
             try:
                 out["cases"].append(await one_case(page, case, engine, context))
-            except Exception as exc:
+            except Exception as exc:  # a failed case is a result, not a crash
                 out["cases"].append({"case": case, "error": repr(exc)})
             await context.close()
         await browser.close()

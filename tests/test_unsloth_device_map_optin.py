@@ -104,11 +104,11 @@ class _Plan:
 @pytest.mark.parametrize(
     "device_map",
     [
-        "sequential",  # today's default accelerate's, which this must never reinterpret what Unsloth Studio passes
+        "sequential",  # today's default
         "auto",  # accelerate's, which this must never reinterpret
-        "balanced",
+        "balanced",  # what Unsloth Studio passes
         "balanced_low_0",
-        None,
+        None,  # a single device
     ],
 )
 def test_every_existing_device_map_is_returned_untouched(device_map):
