@@ -7909,7 +7909,9 @@ def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetC
         if build is None or build < RPC_SERVER_FIRST_PUBLISHED_BUILD:
             return False
     runtime_dir = install_runtime_dir(install_dir, host)
-    rpc_library = ("ggml-rpc.dll",) if host.is_windows else ("libggml-rpc.so*", "libggml-rpc*.dylib")
+    rpc_library = (
+        ("ggml-rpc.dll",) if host.is_windows else ("libggml-rpc.so*", "libggml-rpc*.dylib")
+    )
     if not any(any(runtime_dir.glob(pattern)) for pattern in rpc_library):
         return False
     for name in names:

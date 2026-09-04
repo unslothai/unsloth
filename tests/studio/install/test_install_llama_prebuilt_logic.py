@@ -6902,7 +6902,12 @@ _RPC_INSTALL_KINDS = {
 }
 
 
-def _rpc_choice(install_kind: str, *, source_label: str = "published", tag: str = "b10798-mix-659e406"):
+def _rpc_choice(
+    install_kind: str,
+    *,
+    source_label: str = "published",
+    tag: str = "b10798-mix-659e406",
+):
     return AssetChoice(
         repo = "unslothai/llama.cpp" if source_label == "published" else "ggml-org/llama.cpp",
         tag = tag,
@@ -7012,7 +7017,9 @@ def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
     (runtime_dir / "libggml-rpc.so").write_bytes(b"rpc client library")
     assert INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice)
     (runtime_dir / "rpc-server").write_bytes(b"legacy rpc server")
-    assert not INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice)
+    assert not INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(
+        tmp_path / "llama.cpp", host, choice
+    )
 
 
 @pytest.mark.parametrize(
@@ -7027,7 +7034,13 @@ def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
         # A tag that carries no build number cannot be placed, so it is left alone.
         ("published", "old-release", "libggml-rpc.so"),
     ],
-    ids = ["upstream-no-rpc", "published-no-rpc", "published-b10795", "published-b9596", "unparseable"],
+    ids = [
+        "upstream-no-rpc",
+        "published-no-rpc",
+        "published-b10795",
+        "published-b9596",
+        "unparseable",
+    ],
 )
 def test_rpc_server_backfill_is_not_owed_without_evidence(tmp_path, source_label, tag, library):
     """The thrash guard: a bundle that never ships the executable must not re-extract
@@ -7039,7 +7052,10 @@ def test_rpc_server_backfill_is_not_owed_without_evidence(tmp_path, source_label
     runtime_dir.mkdir(parents = True)
     if library:
         (runtime_dir / library).write_bytes(b"rpc client library")
-    assert INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice) is False
+    assert (
+        INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice)
+        is False
+    )
 
 
 def test_release_build_number_reads_fork_and_upstream_tags():
@@ -7079,7 +7095,9 @@ def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeyp
     for install_kind in _RPC_INSTALL_KINDS:
         choice = _rpc_choice(install_kind)
         host = _windows_host() if install_kind.startswith("windows") else linux_host()
-        overlay = INSTALL_LLAMA_PREBUILT.overlay_directory_for_choice(tmp_path / install_kind, choice, host)
+        overlay = INSTALL_LLAMA_PREBUILT.overlay_directory_for_choice(
+            tmp_path / install_kind, choice, host
+        )
         assert overlay.relative_to(tmp_path / install_kind).parts in searched, install_kind
 
     install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
@@ -7120,7 +7138,14 @@ def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeyp
         expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
     )
 
-    def fake_download(url, target_path, *, expected_sha256 = None, label = None, **kw):
+    def fake_download(
+        url,
+        target_path,
+        *,
+        expected_sha256 = None,
+        label = None,
+        **kw,
+    ):
         _shutil.copy2(bundle, target_path)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file_verified", fake_download)
