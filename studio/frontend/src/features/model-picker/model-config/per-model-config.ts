@@ -1319,6 +1319,60 @@ export function deletePerModelConfig(
 }
 
 /**
+ * Every stored record an override key names. Matched, not split: a colon is legal in
+ * a path, and two records can spell one key.
+ */
+function findModelOverrideKeyOwners(
+  overrideKey: string,
+): { modelId: string; ggufVariant: string | null }[] {
+  const key = overrideKey.trim();
+  const foldedKey = normalizeModelIdentity(key);
+  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  for (const storageKey of Object.keys(readMap())) {
+    const modelId = modelIdFromStorageKey(storageKey);
+    if (!modelId) {
+      continue;
+    }
+    // Already lowercased by modelStorageKey, which is why only the tail folds below.
+    const variant = normalizeGgufVariantIdentity(
+      ggufVariantFromStorageKey(storageKey),
+    );
+    if (!variant) {
+      if (foldedKey === normalizeModelIdentity(modelId)) {
+        owners.push({ modelId, ggufVariant: null });
+      }
+      continue;
+    }
+    const cut = key.length - variant.length - 1;
+    if (
+      cut > 0 &&
+      key[cut] === ":" &&
+      key.slice(cut + 1).toLowerCase() === variant &&
+      normalizeModelIdentity(key.slice(0, cut)) ===
+        normalizeModelIdentity(modelId)
+    ) {
+      owners.push({ modelId, ggufVariant: variant });
+    }
+  }
+  return owners;
+}
+
+/** Delete the records the server keys name; false when one was left behind. */
+export function deletePerModelConfigsForOverrideKeys(
+  overrideKeys: readonly string[],
+): boolean {
+  let deleted = true;
+  for (const overrideKey of overrideKeys) {
+    for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
+        deleted = false;
+      }
+    }
+  }
+  return deleted;
+}
+
+/**
 * Move a saved config from an id an older release keyed it by onto the current one.
 *
 * A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
