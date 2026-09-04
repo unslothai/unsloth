@@ -7,8 +7,9 @@ When ``huggingface.co`` is unreachable but the repo is cached, three failures
 hit: ``list_gguf_variants`` 500'd (empty dropdown), ``detect_gguf_model_remote``
 returned None (GGUF-only repo misrouted), and ``_download_gguf`` synthesised a
 name absent from cache. Follow-ups: the cache filter matches the snapshot-relative
-path (subdir layouts findable), and DNS auto-detect scopes ``HF_HUB_OFFLINE`` to
-one load so a transient hiccup can't pin the singleton offline.
+path (subdir layouts findable), DNS auto-detect scopes ``HF_HUB_OFFLINE`` to
+one load so a transient hiccup can't pin the singleton offline, and the probes above
+share a repo document within one request rather than each fetching it.
 
 No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
 """
@@ -102,11 +103,14 @@ from core.inference.llama_cpp import (
 from utils.models.model_config import (
     _detect_gguf_from_hf_cache,
     _extract_quant_label,
+    _hub_model_info,
     _iter_hf_cache_snapshots,
     _list_gguf_variants_from_hf_cache,
     detect_gguf_model_remote,
     list_gguf_variants,
+    shared_hub_model_info,
 )
+import utils.models.model_config as mc
 
 
 # ---------------------------------------------------------------------------
@@ -925,6 +929,249 @@ class TestDetectGgufModelRemoteOffline:
             out = detect_gguf_model_remote("unsloth/a")
         # Early-return semantics preserved: 404 wins over a stale cache.
         assert out is None
+
+
+class TestSharedHubModelInfo:
+    """The probes above share an ``/api/models/<repo>`` read within a single request.
+
+    Scoped rather than cached, so the 404-beats-a-stale-cache rule the class above asserts
+    still holds between requests. Every read inside a scope asks for file sizes, so one
+    response serves the GGUF variant listing as well as the probes that ignore them.
+    """
+
+    @pytest.fixture(autouse = True)
+    def hub(self, monkeypatch):
+        """A fake hub whose every response identifies the call that produced it."""
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        state = _types.SimpleNamespace(calls = [], raises = None, siblings = ("model.safetensors",))
+
+        def _fake(repo_id, **kwargs):
+            state.calls.append(
+                (repo_id, kwargs.get("token"), kwargs.get("files_metadata"), kwargs.get("timeout"))
+            )
+            if state.raises is not None:
+                raise state.raises
+            return _types.SimpleNamespace(
+                served_for = (repo_id, kwargs.get("token")),
+                tags = ["sentence-transformers"],
+                pipeline_tag = "feature-extraction",
+                siblings = [
+                    _types.SimpleNamespace(
+                        rfilename = name, size = 7 if kwargs.get("files_metadata") else None
+                    )
+                    for name in state.siblings
+                ],
+            )
+
+        monkeypatch.setitem(
+            sys.modules, "huggingface_hub", _types.SimpleNamespace(model_info = _fake)
+        )
+        return state
+
+    def test_sharing_lasts_exactly_one_scope(self, hub):
+        with shared_hub_model_info():
+            first = _hub_model_info("org/repo", "tok")
+            assert _hub_model_info("org/repo", "tok") is first
+        with shared_hub_model_info():
+            _hub_model_info("org/repo", "tok")
+        _hub_model_info("org/repo", "tok")
+        _hub_model_info("org/repo", "tok")
+
+        assert len(hub.calls) == 4
+
+    def test_the_key_separates_by_repo_and_token(self, hub):
+        with shared_hub_model_info():
+            # ``None`` grants the ambient credential and ``False`` denies every credential.
+            served = {
+                repr(token): _hub_model_info(repo, token).served_for
+                for repo in ("org/one", "org/two")
+                for token in ("alice-token", None, False)
+            }
+
+        assert served[repr(False)] == ("org/two", False)
+        assert len(hub.calls) == 6
+        assert len({(r, t) for r, t, _fm, _to in hub.calls}) == 6
+
+    def test_a_sized_response_answers_a_plain_read(self, hub):
+        with shared_hub_model_info():
+            sized = _hub_model_info("org/repo", "tok", files_metadata = True)
+            assert _hub_model_info("org/repo", "tok") is sized
+
+        assert sized.siblings[0].size == 7
+        assert [fm for _r, _t, fm, _to in hub.calls] == [True]
+
+    def test_an_unscoped_read_asks_only_for_what_it_was_given(self, hub):
+        assert _hub_model_info("org/repo", "tok").siblings[0].size is None
+        assert _hub_model_info("org/repo", "tok", files_metadata = True).siblings[0].size == 7
+        assert [fm for _r, _t, fm, _to in hub.calls] == [False, True]
+
+    def test_failures_and_offline_reads_are_never_shared(self, hub, monkeypatch):
+        hub.raises = ConnectionError("hub down")
+        with shared_hub_model_info():
+            for _ in range(3):
+                with pytest.raises(ConnectionError):
+                    _hub_model_info("org/repo", "tok")
+        assert len(hub.calls) == 3
+
+        hub.raises = None
+        with shared_hub_model_info():
+            _hub_model_info("org/repo", "tok")
+            monkeypatch.setattr(mc, "_env_offline", lambda: True)
+            _hub_model_info("org/repo", "tok")
+
+        assert len(hub.calls) == 5
+
+    def test_the_plain_probes_share_one_read(self, hub, monkeypatch):
+        """The embedding probe also bounds the shared read, so a DNS-dead session fails fast."""
+        hub.siblings = ("adapter_config.json",)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False, raising = False)
+        mc._embedding_detection_cache.clear()
+
+        with shared_hub_model_info():
+            assert mc.is_embedding_model("org/repo", hf_token = "tok") is True
+            assert detect_gguf_model_remote("org/repo", hf_token = "tok") is None
+            info = _hub_model_info("org/repo", "tok")
+
+        assert "adapter_config.json" in [s.rfilename for s in info.siblings]
+        assert [to for _r, _t, _fm, to in hub.calls] == [mc._HUB_MODEL_INFO_TIMEOUT]
+
+    def test_every_read_is_bounded(self, hub):
+        """The response is shared, so the first reader decides the bound the rest inherit:
+        an unbounded first read would leave the whole request able to hang."""
+        with shared_hub_model_info():
+            _hub_model_info("org/repo", "tok")
+        _hub_model_info("org/other", "tok")
+        _hub_model_info("org/other", "tok", timeout = 3.0)
+
+        assert [to for _r, _t, _fm, to in hub.calls] == [
+            mc._HUB_MODEL_INFO_TIMEOUT,
+            mc._HUB_MODEL_INFO_TIMEOUT,
+            3.0,
+        ]
+
+    def test_remote_lora_detection_reuses_the_shared_read(self, hub, tmp_path):
+        hub.siblings = ("adapter_config.json",)
+        adapter = tmp_path / "adapter_config.json"
+        adapter.write_text('{"base_model_name_or_path": "org/base"}', encoding = "utf-8")
+        sys.modules["huggingface_hub"].hf_hub_download = lambda *a, **k: str(adapter)
+
+        with shared_hub_model_info():
+            _hub_model_info("org/repo", "tok")
+            cfg = mc.ModelConfig.from_identifier("org/repo", hf_token = "tok")
+
+        # The classification, not only the count: deleting sibling-based detection would
+        # otherwise leave the count at one and pass.
+        assert cfg is not None and cfg.is_lora is True and cfg.base_model == "org/base"
+        assert len(hub.calls) == 1
+
+    def test_variant_listing_shares_its_sized_read(self, hub):
+        """A GGUF listing asks for sizes, and the probes after it read the same response."""
+        hub.siblings = ("a-Q4_K_M.gguf",)
+
+        with shared_hub_model_info():
+            variants, _ = list_gguf_variants("org/repo", hf_token = "tok")
+            shared = _hub_model_info("org/repo", "tok")
+
+        assert [v.size_bytes for v in variants] == [7]
+        assert shared.siblings[0].size == 7
+        assert [fm for _r, _t, fm, _to in hub.calls] == [True]
+
+    def test_one_request_entering_does_not_destroy_another_s_scope(self, hub):
+        """Sequenced, not raced: B opens a scope while A holds one, then A reads again.
+
+        Module-global state would hand A request B's scope, which lacks A's credential.
+        """
+        import threading
+
+        b_is_inside = threading.Event()
+        a_is_finished = threading.Event()
+        a_result: list = []
+        overlapped: list = []
+
+        def _request_a():
+            with shared_hub_model_info():
+                first = _hub_model_info("org/repo", "alice")
+                # Recorded, not merely awaited: a timeout would drop the overlap this test
+                # exists to create.
+                overlapped.append(b_is_inside.wait(timeout = 30))
+                a_result.append(_hub_model_info("org/repo", "alice") is first)
+                a_is_finished.set()
+
+        def _request_b():
+            with shared_hub_model_info():
+                _hub_model_info("org/repo", "bob")
+                b_is_inside.set()
+                overlapped.append(a_is_finished.wait(timeout = 30))
+
+        threads = [threading.Thread(target = _request_a), threading.Thread(target = _request_b)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout = 60)
+
+        assert [thread.is_alive() for thread in threads] == [False, False]
+        assert overlapped == [True, True]
+        assert a_result == [True]
+        assert sorted((r, t) for r, t, _fm, _to in hub.calls) == [
+            ("org/repo", "alice"),
+            ("org/repo", "bob"),
+        ]
+
+    def test_a_failed_request_leaves_no_scope_behind(self, hub):
+        with pytest.raises(RuntimeError):
+            with shared_hub_model_info():
+                _hub_model_info("org/repo", "tok")
+                raise RuntimeError("a probe blew up mid-request")
+
+        assert mc._hub_model_info_scope.get() is None
+        _hub_model_info("org/repo", "tok")
+        assert len(hub.calls) == 2
+
+    def test_the_config_route_opens_the_shared_read_and_the_pin(self, hub, monkeypatch):
+        """The endpoint is what establishes both request scopes, not the helpers below it."""
+        import asyncio
+
+        import routes.models as models_route
+        import utils.utils as uu
+
+        pinned_inside: list = []
+
+        def _embedding(model_name, hf_token = None):
+            pinned_inside.append(uu._hf_reachability_pin.get() is not None)
+            return _hub_model_info(model_name, hf_token).tags == ["sentence-transformers"]
+
+        def _from_identifier(
+            cls,
+            model_name,
+            hf_token = None,
+        ):
+            _hub_model_info(model_name, hf_token)
+            return _types.SimpleNamespace(is_lora = False, base_model = None)
+
+        monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda name: name)
+        monkeypatch.setattr(models_route, "load_model_defaults", lambda _: {})
+        monkeypatch.setattr(models_route, "is_vision_model", lambda *a, **k: False)
+        monkeypatch.setattr(models_route, "is_embedding_model", _embedding)
+        monkeypatch.setattr(mc, "detect_audio_type_checked", lambda *a, **k: (None, True))
+        monkeypatch.setattr(
+            models_route.ModelConfig, "from_identifier", classmethod(_from_identifier)
+        )
+        monkeypatch.setattr(models_route, "_get_max_position_embeddings", lambda _: 4096)
+        monkeypatch.setattr(models_route, "_get_model_size_bytes", lambda *a, **k: None)
+
+        result = asyncio.run(
+            models_route.get_model_config(
+                model_name = "org/model",
+                hf_token = None,
+                current_subject = "test-subject",
+            )
+        )
+
+        assert result.is_embedding is True
+        assert len(hub.calls) == 1
+        # Dropping either scope from the handler leaves every probe below it unchanged.
+        assert pinned_inside == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -3451,3 +3698,163 @@ class TestGuardsShareOneDnsLookup:
         assert _hf_unreachable() is True
         state["dead"] = False
         assert _hf_unreachable() is False  # no waiting out the TTL
+
+
+class TestPinnedReachability:
+    """One request, one reachability verdict, however long the request runs.
+
+    The memo expires on wall-clock, which is right between requests and wrong inside one: a
+    model-config request on a slow link outlives the TTL, so the guards it opens later
+    re-probe, and can reach a different verdict than the guard that admitted the request.
+    """
+
+    @pytest.fixture
+    def probe(self, monkeypatch, clean_offline_env):
+        """A reachability probe whose verdict is settable and whose calls are counted."""
+        import utils.transformers_version as tv
+        import utils.utils as uu
+
+        state = _types.SimpleNamespace(calls = 0, verdict = False)
+
+        def _probe(*_a, **_k):
+            state.calls += 1
+            return state.verdict
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+        # Zero TTL: every read after the first would re-probe were the pin not holding one.
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+        uu.reset_hf_reachability_cache()
+        return state
+
+    def test_the_opt_out_verdict_pins_like_any_other(self, probe, monkeypatch):
+        """Disabling the probe answers before it runs, and that answer is still this
+        request's verdict. An empty pin sends every later guard to its own DNS lookup, which
+        is most of what the opt-out exists to avoid."""
+        import utils.utils as uu
+
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+            assert uu.hf_reachability_memo() is False
+        assert probe.calls == 0
+
+    @pytest.mark.parametrize("verdict", [False, True])
+    def test_the_verdict_survives_the_memo_expiring_mid_request(self, probe, verdict):
+        import utils.utils as uu
+
+        probe.verdict = verdict
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is verdict
+            # Every later guard in this request, with the memo already stale.
+            assert uu.hf_unreachable() is verdict
+            assert uu.hf_reachability_memo() is verdict
+
+        assert probe.calls == 1
+
+    def test_a_memoised_verdict_fills_the_pin_too(self, probe, monkeypatch):
+        """The realistic entry state: the memo is warm when the request opens its first
+        guard, so nothing probes, and the pin would stay empty and let a later guard probe."""
+        import utils.utils as uu
+
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 60.0)
+        assert uu.hf_unreachable() is False
+        assert probe.calls == 1
+
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+            # The memo goes stale mid-request, as it does on a slow link.
+            monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+            probe.verdict = True
+            assert uu.hf_unreachable() is False
+
+        assert probe.calls == 1
+
+    def test_the_guard_the_route_opens_reads_the_pinned_verdict(self, probe, monkeypatch):
+        """The wrapper the handler actually goes through, not only ``hf_unreachable``: it
+        answers from the memo directly, so that path has to pin like every other."""
+        import core.inference.llama_cpp as llama_cpp
+        import utils.utils as uu
+
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 60.0)
+        monkeypatch.setattr(uu, "hf_dns_dead", lambda *_a, **_k: False, raising = False)
+        assert uu.hf_unreachable() is False
+        assert probe.calls == 1
+
+        with uu.pinned_hf_reachability():
+            assert llama_cpp._hf_unreachable() is False
+            monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.0)
+            probe.verdict = True
+            assert llama_cpp._hf_unreachable() is False
+
+        assert probe.calls == 1
+
+    def test_a_later_request_probes_again(self, probe):
+        import utils.utils as uu
+
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is False
+        # Pinning must not outlive the request: the plug may have been pulled since.
+        probe.verdict = True
+        with uu.pinned_hf_reachability():
+            assert uu.hf_unreachable() is True
+
+        assert probe.calls == 2
+
+    def test_nothing_is_pinned_until_something_probes(self, probe):
+        import utils.utils as uu
+        with uu.pinned_hf_reachability():
+            # A block that never reaches the Hub pays nothing, and reports no verdict.
+            assert uu.hf_reachability_memo() is None
+
+        assert probe.calls == 0
+
+    def test_one_request_pinning_does_not_take_over_another_s(self, monkeypatch, probe):
+        """Sequenced, not raced: B pins while A holds a pin, then A reads its verdict again.
+
+        Module-global state would hand A request B's pin, and A would report B's verdict.
+        """
+        import threading
+
+        import utils.transformers_version as tv
+        import utils.utils as uu
+
+        verdicts = [False, True]
+        guard = threading.Lock()
+
+        def _probe(*_a, **_k):
+            with guard:
+                return verdicts.pop(0)
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+
+        a_probed = threading.Event()
+        b_pinned = threading.Event()
+        a_done = threading.Event()
+        seen: dict = {}
+        waited: list = []
+
+        def _request_a():
+            with uu.pinned_hf_reachability():
+                seen["a"] = uu.hf_unreachable()
+                a_probed.set()
+                waited.append(b_pinned.wait(timeout = 30))
+                seen["a_again"] = uu.hf_unreachable()
+                a_done.set()
+
+        def _request_b():
+            waited.append(a_probed.wait(timeout = 30))
+            with uu.pinned_hf_reachability():
+                seen["b"] = uu.hf_unreachable()
+                b_pinned.set()
+                waited.append(a_done.wait(timeout = 30))
+
+        threads = [threading.Thread(target = _request_a), threading.Thread(target = _request_b)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout = 60)
+
+        assert [thread.is_alive() for thread in threads] == [False, False]
+        assert waited == [True, True, True]
+        assert seen["a"] is False and seen["a_again"] is False
+        assert seen["b"] is True
