@@ -148,7 +148,10 @@ import {
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
-import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
+import {
+  holdAutoContinueRun,
+  watchAutoContinueRun,
+} from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
@@ -6901,15 +6904,17 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return index > 0 ? thread.messages[index - 1].id : null;
   });
 
-  const startContinuation = useCallback(() => {
+  // Hands the started run back, untyped: `startRun` is declared `void` and returns the
+  // roundtrip's promise, the only handle identified with THIS run.
+  const startContinuation = useCallback((): unknown => {
     const messages = aui.thread().getState().messages;
     const index = messages.findIndex((message) => message.id === messageId);
     if (index < 0) {
-      return;
+      return undefined;
     }
     // Sibling of the truncated turn, so the branch picker can still reach the partial.
     const parent = index > 0 ? messages[index - 1].id : null;
-    aui.thread().startRun({
+    return aui.thread().startRun({
       parentId: parent,
       runConfig: {
         custom: {
@@ -7024,7 +7029,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
         // Recorded BEFORE the run, so a round that produces nothing still spends its
         // budget instead of re-firing this effect forever.
         recordAutoContinue(parentId);
-        startContinuation();
+        // The run's own promise is what ends the hold if this preflight is stopped: an aborted
+        // run raises no failure, by design.
+        watchAutoContinueRun(messageId, runThreadId, startContinuation());
         return;
       }
       // `skipped` is this tab's own duplicate call, where the run is coming from the

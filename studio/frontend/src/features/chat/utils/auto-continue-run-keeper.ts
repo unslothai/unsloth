@@ -12,6 +12,7 @@
  */
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { issuedRunFrom } from "./auto-continue-issued-run";
 import {
   AUTO_CONTINUE_LEASE_RENEW_MS,
   createAutoContinueLeaseKeeper,
@@ -115,4 +116,23 @@ export function holdAutoContinueRun(
     window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, onRunFailed);
   }
   timer ??= setInterval(tick, AUTO_CONTINUE_LEASE_RENEW_MS);
+}
+
+/**
+ * Tie the hold just taken for `messageId` to the run the bar has just issued for it.
+ *
+ * `started` is whatever `startRun` handed back, passed through untyped; `issuedRunFrom` decides
+ * what it actually got. This is the only thing that ends a hold whose preflight the user
+ * STOPPED: that run raises no failure and never reached the stream flag, so without it the hold
+ * renewed its lease until the tab closed and every other tab refused the message meanwhile.
+ */
+export function watchAutoContinueRun(
+  messageId: string,
+  threadId: string | undefined,
+  started: unknown,
+): void {
+  if (!threadId) {
+    return;
+  }
+  keeper.settleOn(messageId, threadId, issuedRunFrom(started));
 }

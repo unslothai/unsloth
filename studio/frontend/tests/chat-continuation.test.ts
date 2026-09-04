@@ -42,6 +42,10 @@ const { createImageGateRunOwner, isImageGateRunOnly } = await import(
   "../src/features/chat/utils/image-input-support.ts"
 );
 
+const { issuedRunFrom } = await import(
+  "../src/features/chat/utils/auto-continue-issued-run.ts"
+);
+
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
@@ -1700,6 +1704,504 @@ test("the keeper is wired to the failure the adapter already reports", () => {
     /setTimeout\(/,
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
+});
+
+/**
+ * The run a hold was taken for, as the keeper sees it: something that settles, once.
+ *
+ * `runSignalFake` above is the STREAM, which turns true only when tokens are on their way.
+ * This is the RUN, pending for the whole preflight however long that is, and settling when
+ * that one run ends however it ends -- finished, failed, or cancelled mid-model-load.
+ */
+function issuedRunFake() {
+  const settlers = new Set<() => void>();
+  return {
+    issued: {
+      whenSettled: (onSettled: () => void) => {
+        settlers.add(onSettled);
+      },
+    },
+    /** That run ended. */
+    settle: () => {
+      for (const onSettled of [...settlers]) {
+        onSettled();
+      }
+    },
+  };
+}
+
+test("a preflight the user stopped gives up its hold instead of keeping it for the tab", async () => {
+  // Stop during preflight. The run is aborted, so the adapter wrapper skips its per-thread
+  // failure notice ON PURPOSE -- the abort is what was asked for, not a fault to report -- and
+  // `runningByThreadId` never moved in either direction, because no token was ever on its way.
+  // The hold therefore had nothing to arm on and nothing to settle on, and renewed its lease
+  // for the life of the tab while every other tab read that lease as live and refused the
+  // message. The run's own promise is the one thing that knows it is over.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "a run that streamed nothing has continued nothing to record",
+      );
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  // Taken on the line BEFORE the run is started, which is why the two are separate calls.
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // An ordinary preflight: the promise is pending, so nothing here ends anything.
+  for (let tick = 1; tick <= 4; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  assert.equal(keeper.held(), 1, "a preflight in progress keeps its hold");
+
+  // The user hits Stop.
+  issued.settle();
+  assert.equal(
+    keeper.held(),
+    0,
+    "an aborted preflight strands its hold, which then renews the lease forever",
+  );
+  await Promise.all(pending);
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "nothing renews it, so the lease lapses and the message comes back",
+  );
+});
+
+test("a hold whose run is merely slow is never settled by the clock", async () => {
+  // The preflight has no upper bound: this chat's settings pairing waits up to 30 seconds by
+  // itself, and `waitForModelReady` then polls for as long as a large local GGUF takes. The
+  // promise stays pending throughout, and a pending promise settles nothing.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // Ten minutes of preflight, renewed at the keeper's own interval throughout.
+  for (let tick = 1; tick <= 20; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 1, "the hold is still expecting its run");
+  assert.equal(
+    await otherTab.claim("m1", { now: clock }),
+    "held-elsewhere",
+    "nobody else may take a message this tab is still about to continue",
+  );
+
+  // It finally streams, and the ordinary path gives the lease back with its done marker.
+  running.add("thread-A");
+  runs.change();
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.equal(keeper.held(), 0, "its own run ending is what gives it back");
+});
+
+test("the run that ends is the one the hold was taken for, not the round before it", async () => {
+  // The next round is claimed while the previous one is still winding down: the adapter clears
+  // `runningByThreadId` from its own `finally`, strictly before the runtime announces that run
+  // ending. Anything per-thread would read the predecessor's ending as the successor's and
+  // settle a hold whose preflight has only just begun -- lapsing the lease under a live
+  // continuation, which is the failure the missing arming deadline exists to avoid.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const predecessor = issuedRunFake();
+  const round2 = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  // Round one runs and streams on this thread.
+  await tab.claim("round-1", { now: start, holder: "thread-A" });
+  keeper.hold("round-1", "thread-A");
+  keeper.settleOn("round-1", "thread-A", predecessor.issued);
+  running.add("thread-A");
+  runs.change();
+  // Its stream ends, which is what the adapter clears first.
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.equal(
+    keeper.held(),
+    0,
+    "round one is settled by its own stream ending",
+  );
+
+  // Round two is claimed and issued while round one is STILL unwinding.
+  await tab.claim("round-2", { now: clock, holder: "thread-A" });
+  keeper.hold("round-2", "thread-A");
+  keeper.settleOn("round-2", "thread-A", round2.issued);
+
+  // Round one's run finally reports itself over. It is not round two's.
+  predecessor.settle();
+  assert.equal(
+    keeper.held(),
+    1,
+    "the predecessor ending settled the successor's hold mid-preflight",
+  );
+  for (let tick = 1; tick <= 4; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("round-2", { now: clock }),
+    "held-elsewhere",
+    "and its lease is still renewed while its own run is on its way",
+  );
+
+  // Only its own run ending ends it.
+  round2.settle();
+  assert.equal(keeper.held(), 0);
+});
+
+test("a hold whose own run is over is not armed by what is on the thread now", async () => {
+  // The keeper watches the whole store, so a hold taken while the thread already reads busy
+  // -- `scheduleGenerationRecovery` follows a durable run from outside the adapter, and holds
+  // its own owner on the same key -- has not seen the thread idle and so cannot arm on that
+  // run. If its own preflight is then stopped, the answer is already in: the run it was taken
+  // for produced nothing. Left where the running check reaches it first, it kept renewing the
+  // lease until the other owner cleared, and every other tab refused the message meanwhile.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>(["thread-A"]);
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: () => {
+      assert.fail(
+        "a run that streamed nothing has continued nothing to record",
+      );
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // The user stops the preflight while the other owner is still going.
+  issued.settle();
+  assert.equal(keeper.held(), 0, "the hold outlived the run it was taken for");
+
+  // The other owner finishing reaches nothing.
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+
+  const lapsed = clock + AUTO_CONTINUE_LEASE_TTL_MS + 1;
+  clock = lapsed;
+  keeper.tick();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("m1", { now: lapsed }),
+    "started",
+    "nothing renews it, so the lease lapses and the message comes back",
+  );
+});
+
+test("a second owner on the key does not cost an armed hold its marker", async () => {
+  // `runningByThreadId` is a flag per thread with a LIST of owners behind it, and the adapter
+  // clears only its own. A durable run being followed by `scheduleGenerationRecovery` keeps
+  // the key busy after the continuation's own stream is over, so this hold's run settles with
+  // the thread still reading busy. It streamed, so it is owed its `done` marker: discarding it
+  // there would hand the message back and another tab would pay for the same continuation
+  // again once the lease lapsed.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const issued = issuedRunFake();
+  const released: string[] = [];
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      released.push(messageId);
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => start,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", issued.issued);
+
+  // Its own run streams, and the recovery follower takes the same key while it does.
+  running.add("thread-A");
+  runs.change();
+
+  // The continuation's own stream ends, and its promise settles, but the follower still
+  // holds the key so the flag has not moved.
+  issued.settle();
+  assert.equal(keeper.held(), 1, "the hold was dropped on somebody else's run");
+
+  // The follower finishes and the message is recorded as continued, once.
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.deepEqual(released, ["m1"]);
+  assert.equal(
+    await otherTab.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "held-elsewhere",
+    "a continuation that streamed is not offered to another tab",
+  );
+});
+
+test("a run that ends after its hold is gone reaches nothing", async () => {
+  // A promise settles whenever it settles, and by then the hold it was taken for may have been
+  // given back by its own stream or claimed again for the next round under the same key. The
+  // callback is scoped to one hold, not to the message or the thread.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const first = issuedRunFake();
+  const released: string[] = [];
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId: string, holder: string, now: number) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId: string, holder: string, now: number) => {
+      released.push(messageId);
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => start,
+  });
+
+  await tab.claim("m1", { now: start, holder: "thread-A" });
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", first.issued);
+  // It streams and is released the ordinary way, with the marker that says it was continued.
+  running.add("thread-A");
+  runs.change();
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.deepEqual(released, ["m1"]);
+
+  // The same message is claimed again for the next round, and only THEN does the first run's
+  // promise settle.
+  keeper.hold("m1", "thread-A");
+  first.settle();
+  assert.equal(
+    keeper.held(),
+    1,
+    "an older round's run settled a hold that is not its own",
+  );
+});
+
+test("settling a hold that was never taken does nothing", () => {
+  // `settleOn` runs a line after `hold`, and the hold may have been refused: a thread with no
+  // remote id yet is not safe to watch, so nothing is held for it.
+  const runs = runSignalFake(new Set<string>());
+  const issued = issuedRunFake();
+  let attached = 0;
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: () => {},
+    release: () => {
+      assert.fail("nothing was ever held");
+    },
+    now: () => 1_000,
+  });
+  keeper.settleOn("m1", "thread-A", {
+    whenSettled: () => {
+      attached += 1;
+    },
+  });
+  assert.equal(attached, 0, "no hold, so the run is not watched at all");
+  assert.equal(keeper.held(), 0);
+
+  // And a run handed over as nothing leaves an existing hold exactly as it was.
+  keeper.hold("m1", "thread-A");
+  keeper.settleOn("m1", "thread-A", undefined);
+  issued.settle();
+  assert.equal(keeper.held(), 1, "no signal is not the same as an ended run");
+});
+
+test("only what the runtime actually hands back is treated as the run", () => {
+  // `startRun` is DECLARED to return `void` and in fact returns the roundtrip's promise, so
+  // the value is passed through untyped and checked here. A value that is not thenable is
+  // assistant-ui no longer handing the run back, and the honest answer is no signal at all --
+  // the hold is then kept and renewed, which is the behaviour this fix replaced, never an
+  // early release.
+  for (const notARun of [undefined, null, 0, "", "pending", true, {}, []]) {
+    assert.equal(
+      issuedRunFrom(notARun),
+      undefined,
+      `${JSON.stringify(notARun) ?? "undefined"} is not a run`,
+    );
+  }
+
+  assert.notEqual(
+    issuedRunFrom(Promise.resolve("done")),
+    undefined,
+    "a promise is a run",
+  );
+
+  // A thenable rather than a native promise, which is all the contract asks for. The handler
+  // is parked on an object rather than in a local so it survives narrowing to `never`.
+  const parked: { settle?: (ok: boolean) => void } = {};
+  const thenable = {
+    then: (onOk: () => void, onErr: () => void) => {
+      parked.settle = (ok: boolean) => (ok ? onOk() : onErr());
+    },
+  };
+  const custom = issuedRunFrom(thenable);
+  assert.notEqual(custom, undefined, "a thenable is a run");
+  let customSettled = 0;
+  custom?.whenSettled(() => {
+    customSettled += 1;
+  });
+  assert.equal(customSettled, 0, "and it is pending until it is not");
+  parked.settle?.(false);
+  assert.equal(
+    customSettled,
+    1,
+    "a run that ended by throwing has still ended",
+  );
+});
+
+test("a rejected run settles its hold rather than escaping", async () => {
+  // The promise rejects when the roundtrip throws and resolves when it is cancelled, and
+  // neither says whether the lease may be given back -- only whether the run is still coming.
+  // An unobserved rejection here would also be an unhandled one.
+  const settled: string[] = [];
+  const rejected = issuedRunFrom(Promise.reject(new Error("model refused")));
+  rejected?.whenSettled(() => settled.push("rejected"));
+  const fulfilled = issuedRunFrom(Promise.resolve());
+  fulfilled?.whenSettled(() => settled.push("resolved"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(
+    settled.sort(),
+    ["rejected", "resolved"],
+    "both outcomes are an ended run",
+  );
+});
+
+test("the abort case is wired to the run, not to a clock", () => {
+  // The bar is the last place that has the run in hand -- the keeper lives in module scope and
+  // the runtime is only reachable through a hook -- so `startRun`'s own return value has to be
+  // handed over there. Pinned at both ends, since neither side is exercised by a unit test,
+  // and re-pinned against a deadline because a deadline here is the arming timeout coming back.
+  const bar = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    bar,
+    /return aui\.thread\(\)\.startRun\(/,
+    "the continuation bar no longer hands its started run back",
+  );
+  assert.match(
+    bar,
+    /watchAutoContinueRun\(\s*messageId,\s*runThreadId,\s*startContinuation\(\),?\s*\)/,
+    "the started run no longer reaches the keeper",
+  );
+
+  const probe = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-issued-run.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    probe,
+    /typeof \(started as \{ then\?: unknown \}\)\.then !== "function"/,
+    "the declared type is void, so the shape has to be checked rather than assumed",
+  );
+  const wiredKeeper = readFileSync(
+    new URL(
+      "../src/features/chat/utils/auto-continue-run-keeper.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  for (const [name, source] of [
+    ["auto-continue-issued-run.ts", probe],
+    ["auto-continue-run-keeper.ts", wiredKeeper],
+  ] as const) {
+    assert.doesNotMatch(
+      source,
+      /setTimeout\(/,
+      `${name} decides on facts, not on elapsed time`,
+    );
+  }
 });
 
 /**
