@@ -158,8 +158,7 @@ export function SafetensorsDownloadCard({
     !downloading &&
     !cancelling &&
     !downloadAction.starting &&
-    !isLoadingThisModel &&
-    !repoPeerActive;
+    !isLoadingThisModel;
   const canDelete =
     (isDownloaded || isPartial) &&
     !downloading &&

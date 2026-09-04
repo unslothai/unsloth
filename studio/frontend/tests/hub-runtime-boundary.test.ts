@@ -225,6 +225,10 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
     safetensorsCard,
     /const showRunAction =[^;]*?!isLoadingThisModel[^;]*?;/s,
   );
+  assert.doesNotMatch(
+    safetensorsCard,
+    /const showRunAction =[^;]*?repoPeerActive[^;]*?;/s,
+  );
   assert.match(
     ggufCard,
     /const showRunAction =[^;]*?!isLoadingThisModel[^;]*?;/s,
