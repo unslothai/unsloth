@@ -15,8 +15,10 @@ export function useMlxTrainingConfigPolicy(): void {
     })),
   );
 
+  // Only loftq: MLX trains DoRA, so clearing a `dora` selection here would
+  // silently substitute plain LoRA for the run the user asked for.
   useEffect(() => {
-    if (isMac && (loraVariant === "loftq" || loraVariant === "dora")) {
+    if (isMac && loraVariant === "loftq") {
       useTrainingConfigStore.setState({ loraVariant: "lora" });
     }
   }, [isMac, loraVariant]);

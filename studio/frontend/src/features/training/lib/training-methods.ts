@@ -63,11 +63,7 @@ export function isTrainingLoraVariantSupportedOnDevice(
     trainingMethod === "qlora" ||
     trainingMethod === "lora" ||
     trainingMethod === "cpt";
-  return (
-    deviceType !== "mac" ||
-    !usesAdapter ||
-    (loraVariant !== "loftq" && loraVariant !== "dora")
-  );
+  return deviceType !== "mac" || !usesAdapter || loraVariant !== "loftq";
 }
 
 export function parseBackendTrainingMethod(
