@@ -129,7 +129,7 @@ class TestRunShDegradesWithoutNvidia:
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
         """A host with no getent at all (busybox, some slim images) must skip the
         lookup rather than fail it."""
-        body = open(_RUN_SH).read()
+        body = open(_RUN_SH, encoding = "utf-8").read()
         idx = body.index("getent group")
         assert "command -v getent" in body[:idx]
 
@@ -160,7 +160,7 @@ class TestStudioImageAllowsCpu:
     def test_studio_image_defaults_allow_cpu_on(self):
         """:latest is the Studio image. Without this default every CPU-only, AMD
         and Docker-Desktop user goes from working Studio to an exit 1."""
-        body = open(_STUDIO_DF).read()
+        body = open(_STUDIO_DF, encoding = "utf-8").read()
         env_lines = [
             ln.strip()
             for ln in body.splitlines()
@@ -170,7 +170,7 @@ class TestStudioImageAllowsCpu:
 
     def test_the_base_training_image_keeps_the_strict_check(self):
         """FastLanguageModel genuinely needs a GPU, so :core must NOT default it."""
-        body = open(_BASE_DF).read()
+        body = open(_BASE_DF, encoding = "utf-8").read()
         offenders = [
             ln.strip()
             for ln in body.splitlines()
@@ -181,13 +181,13 @@ class TestStudioImageAllowsCpu:
     def test_entrypoint_reads_allow_cpu_from_the_environment(self):
         """An image-level ENV and a `-e` flag reach the process identically, so the
         entrypoint must read it from the environment with no `-e`-only handling."""
-        body = open(_ENTRYPOINT).read()
+        body = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert '"${UNSLOTH_ALLOW_CPU:-0}" == "1"' in body
 
     def test_allow_cpu_only_applies_when_no_gpu_is_visible(self):
         """The default must not weaken a GPU host: the CPU branch has to be gated
         on nvidia-smi finding nothing, otherwise it would skip the torch checks."""
-        body = open(_ENTRYPOINT).read()
+        body = open(_ENTRYPOINT, encoding = "utf-8").read()
         idx = body.index('"${UNSLOTH_ALLOW_CPU:-0}" == "1"')
         branch = body[idx : idx + 400]
         assert "nvidia-smi" in branch and "grep -q '^GPU'" in branch
