@@ -175,6 +175,7 @@ def pin_from(text):
             return m.group(2)
     return None
 
+
 # Only an actual install invocation may supply the pin: the pin outranks the model
 # tier, so a commented-out install line would pick the wrong sidecar with nothing
 # running afterwards to correct it.

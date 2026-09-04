@@ -226,13 +226,13 @@ def test_a_removal_that_cannot_be_unlinked_keeps_its_record_and_retries(tmp_path
     assert run.returncode == 0, run.stdout + run.stderr
 
     assert doomed.exists(), "precondition: the stub refused the unlink"
-    assert _state(dest).get("nb/doomed.ipynb") == _sha256(doomed), (
-        "the file stayed but its record was dropped, so it is now unmanaged"
-    )
+    assert _state(dest).get("nb/doomed.ipynb") == _sha256(
+        doomed
+    ), "the file stayed but its record was dropped, so it is now unmanaged"
     assert "0 removed upstream" in run.stdout, run.stdout
-    assert not (dest / ".unsloth_sync_commit").is_file(), (
-        "the commit was stamped over a failure, so the next start exits before retrying"
-    )
+    assert not (
+        dest / ".unsloth_sync_commit"
+    ).is_file(), "the commit was stamped over a failure, so the next start exits before retrying"
 
     run2 = _refresh(tmp_path, remote, template, dest)
     assert run2.returncode == 0, run2.stdout + run2.stderr

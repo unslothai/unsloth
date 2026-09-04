@@ -225,7 +225,7 @@ def test_a_publish_cut_off_after_its_record_is_recovered(strip, tree, monkeypatc
 
     def _killed(tmp, path, before):
         strip._unlink(tmp)
-        raise KeyboardInterrupt          # docker stop, between the two renames
+        raise KeyboardInterrupt  # docker stop, between the two renames
 
     monkeypatch.setattr(strip, "_publish", _killed)
     with pytest.raises(KeyboardInterrupt):
