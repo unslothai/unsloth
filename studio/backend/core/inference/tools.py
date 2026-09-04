@@ -15195,7 +15195,6 @@ def _web_search(
                 parallel_web_fetch,
                 web_search_provider,
             )
-
             if web_search_provider() == PARALLEL_PROVIDER_ID:
                 return parallel_web_fetch(
                     url.strip(),
@@ -15238,7 +15237,6 @@ def _web_search(
             parallel_web_search,
             web_search_provider,
         )
-
         if web_search_provider() == PARALLEL_PROVIDER_ID:
             try:
                 text = parallel_web_search(
@@ -15250,7 +15248,9 @@ def _web_search(
                     api_key = parallel_api_key(),
                 )
             except Exception as exc:  # noqa: BLE001 - fall back to ddgs below
-                logger.debug("parallel search failed (%s), falling back to ddgs", type(exc).__name__)
+                logger.debug(
+                    "parallel search failed (%s), falling back to ddgs", type(exc).__name__
+                )
             else:
                 if include_images and subjects:
                     found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
@@ -15261,7 +15261,6 @@ def _web_search(
                         from ddgs import DDGS as _DDGS
 
                         from .web_access_policy import scope_search_query as _scope
-
                         text += _web_search_images_suffix(
                             _DDGS(timeout = timeout),
                             _scope(query, website_policy),

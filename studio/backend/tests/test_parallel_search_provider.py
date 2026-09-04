@@ -17,9 +17,7 @@ from routes.chat_history import ChatSettingsPayload  # noqa: E402
 
 
 def test_provider_defaults_to_duckduckgo(monkeypatch):
-    monkeypatch.setattr(
-        "storage.studio_db.list_chat_settings", lambda: {}, raising = False
-    )
+    monkeypatch.setattr("storage.studio_db.list_chat_settings", lambda: {}, raising = False)
     assert ps.web_search_provider() == ps.DUCK_PROVIDER_ID
     assert ps.parallel_api_key() is None
 
@@ -38,7 +36,13 @@ def test_provider_selects_parallel_and_trims_key(monkeypatch):
 
 
 def test_parallel_search_formats_results(monkeypatch):
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         assert tool == "web_search"
         return {
             "content": [
@@ -63,7 +67,13 @@ def test_parallel_search_formats_results(monkeypatch):
 
 
 def test_parallel_search_respects_website_policy(monkeypatch):
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         return {
             "content": [
                 {
