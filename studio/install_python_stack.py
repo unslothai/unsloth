@@ -1802,10 +1802,8 @@ def _has_usable_nvidia_gpu() -> bool:
     timeout, driver initialisation race). If either probe confirms an
     NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
 
-    On Windows nvidia-smi.exe is not always on PATH, so fall back to the two
-    fixed driver locations install.ps1 / setup.ps1 already probe. Without this
-    an AMD iGPU + NVIDIA dGPU host whose PATH misses nvidia-smi looks
-    NVIDIA-free here and gets routed to the ROCm wheels.
+    On Windows nvidia-smi.exe is often off PATH, so also probe the fixed driver
+    locations install.ps1 / setup.ps1 use, else NVIDIA+AMD hosts get ROCm wheels.
 
     CUDA_VISIBLE_DEVICES set to "" or "-1" hides every NVIDIA device (mixed
     AMD+NVIDIA hosts steering work to the AMD card); neither probe honours
@@ -1831,13 +1829,9 @@ def _has_usable_nvidia_gpu() -> bool:
             return False
         return result.returncode == 0 and "GPU " in result.stdout
 
-    # Try every candidate until one lists a GPU, rather than committing to the
-    # first executable found. A stale or driverless nvidia-smi on PATH exits
-    # non-zero listing nothing; stopping there would report the host as
-    # NVIDIA-free and route it into _ensure_rocm_torch() even though a working
-    # driver binary sits at a fixed location. install.ps1 and setup.ps1 both
-    # gate their fallback on the GPU check failing, not on the PATH lookup
-    # missing, so mirror that.
+    # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
+    # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
+    # on the GPU check failing, not on the PATH lookup missing.
     candidates = []
     _path_exe = shutil.which("nvidia-smi")
     if _path_exe:

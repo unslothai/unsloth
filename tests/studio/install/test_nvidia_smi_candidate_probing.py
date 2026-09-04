@@ -3,15 +3,10 @@
 
 """_has_usable_nvidia_gpu must keep probing after an unusable nvidia-smi.
 
-A stale or driverless nvidia-smi on PATH exits non-zero and lists no GPU.
-Treating the first executable found as the answer reports a mixed AMD+NVIDIA
-Windows host as NVIDIA-free, which routes it into _ensure_rocm_torch() and
-replaces a working CUDA stack with ROCm wheels. install.ps1 and setup.ps1 both
-gate their fixed-location fallback on the GPU check failing rather than on the
-PATH lookup missing; this pins the Python helper to the same rule.
-
-The stubs are real executables run through the real subprocess call, so the
-test exercises the actual control flow rather than a mocked return value.
+A stale nvidia-smi exits non-zero listing no GPU; stopping there makes a mixed
+AMD+NVIDIA Windows host look NVIDIA-free and swaps its CUDA stack for ROCm.
+install.ps1 / setup.ps1 gate the fallback on the GPU check failing, not on the
+PATH lookup missing. Stubs are real executables run via real subprocess.
 """
 
 import importlib.util
@@ -31,8 +26,7 @@ _WORKING = 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"; exit 0'
 
 
 def _load_module():
-    # install_python_stack imports backend.utils.wheel_utils, which resolves
-    # only with studio/ on sys.path. That is how the installer invokes it.
+    # backend.utils.wheel_utils resolves only with studio/ on sys.path.
     if str(_STUDIO) not in sys.path:
         sys.path.insert(0, str(_STUDIO))
     spec = importlib.util.spec_from_file_location("_ips_probe_under_test", _SRC)
@@ -44,8 +38,7 @@ def _load_module():
 
 def _write_stub(path: pathlib.Path, body: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
-    # Not /usr/bin/env: PATH is narrowed to the stub directory below, so env
-    # would not find an interpreter.
+    # Not /usr/bin/env: PATH is narrowed to the stub directory below.
     path.write_text("#!/bin/bash\n" + body + "\n")
     path.chmod(0o755)
 
@@ -78,9 +71,7 @@ def probe(tmp_path, monkeypatch):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
         module = _load_module()
         monkeypatch.setattr(module, "IS_WINDOWS", True)
-        # A real NVIDIA host has /proc/driver/nvidia/gpus, and the helper's
-        # Linux-only fallback would then answer True for every case and mask
-        # what the Windows path did. Present as win32 to isolate it.
+        # Pose as win32 so the Linux /proc fallback cannot answer True for us.
         monkeypatch.setattr(module, "sys", types.SimpleNamespace(platform = "win32"))
         return module._has_usable_nvidia_gpu()
 
@@ -88,7 +79,6 @@ def probe(tmp_path, monkeypatch):
 
 
 def test_stale_path_nvidia_smi_still_reaches_the_fixed_locations(probe):
-    # The regression: a driverless nvidia-smi on PATH used to end the search.
     assert probe(_STALE, _WORKING) is True
 
 
@@ -105,8 +95,7 @@ def test_no_nvidia_smi_anywhere_reports_no_gpu(probe):
 
 
 def test_stale_everywhere_reports_no_gpu(probe):
-    # Every candidate answering "no GPU" must stay False, or an AMD-only host
-    # with a leftover nvidia-smi would be denied the ROCm wheels.
+    # Must stay False, or an AMD-only host with a leftover nvidia-smi loses ROCm.
     assert probe(_STALE, _STALE) is False
 
 
