@@ -637,3 +637,40 @@ class TestNothingNewSlipsIntoTheSameHazard:
             f"the settle path now writes {sorted(names)}. If the loop reads any new one "
             "while preparing a call, an overlapped round reads it before this runs."
         )
+
+
+class TestTheReplayedTurnIsWhatTheModelSees:
+    """`assistant_msg` is the third name read while preparing and written when settling.
+
+    It is safe for a structural reason rather than a counted one: every call is APPENDED to
+    it in the preparing pass, and the rebinding only happens in the settling pass, so the
+    hazard its own comment describes -- "the next one in the batch appends its tool_call to
+    this handle while its RESULT goes to conversation" -- cannot occur in an overlapped
+    round. That is an argument, so here it is as a measurement instead.
+    """
+
+    def test_one_assistant_row_carries_every_call_and_its_own_result(self, monkeypatch):
+        def _execute(name, arguments, **_kwargs):
+            return f"RESULT<{arguments.get('query')}>"
+
+        _events, payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+                ("call_c", "web_search", {"query": "gamma"}),
+            ],
+            _execute,
+        )
+        assert len(payloads) >= 2, "the round never produced a follow-up request"
+        messages = payloads[1]["messages"]
+        assistant = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+        assert assistant, "the round's calls never reached the replayed history"
+        assert [c["id"] for c in assistant[-1]["tool_calls"]] == ["call_a", "call_b", "call_c"]
+        tool_rows = [m for m in messages if m.get("role") == "tool"]
+        assert [row.get("tool_call_id") for row in tool_rows] == ["call_a", "call_b", "call_c"]
+        assert [row.get("content") for row in tool_rows] == [
+            "RESULT<alpha>",
+            "RESULT<beta>",
+            "RESULT<gamma>",
+        ], "a result was attached to a call that did not produce it"
