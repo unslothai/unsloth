@@ -198,9 +198,9 @@ _NEMO_STYLE = (
 
 def test_a_comment_mentioning_an_install_does_not_make_it_an_install_cell(sig):
     cell = {"cell_type": "code", "source": [_NEMO_STYLE]}
-    assert not sig._is_install_code(cell), (
-        "a 200-line Python cell was flattened because a comment named uv pip install"
-    )
+    assert not sig._is_install_code(
+        cell
+    ), "a 200-line Python cell was flattened because a comment named uv pip install"
 
 
 def test_yaml_nesting_inside_a_string_literal_is_not_cosmetic(sig, tmp_path: Path):
