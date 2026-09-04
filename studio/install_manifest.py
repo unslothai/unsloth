@@ -25,6 +25,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
@@ -275,6 +276,7 @@ def write_manifest(
     no_torch: Optional[bool] = None,
     expected_torch_tag: Optional[str] = None,
     expected_torch_tag_pinned: Optional[bool] = None,
+    woa_torch_index: Optional[str] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -307,6 +309,28 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
+    # Windows on ARM is the one platform whose CUDA wheels are not on download.pytorch.org
+    # at all, so a later `unsloth studio update` from a fresh shell cannot re-derive the
+    # index from the driver the way every other host can. Recorded so a repair has
+    # somewhere to resolve from.
+    #
+    # The rule above still holds -- never a URL that could carry a credential. Only
+    # NVIDIA's own out-of-tree channels are written, and only with no userinfo, query or
+    # fragment; a user's pinned mirror is deliberately NOT persisted, because they supply
+    # it through their own environment anyway and this file is read back by
+    # verify-install and desktop-capabilities.
+    if woa_torch_index:
+        candidate = str(woa_torch_index).strip()
+        parsed = urlsplit(candidate)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname == "pypi.nvidia.com"
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            payload["woa_torch_index"] = candidate.rstrip("/")
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")

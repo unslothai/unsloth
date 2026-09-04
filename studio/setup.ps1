@@ -3773,6 +3773,28 @@ function Get-PersistedNoTorch {
     return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)
 }
 
+# Windows on ARM: the CUDA index install.ps1 chose, as recorded in the manifest. Only
+# NVIDIA's own channels are ever written there, so this cannot return a credentialed URL.
+# Empty when absent, which is the pre-existing behaviour for every other host.
+function Get-PersistedWoaTorchIndex {
+    param([Parameter(Mandatory = $true)][string]$VenvPath)
+    $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return "" }
+    try {
+        $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return ""
+    }
+    if ($null -eq $payload -or -not $payload.woa_torch_index) { return "" }
+    $value = "$($payload.woa_torch_index)".Trim().TrimEnd('/')
+    # Re-checked on read as well as on write: a hand-edited manifest must not be able to
+    # redirect the torch install to an arbitrary host. Anchored at BOTH ends and with no
+    # `?` or `#` in the character class, so neither a query nor a fragment can ride along
+    # on an otherwise correct host and reach the uv command line.
+    if ($value -notmatch '^https://pypi\.nvidia\.com(/[A-Za-z0-9._~/-]*)?$') { return "" }
+    return $value
+}
+
 # Written before anything that could be interrupted, and cleared when torch is
 # wanted so migrating out of no-torch leaves nothing stale behind.
 function Set-PersistedNoTorch {
@@ -5041,6 +5063,13 @@ $WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
 # older installer -- this stays empty and every index choice is exactly as before.
 $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
+} elseif ($WinArm64Venv) {
+    # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
+    # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
+    # channels, since write_manifest refuses any URL that could carry a credential, so a
+    # user's pinned mirror is not recovered here and is supplied through their own
+    # environment as before. Empty on every other host, leaving the index unchanged.
+    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
 } else { "" }
 
 $ROCmCpuFallback = $false

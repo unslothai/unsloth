@@ -434,6 +434,32 @@ function Install-UnslothStudio {
         return $Path
     }
 
+    # Can uv read the resolver files this host would need? uv splits UV_OVERRIDE on
+    # whitespace and accepts no quoting or escaping of any kind (checked against uv 0.10.7:
+    # bare, "quoted", 'quoted' and back\ slashed all fail identically), so the 8.3 short
+    # form is the whole mitigation for a spaced StudioHome -- and 8.3 generation can be
+    # disabled on the volume, leaving no space-free spelling at all.
+    #
+    # Answered from $StudioHome rather than the woa directory below it: every path this
+    # branch builds is $StudioHome plus space-free segments, so if its short form has no
+    # space neither do they, and this can be asked before anything is created. Asked from
+    # inside the probe so the answer survives a re-probe, which would otherwise set the
+    # native flag again; cached because it cannot change within a run.
+    $script:WoaResolverPathsOk = $null
+    function Test-WoaResolverPathsUsable {
+        if ($null -ne $script:WoaResolverPathsOk) { return $script:WoaResolverPathsOk }
+        # GetShortPathName needs the path to exist, and the installer creates this
+        # directory regardless of which stack it ends up choosing.
+        try { New-Item -ItemType Directory -Force -Path $StudioHome -ErrorAction Stop | Out-Null } catch {}
+        $script:WoaResolverPathsOk = -not ((Get-UvSafePath $StudioHome) -match '\s')
+        if (-not $script:WoaResolverPathsOk) {
+            substep "windows on arm: $StudioHome contains a space and this volume has no 8.3" "Yellow"
+            substep "short name for it, which uv cannot read -- using the x64 stack instead." "Yellow"
+            substep "Set UNSLOTH_STUDIO_HOME to a path without spaces for the native install." "Yellow"
+        }
+        return $script:WoaResolverPathsOk
+    }
+
     # Can this host get a pyarrow that imports? PyPI first (so a published win_arm64 wheel
     # ends this special case for good), then an explicitly supplied wheel, then the
     # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
@@ -549,6 +575,10 @@ function Install-UnslothStudio {
             return
         }
         if (-not (Test-WoaNvidiaPresent)) { return }
+        # Before the index probes, and before any interpreter or venv is chosen: a host
+        # whose resolver files uv cannot read is not a native host, and deciding that
+        # here means the ARM64 venv is never built for a stack that cannot resolve.
+        if (-not (Test-WoaResolverPathsUsable)) { return }
         # An explicit pin wins outright: the user named the index, so honour it and only
         # ask whether it can serve this machine natively.
         $pinned = @()
@@ -4762,26 +4792,6 @@ exit 0
         } catch {
             substep "could not create $WoaWheelDir -- falling back to the x64 stack." "Yellow"
             $script:WoaNativeCudaTorch = $false
-        }
-    }
-    if ($script:WoaNativeCudaTorch) {
-        # uv splits UV_OVERRIDE on whitespace and accepts no quoting or escaping of any
-        # kind (checked against uv 0.10.7: bare, "quoted", 'quoted' and back\ slashed all
-        # fail the same way), so a resolver path it cannot read is not a degraded install,
-        # it is every later uv call dying on a truncated path. Get-UvSafePath answers with
-        # the 8.3 short form, but 8.3 generation can be disabled on the volume, and then
-        # a spaced StudioHome has no space-free spelling at all. Decide that here, before
-        # anything is staged, and take the x64 path -- which never sets these variables --
-        # rather than building a native venv that cannot resolve. Same rule as the pyarrow
-        # probe: a host that cannot be served natively is never left half configured.
-        foreach ($_woaResolverPath in @($WoaDir, $WoaWheelDir)) {
-            if ((Get-UvSafePath $_woaResolverPath) -match '\s') {
-                substep "windows on arm: $_woaResolverPath contains a space and this volume has no" "Yellow"
-                substep "8.3 short name for it, which uv cannot read -- using the x64 stack instead." "Yellow"
-                substep "Set UNSLOTH_STUDIO_HOME to a path without spaces for the native install." "Yellow"
-                $script:WoaNativeCudaTorch = $false
-                break
-            }
         }
     }
     if ($script:WoaNativeCudaTorch) {
