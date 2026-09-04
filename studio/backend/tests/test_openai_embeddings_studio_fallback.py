@@ -679,3 +679,44 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
     error = _http_error({"input": "alphabet"})
     assert error.status_code == 400
     assert "bge" in error.detail and str(tmp_path) not in error.detail
+
+
+@pytest.mark.parametrize("answers", [True, False])
+def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embedder, answers):
+    import httpx
+
+    class _Client:
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}], "model": "proxy"})
+
+        async def aclose(self):
+            return None
+
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(inference_route, "_loaded_satisfies", lambda requested: answers)
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = f"{MODEL}-GGUF",
+        ),
+    )
+    payload = _call({"input": "alpha", "model": MODEL})
+    assert payload["model"] == ("proxy" if answers else IDENTITY)
+
+
+@pytest.mark.parametrize(
+    ("name", "public"),
+    [
+        ("C:\\models\\private\\bge", "bge"),
+        ("/tmp/models/bge/", "bge"),
+        ("unsloth/bge-small-en-v1.5", "unsloth/bge-small-en-v1.5"),
+    ],
+)
+def test_public_embedding_name_hides_any_local_path_shape(name, public):
+    assert inference_route._public_embedding_name(name) == public

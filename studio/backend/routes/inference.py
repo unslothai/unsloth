@@ -25792,7 +25792,7 @@ def _public_embedding_name(model_name: str) -> str:
     from utils.paths import is_local_path
     if not is_local_path(model_name):
         return model_name
-    return os.path.basename(model_name.rstrip("/\\")) or model_name
+    return model_name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or model_name
 
 
 def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
@@ -25828,6 +25828,12 @@ def _names_studio_embedder(requested: str) -> bool:
         pass
     wanted = requested.strip().casefold()
     return any(name and wanted == name.casefold() for name in names)
+
+
+async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
+    if not _resident_serves_embeddings(llama_backend):
+        return False
+    return await asyncio.to_thread(_loaded_satisfies, requested)
 
 
 async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
@@ -26005,7 +26011,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     studio_body = await _studio_embedder_request_body(request)
-    if studio_body is not None:
+    if studio_body is not None and not await _resident_answers_embeddings(
+        llama_backend, studio_body["model"]
+    ):
         return await _studio_embeddings(request, studio_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded and not isinstance(body, dict):
