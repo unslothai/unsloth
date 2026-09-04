@@ -514,9 +514,8 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 
-    # conftest.py imports unsloth, so on an affected environment the
-    # placeholders are already installed and the call below would return False.
-    # _gpu_init sees a fresh interpreter; reproduce that.
+    # conftest.py imports unsloth, so on an affected environment the placeholders are already installed and the call
+    # below would return False. _gpu_init sees a fresh interpreter; reproduce that.
     for name in IF._TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
             delattr(F, name)
@@ -768,7 +767,6 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
 
 
 # ---- a second spelling of our own directory on sys.path -------------------
-
 
 _COUNT_HOOKS = (
     "import sys;"

@@ -2799,7 +2799,10 @@ test("nothing of the engine is mounted while the bar is closed", async () => {
     "utf8",
   );
   assert.match(controller, /if \(!enabled \|\| !open\) return null;/);
-  assert.match(controller, /lazy\(\(\) => import\("\.\/find-bar-loader\.tsx"\)\)/);
+  assert.match(
+    controller,
+    /lazy\(\(\) => import\("\.\/find-bar-loader\.tsx"\)\)/,
+  );
   assert.equal(controller.includes("useFindInPage("), false);
 
   const loadedBar = await readFile(

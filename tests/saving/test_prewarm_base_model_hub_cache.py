@@ -108,8 +108,8 @@ def _build_env(
     hf_hub_download = _Recorder(result = str(tmp_path / "cached"))
     if not cached:
         hf_hub_download.exc = _LocalMiss("not cached")
-    # Serve model.safetensors.index.json (the merge's shard filter) while shard cache
-    # probes still miss, so the index-filter path can be exercised without a network.
+    # Serve model.safetensors.index.json (the merge's shard filter) while shard cache probes still miss, so the
+    # index-filter path can be exercised without a network.
     if index_weight_map is not None:
         _idx_path = tmp_path / "model.safetensors.index.json"
         _idx_path.write_text(json.dumps({"weight_map": index_weight_map}))
@@ -127,8 +127,8 @@ def _build_env(
         hf_hub_download.results_fn = _hub_dl
     snapshot_download = _Recorder()
     determine_base_model_source = _Recorder(result = base_source)
-    # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the
-    # helper re-resolves the sibling, else the original base source.
+    # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the helper re-resolves the sibling,
+    # else the original base source.
     if fp8_sibling is not None:
         _sib_src = sibling_source or (fp8_sibling, False, None, False, None)
         determine_base_model_source.results_fn = (
@@ -317,8 +317,8 @@ def test_gpt_oss_bf16_mxfp4_swap_skips(monkeypatch, tmp_path):
 
 
 def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
-    # A model whose config is None must skip silently, not fall into the outer
-    # exception handler that prints a misleading "Could not pre-cache" warning.
+    # A model whose config is None must skip silently, not fall into the outer exception handler that prints a
+    # misleading "Could not pre-cache" warning.
     fn, stubs = _build_env(monkeypatch, tmp_path)
     model = _FakePeftModel()  # a PeftModel instance so the isinstance guard passes
     model.config = None
@@ -331,8 +331,8 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
 
 
 def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
-    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real
-    # root for the disk probe; without abspath the walk-up hits "" and pre-warm is skipped.
+    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real root for the disk probe;
+    # without abspath the walk-up hits "" and pre-warm is skipped.
     monkeypatch.chdir(tmp_path)
     fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
@@ -363,8 +363,8 @@ def test_prewarm_downloads_into_live_env_cache(monkeypatch, tmp_path):
 
 
 def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
-    # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm
-    # must follow the redirect, else the cache-copy fast path misses and #6890 is unfixed.
+    # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm must follow the redirect, else
+    # the cache-copy fast path misses and #6890 is unfixed.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
