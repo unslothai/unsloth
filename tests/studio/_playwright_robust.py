@@ -782,6 +782,22 @@ def install_wall_clock_watchdog(
             sys.stderr.flush()
         except Exception:
             pass
+        # Dump every thread's stack on the way out. Without it the only evidence is
+        # the last step printed, which is where the script ENTERED, not where it
+        # blocked, and a call with no timeout of its own (page.evaluate takes no
+        # `timeout`) reads exactly like one that was merely slow. os._exit skips
+        # atexit and every finally, so this is the last chance to say anything.
+        #
+        # Under Playwright's sync API the script runs inside a greenlet, so the
+        # frames shown for the main thread stop at the driver's event loop. That
+        # still separates "blocked in the driver" from "blocked in our own code",
+        # which the message alone did not.
+        try:
+            import faulthandler
+            faulthandler.dump_traceback(file = sys.stderr, all_threads = True)
+            sys.stderr.flush()
+        except Exception:
+            pass
         os._exit(2)
 
     timer = threading.Timer(deadline_s, _kaboom)
