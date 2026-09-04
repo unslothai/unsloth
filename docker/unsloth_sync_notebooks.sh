@@ -297,13 +297,33 @@ fi
 if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     restored=0
     downgraded=0
-    RS_TMP="$(mktemp)"
+    # Beside $STATE, exactly like the other two writers, and for the reasons bee9e5a52
+    # gives for the refresh child. mktemp puts it in /tmp, which in the shipped image
+    # is the container overlay while $DEST is a bind mount, so the publish below was a
+    # cross-device copy that can leave a HALF-WRITTEN state behind rather than an
+    # atomic same-directory rename. mktemp also creates 0600 owned by whoever booted,
+    # so this was the one writer that re-owned and downgraded $STATE, undoing what
+    # own_like_dir and mkdir_keep_owner exist to preserve: a root boot then left it
+    # unreadable to a later --user boot.
+    RS_TMP="$STATE.tmp"
     # Same class as the populate loop: an unchecked append publishes a state that is
     # missing records for notebooks still on disk, which hands them to the user for
     # good. Here the old $STATE is still valid, so abandon the rewrite rather than
     # publish a truncated one.
     rs_ok=1
-    while IFS= read -r line; do
+    rm -f "$RS_TMP" 2>/dev/null || true
+    if ! : > "$RS_TMP" 2>/dev/null; then
+        rs_ok=0
+    fi
+    # An unreadable $STATE must not quietly become an EMPTY one. There is no set -e, so
+    # a failed redirect below just skips the loop body: rs_ok stays 1 and the mv
+    # publishes a zero-line state over a valid one, stranding every notebook it
+    # described while still reporting success.
+    if [ "$rs_ok" = 1 ] && [ ! -r "$STATE" ]; then
+        echo "[unsloth-nb] the sync state in $DEST is unreadable; leaving it alone rather than replacing it with an empty one"
+        rs_ok=0
+    fi
+    [ "$rs_ok" = 1 ] && while IFS= read -r line; do
         h="${line%%  *}"; rel="${line#*  }"
         if [ -n "$rel" ] && [ "$rel" != "$line" ] \
            && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
@@ -325,7 +345,14 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         printf '%s\n' "$line" >> "$RS_TMP" || rs_ok=0
     done < "$STATE"
     if [ "$rs_ok" = 1 ]; then
-        mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+        # loud, and drop the marker, exactly like the sibling branch three lines down:
+        # a silent failure here left the "restored N" success message printing over a
+        # state that was never published
+        mv "$RS_TMP" "$STATE" 2>/dev/null || {
+            echo "[unsloth-nb] the sync state could not be published in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
+            rm -f "$RS_TMP"
+            rm -f "$SYNCED" 2>/dev/null || true
+        }
     else
         echo "[unsloth-nb] the sync state could not be rewritten in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
         rm -f "$RS_TMP"

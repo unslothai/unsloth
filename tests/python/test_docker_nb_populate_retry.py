@@ -516,3 +516,73 @@ def test_record_state_is_still_uncalled():
         and not ln.lstrip().startswith("#")
     ]
     assert not calls, f"record_state gained a caller; the exemption is now unsound: {calls}"
+
+
+# Section 1b (restore deleted notebooks) rewrites the WHOLE state on every boot, and
+# it was the one state writer using mktemp instead of a sibling of $STATE. That gave
+# it /tmp (a different filesystem from $DEST in the shipped image, so the publish was
+# a cross-device copy that can leave a half-written state) and mode 0600 owned by
+# whoever booted. A root boot then left $STATE unreadable to a later `--user` boot,
+# and an unreadable $STATE is the dangerous input: there is no `set -e`, so the failed
+# redirect just skips the loop body and an EMPTY state gets published over a valid one.
+def _state_path(dest: Path) -> Path:
+    return dest / ".unsloth_sync_state"
+
+
+@behavioural
+def test_an_unreadable_state_is_never_replaced_by_an_empty_one(tmp_path: Path):
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    assert _run(tmp_path, template, dest).returncode == 0
+    before = _state(dest)
+    assert before, "nothing to protect; the populate did not record anything"
+
+    _state_path(dest).chmod(0o000)
+    try:
+        run = _run(tmp_path, template, dest)
+    finally:
+        _state_path(dest).chmod(0o644)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert _state(dest) == before, (
+        "the state was replaced while unreadable; every notebook it described is now "
+        "read as a user edit and never updated again\n" + run.stdout + run.stderr
+    )
+    assert "unreadable" in run.stdout, run.stdout
+
+
+@behavioural
+def test_the_restore_loop_does_not_downgrade_the_state_file(tmp_path: Path):
+    """It runs on every boot, so a mode or owner change here compounds."""
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    _run(tmp_path, template, dest)
+    first = _state_path(dest).stat().st_mode & 0o777
+
+    _run(tmp_path, template, dest)  # a second boot re-runs section 1b
+    second = _state_path(dest).stat().st_mode & 0o777
+
+    assert second == first, f"the state mode changed across boots: {oct(first)} -> {oct(second)}"
+    assert second & 0o044, (
+        f"the state is not group/world readable ({oct(second)}); a root boot leaves it "
+        f"unreadable to a later --user boot, which is the input above"
+    )
+
+
+def test_every_state_writer_stages_beside_the_state_file():
+    """mktemp lands in /tmp, a different filesystem from $DEST under the documented
+    bind mount, so the publish stops being an atomic same-directory rename."""
+    body = SYNC.read_text(encoding = "utf-8")
+    assert 'RS_TMP="$STATE.tmp"' in body, "the restore loop must stage beside $STATE"
+    assert 'RS_TMP="$(mktemp)"' not in body
+
+
+def test_the_restore_publish_failure_is_not_silent():
+    """Its sibling branch three lines down is loud and drops the marker; this one used
+    to swallow the failure while the 'restored N' success message still printed."""
+    body = SYNC.read_text(encoding = "utf-8")
+    block = body[body.index('mv "$RS_TMP" "$STATE"') :][:600]
+    assert "could not be published" in block, block[:200]
+    assert 'rm -f "$SYNCED"' in block, block[:200]

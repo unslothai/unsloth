@@ -476,7 +476,10 @@ def _filter_requirements_file(path, _depth = 0):
     """Strip protected packages out of a `-r` file, recursing into nested includes.
     Returns (path_to_use, recorded_transformers_version, dropped_specs)."""
     try:
-        with open(path, encoding = "utf-8") as f:
+        # utf-8-sig, not utf-8: a BOM would otherwise leave "\ufefftransformers==X" on
+        # line 1, matching no handler, so a file whose ONLY protected pin is first
+        # forwards unchanged. Both real tools strip it and honour the line.
+        with open(path, encoding = "utf-8-sig") as f:
             lines = f.readlines()
     except OSError:
         return path, None, []
@@ -649,6 +652,39 @@ def _selfcheck_value_flags():
     sys.exit(0)
 
 
+def _expand_short_clusters(argv):
+    """Split `-qr reqs.txt` into `-q -r reqs.txt`, which is what both real tools see.
+
+    A cluster reached no handler at all: only `tok[:2]` is tested against the
+    attached-value flags, the exact-token comparisons never match, and the fallback
+    keeps any unrecognised `-...` verbatim. So `pip install -qr reqs.txt` forwarded the
+    ORIGINAL requirements file, unfiltered and with nothing recorded, and `-I` hid
+    inside a cluster the same way and escaped the reinstall handling.
+
+    A value-taking short flag consumes the REST of the cluster as its attached value,
+    or the next argv token when it ends the cluster, exactly as getopt does.
+    """
+    shorts = {f for f in _VALUE_FLAGS if len(f) == 2 and f[0] == "-" and f[1] != "-"}
+    shorts |= _ATTACHED_SHORT_FLAGS
+    out = []
+    for tok in argv:
+        if len(tok) <= 2 or tok[0] != "-" or tok[1] == "-" or tok in _VALUE_FLAGS:
+            out.append(tok)
+            continue
+        i = 1
+        while i < len(tok):
+            flag = "-" + tok[i]
+            rest = tok[i + 1 :]
+            if flag in shorts:
+                out.append(flag + rest)  # attached value, or bare when rest is empty
+                break
+            out.append(flag)
+            i += 1
+        else:
+            continue
+    return out
+
+
 def _install_index(tool, argv):
     """Index of the install SUBCOMMAND, or None when this is not a package install.
 
@@ -667,23 +703,43 @@ def _install_index(tool, argv):
     replace the baked torch/CUDA stack. _VALUE_FLAGS is the same set the tail scanner
     uses and _selfcheck_value_flags() holds it to the real CLIs at build time."""
     expect = ["install"] if tool == "pip" else ["pip", "install"]
-    seen = 0
+    got = _positionals(argv)
+    if len(got) < len(expect):
+        return None
+    for (idx, tok), want in zip(got, expect):
+        if tok != want:
+            return None
+    return got[len(expect) - 1][0]
+
+
+def _positionals(argv):
+    """(index, token) for every positional, skipping options AND their values.
+
+    `--flag=value` carries its own value; a bare value flag eats the next token.
+    _VALUE_FLAGS is the same set the tail scanner uses and _selfcheck_value_flags()
+    holds it to the real CLIs at build time."""
+    out = []
     skip = False
     for i, tok in enumerate(argv):
         if skip:
             skip = False
             continue
         if tok.startswith("-"):
-            # `--flag=value` carries its own value; a bare one eats the next token
             if "=" not in tok and tok in _VALUE_FLAGS:
                 skip = True
             continue
-        if tok != expect[seen]:
-            return None
-        seen += 1
-        if seen == len(expect):
-            return i
-    return None
+        out.append((i, tok))
+    return out
+
+
+def _is_uv_pip_sync(argv):
+    """`uv pip sync` is an install path we cannot make safe by filtering.
+
+    It UNINSTALLS every package absent from the requirements file, so unlike install
+    there is nothing to strip: keeping a protected package out of the file is exactly
+    what deletes it, and --constraint only bounds versions, never prevents a removal.
+    """
+    return [tok for _, tok in _positionals(argv)][:2] == ["pip", "sync"]
 
 
 def main():
@@ -697,12 +753,20 @@ def main():
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
+    if tool == "uv" and _is_uv_pip_sync(argv):
+        raise SystemExit(
+            "[unsloth-nb] refusing `uv pip sync`: it UNINSTALLS every package missing "
+            "from the requirements file, which would strip the baked torch/CUDA stack "
+            "this image is built on, and no --constraint can prevent a removal. Use "
+            "`uv pip install -r <file>`, which adds without removing."
+        )
+
     i = _install_index(tool, argv)
     if i is None:
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
-    head, tail = argv[: i + 1], argv[i + 1 :]
+    head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
     keep_args, dropped, recorded = [], [], None
     extras_only = []
     has_target = False

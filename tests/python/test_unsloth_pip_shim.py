@@ -1179,3 +1179,84 @@ def test_a_protected_pin_behind_a_value_option_is_still_held(shim, monkeypatch):
     _fake_distributions(monkeypatch, ("torch", "2.11.0"))
     ran = _full_argv(shim, ["uv", "pip", "--directory", "/tmp", "install", "torch==9.9"])
     assert ran is None or "torch==9.9" not in ran, f"the baked torch was replaceable: {ran}"
+
+
+# `!pip install -qr requirements.txt` is a standard notebook idiom, and a short-option
+# CLUSTER reached no handler: only tok[:2] is tested against the attached-value flags,
+# the exact-token comparisons never match, and the fallback keeps any unrecognised
+# `-...` verbatim. The ORIGINAL requirements file was forwarded, unfiltered and with
+# nothing recorded, so the sidecar was never activated for the pin it contained.
+@pytest.mark.parametrize(
+    "cluster",
+    ["-qr", "-Ur", "-vr", "-nr", "-Ir", "-qqr"],
+)
+def test_short_option_clusters_still_filter_the_requirements_file(
+    shim, monkeypatch, tmp_path, cluster
+):
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"), ("torch", "2.11.0"))
+    reqs = tmp_path / "reqs.txt"
+    reqs.write_text("transformers==5.5.0\nsnac==1.2.1\n", encoding = "utf-8")
+    ran = _full_argv(shim, ["pip", "install", cluster, str(reqs)])
+    assert ran is not None
+    assert str(reqs) not in ran, (
+        f"{cluster} forwarded the ORIGINAL requirements file; the protected pin in it "
+        f"was never filtered and never recorded"
+    )
+
+
+def test_an_attached_short_value_is_left_alone(shim, monkeypatch, tmp_path):
+    """`-rfoo.txt` already worked; splitting clusters must not break it."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    reqs = tmp_path / "reqs.txt"
+    # it needs a protected pin, else nothing is rewritten and forwarding the ORIGINAL
+    # path is the correct answer, which makes the assertion below vacuous
+    reqs.write_text("transformers==5.5.0\nsnac==1.2.1\n", encoding = "utf-8")
+    ran = _full_argv(shim, ["pip", "install", f"-r{reqs}"])
+    assert ran is not None and str(reqs) not in ran, ran
+
+
+def test_reinstall_flags_inside_a_cluster_are_still_handled(shim, monkeypatch, tmp_path):
+    """-I hid inside a cluster and escaped _REINSTALL_FLAGS."""
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    ran = _full_argv(shim, ["pip", "install", "-qI", "snac"])
+    assert ran is not None
+    assert "-I" not in ran and "-qI" not in ran, ran
+
+
+# `uv pip sync` UNINSTALLS everything absent from the file, so unlike install there is
+# nothing to strip: leaving a protected package out of the file is exactly what deletes
+# it, and --constraint bounds versions rather than preventing removals.
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["uv", "pip", "sync", "reqs.txt"],
+        ["uv", "pip", "--directory", "/tmp", "sync", "reqs.txt"],
+    ],
+    ids = ["plain", "behind-a-value-option"],
+)
+def test_uv_pip_sync_is_refused_rather_than_forwarded(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    with pytest.raises(SystemExit) as exc:
+        _full_argv(shim, argv)
+    assert "refusing" in str(exc.value), exc.value
+    assert "uv pip install" in str(exc.value), "say what to use instead"
+
+
+def test_uv_pip_install_is_not_caught_by_the_sync_refusal(shim, monkeypatch):
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    ran = _full_argv(shim, ["uv", "pip", "install", "snac"])
+    assert ran is not None and "--constraint" in ran, ran
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_pin(shim, monkeypatch, tmp_path):
+    """Both real tools strip a BOM and honour the line. Reading as utf-8 left
+    '\\ufefftransformers==X' matching nothing, so a file whose ONLY protected pin was
+    on line 1 was forwarded unchanged."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    reqs = tmp_path / "bom.txt"
+    reqs.write_bytes("﻿transformers==5.5.0\n".encode("utf-8"))
+    ran = _full_argv(shim, ["pip", "install", "-r", str(reqs)])
+    assert ran is None or str(reqs) not in ran, (
+        "the BOM'd requirements file was forwarded verbatim, so its transformers pin "
+        "reached the resolver instead of being recorded for the sidecar"
+    )

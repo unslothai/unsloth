@@ -148,7 +148,11 @@ def test_the_next_refresh_recovers_everything_that_was_rolled_back(tmp_path: Pat
 
     first = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
     assert "could not be written" in first.stdout, first.stdout + first.stderr
-    assert len(_published(dest)) < NOTEBOOKS + 1, "nothing was rolled back"
+    # strictly fewer than the full set: `< NOTEBOOKS + 1` was vacuous, since the
+    # run yields NOTEBOOKS either way and seed.ipynb is dropped as deleted upstream
+    assert (
+        len(_published(dest)) < NOTEBOOKS
+    ), "nothing was rolled back, so the retry below proves nothing"
 
     second = _run(tpl, dest, up, refresh = True)
     assert "kept (your edits)" in second.stdout, second.stdout
@@ -176,23 +180,39 @@ def _commit_upstream_change(up: Path):
 
 @needs_git
 def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
-    """The rollback removes OUR copy to make a lost record recoverable. It must never
-    touch a notebook the user changed, whose record is also the one most likely to be
-    dropped, since an edited file takes the `kept` branch on every refresh."""
+    """The rollback removes OUR copy so a lost record is recoverable. It must never
+    touch a notebook the user changed.
+
+    Every SECOND notebook is edited, not every twenty-fifth. The cap bites near the
+    end of the walk, so a sparse edited set can miss the failing range entirely and
+    the rollback is then never asked about a user edit -- which is how the first
+    version of this test passed without executing the code it named. The assertion
+    that some pristine notebook WAS removed is what keeps it honest.
+    """
     tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
     dest.mkdir()
     _run(tpl, dest, up, refresh = False)
     _run(tpl, dest, up, refresh = True)  # uncapped: everything published and recorded
+    assert len(_published(dest)) == NOTEBOOKS
 
-    edited = {f"nb{i:09d}.ipynb" for i in range(1, NOTEBOOKS + 1, 25)}
+    edited = {f"nb{i:09d}.ipynb" for i in range(2, NOTEBOOKS + 1, 2)}
     for name in edited:
         (dest / name).write_text("USER EDIT", encoding = "utf-8")
+    pristine = {f"nb{i:09d}.ipynb" for i in range(1, NOTEBOOKS + 1, 2)}
     _commit_upstream_change(up)
 
     run = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
     assert "could not be written" in run.stdout, run.stdout + run.stderr
 
-    lost = {n for n in edited if not (dest / n).exists()}
+    survivors = _published(dest)
+    # non-vacuity: the rollback has to have actually fired somewhere in this run
+    assert pristine - survivors, (
+        "no notebook was rolled back, so this test never asked the rollback about a "
+        "user edit and proves nothing"
+    )
+    lost = edited - survivors
     assert not lost, f"user edits destroyed by the rollback: {sorted(lost)[:5]}"
     for name in sorted(edited):
-        assert (dest / name).read_text(encoding = "utf-8") == "USER EDIT", name
+        assert (dest / name).read_text(
+            encoding = "utf-8"
+        ) == "USER EDIT", f"{name} was overwritten while the disk was full"
