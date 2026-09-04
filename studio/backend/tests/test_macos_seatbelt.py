@@ -119,6 +119,23 @@ def test_sbpl_path_rejects_a_missing_absolute_path(tmp_path):
         os_sandbox._sbpl_path(str(tmp_path / "missing"))
 
 
+def test_sbpl_filters_include_a_validated_runtime_alias(monkeypatch, tmp_path):
+    alias = tmp_path / "python"
+    target = tmp_path / "python3.12"
+    target.touch()
+    monkeypatch.setattr(
+        os_sandbox.os.path,
+        "realpath",
+        lambda path: str(target) if os.fspath(path) == str(alias) else os.fspath(path),
+    )
+    monkeypatch.setattr(os_sandbox.os.path, "exists", lambda _path: True)
+
+    filters = os_sandbox._sbpl_path_filters((str(alias),))
+
+    assert f"(literal {json.dumps(str(alias))})" in filters
+    assert f"(literal {json.dumps(str(target))})" in filters
+
+
 def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     monkeypatch, tmp_path
 ):

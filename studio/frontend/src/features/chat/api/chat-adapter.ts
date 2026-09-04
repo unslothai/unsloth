@@ -1958,6 +1958,7 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    toolExecutionMode,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
@@ -1968,7 +1969,11 @@ export async function buildLocalTokenCountExtras(
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      tool_execution_mode: toolExecutionMode,
+    };
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -1991,7 +1996,11 @@ export async function buildLocalTokenCountExtras(
     // python/terminal into a pill-less request and the count would otherwise
     // price sandboxed schemas against an unsandboxed completion. Inert whenever
     // the false stands and no tool list is built.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      tool_execution_mode: toolExecutionMode,
+    };
   }
 
   return {
@@ -2001,6 +2010,7 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    tool_execution_mode: toolExecutionMode,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge

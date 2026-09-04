@@ -3,6 +3,12 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_MARK_KEY,
+  AUTH_SESSION_STORED_EVENT,
+  AUTH_TOKEN_KEY,
+} from "@/features/auth/session";
+import {
   mirrorHfTokenInto,
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
@@ -6357,6 +6363,53 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
+
+function clearToolIsolationGrantForAuthSession(): void {
+  useChatRuntimeStore.setState((state) => ({
+    toolIsolationUiSessionId: createToolIsolationUiSessionId(),
+    limitedToolGrant: null,
+    toolExecutionMode:
+      state.toolExecutionMode === "limited"
+        ? ("os_isolation_required" as ToolExecutionMode)
+        : state.toolExecutionMode,
+    toolIsolationError: null,
+  }));
+}
+
+function handleToolIsolationAuthStorageChange(event: StorageEvent): void {
+  if (
+    event.key === AUTH_SESSION_MARK_KEY ||
+    (event.key === AUTH_TOKEN_KEY && event.newValue === null)
+  ) {
+    clearToolIsolationGrantForAuthSession();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    AUTH_SESSION_CLEARED_EVENT,
+    clearToolIsolationGrantForAuthSession,
+  );
+  window.addEventListener(
+    AUTH_SESSION_STORED_EVENT,
+    clearToolIsolationGrantForAuthSession,
+  );
+  window.addEventListener("storage", handleToolIsolationAuthStorageChange);
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    window.removeEventListener(
+      AUTH_SESSION_CLEARED_EVENT,
+      clearToolIsolationGrantForAuthSession,
+    );
+    window.removeEventListener(
+      AUTH_SESSION_STORED_EVENT,
+      clearToolIsolationGrantForAuthSession,
+    );
+    window.removeEventListener("storage", handleToolIsolationAuthStorageChange);
+  });
 }
 
 export function resolveSpeculativeSettingsForLoad({

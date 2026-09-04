@@ -2675,6 +2675,13 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
         "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
     )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation mode whose Python and Terminal descriptions the matching "
+            "completion request will render."
+        ),
+    )
 
     confirm_tool_calls: Optional[bool] = Field(
         None,
@@ -2693,6 +2700,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     def _coerce_permission_mode(cls, value: Any) -> Any:
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
     # The very function the completion request runs, not a copy: a count renders replayed
     # tool history through the same templates, which read the id off the result message.
     _resolve_missing_tool_call_ids = model_validator(mode = "after")(
@@ -2703,10 +2715,15 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
         """Mirrors ChatCompletionRequest: the prompt builders read only the
         bypass flag, so 'full' has to reach them the same way here."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode is None and self.confirm_tool_calls is True:
             # The same reading a completion gives it: gating every call is the
             # pre-permission-mode way of asking for "ask", and the loop's retrieval

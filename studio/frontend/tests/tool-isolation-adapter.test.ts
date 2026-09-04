@@ -104,6 +104,13 @@ const adapter = readFileSync(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
   "utf8",
 );
+const runtimeStore = readFileSync(
+  new URL(
+    "../src/features/chat/stores/chat-runtime-store.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("local Python and Terminal refresh capability and block without downgrade", () => {
   const gateStart = adapter.indexOf("const runsStudioPythonOrTerminal =");
@@ -136,6 +143,24 @@ test("requests carry a current Limited grant and never attach it to other modes"
     2,
     "both local-model and external-provider Studio-tool requests need the fields",
   );
+});
+
+test("token counts carry the same execution mode as their completion", () => {
+  const start = adapter.indexOf("export async function buildLocalTokenCountExtras");
+  const end = adapter.indexOf("async function resolveUseAdapter", start);
+  const builder = adapter.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.match(builder, /toolExecutionMode/);
+  assert.match(builder, /tool_execution_mode: toolExecutionMode/);
+});
+
+test("auth-session changes discard Limited grants and rotate their page binding", () => {
+  assert.match(runtimeStore, /AUTH_SESSION_CLEARED_EVENT/);
+  assert.match(runtimeStore, /AUTH_SESSION_STORED_EVENT/);
+  assert.match(runtimeStore, /clearToolIsolationGrantForAuthSession/);
+  assert.match(runtimeStore, /toolIsolationUiSessionId: createToolIsolationUiSessionId\(\)/);
+  assert.match(runtimeStore, /limitedToolGrant: null/);
+  assert.match(runtimeStore, /state\.toolExecutionMode === "limited"/);
 });
 
 test("only the started event paints a running record and tool_end persists it", () => {

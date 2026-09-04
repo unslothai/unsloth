@@ -222,11 +222,15 @@ def _remap(path, notify = True):
         return path
     if not isinstance(text, str):
         return path
+    comparison = text.replace("\\", "/") if os.name == "nt" else text
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
         # Heal only while the real prefix directory is absent, so a genuine host mount / user directory at that prefix
         # is never shadowed.
-        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
-            return _map_onto_cwd(prefix, text, notify = notify)
+        prefix_is_absent = os.name == "nt" or not os.path.exists(prefix)
+        if (
+            comparison == prefix or comparison.startswith(prefix + "/")
+        ) and prefix_is_absent:
+            return _map_onto_cwd(prefix, comparison, notify = notify)
     return path
 
 

@@ -14,6 +14,7 @@ from core.inference import tool_isolation as isolation
 from models.inference import (
     AnthropicMessagesRequest,
     ChatCompletionRequest,
+    ChatCountTokensRequest,
     ResponsesRequest,
 )
 from routes import inference as inference_route
@@ -75,6 +76,17 @@ def test_request_families_default_to_required_os_isolation(payload):
 )
 def test_explicit_null_execution_mode_normalizes_to_required(factory):
     assert factory().tool_execution_mode == "os_isolation_required"
+
+
+def test_token_count_requests_declare_and_normalize_the_execution_mode():
+    assert ChatCountTokensRequest(messages = []).tool_execution_mode == "os_isolation_required"
+    assert (
+        ChatCountTokensRequest(messages = [], tool_execution_mode = "limited").tool_execution_mode
+        == "limited"
+    )
+    full = ChatCountTokensRequest(messages = [], tool_execution_mode = "full")
+    assert full.permission_mode == "full"
+    assert full.bypass_permissions is True
 
 
 @pytest.mark.parametrize(

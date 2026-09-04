@@ -478,6 +478,7 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
 
     assert str(venv_python) in paths
     assert str(base_python) in paths
+    assert str(venv_python.parent) in paths
     assert str(pyvenv_cfg) in paths
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", (str(base_python.parent),))
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
@@ -586,6 +587,7 @@ def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch,
     command = run.call_args.args[0]
     assert "-readable" not in command
     assert command.count("-executable") == 1
+    assert not any(left == "-type" and right == "s" for left, right in zip(command, command[1:]))
 
 
 @pytest.mark.skipif(

@@ -408,6 +408,7 @@ def _runtime_read_paths() -> tuple[str, ...]:
     candidates: list[str] = [
         executable,
         os.path.realpath(executable),
+        os.path.dirname(executable),
         os.path.join(sys.prefix, "pyvenv.cfg"),
         os.path.join(sys.prefix, "lib"),
         os.path.join(sys.prefix, "lib64"),
@@ -499,9 +500,6 @@ def _validate_runtime_paths(
         find_command.extend(
             [
                 "(",
-                "-type",
-                "s",
-                "-o",
                 "-type",
                 "p",
                 "-o",
@@ -1189,12 +1187,14 @@ def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
         if not os.path.exists(path):
             continue
         encoded, is_directory = _sbpl_path(path)
-        if encoded in seen:
-            continue
-        seen.add(encoded)
-        filters.append(f"(literal {encoded})")
-        if is_directory:
-            filters.append(f"(subpath {encoded})")
+        spellings = (json.dumps(os.path.abspath(path)), encoded)
+        for spelling in spellings:
+            if spelling in seen:
+                continue
+            seen.add(spelling)
+            filters.append(f"(literal {spelling})")
+            if is_directory:
+                filters.append(f"(subpath {spelling})")
     return filters
 
 

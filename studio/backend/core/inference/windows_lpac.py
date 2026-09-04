@@ -653,7 +653,15 @@ def _validate_runtime_trees(roots: tuple[str, ...]) -> None:
                 f"an LPAC runtime path cannot be inspected: {path}"
             ) from exc
         if getattr(info, "st_file_attributes", 0) & 0x400:
-            raise SandboxUnavailableError(f"an LPAC runtime contains a reparse point: {path}")
+            target = os.path.realpath(path)
+            target_within_runtime = os.path.normcase(target) != os.path.normcase(
+                os.path.abspath(path)
+            ) and any(_is_within(target, root) for root in roots)
+            if not target_within_runtime or not os.path.isfile(target):
+                raise SandboxUnavailableError(
+                    f"an LPAC runtime contains an unsafe reparse point: {path}"
+                )
+            return
         if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
             key = (info.st_dev, info.st_ino)
             link_counts[key] = link_counts.get(key, 0) + 1

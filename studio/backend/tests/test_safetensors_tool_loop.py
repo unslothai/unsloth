@@ -1289,6 +1289,37 @@ def test_local_process_events_carry_the_actual_execution_record(tool_name):
     assert execute_kwargs["limited_grant"] == "grant-1"
 
 
+def test_inference_orchestrator_forwards_limited_launch_authorization(monkeypatch):
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    seen = {}
+
+    def capture_loop(**kwargs):
+        seen.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(safetensors_agentic, "run_safetensors_tool_loop", capture_loop)
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend.active_model_name = "sf-model"
+    backend.models = {"sf-model": {"context_length": 4096}}
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            tool_execution_mode = "limited",
+            current_subject = "actor-1",
+            tool_ui_session_id = "ui-session-1",
+            limited_grant = "grant-1",
+        )
+    )
+
+    assert seen["tool_execution_mode"] == "limited"
+    assert seen["current_subject"] == "actor-1"
+    assert seen["tool_ui_session_id"] == "ui-session-1"
+    assert seen["limited_grant"] == "grant-1"
+
+
 class TestParserDeepSeek:
     """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
     (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a

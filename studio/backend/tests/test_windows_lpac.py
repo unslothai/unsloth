@@ -153,7 +153,7 @@ def test_runtime_tree_rejects_reparse_points_and_boundary_hardlinks(monkeypatch,
         return info
 
     monkeypatch.setattr(windows_lpac.os, "lstat", reparse_root)
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "runtime contains a reparse"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unsafe reparse"):
         windows_lpac._validate_runtime_trees((str(runtime),))
     monkeypatch.setattr(windows_lpac.os, "lstat", original_lstat)
     outside = tmp_path / "outside"
@@ -161,6 +161,38 @@ def test_runtime_tree_rejects_reparse_points_and_boundary_hardlinks(monkeypatch,
     os.link(outside, runtime / "crossing-link")
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "hardlink crossing"):
         windows_lpac._validate_runtime_trees((str(runtime),))
+
+
+def test_runtime_tree_allows_an_internal_file_reparse_alias(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    alias = runtime / "python3.exe"
+    target = runtime / "python.exe"
+    alias.touch()
+    target.touch()
+    original_lstat = windows_lpac.os.lstat
+    original_realpath = windows_lpac.os.path.realpath
+
+    def lstat_with_alias(path):
+        info = original_lstat(path)
+        if os.fspath(path) == str(alias):
+            return SimpleNamespace(
+                st_file_attributes = 0x400,
+                st_mode = info.st_mode,
+                st_dev = info.st_dev,
+                st_ino = info.st_ino,
+                st_nlink = info.st_nlink,
+            )
+        return info
+
+    monkeypatch.setattr(windows_lpac.os, "lstat", lstat_with_alias)
+    monkeypatch.setattr(
+        windows_lpac.os.path,
+        "realpath",
+        lambda path: str(target) if os.fspath(path) == str(alias) else original_realpath(path),
+    )
+
+    windows_lpac._validate_runtime_trees((str(runtime),))
 
 
 def test_environment_strips_host_channels_and_uses_private_temp(monkeypatch, tmp_path):
