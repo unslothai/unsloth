@@ -5,8 +5,9 @@
 
 Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props``
 returned 200 and a page of HTML. That is worse than a 404: a probe reads the status
-before the body. Served here: ``/props``, ``/v1/props``, ``/version``. Everything else
-in llama-server's table gets an explicit 404, on its real method as well as GET.
+before the body. Served here: ``/props``, ``/v1/props``, ``/version`` and
+``/models/unload``. Everything else in llama-server's table gets an explicit 404,
+on its real method as well as GET.
 
 Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes
 a client select Ollama and then fail on ``/api/chat``, which Studio does not implement;
@@ -21,6 +22,7 @@ import functools
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
@@ -51,7 +53,6 @@ _ENGINE_PROBE_PATHS = frozenset(
         "models",
         "models/load",
         "models/sse",
-        "models/unload",
         "rerank",
         "reranking",
         "responses",
@@ -187,6 +188,23 @@ async def studio_version(current_subject: str = Depends(get_current_subject)):
     of claiming to be Ollama."""
     # Threaded like /props: the first call resolves the version.
     return {"version": await asyncio.to_thread(_studio_version)}
+
+
+class _LlamaUnloadRequest(BaseModel):
+    model: str = Field(..., min_length = 1)
+
+
+@router.post("/models/unload", include_in_schema = False)
+@router.post("/models/unload/", include_in_schema = False)
+async def llama_unload(
+    request: _LlamaUnloadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """llama-server-compatible unload used by Open WebUI's llama.cpp provider."""
+    from models.inference import UnloadRequest
+    return await _inference().unload_model(
+        UnloadRequest(model_path = request.model),
+        current_subject,
+    )
 
 
 async def _probe_not_found():
