@@ -126,7 +126,7 @@ def _provider_jsx() -> str:
     return slice_between(
         read(PROVIDER),
         "      <ToolPaneScopeContext.Provider",
-        "        {/* The view stays mounted",
+        "        {children}",
     )
 
 

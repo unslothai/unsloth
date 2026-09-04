@@ -106,7 +106,7 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
 def _thread_recount_effects() -> list[tuple[list[str], str]]:
     return _component_effects(
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
 
 
@@ -116,7 +116,7 @@ def _store_reducers() -> str:
     checkpoint = slice_between(
         text,
         "setCheckpoint: (modelId, ggufVariant, options) =>",
-        "  // Re-apply the incoming thread's own usage",
+        "  setActiveThreadId: (activeThreadId) =>",
     )
     active = slice_between(
         text, "setActiveThreadId: (activeThreadId) =>", "applyThreadScopedSettings:"
@@ -148,7 +148,7 @@ def _resident_fast_path() -> str:
     return slice_between(
         read(RUNTIME),
         "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      // Block queue materialization before taking the cancellation snapshot.",
+        "      const lifecycleLease = useChatRuntimeStore",
     )
 
 
@@ -156,8 +156,8 @@ def _history_usage_restore() -> str:
     """The history loader's saved-usage restore and its recount call, verbatim."""
     return slice_between(
         read(PROVIDER),
-        "        // Window check applies only when a local GGUF window is known; external",
-        "        // If any message has a stored parentId, reconstruct the tree so",
+        "        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;",
+        "        const hasParentIds = msgs.some((m) => m.parentId != null);",
     )
 
 
@@ -1981,7 +1981,7 @@ def test_the_count_is_retried_once_the_run_finishes():
     recount = slice_between(
         src,
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
     assert "runningByThreadId" in recount, "the effect must observe decoding"
     deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)

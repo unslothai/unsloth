@@ -324,8 +324,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     """
     release = _between(
         THREAD,
-        "// Fire the parked send once indexing clears",
-        "// Drop any queued send + toast on unmount",
+        "      parkIfWaitingOnAttachments,\n    ],\n  );",
+        "  useEffect(\n    () => () => {\n      pendingSendRef.current = false;",
     )
     code = re.sub(r"//[^\n]*", "", release)
     assert "const waitForCurrentRun =" in code
@@ -465,7 +465,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
-        "// Re-read store after auto-load / model-ready wait.",
+        "      const liveRuntime = useChatRuntimeStore.getState();",
         "const { params } = runtime",
     )
     assert "...queuedRunSettings.params" in auto_load_merge
@@ -649,15 +649,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "useChatRuntimeStore.subscribe(" not in compare_handle
     gpu_discovery = _between(
         SHARED_COMPOSER,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "await ensureGpuDeviceCache();" in gpu_discovery
     assert "catch (error) {\n        releaseCompareModelLifecycle();" in gpu_discovery
     side_one = _between(
         SHARED_COMPOSER,
-        "// Side 1: load → generate → wait",
-        "// Side 2: load → generate → wait",
+        "        if (handle1 && model1?.id) {",
+        "        if (handle2 && model2?.id) {",
     )
     assert (
         side_one.index("const status1 = await ensureModelLoaded(model1)")
@@ -666,7 +666,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     side_two = _between(
         SHARED_COMPOSER,
-        "// Side 2: load → generate → wait",
+        "        if (handle2 && model2?.id) {",
         "compareStepSucceededRef.current = true",
     )
     assert (
@@ -776,7 +776,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     apply_compare_stop = _between(
         send_flow,
         "const applyCompareStopDecision = () => {",
-        "// Helper: load a model and update store checkpoint",
+        "      async function ensureModelLoaded(",
     )
     assert "cancelPreStreamRunReservations(" in apply_compare_stop
     assert "compareStopDecision?.preStreamRunTokens ?? []" in apply_compare_stop
@@ -785,7 +785,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ensure_compare_model = _between(
         send_flow,
         "async function ensureModelLoaded(",
-        "// Side 1: load",
+        "        if (handle1 && model1?.id) {",
     )
     already_active = _between(
         ensure_compare_model,
@@ -898,8 +898,8 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     failed_gpu_discovery = _between(
         send_flow,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "resetPromptQueue();" in failed_gpu_discovery
 
@@ -1078,7 +1078,7 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
     append = _between(
         RUNTIME_PROVIDER,
         "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
-        "\n  // Always register the adapter so the mic stays clickable",
+        "\n  const dictation = useMemo(() => new StudioDictationAdapter(), []);",
     )
 
     assert (

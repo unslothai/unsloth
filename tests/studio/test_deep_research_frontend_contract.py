@@ -427,7 +427,7 @@ def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
 def test_a_local_model_without_tools_cannot_consume_research_without_classifying() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     fallback = adapter.split("if (\n        deepResearchArmed &&", 1)[1].split(
-        "// Project sources auto-scope", 1
+        "      const ragProjectId = await resolveProjectId(", 1
     )[0]
 
     assert "!supportsTools" in fallback

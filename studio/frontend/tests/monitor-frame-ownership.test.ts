@@ -28,6 +28,21 @@ const PANEL_SOURCE = readFileSync(
   "utf8",
 );
 
+
+const ROOT_SOURCE = readFileSync(
+  fileURLToPath(new URL("../src/app/routes/__root.tsx", import.meta.url)),
+  "utf8",
+);
+const SETTINGS_MOUNT_SOURCE = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/settings/settings-dialog-mount.tsx",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+
 /** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
 function corner(height = 300): MonitorFrame {
   return { left: 1168, top: 884 - height, right: 1424, bottom: 884 };
@@ -190,4 +205,42 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
   assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
   assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
+});
+
+
+// Once Settings has loaded the monitor, an auth-route round trip must not
+// forget that lazy-entry latch. The inner dialog still unmounts on /login so
+// its open monitor remains dormant there, then resumes after authentication.
+test("the lazy Settings mount survives an auth-route round trip", () => {
+  assert.match(
+    ROOT_SOURCE,
+    /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/,
+  );
+  assert.match(
+    ROOT_SOURCE,
+    /<SettingsDialogMount active=\{active && ready\} \/>/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /if \(!active \|\| !mounted\) return null;/,
+
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /const \[mounted, setMounted\] = useState\(open \|\| monitorOpen\)/,
+  );
+
+  assert.match(SETTINGS_MOUNT_SOURCE, /dismissLabel=\{t\("common\.close"\)\}/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
+
+  assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /event\.target === event\.currentTarget/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /restoreSettingsOpener\(opener, openerFallback\)/);
+
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*setMonitorOpen\(false\);/,
+  );
 });

@@ -131,6 +131,7 @@ import {
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
+import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
   type ControlNetSpecInput,
@@ -218,9 +219,6 @@ const CONTROL_TYPE_LABELS: Record<string, string> = {
   pose: "Pose (map)",
 };
 
-// Z-Image accepts 256-2048, in multiples of 16. Snap any value into range.
-const MIN_DIM = 256;
-const MAX_DIM = 2048;
 // Convenient drag range for the Runs slider; the number box accepts higher typed values on purpose.
 const RUNS_SLIDER_MAX = 128;
 // Offered sizes; a locked ratio can derive one off-list, so the current value is added in.
@@ -228,11 +226,6 @@ const DIM_OPTIONS = [
   256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1152, 1280,
   1408, 1536, 1664, 1792, 1920, 2048,
 ];
-
-function snapDim(value: number): number {
-  if (!Number.isFinite(value)) return 1024;
-  return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
-}
 
 /** Compact size control: type a value, or pick one of the usual sizes from the menu. */
 function DimensionSelect({
@@ -1962,11 +1955,12 @@ export function ImagesPage({
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
-    setWidth(image.width);
-    setHeight(image.height);
+    const restored = restorableSize(image.width, image.height, image.workflow);
+    setWidth(restored.width);
+    setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
     setBatchSize(image.batch_size ?? 1);
-    const m = matchAspect(image.width, image.height);
+    const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
     // Restore LoRA adapters from the recipe ("id:weight"), splitting on the LAST colon so an id
@@ -1995,12 +1989,18 @@ export function ImagesPage({
     // The control image is not persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
+    // The Recipe popover goes on showing the recorded size, so a restore that had to move it says
+    // so rather than leaving the two silently disagreeing.
+    const rescaled =
+      restored.width !== image.width || restored.height !== image.height
+        ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}-${MAX_DIM} range.` }
+        : undefined;
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
     const conditioned = CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
     if (conditioned) {
-      toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`);
+      toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
-      toast.success("Settings restored to inputs");
+      toast.success("Settings restored to inputs", rescaled);
     }
   }, [setWorkflow]);
 

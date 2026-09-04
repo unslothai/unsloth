@@ -6,11 +6,12 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
+import { useShortcut } from "@/features/settings";
 import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
-import { useShortcut } from "@/features/settings";
 import { cn } from "@/lib/utils";
 import {
   ArrowExpand01Icon,
@@ -310,6 +311,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
           style={{ zIndex }}
         >
           <motion.div
+            {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
             ref={setPanelElement}
             onPointerDownCapture={() => raisePanel("api-monitor")}
             drag={true}
