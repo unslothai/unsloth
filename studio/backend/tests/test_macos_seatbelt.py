@@ -495,14 +495,17 @@ def test_live_pytorch_transfer_when_installed(live_seatbelt_backend, tmp_path):
 import torch
 import torch.multiprocessing as mp
 
-def child(queue):
+def child(queue, received):
     queue.put(torch.arange(4))
+    assert received.wait(10)
 
 context = mp.get_context('fork')
 queue = context.Queue()
-process = context.Process(target=child, args=(queue,))
+received = context.Event()
+process = context.Process(target=child, args=(queue, received))
 process.start()
 tensor = queue.get(timeout=10)
+received.set()
 process.join(10)
 assert process.exitcode == 0
 assert torch.equal(tensor, torch.arange(4))
