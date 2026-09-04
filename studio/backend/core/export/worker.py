@@ -246,9 +246,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # The route carries the policy as a flag; the preflight helpers read it off the token,
     # and None means "find a credential" to everything downstream. Rebuild the canonical
     # HfTokenArg once, here, and use it for the whole load.
-    hf_token = hf_token_arg(
-        cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True)
-    )
+    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized

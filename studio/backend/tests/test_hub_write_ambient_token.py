@@ -153,7 +153,11 @@ def test_a_local_export_carries_the_callers_identity(
 
 @pytest.mark.parametrize(
     "via_api_key,token,expected_token,expected_flag",
-    [(True, None, False, False), (True, "hf_caller", "hf_caller", False), (False, None, None, True)],
+    [
+        (True, None, False, False),
+        (True, "hf_caller", "hf_caller", False),
+        (False, None, None, True),
+    ],
 )
 def test_load_checkpoint_forwards_the_policy(
     monkeypatch, via_api_key, token, expected_token, expected_flag
@@ -386,7 +390,9 @@ def test_hf_login_reads_none_as_fetch_the_operators_stored_token():
 
 
 @pytest.mark.parametrize("hf_token,expected", [(False, False), ("hf_caller", "hf_caller")])
-def test_a_local_gguf_lora_conversion_carries_the_sentinel(monkeypatch, tmp_path, hf_token, expected):
+def test_a_local_gguf_lora_conversion_carries_the_sentinel(
+    monkeypatch, tmp_path, hf_token, expected
+):
     """save.py substitutes get_token() only when the token is None, so False has to reach it."""
     from core.export import export as export_backend_module
 
@@ -396,8 +402,13 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(monkeypatch, tmp_path
         peft_config: dict = {}
 
         @staticmethod
-        def save_pretrained_gguf(save_directory, tokenizer, save_method = None,
-                                 quantization_method = None, token = None):
+        def save_pretrained_gguf(
+            save_directory,
+            tokenizer,
+            save_method = None,
+            quantization_method = None,
+            token = None,
+        ):
             seen["token"] = token
 
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
@@ -426,7 +437,12 @@ def test_a_local_merged_save_carries_the_sentinel(monkeypatch, tmp_path, hf_toke
 
     class _FakeModel:
         @staticmethod
-        def save_pretrained_merged(save_directory, tokenizer, save_method = None, token = None):
+        def save_pretrained_merged(
+            save_directory,
+            tokenizer,
+            save_method = None,
+            token = None,
+        ):
             seen["token"] = token
 
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
