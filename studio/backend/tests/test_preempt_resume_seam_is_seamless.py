@@ -186,9 +186,9 @@ class TestThePlainPathSeam:
         _run_plain(recorder.backend, signal = signal, policy = policy)
         resumed = recorder.payloads[1]["messages"][-1]
         assert resumed["role"] == "assistant"
-        assert "<think>" not in (resumed.get("content") or ""), (
-            "the open thought was replayed as visible content with a literal tag"
-        )
+        assert "<think>" not in (
+            resumed.get("content") or ""
+        ), "the open thought was replayed as visible content with a literal tag"
         assert resumed.get("reasoning_content") == "Let me"
         assert recorder.payloads[1].get("continue_final_message") is True
 
