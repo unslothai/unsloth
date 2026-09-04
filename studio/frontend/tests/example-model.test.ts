@@ -52,15 +52,23 @@ test("options list the resident model first, with every on-disk quant", () => {
       id: "unsloth/Qwen3-GGUF",
       loaded: true,
       residentQuant: "Q4_K_M",
+      withheld: false,
       quants: ["Q4_K_M", "Q8_0"],
     },
     {
       id: "unsloth/Llama-GGUF",
       loaded: false,
       residentQuant: null,
+      withheld: false,
       quants: ["Q8_0"],
     },
-    { id: "org/Mistral", loaded: false, residentQuant: null, quants: [] },
+    {
+      id: "org/Mistral",
+      loaded: false,
+      residentQuant: null,
+      withheld: false,
+      quants: [],
+    },
   ]);
   // An older server sends `quant` alone; it is still the one quant to offer.
   assert.deepEqual(exampleModelOptions([{ id: "a", quant: "Q4" }])[0].quants, [
@@ -383,4 +391,31 @@ test("merging never promotes a singular quant the server withheld", () => {
     { id: "org/Foo", loaded: false, quant: "BF16", quants: ["BF16", "Q2_K"] },
   ]);
   assert.deepEqual(vouched[0].quants, ["BF16", "Q2_K"]);
+});
+
+// An older server sends only `quant`; a current one that cannot vouch for any pin on
+// an id sends `quants: []`. The picker must not read the second as the first, or it
+// re-offers exactly the pin the server withheld.
+test("an omitted quant list outranks a singular quant", () => {
+  const withheld = exampleModelOptions([
+    { id: "org/Foo", loaded: false, quant: "BF16", quants: [] },
+  ]);
+  assert.deepEqual(withheld[0].quants, []);
+  assert.equal(withheld[0].withheld, true);
+  // Nothing to pin, so the snippet names the bare repo.
+  const resolved = resolveExampleModel({
+    ...base,
+    catalog: [{ id: "org/Foo", loaded: false, quant: "BF16", quants: [] }],
+    autoSwitch: true,
+    picked: "org/Foo",
+    options: withheld,
+  });
+  assert.equal(resolved.model, "org/Foo");
+
+  // An older server omits the field entirely: its singular quant is still the one pin.
+  const legacy = exampleModelOptions([
+    { id: "org/Foo", loaded: false, quant: "BF16" },
+  ]);
+  assert.deepEqual(legacy[0].quants, ["BF16"]);
+  assert.equal(legacy[0].withheld, false);
 });

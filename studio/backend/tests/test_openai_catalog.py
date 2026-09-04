@@ -571,7 +571,9 @@ def test_copies_that_disagree_advertise_no_quants(monkeypatch):
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
-    assert "quants" not in ids["org/Foo"]
+    # Empty, not absent: a client must be able to tell this from an older server that
+    # never sent the field, where the singular `quant` is still the one pin to offer.
+    assert ids["org/Foo"]["quants"] == []
     # The resident pin still resolves on its own, so it survives.
     assert ids["org/Foo"]["quant"] == "Q8_0"
 
@@ -643,8 +645,8 @@ def test_case_variant_copies_that_disagree_advertise_no_quants(monkeypatch):
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     # Both rows are still listed, exactly as before this field existed.
     assert {"org/Foo", "Org/Foo"} <= set(ids)
-    assert "quants" not in ids["org/Foo"]
-    assert "quants" not in ids["Org/Foo"]
+    assert ids["org/Foo"]["quants"] == []
+    assert ids["Org/Foo"]["quants"] == []
 
 
 def test_a_quant_spelled_two_ways_is_listed_once(monkeypatch):

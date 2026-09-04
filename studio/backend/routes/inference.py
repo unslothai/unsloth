@@ -25301,7 +25301,13 @@ async def _openai_catalog_objects() -> list[dict]:
         GGUF sibling's quants are just as unreachable.
         """
         key = str(row.get("id", "")).lower()
-        if not key or key in ambiguous_quants:
+        if not key:
+            return
+        if key in ambiguous_quants:
+            # Empty, not absent: a client that sees no key at all cannot tell this
+            # from an older server that never sent the field, and would fall back to
+            # offering the singular `quant` -- the pin this id has no answer for.
+            row["quants"] = []
             return
         # Compare the way `_quant_list` dedupes, or two copies that hold the same
         # files under different spellings read as a disagreement and lose their list.
@@ -25315,7 +25321,8 @@ async def _openai_catalog_objects() -> list[dict]:
             return
         if seen != found_key:
             ambiguous_quants.add(key)
-            quants_owner.pop(key, {}).pop("quants", None)
+            quants_owner.pop(key, {})["quants"] = []
+            row["quants"] = []
 
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.

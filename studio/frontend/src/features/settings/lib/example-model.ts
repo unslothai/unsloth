@@ -11,6 +11,8 @@ export const PLACEHOLDER_EXAMPLE_MODEL = `${EXAMPLE_MODEL_REPO}:${EXAMPLE_MODEL_
 export type ExampleModelOption = {
   id: string;
   loaded: boolean;
+  // The server listed this id but vouched for no quant on it, so nothing may be pinned.
+  withheld: boolean;
   // The quant actually in memory, from the row that reported residency. Null when the
   // server withheld it, or when the quants came from a different copy of this repo.
   residentQuant: string | null;
@@ -78,13 +80,23 @@ export function exampleModelOptions(
       if (existing.quants.length === 0 && m.quants?.length) {
         existing.quants = m.quants;
       }
+      // An explicit empty list is the server saying it cannot vouch for any pin on
+      // this id, which outranks another row's singular `quant`.
+      if (m.quants?.length === 0) {
+        existing.quants = [];
+        existing.withheld = true;
+      }
       continue;
     }
     byIdentity.set(identity, {
       id: m.id,
       loaded: m.loaded === true,
       residentQuant: m.loaded === true ? (m.quant ?? null) : null,
-      quants: m.quants?.length ? m.quants : m.quant ? [m.quant] : [],
+      // `quants: []` is the server withholding every pin for this id, which is not the
+      // same as an older server omitting the field: there the singular `quant` is all
+      // there is, and it is still the one quant to offer.
+      withheld: m.quants?.length === 0,
+      quants: m.quants?.length ? m.quants : m.quant && m.quants === undefined ? [m.quant] : [],
     });
   }
   const options = [...byIdentity.values()];
