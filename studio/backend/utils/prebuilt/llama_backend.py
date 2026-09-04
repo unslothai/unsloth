@@ -13,6 +13,10 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
     "windows-cuda": "cuda",
+    # Windows on ARM with an NVIDIA GPU (GB10 / N1X "RTX Spark" class), which runs
+    # CUDA natively. Distinct from windows-cuda because the payload differs: the
+    # arm64 bundle ships its own cudart/cublas set built for ARM64.
+    "windows-arm64-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
     "windows-rocm": "rocm",

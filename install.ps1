@@ -273,6 +273,241 @@ function Install-UnslothStudio {
         return "unknown"
     }
 
+    # ── Windows on ARM + NVIDIA: native CUDA stack ──
+    # NVIDIA's Windows-on-ARM parts (GB10 / N1X, the "RTX Spark" laptops) run CUDA
+    # natively, so those machines want a native ARM64 interpreter and win_arm64 CUDA
+    # wheels rather than the x64-under-emulation fallback below -- emulated x64 torch
+    # does load, but triton-windows' bundled ptxas is built for the x64 toolkit and
+    # cannot target the Blackwell SM these parts report, so every Unsloth kernel fails
+    # to compile.
+    #
+    # This is decided by evidence, never by arch alone: the probe asks the candidate
+    # indexes whether a win_arm64 CUDA torch wheel exists for the interpreter we are
+    # about to use, and only then switches. download.pytorch.org is asked first, so the
+    # day PyTorch ships win_arm64 CUDA wheels the official index wins with no code
+    # change; NVIDIA's out-of-tree nightly index is the fallback that carries them
+    # today. When nothing serves one -- an ARM64 box with no NVIDIA GPU, an offline
+    # host, a future where the wheels move -- $script:WoaNativeCudaTorch stays false and
+    # the historical x64 path runs exactly as before.
+    $script:WoaNativeCudaTorch = $false
+    $script:WoaTorchIndexUrl = $null
+    $script:WoaPythonMinor = $null
+
+    # NVIDIA's out-of-tree Windows-on-ARM wheel indexes, GA first and the nightly channel
+    # behind it. UNSLOTH_WOA_TORCH_INDEX_URL replaces both (a mirror, or wherever these
+    # wheels move to next); UNSLOTH_TORCH_INDEX_URL still overrides everything.
+    $script:WoaNvidiaTorchIndexUrls = if ($env:UNSLOTH_WOA_TORCH_INDEX_URL) {
+        @($env:UNSLOTH_WOA_TORCH_INDEX_URL.Trim().TrimEnd('/'))
+    } else {
+        @(
+            "https://pypi.nvidia.com/nvtorch_oot",
+            "https://pypi.nvidia.com/nvtorch_oot_nightly"
+        )
+    }
+    # Does the index this run settled on ship a win_arm64 torchaudio? The GA channel does
+    # (2.11.0+cu134); nothing on download.pytorch.org ever has. Recorded rather than
+    # assumed, because it decides whether the trio below is a trio or a pair, and the same
+    # answer travels to studio/setup.ps1 so its own torch steps agree.
+    $script:WoaTorchAudio = $false
+
+    # Wheels that Windows on ARM needs and PyPI does not carry yet. Today that is exactly
+    # pyarrow, which `datasets` requires and which cannot be built here without CMake and
+    # the MSVC toolchain (apache/arrow#48539 adds the win_arm64 build; once it lands and
+    # Arrow publishes, the PyPI probe below wins and this is never consulted).
+    # UNSLOTH_WOA_WHEELHOUSE takes a directory or a base URL; UNSLOTH_PYARROW_WHEEL takes
+    # one local .whl.
+    $script:WoaWheelhouse = if ($env:UNSLOTH_WOA_WHEELHOUSE) {
+        $env:UNSLOTH_WOA_WHEELHOUSE.Trim().TrimEnd('/')
+    } else {
+        "https://huggingface.co/unsloth/windows-arm64-wheels/resolve/main"
+    }
+    $script:WoaPyarrowWheel = $null      # local path once provisioned
+    $script:WoaPyarrowSource = $null     # "pypi" | "wheelhouse" | "local"
+    $script:WoaPyarrowWheelName = $null  # staged wheel filename, for the version pin
+
+    # A wheel's real filename, read from inside the archive. NVIDIA hands out these
+    # prebuilt wheels as bare .bin artifacts, and uv/pip both refuse a wheel whose
+    # filename does not encode its tags, so reconstruct "<name>-<version>-<tag>.whl" from
+    # the .dist-info directory and the Tag: line in its WHEEL metadata. $null when the
+    # file is not a readable wheel.
+    function Get-WheelFileNameFromArchive {
+        param([string]$Path)
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        } catch { return $null }
+        try {
+            $wheelEntry = $zip.Entries | Where-Object { $_.FullName -match '^[^/]+\.dist-info/WHEEL$' } | Select-Object -First 1
+            if (-not $wheelEntry) { return $null }
+            $distInfo = ($wheelEntry.FullName -split '/')[0] -replace '\.dist-info$', ''
+            $reader = New-Object System.IO.StreamReader($wheelEntry.Open())
+            try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            if ($content -notmatch '(?m)^Tag:\s*(\S+)\s*$') { return $null }
+            return "$distInfo-$($Matches[1]).whl"
+        } catch {
+            return $null
+        } finally {
+            $zip.Dispose()
+        }
+    }
+
+    # Can this host get a pyarrow that imports? PyPI first (so a published win_arm64 wheel
+    # ends this special case for good), then an explicitly supplied wheel, then the
+    # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
+    # unselected rather than half-configured.
+    function Get-WoaPyarrowSource {
+        param([string]$PythonMinor)
+        if ($env:UNSLOTH_PYARROW_WHEEL -and (Test-Path -LiteralPath $env:UNSLOTH_PYARROW_WHEEL -PathType Leaf)) {
+            return "local"
+        }
+        $tag = "cp" + ($PythonMinor -replace '\.', '')
+        try {
+            $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
+            foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
+                if ($match.Value -like "*$tag-$tag*") { return "pypi" }
+            }
+        } catch {}
+        if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
+            if (Test-Path -LiteralPath $script:WoaWheelhouse) {
+                $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
+                if ($local) { return "wheelhouse" }
+            }
+            return ""
+        }
+        try {
+            $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+            foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
+                if ($match.Value -like "*$tag-$tag*") { return "wheelhouse" }
+            }
+        } catch {}
+        return ""
+    }
+
+    # True when nvidia-smi exists AND lists at least one GPU. Deliberately self-contained:
+    # this runs long before the main GPU-detection block builds its bounded probes.
+    function Test-WoaNvidiaPresent {
+        $exe = $null
+        try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
+        if (-not $exe) {
+            foreach ($candidate in @(
+                "$env:SystemRoot\System32\nvidia-smi.exe",
+                "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+            )) {
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $exe = $candidate; break }
+            }
+        }
+        if (-not $exe) { return $false }
+        try {
+            $listing = & $exe -L 2>&1 | Out-String
+            return ($LASTEXITCODE -eq 0 -and $listing -match '(?m)^\s*GPU\s+\d+')
+        } catch { return $false }
+    }
+
+    # CUDA family leaf (cu130 / cu128 / ...) implied by the installed driver, or $null.
+    # Same mapping as Get-TorchIndexUrl further down, kept small and local because this
+    # runs before that function is defined.
+    function Get-WoaDriverCudaLeaf {
+        $exe = $null
+        try { $exe = (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source } catch { $exe = $null }
+        if (-not $exe -and (Test-Path -LiteralPath "$env:SystemRoot\System32\nvidia-smi.exe")) {
+            $exe = "$env:SystemRoot\System32\nvidia-smi.exe"
+        }
+        if (-not $exe) { return $null }
+        try { $out = & $exe 2>&1 | Out-String } catch { return $null }
+        # Newer drivers print "CUDA UMD Version"; accept both spellings.
+        if ($out -notmatch 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') { return $null }
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+        if ($major -ge 13) { return "cu130" }
+        if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
+        if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
+        if ($major -ge 12) { return "cu124" }
+        if ($major -ge 11) { return "cu118" }
+        return $null
+    }
+
+    # Does $IndexUrl publish a win_arm64 CUDA wheel of $Project for CPython $PythonMinor?
+    # Reads the PEP 503 page and looks for a matching wheel; a "+cpu" local version is
+    # rejected so a CPU-only index cannot masquerade as CUDA.
+    function Test-WoaCudaWheel {
+        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
+        if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $false }
+        $tag = "cp" + ($PythonMinor -replace '\.', '')
+        $projectUrl = ($IndexUrl.TrimEnd('/')) + "/$Project/"
+        try {
+            $body = [string](Invoke-RestMethod -Uri $projectUrl -UseBasicParsing -TimeoutSec 20)
+        } catch {
+            return $false
+        }
+        if ([string]::IsNullOrWhiteSpace($body)) { return $false }
+        foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
+            $name = $match.Value
+            if ($name -notlike "*$tag-$tag*") { continue }
+            if ($name -match '\+cpu') { continue }
+            return $true
+        }
+        return $false
+    }
+
+    # Sets $script:WoaNativeCudaTorch / $script:WoaTorchIndexUrl when this is a
+    # Windows-on-ARM host with an NVIDIA GPU and some index serves a win_arm64 CUDA
+    # torch wheel for $PythonMinor. Safe to call more than once.
+    function Initialize-WoaNativeCudaTorch {
+        param([string]$PythonMinor)
+        $script:WoaNativeCudaTorch = $false
+        $script:WoaTorchIndexUrl = $null
+        if ((Get-HostMachineArch) -ne "arm64") { return }
+        if ($SkipTorch) { return }
+        # Escape hatch back to the historical x64-under-emulation path, for a host where
+        # the native stack misbehaves. Off means off; anything else leaves the probe to decide.
+        if ($env:UNSLOTH_WOA_NATIVE -and $env:UNSLOTH_WOA_NATIVE.Trim().ToLowerInvariant() -in @("0", "false", "no", "off")) {
+            substep "windows on arm: UNSLOTH_WOA_NATIVE is off -- using the x64 path." "Yellow"
+            return
+        }
+        if (-not (Test-WoaNvidiaPresent)) { return }
+        $script:WoaPythonMinor = $PythonMinor
+        # An explicit pin wins outright: the user named the index, so honour it and only
+        # ask whether it can serve this machine natively.
+        $pinned = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+            $pinned += $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+            $mirror = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+            $pinned += "$mirror/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+        }
+        $candidates = @()
+        if ($pinned.Count -gt 0) {
+            $candidates = $pinned
+        } else {
+            $mirror = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+            $driverLeaf = Get-WoaDriverCudaLeaf
+            if ($driverLeaf) { $candidates += "$mirror/$driverLeaf" }
+            $candidates += $script:WoaNvidiaTorchIndexUrls
+        }
+        $torchIndex = $null
+        foreach ($candidate in $candidates) {
+            if (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torch") {
+                $torchIndex = $candidate
+                break
+            }
+        }
+        if (-not $torchIndex) { return }
+        # torch alone is not enough: `datasets` needs pyarrow, which has no win_arm64
+        # wheel on PyPI yet and cannot be built here. Requiring both up front means the
+        # host either gets the whole native stack or stays on the emulated one -- never a
+        # native venv that dies at the datasets step.
+        $pyarrowSource = Get-WoaPyarrowSource -PythonMinor $PythonMinor
+        if (-not $pyarrowSource) {
+            substep "windows on arm: native CUDA torch is available, but no win_arm64 pyarrow wheel could be found." "Yellow"
+            substep "using the x64 stack instead. Set UNSLOTH_PYARROW_WHEEL to a win_arm64 pyarrow wheel for the native install." "Yellow"
+            return
+        }
+        $script:WoaNativeCudaTorch = $true
+        $script:WoaTorchIndexUrl = $torchIndex
+        $script:WoaPyarrowSource = $pyarrowSource
+        $script:WoaTorchAudio = Test-WoaCudaWheel -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio"
+    }
+
     function Get-TauriTorchIndexFamily {
         param([string]$TorchIndexUrl)
         if ($SkipTorch) { return "none" }
@@ -3249,7 +3484,14 @@ exit 0
         # win_arm64 wheel, so a native ARM64 Python source-builds both and dies on CMake /
         # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
         # there is, and the caller then bootstraps x64 or warns.
-        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64")
+        # Windows on ARM with a working native CUDA stack wants the opposite preference:
+        # rank ARM64 first so an x64 interpreter left behind by an older install (or by a
+        # previous run of this script) does not capture the venv. Both preferences use the
+        # same candidate-collection path; when neither applies the first match still wins,
+        # exactly as before.
+        $preferArm64 = $script:WoaNativeCudaTorch -and -not $X64Only
+        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $preferArm64)
+        $rankByArch = $preferX64 -or $preferArm64
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -3274,7 +3516,7 @@ exit 0
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -3303,7 +3545,7 @@ exit 0
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -3314,7 +3556,7 @@ exit 0
         # a same-minor x64 install that is neither preferred nor on PATH never becomes a
         # candidate. `-3.12-64` cannot disambiguate (deprecated, it only means "not
         # 32-bit"), so enumerate every registration with -0p and probe each path.
-        if ($preferX64) {
+        if ($rankByArch) {
             foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
                 if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
                 $listed = @()
@@ -3349,6 +3591,15 @@ exit 0
         foreach ($minor in $minors) {
             $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
             if ($sameMinor.Count -eq 0) { continue }
+            if ($preferArm64) {
+                # Native ARM64 first. An x64 build of the same minor is still returned when
+                # no ARM64 one exists, so a host that somehow lost its native interpreter
+                # keeps installing rather than failing; the torch step re-checks the venv's
+                # own platform tag and falls back to the emulated stack if it is x64.
+                $arm = $sameMinor | Where-Object { $_.Arch -eq "arm64" } | Select-Object -First 1
+                if ($arm) { return $arm }
+                return $sameMinor[0]
+            }
             $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
             if ($x64) { return $x64 }
             if (-not $X64Only) { return $sameMinor[0] }
@@ -3495,6 +3746,14 @@ exit 0
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
+    # Decide the Windows-on-ARM question before choosing an interpreter, because the
+    # answer flips the arch preference inside Find-CompatiblePython. $PythonVersion is
+    # the minor this run targets (3.13 unless UNSLOTH_PYTHON says otherwise).
+    Initialize-WoaNativeCudaTorch -PythonMinor $PythonVersion
+    if ($script:WoaNativeCudaTorch) {
+        step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
+        substep "torch index: $($script:WoaTorchIndexUrl)"
+    }
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
     if ($DetectedPython) {
@@ -3563,10 +3822,32 @@ exit 0
             return (Exit-InstallFailure "Python installation failed")
         }
     }
+    # ── Windows on ARM + NVIDIA: make sure the interpreter really is ARM64 ──
+    # The native stack needs a native interpreter: an emulated x64 python cannot load the
+    # win_arm64 CUDA wheels the probe just found. A leftover x64 install is the common
+    # case here (an earlier run of this very script bootstrapped one), so swap it the
+    # other way round.
+    if ($script:WoaNativeCudaTorch -and $DetectedPython -and $DetectedPython.Arch -eq "x86_64") {
+        substep "windows on arm: found an x64 Python $($DetectedPython.Version); installing the native ARM64 build..." "Yellow"
+        $Arm64Python = Install-PythonFromPythonOrg -Arch "arm64"
+        if ($Arm64Python -and $Arm64Python.Arch -ne "x86_64") {
+            $DetectedPython = $Arm64Python
+            step "python" "using native ARM64 Python $($DetectedPython.Version)"
+        } else {
+            # No native interpreter: the win_arm64 wheels are unusable, so fall back to the
+            # emulated x64 stack rather than installing wheels this python cannot import.
+            substep "could not install a native ARM64 Python; falling back to the x64 stack." "Yellow"
+            $script:WoaNativeCudaTorch = $false
+            $script:WoaTorchIndexUrl = $null
+        }
+    }
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
     # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
-    # both and fails deep into the run. Warn up front if x64 is unobtainable.
-    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+    # both and fails deep into the run. Warn up front if x64 is unobtainable. Skipped when
+    # the native CUDA stack is in play: there the ARM64 interpreter is the point, pyarrow
+    # comes from the win_arm64 wheel resolved below, and hf-transfer is dropped by marker.
+    if (-not $script:WoaNativeCudaTorch -and
+        $DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
         substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
         substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
         $X64Python = Install-X64Python
@@ -4359,6 +4640,199 @@ exit 0
     # Mark the managed venv before probing so failed installs can be replaced on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+    }
+
+    # ── Windows on ARM + NVIDIA: resolver settings for the native stack ──
+    # Every later dependency step -- the torch install below, the unsloth install, and
+    # `unsloth studio setup`, which runs its own uv/pip passes in a child process --
+    # inherits these through the environment, so the rules are stated once here instead
+    # of being threaded through each call site. All of it is scoped to this host: the
+    # variables are set only inside this branch.
+    if ($script:WoaNativeCudaTorch) {
+        $WoaDir = Join-Path $StudioHome "woa"
+        $WoaWheelDir = Join-Path $WoaDir "wheels"
+        try {
+            New-Item -ItemType Directory -Force -Path $WoaWheelDir -ErrorAction Stop | Out-Null
+        } catch {
+            substep "could not create $WoaWheelDir -- falling back to the x64 stack." "Yellow"
+            $script:WoaNativeCudaTorch = $false
+        }
+    }
+    if ($script:WoaNativeCudaTorch) {
+        # Put the win_arm64 pyarrow wheel where uv and pip can both find it. Skipped when
+        # PyPI already serves one: then the ordinary resolution path handles it.
+        if ($script:WoaPyarrowSource -eq "local") {
+            $srcWheel = $env:UNSLOTH_PYARROW_WHEEL
+            $wheelName = [System.IO.Path]::GetFileName($srcWheel)
+            if ($wheelName -notlike "*.whl") {
+                # A .bin artifact from NVIDIA: recover the wheel filename from its metadata.
+                $wheelName = Get-WheelFileNameFromArchive -Path $srcWheel
+            }
+            if (-not $wheelName) {
+                substep "UNSLOTH_PYARROW_WHEEL is not a readable wheel: $srcWheel" "Yellow"
+                $script:WoaNativeCudaTorch = $false
+            } else {
+                try {
+                    Copy-Item -LiteralPath $srcWheel -Destination (Join-Path $WoaWheelDir $wheelName) -Force -ErrorAction Stop
+                    $script:WoaPyarrowWheelName = $wheelName
+                    substep "windows on arm: using the supplied pyarrow wheel $wheelName"
+                } catch {
+                    substep "could not stage $srcWheel ($($_.Exception.Message))." "Yellow"
+                    $script:WoaNativeCudaTorch = $false
+                }
+            }
+        } elseif ($script:WoaPyarrowSource -eq "wheelhouse") {
+            $tag = "cp" + ($PythonVersion -replace '\.', '')
+            if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
+                $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
+                if ($found) {
+                    Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $WoaWheelDir $found.Name) -Force
+                    $script:WoaPyarrowWheelName = $found.Name
+                    substep "windows on arm: using pyarrow wheel $($found.Name) from the wheelhouse"
+                } else {
+                    $script:WoaNativeCudaTorch = $false
+                }
+            } else {
+                $wheelName = $null
+                try {
+                    $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+                    foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
+                        if ($match.Value -like "*$tag-$tag*") { $wheelName = $match.Value; break }
+                    }
+                } catch {}
+                if ($wheelName) {
+                    try {
+                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$wheelName" -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -ErrorAction Stop
+                        $script:WoaPyarrowWheelName = $wheelName
+                        substep "windows on arm: downloaded pyarrow wheel $wheelName"
+                    } catch {
+                        substep "could not download $wheelName ($($_.Exception.Message))." "Yellow"
+                        $script:WoaNativeCudaTorch = $false
+                    }
+                } else {
+                    $script:WoaNativeCudaTorch = $false
+                }
+            }
+        }
+        if (-not $script:WoaNativeCudaTorch) {
+            substep "windows on arm: pyarrow could not be staged; continuing without the native stack." "Yellow"
+        }
+    }
+    if ($script:WoaNativeCudaTorch) {
+        # Mirror the rest of the wheelhouse too. pyarrow is the one wheel this path cannot
+        # run without, but the same place can carry any other win_arm64 wheel PyPI does not
+        # publish (tiktoken, sqlite-vec, brotli, regex, ...). Whatever lands here is offered
+        # to every resolver step below through UV_FIND_LINKS / PIP_FIND_LINKS, and the
+        # matching entry is dropped from the skip and override lists automatically -- so
+        # publishing a wheel is the only action needed to re-enable a feature on this host.
+        $WoaExtraStaged = 0
+        if ($script:WoaWheelhouse -match '^[A-Za-z]:\\|^\\\\') {
+            foreach ($wheel in @(Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "*.whl" -ErrorAction SilentlyContinue)) {
+                if ($wheel.Name -like "pyarrow-*") { continue }
+                if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
+                try {
+                    Copy-Item -LiteralPath $wheel.FullName -Destination (Join-Path $WoaWheelDir $wheel.Name) -Force -ErrorAction Stop
+                    $WoaExtraStaged++
+                } catch {}
+            }
+        } else {
+            try {
+                $index = [string](Invoke-RestMethod -Uri "$($script:WoaWheelhouse)/index.txt" -UseBasicParsing -TimeoutSec 20)
+                foreach ($match in [regex]::Matches($index, '[A-Za-z0-9_.+-]+\.whl')) {
+                    $name = $match.Value
+                    if ($name -like "pyarrow-*") { continue }
+                    if ($name -notlike "*win_arm64*" -and $name -notlike "*-any.whl") { continue }
+                    $dest = Join-Path $WoaWheelDir $name
+                    if (Test-Path -LiteralPath $dest) { $WoaExtraStaged++; continue }
+                    try {
+                        Invoke-WebRequest -Uri "$($script:WoaWheelhouse)/$name" -OutFile $dest -UseBasicParsing -ErrorAction Stop
+                        $WoaExtraStaged++
+                    } catch {}
+                }
+            } catch {}
+        }
+        if ($WoaExtraStaged -gt 0) {
+            substep "windows on arm: staged $WoaExtraStaged more wheel(s) from the wheelhouse."
+        }
+    }
+    if ($script:WoaNativeCudaTorch) {
+        # Requirement overrides for the packages win_arm64 cannot resolve. These are
+        # version-constraint replacements, not new requirements: a line marked
+        # AMD64-only makes the requirement vanish here while leaving x64 untouched, and
+        # nothing installs a package that nothing asked for.
+        #   hf_transfer / xformers  -- no win_arm64 wheel, no buildable sdist (Rust / CUDA).
+        #   torchaudio / torchcodec -- no win_arm64 wheel on any index.
+        #   torch / torchvision     -- released unsloth and unsloth_zoo metadata caps torch
+        #                              below the only win_arm64 CUDA build there is
+        #                              (a 2.15 nightly). Floors are kept.
+        $WoaOverrides = Join-Path $WoaDir "overrides.txt"
+        # Anything the wheelhouse already carries is installable here, so it must not also
+        # be dropped as unavailable. Keyed on the wheel's own distribution name, normalised
+        # the way a requirement name is (underscores and dots are dashes, case-folded).
+        $WoaWheelNames = @{}
+        foreach ($wheel in @(Get-ChildItem -LiteralPath $WoaWheelDir -Filter "*.whl" -ErrorAction SilentlyContinue)) {
+            $dist = ($wheel.Name -split '-')[0]
+            $WoaWheelNames[($dist -replace '[-_.]+', '-').ToLowerInvariant()] = $true
+        }
+        # Requirement overrides for the packages win_arm64 cannot resolve. These are
+        # version-constraint replacements, not new requirements: a line marked
+        # AMD64-only makes the requirement vanish here while leaving x64 untouched, and
+        # nothing installs a package that nothing asked for.
+        #   hf_transfer / xformers  -- no win_arm64 wheel, no buildable sdist (Rust / CUDA).
+        #   torchaudio / torchcodec -- no win_arm64 wheel on any index.
+        #   brotli / brotlicffi     -- no win_arm64 wheel; pulled in transitively by
+        #                              httpx[brotli] (via ddgs), an optional content
+        #                              encoding httpx negotiates around when absent.
+        $WoaDropCandidates = @(
+            "hf-transfer", "hf_transfer", "xformers", "torchcodec",
+            "brotli", "brotlicffi"
+        )
+        # torchaudio is dropped only when the CUDA index this run chose has no win_arm64
+        # build of it. NVIDIA's GA channel does, so audio models work there.
+        if (-not $script:WoaTorchAudio) { $WoaDropCandidates += "torchaudio" }
+        $WoaOverrideLines = @(
+            '# Generated by install.ps1 for Windows on ARM (win_arm64). See the WoA block there.'
+        )
+        # Both spellings of a name have to reach the overrides file (requirement lines use
+        # either), but they are one package to the reader, so only report the first.
+        $WoaReported = @{}
+        foreach ($candidate in $WoaDropCandidates) {
+            $key = ($candidate -replace '[-_.]+', '-').ToLowerInvariant()
+            if ($WoaWheelNames.ContainsKey($key)) {
+                if (-not $WoaReported.ContainsKey($key)) {
+                    $WoaReported[$key] = $true
+                    substep "windows on arm: keeping $key (the wheelhouse provides a win_arm64 wheel)."
+                }
+                continue
+            }
+            $WoaOverrideLines += "$candidate ; platform_machine == `"AMD64`""
+        }
+        # torch / torchvision: released unsloth and unsloth_zoo metadata caps torch below
+        # the only win_arm64 CUDA build there is (a 2.15 nightly). Floors are kept.
+        $WoaOverrideLines += 'torch>=2.4'
+        $WoaOverrideLines += 'torchvision>=0.19'
+        # Pin pyarrow to the wheel that was just staged. Without this the resolver takes
+        # the newest pyarrow on PyPI, which is an sdist here, and tries to build Arrow
+        # from source -- the exact CMake/MSVC dependency this path exists to avoid.
+        # Skipped when PyPI serves a win_arm64 wheel, where normal resolution is correct.
+        if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName -match '^pyarrow-([^-]+)-') {
+            $WoaOverrideLines += "pyarrow==$($Matches[1])"
+        }
+        $WoaOverrideLines | Set-Content -Path $WoaOverrides -Encoding ascii
+        $env:UV_OVERRIDE = $WoaOverrides
+        $env:UV_FIND_LINKS = $WoaWheelDir
+        $env:PIP_FIND_LINKS = $WoaWheelDir
+        # studio/install_python_stack.py only drives uv when `uv` resolves on PATH, and
+        # falls back to plain pip when it does not. pip has no equivalent of UV_OVERRIDE,
+        # so on this host the managed uv must be reachable by name in that child process.
+        $uvDir = $null
+        try { $uvDir = [System.IO.Path]::GetDirectoryName($script:UvExe) } catch {}
+        if ($uvDir -and (Test-Path -LiteralPath $uvDir -PathType Container) -and ($env:PATH -notlike "*$uvDir*")) {
+            $env:PATH = "$uvDir;$env:PATH"
+        }
+        step "windows on arm" "native ARM64 CUDA stack selected"
+        substep "overrides: $WoaOverrides"
     }
 
     if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
@@ -5212,6 +5686,11 @@ exit 0
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
             return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
         }
+        # Windows on ARM + NVIDIA: the index the probe proved carries win_arm64 CUDA
+        # wheels. Set only on that host, and only when no pin above already answered.
+        if ($script:WoaNativeCudaTorch -and $script:WoaTorchIndexUrl) {
+            return $script:WoaTorchIndexUrl
+        }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
@@ -5797,12 +6276,52 @@ exit 0
             $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
             $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
             $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)
+            $_torchExtraArgs = @()
             if ($VenvPlatform -eq "win-arm64") {
-                substep "windows on arm: skipping torchaudio (upstream publishes no"
-                substep "win_arm64 wheel); torch and torchvision install normally."
+                # Quiet when the WoA branch below is about to put torchaudio back: that one
+                # knows whether this index publishes a win_arm64 build, and saying both
+                # things in sequence reads as a contradiction.
+                if (-not $script:WoaTorchAudio) {
+                    substep "windows on arm: skipping torchaudio (upstream publishes no"
+                    substep "win_arm64 wheel); torch and torchvision install normally."
+                }
                 $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec)
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
+            # Windows on ARM + NVIDIA: the only index carrying win_arm64 CUDA wheels today
+            # is NVIDIA's out-of-tree nightly, whose versions are dev builds above the
+            # usual ceiling (2.15.0.dev...+cu134). Both the cap and the release-only
+            # default would leave it unresolvable, so lift the ceiling and allow
+            # prereleases -- for this host only, since $script:WoaNativeCudaTorch is set
+            # nowhere else. The floors stay: they are what unsloth actually requires.
+            if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
+                $_torchSpecs = @("torch>=2.4", "torchvision>=0.19")
+                # NVIDIA's GA channel ships a win_arm64 torchaudio (2.11.0+cu134); the
+                # nightly one and download.pytorch.org do not. Ask for it only where the
+                # probe found it, so the "no torchaudio" case above still holds elsewhere.
+                if ($script:WoaTorchAudio) {
+                    $_torchSpecs += "torchaudio>=2.4"
+                    substep "windows on arm: this index publishes torchaudio; installing the full trio."
+                }
+                # PyPI as a second index: download.pytorch.org mirrors torch's own
+                # dependencies (filelock, sympy, networkx, ...), NVIDIA's wheel index
+                # publishes only torch/vision/audio, so without it the resolve fails on
+                # the first shared dependency. best-match is required with it: torch
+                # exists on both indexes, and under uv's default first-index rule PyPI
+                # answers first with a build that has no win_arm64 wheel. Both indexes
+                # here are first-party registries (pypi.org and NVIDIA's own), and the
+                # only package they both publish is torch itself.
+                $_torchExtraArgs = @(
+                    "--index-strategy", "unsafe-best-match",
+                    "--extra-index-url", "https://pypi.org/simple"
+                )
+                # Only the nightly channel needs prereleases allowed; the GA channel
+                # publishes ordinary releases (2.14.0+cu134) that resolve without it.
+                if ($script:WoaTorchIndexUrl -match 'nightly') {
+                    $_torchExtraArgs = @("--prerelease=allow") + $_torchExtraArgs
+                    substep "windows on arm: allowing prerelease torch (this index publishes win_arm64 CUDA wheels as nightlies)."
+                }
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs @_torchExtraArgs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -6117,6 +6636,32 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
+    # ── Windows on ARM: the studio package has to know about this host too ──
+    # This script is fetched live from unsloth.ai while `unsloth` comes from PyPI, so the
+    # two halves can be different ages. That is harmless everywhere else -- but on the
+    # native ARM64 path the handoff below hands a working +cu134 torch to a setup.ps1
+    # that, if it predates ARM64 support, reads the family as "not this host" and
+    # reinstalls a cu130 that has no win_arm64 wheel at all, leaving no torch behind.
+    # Checking for the capability rather than a version number keeps this correct
+    # regardless of which release first carries it.
+    if ($script:WoaNativeCudaTorch) {
+        $WoaStudioSetup = $null
+        try {
+            $WoaStudioSetup = (& $VenvPython -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
+        } catch {}
+        $WoaStudioAware = $false
+        if ($WoaStudioSetup -and (Test-Path -LiteralPath $WoaStudioSetup -PathType Leaf)) {
+            $WoaStudioAware = [bool](Select-String -LiteralPath $WoaStudioSetup -Pattern 'WinArm64Venv' -Quiet)
+        }
+        if (-not $WoaStudioAware) {
+            Write-StudioLine "[ERROR] This unsloth release predates Windows-on-ARM support." -ForegroundColor Red
+            Write-StudioLine "        The installed studio setup would replace the ARM64 CUDA PyTorch just installed" -ForegroundColor Yellow
+            Write-StudioLine "        with a build that has no win_arm64 wheel, leaving the environment without torch." -ForegroundColor Yellow
+            Write-StudioLine "        Upgrade to a newer unsloth, or re-run with UNSLOTH_WOA_NATIVE=0 for the x64 path." -ForegroundColor Yellow
+            return (Exit-InstallFailure "installed unsloth has no Windows-on-ARM support")
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
@@ -6171,6 +6716,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
     # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
     # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
     # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
+    # Windows on ARM: tell setup.ps1 whether the CUDA index this run used publishes a
+    # win_arm64 torchaudio, so its own torch steps ask for the same trio this one did
+    # rather than assuming there is none. Always assigned, so a previous run in the same
+    # shell cannot leak a stale answer.
+    $env:UNSLOTH_WOA_HAS_TORCHAUDIO = if ($script:WoaNativeCudaTorch -and $script:WoaTorchAudio) { "1" } else { "0" }
     $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
         [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
     }

@@ -4071,6 +4071,36 @@ $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true
 # 7.0-7.4 remove the variable.
 $InstallerTorchTag = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_INSTALLER_TORCH_TAG)) { $null }
                      else { $env:UNSLOTH_INSTALLER_TORCH_TAG.Trim().ToLowerInvariant() }
+# Is the managed interpreter a native Windows-on-ARM build? Asked of the interpreter, not
+# the machine: an emulated x64 python on an ARM64 box is win-amd64 and must keep every x64
+# rule. Memoized because the torch-flavor logic below and the wheel-availability rules
+# further down both consult it, and each call costs a subprocess.
+$script:_winArm64Venv = $null
+function Test-WinArm64Venv {
+    if ($null -ne $script:_winArm64Venv) { return $script:_winArm64Venv }
+    # The managed interpreter by path first: this is called from the torch-flavor logic,
+    # which runs before `python` is necessarily the venv's own on PATH. Asking the wrong
+    # interpreter -- or none -- would answer "not ARM64" for an ARM64 venv, and the answer
+    # decides whether a working CUDA torch gets "repaired" into one with no wheel.
+    $candidates = @()
+    $managed = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-Path -LiteralPath $managed) { $candidates += $managed }
+    $candidates += "python"
+    foreach ($exe in $candidates) {
+        $platform = ""
+        try {
+            $platform = (& $exe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+        } catch { $platform = "" }
+        if ($platform) {
+            # Only a probe that actually answered is worth remembering; caching a failure
+            # would pin the wrong answer for the rest of the run.
+            $script:_winArm64Venv = ($platform -eq "win-arm64")
+            return $script:_winArm64Venv
+        }
+    }
+    return $false
+}
+
 # Only the stale-venv block below assigns this, but the XPU install reads it to decide whether to
 # force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
 # Set-StrictMode from making the read fatal.
@@ -4222,6 +4252,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # A stale venv under a pin whose torch still imports is repaired IN PLACE (the dependency
     # pass force-reinstalls from the pin). The rebuild path wipes the venv and would strand a
     # direct `studio update`; only a broken venv or an unpinned drift wipes.
+    # Windows on ARM: keep a CUDA torch that is already here. win_arm64 has exactly one
+    # source of CUDA wheels (NVIDIA's out-of-tree index), and its family tag -- cu134
+    # today -- is not one download.pytorch.org publishes, so the host-family comparison
+    # above can only ever disagree with it and would "repair" a working install into a
+    # cu130 that has no win_arm64 wheel at all. A CUDA build on this platform is by
+    # construction the right one. Everything else, including a CPU build that should
+    # become a GPU one, still falls through to the branches below.
+    if ((Test-WinArm64Venv) -and $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag)) {
+        if ($shouldRebuild) {
+            substep "windows on arm: keeping the installed CUDA torch ($installedTorchTag); it is the only win_arm64 CUDA build published." "Cyan"
+        }
+        $shouldRebuild = $false
+        $script:PinChangedForceReinstall = $false
+    }
     if ($shouldRebuild -and $_pinnedIdx -and $installedTorchTag) {
         substep "Torch-index pin changed ($installedTorchTag) -- reinstalling torch from the pin in place." "Cyan"
         $script:PinChangedForceReinstall = $true
@@ -4768,7 +4812,22 @@ function Fast-Install {
             $result = & uv pip install --python $VenvPy @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
         }
-        & python -m pip install @Args_ 2>&1
+        # pip does not understand uv's resolver flags, and handing it one turns a failed
+        # uv resolve into an unreadable "no such option" usage dump. Drop them (with the
+        # value that follows a two-token flag) so the fallback runs the same install pip
+        # would have run on its own. Inert for every caller that passes none.
+        $pipArgs = @()
+        $skipNext = $false
+        foreach ($arg in @($Args_)) {
+            if ($skipNext) { $skipNext = $false; continue }
+            $token = [string]$arg
+            if ($token -eq '--index-strategy') { $skipNext = $true; continue }
+            if ($token -like '--index-strategy=*') { continue }
+            if ($token -eq '--prerelease') { $skipNext = $true; continue }
+            if ($token -like '--prerelease=*') { $pipArgs += '--pre'; continue }
+            $pipArgs += $token
+        }
+        & python -m pip install @pipArgs 2>&1
     }
     finally {
         if ($pinned) {
@@ -5214,12 +5273,41 @@ if (-not $NoTorchMode) {
 # so every branch below drops it. Ask the interpreter uv resolves for, not
 # PROCESSOR_ARCHITECTURE, which describes the host process. Inside the no-torch guard
 # because all three uses are, and no-torch installs nothing to skip.
-$_setupPlatform = ""
-try {
-    $_setupPlatform = (& python -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
-} catch { $_setupPlatform = "" }
-$WinArm64NoAudio = ($_setupPlatform -eq "win-arm64")
-if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)" }
+$WinArm64Venv = Test-WinArm64Venv
+# torchaudio is not a foregone loss on this platform any more: NVIDIA's GA out-of-tree
+# channel publishes a win_arm64 build (2.11.0+cu134), and install.ps1 reports through
+# UNSLOTH_WOA_HAS_TORCHAUDIO which way the index it chose went. Absent that (a direct
+# `unsloth studio update`, or an older installer), keep the historical assumption that
+# there is none -- asking for a wheel that does not exist makes the trio unresolvable,
+# while skipping one that does costs only audio support.
+$WinArm64NoAudio = $WinArm64Venv -and ($env:UNSLOTH_WOA_HAS_TORCHAUDIO -ne "1")
+if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel on this index)" }
+elseif ($WinArm64Venv) { substep "windows on arm: this index publishes torchaudio; keeping it in the torch trio" }
+# Same host, second consequence: the version ceilings below are written for the x64
+# wheels on download.pytorch.org. Windows on ARM has no CUDA torch there at all -- the
+# only win_arm64 CUDA build is NVIDIA's out-of-tree nightly, which is above the ceiling
+# (2.15.0.dev...+cu134) -- and triton-windows only grew win_arm64 wheels at 3.8.0.post28,
+# above the <3.7 pin. Applying either there makes the install unresolvable, so this host
+# takes floors without ceilings. Every other platform keeps the pins unchanged.
+$WinArm64TorchSpec = "torch>=2.4"
+$WinArm64VisionSpec = "torchvision>=0.19"
+$WinArm64AudioSpec = "torchaudio>=2.4"
+# The spec every triton-windows install in this script uses. <3.7 everywhere except
+# Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
+$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# Extra resolver arguments for the win_arm64 CUDA index. That index publishes only
+# torch/vision/audio, so PyPI has to stay reachable for their shared dependencies
+# (filelock, sympy, ...); best-match is required alongside it because torch exists on
+# both and uv's first-index default would take PyPI's build, which has no win_arm64
+# wheel; and the wheels are nightlies, hence prereleases. Empty on every other host,
+# where it splats to nothing and the commands are unchanged.
+# Gated on $UseUv as well as the platform: these are uv spellings, and Fast-Install
+# falls back to `pip install` with the same argument list, which would reject them.
+# Without uv this host cannot install anyway (pip has no equivalent of the requirement
+# overrides install.ps1 sets up), so there is nothing to preserve in that case.
+$WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
+    @("--prerelease=allow", "--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
+} else { @() }
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
@@ -5366,15 +5454,20 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
     # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host
-    # here, so this branch drops torchaudio too.
+    # here, so this branch drops the ceilings: the index that pin names is NVIDIA's
+    # win_arm64 CUDA channel, whose builds (2.14.0+cu134 GA, 2.15 nightly) sit above them.
+    # torchaudio comes along only when that channel actually publishes one.
     $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)
-    if ($WinArm64NoAudio) { $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec) }
+    if ($WinArm64Venv) {
+        $_cudaTrio = @($WinArm64TorchSpec, $WinArm64VisionSpec)
+        if (-not $WinArm64NoAudio) { $_cudaTrio += $WinArm64AudioSpec }
+    }
     if ($script:UnslothVerbose) {
-        Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -5386,11 +5479,11 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
     substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {
-        Fast-Install "triton-windows<3.7"
+        Fast-Install $_tritonSpec
         $tritonInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install "triton-windows<3.7" | Out-String
+        $output = Fast-Install $_tritonSpec | Out-String
         $tritonInstallExit = $LASTEXITCODE
     }
     if ($tritonInstallExit -ne 0) {
@@ -5579,7 +5672,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         # Off the network by now, so this is disk/permissions. triton-windows is
                         # already gone and took the shared paths with it, so put SOME working
                         # triton back rather than leave the venv unable to import one.
-                        Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
+                        Fast-Install --force-reinstall --no-deps $_tritonSpec | Out-Null
                         $tritonBackExit = $LASTEXITCODE
                         $_tritonPresent = ($tritonBackExit -eq 0)
                         Write-StudioLine (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
@@ -6056,7 +6149,9 @@ if ($LocalLlamaCppLinked) {
                 # write_prebuilt_metadata does not persist an install_kind key, so
                 # $existingKind is always null; keep $expectedKinds in sync with the
                 # kinds install_llama_prebuilt.py installs before relying on it.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
+                # windows-arm64-cuda is the Windows-on-ARM NVIDIA kind (GB10 / N1X): an
+                # NVIDIA host can legitimately carry either CUDA kind depending on its arch.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda", "windows-arm64-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

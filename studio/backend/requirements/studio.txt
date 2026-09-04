@@ -12,8 +12,10 @@ packaging==26.3
 matplotlib==3.10.9
 # Held at 2.3.3 rather than the 3.0.x line: single-env/constraints.txt pins
 # pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
-# 3.9. Bump both together.
-pandas==2.3.3
+# 3.9. Bump both together. Windows on ARM is the exception: win_arm64 pandas
+# wheels start at 3.0, so 2.3.3 would source-build there (constraints.txt matches).
+pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64"
+pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64"
 nest_asyncio==1.6.0
 datasets==4.3.0
 pyjwt==2.13.0
@@ -54,7 +56,9 @@ av>=12.0.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
 sqlite-vec==0.1.9
-pymupdf==1.27.2.3
+# pymupdf publishes a win_arm64 wheel from 1.28 only.
+pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
+pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4

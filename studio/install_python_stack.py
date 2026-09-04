@@ -86,6 +86,17 @@ def _is_windows_arm64() -> bool:
     )
 
 
+def _windows_arm64_has_torchaudio() -> bool:
+    """Does the CUDA index this install used publish a win_arm64 torchaudio?
+
+    NVIDIA's GA out-of-tree channel does (2.11.0+cu134); its nightly channel and
+    download.pytorch.org do not. install.ps1 answers this in UNSLOTH_WOA_HAS_TORCHAUDIO.
+    Unset means "assume not": asking for a wheel that does not exist makes the whole trio
+    unresolvable, while skipping one that does costs only audio support.
+    """
+    return (os.environ.get("UNSLOTH_WOA_HAS_TORCHAUDIO") or "").strip() == "1"
+
+
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Detected ROCm (major, minor) -> best PyTorch wheel tag on
 # download.pytorch.org. Checked newest-first (>=).
@@ -3986,6 +3997,17 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """
     if NO_TORCH:
         return True
+    # Windows on ARM: a CUDA torch already here is the only CUDA torch this platform has.
+    # win_arm64 CUDA wheels come from NVIDIA's out-of-tree index and carry a family tag
+    # (cu134 today) that download.pytorch.org does not publish, so the expectation derived
+    # from the driver can only ever disagree -- and "repairing" it means resolving a cu130
+    # that has no win_arm64 wheel at all, which fails the install after everything else
+    # succeeded. A CPU build still falls through to the repair below, so a host that
+    # genuinely lost its GPU torch is still fixed. Mirrors the same guard in setup.ps1.
+    if _is_windows_arm64():
+        _installed = _probe_installed_torch_version()
+        if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
+            return True
     # rocm/xpu/cpu fall THROUGH: an explicit GPU pin sets _TORCH_BACKEND, and rejecting it
     # here would skip the invariant on the hosts that asked for that family.
     if _TORCH_BACKEND not in ("", "cuda", "rocm", "xpu", "cpu"):
@@ -4060,9 +4082,10 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _torch_pkg, _vision_pkg, _audio_pkg = (
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
-    # No win_arm64 torchaudio wheel exists on any index ($WinArm64NoAudio in setup.ps1).
+    # torchaudio exists for win_arm64 only on NVIDIA's GA out-of-tree channel; install.ps1
+    # reports which way the index it chose went ($WinArm64NoAudio in setup.ps1).
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
-    if _is_windows_arm64():
+    if _is_windows_arm64() and not _windows_arm64_has_torchaudio():
         _trio = [_torch_pkg, _vision_pkg]
     _label_before = str(installed_version)
     # --force-reinstall, not install.ps1's uv-only --reinstall-package: pip_install falls
@@ -5389,6 +5412,91 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
+
+# Packages to skip on Windows on ARM (win_arm64). Each one publishes no win_arm64
+# wheel and cannot build from its sdist on a stock machine, because that needs a
+# toolchain this installer deliberately does not require (MSVC, Rust, LLVM, FFmpeg):
+#   MeCab           C++ extension.
+#   sqlite-vec      C extension. Optional: the RAG store imports it lazily and the
+#                   router mounts without it.
+#   tiktoken        Rust extension. Only converts tokenizers published in tiktoken
+#                   format; Qwen and friends ship a tokenizer.json and load without it.
+#   tensorboard     pure Python itself, but requires grpcio, which has no win_arm64
+#                   wheel at any version. TRL/transformers report to the console instead.
+#   librosa /       both pull numba -> llvmlite, whose only win_arm64 wheels are cp314;
+#   openai-whisper  there is nothing for the 3.11-3.13 interpreters this installer uses.
+#   torch-c-dlpack-ext, pytorch_tokenizers   torch C++ extensions, x64/macOS wheels only.
+#   hf_transfer     Rust extension. Optional accelerator; hf_xet ships win_arm64 and
+#                   covers fast downloads. Also marked in pyproject.toml.
+#   xformers        no win_arm64 wheel; torch's own SDPA (flash backend included) is the
+#                   fallback Unsloth already uses when xFormers is absent.
+# Everything here is an optional feature. Training, inference, GGUF serving and the
+# Studio UI do not import any of them at startup.
+# Entries must be lowercase: _filter_requirements lowercases the requirement line but
+# compares against these verbatim (so "MeCab" would never match "mecab==0.996.13").
+WINDOWS_ARM64_SKIP_PACKAGES = {
+    "mecab",
+    "sqlite-vec",
+    "tiktoken",
+    "tensorboard",
+    "librosa",
+    "openai-whisper",
+    "torch-c-dlpack-ext",
+    "pytorch_tokenizers",
+    "hf_transfer",
+    "xformers",
+}
+
+
+@functools.lru_cache(maxsize = 1)
+def _find_links_wheel_names() -> frozenset[str]:
+    """Canonical names of the wheels sitting in the configured find-links directories.
+
+    install.ps1 points UV_FIND_LINKS / PIP_FIND_LINKS at a local wheelhouse on Windows on
+    ARM, holding the wheels PyPI does not publish for win_arm64. Anything served there is
+    installable, so it must not also be filtered out as unavailable.
+    """
+    names: set[str] = set()
+    for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
+        for entry in (value or "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or "://" in entry:
+                continue  # a URL index cannot be listed cheaply; treat it as unknown
+            try:
+                for wheel in Path(entry).glob("*.whl"):
+                    names.add(_canonical_dist_name(wheel.name.split("-", 1)[0]))
+            except OSError:
+                continue
+    return frozenset(names)
+
+
+# Some entries are skipped not for themselves but for a dependency with no win_arm64
+# wheel: tensorboard is pure Python and only unavailable because grpcio is, and librosa
+# and openai-whisper are blocked by llvmlite (via numba). Hosting the blocker's wheel
+# re-enables them, so record what each one is actually waiting on.
+WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
+    "tensorboard": "grpcio",
+    "librosa": "llvmlite",
+    "openai-whisper": "llvmlite",
+}
+
+
+def _windows_arm64_skip_packages() -> set[str]:
+    """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
+    hosting a wheel is all it takes to re-enable one of these features here."""
+    available = _find_links_wheel_names()
+    if not available:
+        return set(WINDOWS_ARM64_SKIP_PACKAGES)
+    keep_skipping: set[str] = set()
+    for package in WINDOWS_ARM64_SKIP_PACKAGES:
+        canonical = _canonical_dist_name(package)
+        if canonical in available:
+            continue
+        blocker = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
+        if blocker and _canonical_dist_name(blocker) in available:
+            continue
+        keep_skipping.add(package)
+    return keep_skipping
 
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode). These
 # either *are* torch extensions or have unconditional ``Requires-Dist: torch``, so
@@ -6826,6 +6934,11 @@ def pip_install(
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+    if actual_req is not None and _is_windows_arm64():
+        _arm64_skip = _windows_arm64_skip_packages()
+        if _arm64_skip:
+            actual_req = _filter_requirements(actual_req, _arm64_skip)
+            temp_reqs.append(actual_req)
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)

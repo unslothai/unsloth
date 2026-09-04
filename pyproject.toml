@@ -112,7 +112,10 @@ studio = [
     "pydantic==2.13.4",
     "packaging==26.3",
     "matplotlib==3.10.9",
-    "pandas==2.3.3",
+    # Mirrors studio.txt: win_arm64 pandas wheels start at 3.0, so 2.3.3 would
+    # source-build on Windows on ARM.
+    "pandas==2.3.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "pandas>=3.0,<4 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
     "pyjwt==2.13.0",
@@ -132,14 +135,20 @@ studio = [
     "gguf==0.18.0 ; python_version < '3.10'",
     "av>=12.0.0",
     "sqlite-vec==0.1.9",
-    "pymupdf==1.27.2.3",
+    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel from 1.28 only.
+    "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "pymupdf>=1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
 ]
 
 triton = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
+    # ARM64 is Windows on ARM (NVIDIA N1X / RTX Spark class). triton-windows has
+    # published win_arm64 wheels since 3.8.0.post28; earlier releases have none, so
+    # the floor is what keeps this row resolvable there rather than a marker.
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 
 huggingfacenotorch = [
@@ -156,7 +165,12 @@ huggingfacenotorch = [
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
-    "hf_transfer",
+    # hf_transfer is a Rust extension and publishes no win_arm64 wheel, so on Windows
+    # on ARM pip falls back to a cargo build that needs the MSVC linker and fails. It is
+    # an optional accelerator that huggingface_hub only imports when
+    # HF_HUB_ENABLE_HF_TRANSFER=1, and hf_xet (which does ship win_arm64) covers fast
+    # downloads there, so skip it rather than fail the whole install.
+    "hf_transfer ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # 0.39 is the floor the diffusion stack already assumes: Krea2Pipeline (the Krea 2
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
@@ -232,8 +246,14 @@ huggingface = [
 # handles instead.
 windows = [
     "unsloth[huggingface]",
+    # bitsandbytes ships a win_arm64 wheel (0.50.1+, carrying libbitsandbytes_cuda134.dll),
+    # so Windows on ARM stays on this row.
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
-    "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
+    # xFormers publishes no win_arm64 wheel and has no sdist fallback that builds without
+    # CUDA's Windows-ARM toolchain, so this row would fail the whole extra there. Torch's
+    # SDPA (flash backend included) works natively on win_arm64, which is what Unsloth
+    # falls back to when xFormers is absent.
+    "xformers>=0.0.22.post7 ; (sys_platform == 'win32') and platform_machine != 'ARM64'",
 ]
 base = [
     "unsloth[huggingface]",

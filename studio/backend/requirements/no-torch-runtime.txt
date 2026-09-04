@@ -94,7 +94,9 @@ pillow==11.3.0; python_version < "3.10"
 # RAG store + document parsing, mirroring studio.txt. Pinned here because
 # this file installs --no-deps; without them Unsloth runs with RAG disabled.
 sqlite-vec==0.1.9
-pymupdf==1.27.2.3
+# pymupdf publishes a win_arm64 wheel from 1.28 only.
+pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
+pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4
