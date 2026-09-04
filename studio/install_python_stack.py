@@ -5473,10 +5473,16 @@ def _windows_arm64_skip_packages() -> set[str]:
     keep_skipping: set[str] = set()
     for package in WINDOWS_ARM64_SKIP_PACKAGES:
         canonical = _canonical_dist_name(package)
-        if canonical in available:
-            continue
         blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
-        if blockers and all(_canonical_dist_name(b) in available for b in blockers):
+        if blockers:
+            # The blockers decide even when the package's own wheel is hosted: it is
+            # skipped for its DEPENDENCIES, and hosting it does not make those resolve.
+            # tensorboard and librosa publish py3-none-any wheels that the staging step
+            # copies, so a wheelhouse can hold the package while still lacking grpcio or
+            # numba, and unskipping it there sends the resolver to that sdist instead.
+            if all(_canonical_dist_name(b) in available for b in blockers):
+                continue
+        elif canonical in available:
             continue
         keep_skipping.add(package)
     return keep_skipping

@@ -1120,7 +1120,10 @@ def direct_upstream_release_plan(
         # natively, and upstream ships llama-bNNNN-bin-win-cuda-13.4-arm64.zip plus its
         # cudart bundle for them. Try those first, exactly as the x64 branch does, and
         # keep the CPU bundle appended below as the fallback attempt.
-        if host.has_usable_nvidia:
+        # UNSLOTH_LLAMA_ARM64_CUDA=0 has to be honoured here as well as in the fork
+        # resolver: an escape hatch that works on one planning path and silently does
+        # nothing on the other is worse than not having one.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             attempts.extend(
                 windows_cuda_attempts(

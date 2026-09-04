@@ -5034,6 +5034,14 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 $WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
     @("--prerelease=allow", "--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
 } else { @() }
+# The index those arguments are FOR. Without it the CUDA branch below would point them at
+# the driver-derived family (cu130), which publishes no win_arm64 CUDA wheel at all, so a
+# repair or a missing companion on this venv could not resolve. install.ps1 reports the
+# index it actually probed and used; absent it -- a direct `unsloth studio update`, or an
+# older installer -- this stays empty and every index choice is exactly as before.
+$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
+} else { "" }
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
@@ -5232,12 +5240,15 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         } elseif ($WinArm64NoAudio) {
             $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec)
         }
+        # The win_arm64 CUDA wheels live on the index install.ps1 probed, not on the
+        # driver-derived family; everywhere else this is empty and the URL is unchanged.
+        $_cudaIndexUrl = if ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl } else { $TorchInstallIndexUrl }
         if ($script:UnslothVerbose) {
-            Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             $torchInstallExit = $LASTEXITCODE
             $output = ""
         } else {
-            $output = Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $TorchInstallIndexUrl | Out-String
+            $output = Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | Out-String
             $torchInstallExit = $LASTEXITCODE
         }
         if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }

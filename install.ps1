@@ -3797,8 +3797,10 @@ exit 0
     # and the pyarrow== override then forces the Arrow sdist this path exists to avoid.
     # Ask again for the minor that was chosen; a changed answer also flips the arch
     # preference inside Find-CompatiblePython, so the interpreter is chosen again under it.
+    $WoaProbedMinor = $PythonVersion
     if ($DetectedPython -and $DetectedPython.Version -ne $PythonVersion) {
         $WoaNativeBeforeReprobe = $script:WoaNativeCudaTorch
+        $WoaProbedMinor = $DetectedPython.Version
         Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version
         if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
             # $null only if every candidate vanished between the two passes; keep the
@@ -3823,6 +3825,18 @@ exit 0
         if ($Arm64Python -and $Arm64Python.Arch -ne "x86_64") {
             $DetectedPython = $Arm64Python
             step "python" "using native ARM64 Python $($DetectedPython.Version)"
+            # This installs $PythonVersion, which is not necessarily the minor the probe
+            # last answered for: the re-probe above may have settled on an installed 3.12
+            # while python.org hands back a fresh 3.13. Ask again for the interpreter that
+            # will actually own the venv, so the index and the pyarrow source are both
+            # confirmed for it rather than for a minor that is no longer in play.
+            if ($DetectedPython.Version -ne $WoaProbedMinor) {
+                $WoaProbedMinor = $DetectedPython.Version
+                Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version
+                if (-not $script:WoaNativeCudaTorch) {
+                    substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
+                }
+            }
         } else {
             # No native interpreter: the win_arm64 wheels are unusable, so fall back to the
             # emulated x64 stack rather than installing wheels this python cannot import.
@@ -4709,11 +4723,20 @@ exit 0
     # that a user set for their own wheelhouse is left exactly as it was -- clearing that
     # would break an air-gapped install on every Windows host, which is not this PR's
     # business. Same intent as always assigning UNSLOTH_WOA_HAS_TORCHAUDIO.
+    # Both spellings: the assignment below hands uv the 8.3 short form when the long one
+    # contains a space, so matching only the long prefix would leave this run's own
+    # variables behind on the next pass -- the exact leak this block exists to stop.
     $_woaOwnedPrefix = Join-Path $StudioHome "woa"
+    $_woaOwnedPrefixes = @($_woaOwnedPrefix, (Get-UvSafePath $_woaOwnedPrefix)) |
+        Where-Object { $_ } | Select-Object -Unique
     foreach ($_woaResolverVar in 'UV_OVERRIDE', 'UV_FIND_LINKS', 'PIP_FIND_LINKS') {
         $_woaInherited = [Environment]::GetEnvironmentVariable($_woaResolverVar)
-        if ($_woaInherited -and $_woaInherited.StartsWith($_woaOwnedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
+        if (-not $_woaInherited) { continue }
+        foreach ($_woaPrefix in $_woaOwnedPrefixes) {
+            if ($_woaInherited.StartsWith($_woaPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
+                break
+            }
         }
     }
     if ($script:WoaNativeCudaTorch) {
@@ -4724,6 +4747,26 @@ exit 0
         } catch {
             substep "could not create $WoaWheelDir -- falling back to the x64 stack." "Yellow"
             $script:WoaNativeCudaTorch = $false
+        }
+    }
+    if ($script:WoaNativeCudaTorch) {
+        # uv splits UV_OVERRIDE on whitespace and accepts no quoting or escaping of any
+        # kind (checked against uv 0.10.7: bare, "quoted", 'quoted' and back\ slashed all
+        # fail the same way), so a resolver path it cannot read is not a degraded install,
+        # it is every later uv call dying on a truncated path. Get-UvSafePath answers with
+        # the 8.3 short form, but 8.3 generation can be disabled on the volume, and then
+        # a spaced StudioHome has no space-free spelling at all. Decide that here, before
+        # anything is staged, and take the x64 path -- which never sets these variables --
+        # rather than building a native venv that cannot resolve. Same rule as the pyarrow
+        # probe: a host that cannot be served natively is never left half configured.
+        foreach ($_woaResolverPath in @($WoaDir, $WoaWheelDir)) {
+            if ((Get-UvSafePath $_woaResolverPath) -match '\s') {
+                substep "windows on arm: $_woaResolverPath contains a space and this volume has no" "Yellow"
+                substep "8.3 short name for it, which uv cannot read -- using the x64 stack instead." "Yellow"
+                substep "Set UNSLOTH_STUDIO_HOME to a path without spaces for the native install." "Yellow"
+                $script:WoaNativeCudaTorch = $false
+                break
+            }
         }
     }
     if ($script:WoaNativeCudaTorch) {
@@ -4869,7 +4912,16 @@ exit 0
             $abiTags = $parts[-2] -split '\.'
             $compatible = $false
             foreach ($pyTag in ($parts[-3] -split '\.')) {
-                if ($pyTag -eq $WoaWheelTag) { $compatible = $true; break }
+                # The ABI has to agree as well as the interpreter: a cp313-cp313t wheel
+                # is built for the free-threaded build and uv rejects it here, so
+                # matching on the python tag alone would drop the override and send the
+                # resolve to the sdist the override exists to avoid.
+                if ($pyTag -eq $WoaWheelTag -and (
+                        ($abiTags -contains $WoaWheelTag) -or
+                        ($abiTags -contains 'abi3') -or
+                        ($abiTags -contains 'none'))) {
+                    $compatible = $true; break
+                }
                 if (($abiTags -contains 'none') -and ($pyTag -match '^py3(\d*)$')) {
                     if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $WoaWheelMinor)) {
                         $compatible = $true; break
@@ -6941,6 +6993,17 @@ sys.exit(2 if conflict else (0 if installed else 1))
     # rather than assuming there is none. Always assigned, so a previous run in the same
     # shell cannot leak a stale answer.
     $env:UNSLOTH_WOA_HAS_TORCHAUDIO = if ($script:WoaNativeCudaTorch -and $script:WoaTorchAudio) { "1" } else { "0" }
+    # And WHICH index that was. setup.ps1 otherwise derives its CUDA index from the driver
+    # (cu130 today), and download.pytorch.org publishes no win_arm64 CUDA wheel at all, so
+    # a later repair or a missing companion would be resolved against an index that cannot
+    # serve this venv. Deliberately not UNSLOTH_WOA_TORCH_INDEX_URL, which is the user's
+    # INPUT override read at the top of this script: writing that one here would make a
+    # second run in the same shell treat this run's choice as a hand-pinned index.
+    if ($script:WoaNativeCudaTorch -and $script:WoaTorchIndexUrl) {
+        $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $script:WoaTorchIndexUrl
+    } else {
+        Remove-Item Env:UNSLOTH_WOA_SELECTED_TORCH_INDEX -ErrorAction SilentlyContinue
+    }
     $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
         [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
     }

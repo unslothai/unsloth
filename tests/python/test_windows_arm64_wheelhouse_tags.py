@@ -161,3 +161,89 @@ class TestInstallPs1Mirror:
         for line in source.splitlines():
             if "torch index:" in line:
                 assert "Remove-IndexUrlCredentials" in line, line.strip()
+
+
+class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
+    """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel.
+
+    tensorboard and librosa publish py3-none-any wheels, and the staging step copies
+    ``*-any.whl`` as well as win_arm64, so a wheelhouse can hold the package while still
+    lacking grpcio or numba. Unskipping it there sends the resolver to the blocker's
+    sdist, which is the unbuildable thing the skip existed to avoid.
+    """
+
+    def _wheelhouse(self, tmp_path, *specs):
+        for name, py, abi, plat in specs:
+            (tmp_path / f"{name}-1.0.0-{py}-{abi}-{plat}.whl").write_bytes(b"")
+        return tmp_path
+
+    def _skips(self, ips, tmp_path, monkeypatch, *specs):
+        self._wheelhouse(tmp_path, *specs)
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            return ips._windows_arm64_skip_packages()
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_hosting_tensorboard_without_grpcio_keeps_the_skip(self, ips, tmp_path, monkeypatch):
+        skips = self._skips(
+            ips, tmp_path, monkeypatch, ("tensorboard", "py3", "none", "any"),
+        )
+        assert "tensorboard" in skips
+
+    def test_hosting_both_lifts_it(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        skips = self._skips(
+            ips, tmp_path, monkeypatch,
+            ("tensorboard", "py3", "none", "any"),
+            ("grpcio", tag, tag, _this_platform()),
+        )
+        assert "tensorboard" not in skips
+
+    def test_librosa_needs_numba_as_well_as_llvmlite(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        skips = self._skips(
+            ips, tmp_path, monkeypatch,
+            ("librosa", "py3", "none", "any"),
+            ("llvmlite", tag, tag, _this_platform()),
+        )
+        assert "librosa" in skips
+
+    def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        skips = self._skips(
+            ips, tmp_path, monkeypatch, ("tiktoken", tag, tag, _this_platform()),
+        )
+        assert "tiktoken" not in skips
+
+
+class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
+    """cp313-cp313t is built for the free-threaded build; uv rejects it on cp313.
+
+    Matching on the python tag alone counted it as available, which dropped the package's
+    requirement override and sent the resolve to the sdist the override existed to avoid.
+    """
+
+    def test_python_side_rejects_a_free_threaded_abi(self, ips):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+        matched = ips._wheel_matches_interpreter(
+            _wheel("tiktoken", tag, f"{tag}t")
+        )
+        assert matched is free_threaded
+
+    def test_install_ps1_checks_the_abi_not_just_the_python_tag(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = source[source.index("$WoaWheelNames = @{}"):]
+        block = block[:block.index("$WoaDropCandidates")]
+        first = block[block.index("foreach ($pyTag in"):]
+        first = first[:first.index("$compatible = $true; break") + 30]
+        assert "$abiTags -contains $WoaWheelTag" in first, (
+            "the exact-python-tag branch must also require a usable ABI"
+        )
