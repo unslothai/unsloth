@@ -274,6 +274,17 @@ def _spark_peer_cabled():
 
 def notify_device_map_cannot_span_sparks(device_map):
     """Explain, once, that a multi-device map does nothing on a single-GPU Spark."""
+    try:
+        _notify_device_map_cannot_span_sparks(device_map)
+    except Exception:
+        # This is a cosmetic notice sitting on the model-load path of every platform we
+        # support. Nothing it can discover is worth failing a load that would otherwise
+        # have succeeded, so it fails silent rather than propagating. The cheap gates
+        # below are still checked first, so the try costs nothing on the common path.
+        pass
+
+
+def _notify_device_map_cannot_span_sparks(device_map):
     if _SPARK_NOTICE_SHOWN[0]:
         return
     if not isinstance(device_map, str) or device_map not in _MULTI_DEVICE_MAPS:

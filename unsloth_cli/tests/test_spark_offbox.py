@@ -635,3 +635,95 @@ def test_merge_module_imports_nothing_heavy() -> None:
         elif isinstance(node, ast.ImportFrom):
             imported.append(node.module or "")
     assert not [n for n in imported if n.split(".")[0] in HEAVY | {"safetensors"}]
+
+
+# ── The Spark notice on the model-load path of every platform ────────────────
+# notify_device_map_cannot_span_sparks runs inside FastLanguageModel.from_pretrained
+# and FastModel.from_pretrained, so it executes for every Unsloth user on every OS and
+# accelerator. It is cosmetic. The bar is that it can never turn a load that would have
+# succeeded into a crash, and that it is silent on anything that is not a cabled Spark.
+
+_PLATFORMS = [
+    ("Linux",   "x86_64"),   # linux x64: NVIDIA, AMD, CPU-only, and WSL2
+    ("Linux",   "aarch64"),  # linux arm64 that is not a Spark (GH200, Jetson)
+    ("Windows", "AMD64"),
+    ("Windows", "ARM64"),
+    ("Darwin",  "arm64"),    # Apple Silicon
+    ("Darwin",  "x86_64"),   # Intel Mac
+]
+
+_DEVICE_MAPS = [
+    "balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced",
+    "sequential", "cuda:0", "cpu", "", None, 0, {"": "cuda:0"}, ["cuda:0"],
+]
+
+
+def _spark_notice(monkeypatch, system, machine, *, opener=None, device_count=1):
+    """Call the notice with every probe pointed at a simulated host."""
+    pytest.importorskip("torch")
+    import builtins
+    import platform as _platform
+    import torch
+    from unsloth.models import loader_utils as LU
+
+    monkeypatch.setattr(_platform, "system", lambda: system)
+    monkeypatch.setattr(_platform, "machine", lambda: machine)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: device_count)
+    if opener is not None:
+        real_open = builtins.open
+
+        def guarded(path, *a, **k):
+            p = str(path)
+            if p.startswith("/etc/dgx") or p.startswith("/sys/"):
+                raise opener("simulated")
+            return real_open(path, *a, **k)
+
+        monkeypatch.setattr(builtins, "open", guarded)
+    LU._SPARK_NOTICE_SHOWN[0] = False
+    return LU
+
+
+@pytest.mark.parametrize("system,machine", _PLATFORMS)
+def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine):
+    """No Unsloth user on another platform should ever see this.
+
+    `opener=FileNotFoundError` simulates the non-Spark filesystem as well as the
+    non-Spark platform. Without it this test passes everywhere except on a real DGX
+    Spark, where the aarch64 case would read the machine's own /etc/dgx-release and see
+    a genuine Spark. CI that ever runs on this hardware must not go red for that.
+    """
+    LU = _spark_notice(monkeypatch, system, machine, opener=FileNotFoundError)
+    capsys.readouterr()  # drop unsloth's import banner, which is not ours to assert on
+    for device_map in _DEVICE_MAPS:
+        LU.notify_device_map_cannot_span_sparks(device_map)
+    assert "DGX Spark" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("system,machine", _PLATFORMS)
+@pytest.mark.parametrize(
+    "opener", [OSError, PermissionError, IsADirectoryError, ValueError, RuntimeError]
+)
+def test_spark_notice_never_breaks_a_load(monkeypatch, system, machine, opener):
+    """A probe that raises must not propagate: the caller is loading a model.
+
+    ValueError and RuntimeError are the point of this test. The probes catch OSError
+    themselves, so only the outer guard stops a non-OSError from escaping into
+    from_pretrained and failing a load that had nothing to do with a Spark.
+    """
+    LU = _spark_notice(monkeypatch, system, machine, opener=opener)
+    for device_map in _DEVICE_MAPS:
+        LU.notify_device_map_cannot_span_sparks(device_map)
+
+
+def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
+    """torch.cuda.device_count() can raise on a broken driver; that is not our problem."""
+    pytest.importorskip("torch")
+    import torch
+    from unsloth.models import loader_utils as LU
+
+    def boom():
+        raise RuntimeError("no CUDA driver")
+
+    monkeypatch.setattr(torch.cuda, "device_count", boom)
+    LU._SPARK_NOTICE_SHOWN[0] = False
+    LU.notify_device_map_cannot_span_sparks("balanced")

@@ -6313,8 +6313,12 @@ _unsloth_qwen35_fast_path
 # normal install never pays for this feature existing. Only an aarch64 Linux box
 # reads /etc/dgx-release, which is a few hundred bytes.
 _unsloth_is_dgx_spark() {
-    [ "$OS" = "linux" ] || return 1
-    case "$_ARCH" in aarch64|arm64) ;; *) return 1 ;; esac
+    # `${OS:-}` rather than `$OS`: both are set unconditionally long before this runs,
+    # but install.sh is the entry point for every user on every platform, and if anyone
+    # ever adds `set -u` above this line an unbound variable would abort the whole
+    # install rather than skipping a hint nobody asked for. Fails closed either way.
+    [ "${OS:-}" = "linux" ] || return 1
+    case "${_ARCH:-}" in aarch64|arm64) ;; *) return 1 ;; esac
     grep -qiE 'dgx[_ -]*spark' /etc/dgx-release 2>/dev/null && return 0
     grep -qiE 'dgx[_ -]*spark' /sys/class/dmi/id/product_name 2>/dev/null
 }
