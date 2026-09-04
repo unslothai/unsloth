@@ -232,7 +232,8 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
 
   assert.match(SETTINGS_MOUNT_SOURCE, /dismissLabel=\{t\("common\.close"\)\}/);
   assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /<dialog\s+open/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
 
   assert.match(
     SETTINGS_MOUNT_SOURCE,

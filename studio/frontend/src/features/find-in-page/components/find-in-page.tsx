@@ -146,10 +146,9 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     direction: "forward" | "backward" | "none";
   } | null>(null);
 
-  const [pendingStep, setPendingStep] = useState<{
-    query: string;
-    delta: -1 | 1;
-  } | null>(null);
+  const [pendingSteps, setPendingSteps] = useState<
+    { query: string; delta: -1 | 1 }[]
+  >([]);
 
   const [handoffBlock, setHandoffBlock] = useState<Promise<void> | null>(null);
   const releaseHandoffRef = useRef<(() => void) | null>(null);
@@ -200,7 +199,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     }
     loadingSelectionRef.current = null;
 
-    setPendingStep(null);
+    setPendingSteps([]);
     setOpen(true);
     setFocusToken((token) => token + 1);
   }, []);
@@ -213,10 +212,12 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   }, []);
 
   const queueLoadingStep = useCallback(
-    (delta: -1 | 1) => setPendingStep({ query, delta }),
+    (delta: -1 | 1) => {
+      setPendingSteps((steps) => [...steps, { query, delta }]);
+    },
     [query],
   );
-  const clearPendingStep = useCallback(() => setPendingStep(null), []);
+  const clearPendingSteps = useCallback(() => setPendingSteps([]), []);
   const restoreLoadingSelection = useCallback((input: HTMLInputElement) => {
     const selection = loadingSelectionRef.current;
     if (!selection) return false;
@@ -286,8 +287,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             close={close}
             focusToken={focusToken}
             restoreSelection={restoreLoadingSelection}
-            pendingStep={pendingStep}
-            clearPendingStep={clearPendingStep}
+            pendingSteps={pendingSteps}
+            clearPendingSteps={clearPendingSteps}
           />
         </FindBarAfterComposition>
       </Suspense>

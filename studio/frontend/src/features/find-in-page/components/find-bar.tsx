@@ -22,8 +22,8 @@ export type FindBarProps = {
   close: () => void;
   focusToken: number;
   restoreSelection: (input: HTMLInputElement) => boolean;
-  pendingStep: { query: string; delta: -1 | 1 } | null;
-  clearPendingStep: () => void;
+  pendingSteps: { query: string; delta: -1 | 1 }[];
+  clearPendingSteps: () => void;
 };
 
 /** Keep the caret in the field when a walk button is clicked. */
@@ -65,8 +65,8 @@ export default function FindBar({
   close,
   focusToken,
   restoreSelection,
-  pendingStep,
-  clearPendingStep,
+  pendingSteps,
+  clearPendingSteps,
 }: FindBarProps) {
   const t = useT();
   const [settledQuery, settleQuery] = useSettledQuery(query);
@@ -76,13 +76,10 @@ export default function FindBar({
     queryPending,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const queuedStepRef = useRef<-1 | 0 | 1>(pendingStep?.delta ?? 0);
-  const queuedStepQueryRef = useRef(pendingStep?.query ?? query);
+  const queuedStepsRef = useRef(pendingSteps);
   const stepWhenSettled = (delta: -1 | 1) => {
     if (queryPending) {
-      queuedStepRef.current = delta;
-
-      queuedStepQueryRef.current = query;
+      queuedStepsRef.current.push({ query, delta });
       settleQuery();
       return;
     }
@@ -90,21 +87,29 @@ export default function FindBar({
     else next();
   };
   useEffect(() => {
-    if (queuedStepRef.current === 0 || queuedStepQueryRef.current === query) {
+    const matchingSteps = queuedStepsRef.current.filter(
+      (step) => step.query === query,
+    );
+    if (matchingSteps.length === queuedStepsRef.current.length) {
       return;
     }
-    queuedStepRef.current = 0;
-    clearPendingStep();
-  }, [clearPendingStep, query]);
+    queuedStepsRef.current = matchingSteps;
+    if (matchingSteps.length === 0) {
+      clearPendingSteps();
+    }
+  }, [clearPendingSteps, query]);
 
   useEffect(() => {
-    if (queryPending || count === 0 || queuedStepRef.current === 0) return;
-    const delta = queuedStepRef.current;
-    queuedStepRef.current = 0;
-    if (delta < 0) previous();
-    else next();
-    clearPendingStep();
-  }, [clearPendingStep, count, next, previous, queryPending]);
+    if (queryPending || count === 0 || queuedStepsRef.current.length === 0)
+      return;
+    const steps = queuedStepsRef.current;
+    queuedStepsRef.current = [];
+    for (const step of steps) {
+      if (step.delta < 0) previous();
+      else next();
+    }
+    clearPendingSteps();
+  }, [clearPendingSteps, count, next, previous, queryPending]);
   // Hand focus back to whatever had it, usually the composer, so closing a search leaves the reader
   // typing. Declared above the focus effect so it reads `activeElement` before the field takes it.
   const barRef = useRef<HTMLDivElement>(null);

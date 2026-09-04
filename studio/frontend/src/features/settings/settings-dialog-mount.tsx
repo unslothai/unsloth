@@ -6,7 +6,14 @@ import {
   LazyImportFailure,
 } from "@/components/lazy-import-boundary";
 import { useT } from "@/i18n";
-import { Suspense, lazy, useEffect, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { isImeComposing } from "./hooks/use-shortcut";
 
 import { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
@@ -20,6 +27,8 @@ const SettingsDialog = lazy(() =>
 
 function SettingsDialogLoading({ active }: { active: boolean }) {
   const t = useT();
+
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const closeDialog = useSettingsDialogStore((state) => state.closeDialog);
   useEffect(() => {
     if (!active) return;
@@ -32,10 +41,19 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
     window.addEventListener("keydown", cancel, true);
     return () => window.removeEventListener("keydown", cancel, true);
   }, [active, closeDialog]);
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!active || !dialog) return;
+    dialog.showModal();
+    dialog.focus();
+    return () => dialog.close();
+  }, [active]);
+
   if (!active) return null;
   return (
     <dialog
-      open
+      ref={dialogRef}
+      tabIndex={-1}
       className="fixed inset-0 z-[100] m-0 grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-black/50 p-4"
       data-testid="settings-dialog-loading"
       aria-label={t("common.loading")}

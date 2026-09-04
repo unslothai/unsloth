@@ -795,6 +795,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         })"""
     )
     composer_value = composer.input_value()
+
+    field.press("Enter")
     loading.wait_for(
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
@@ -841,8 +843,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     check(
         engine,
         mode,
-        "Enter queued by the loading shell advances after handoff",
-        "2/28" in page.locator('[role="search"]').inner_text(),
+        "every Enter queued by the loading shell advances after handoff",
+        "3/28" in page.locator('[role="search"]').inner_text(),
         page.locator('[role="search"]').inner_text(),
     )
     context.close()
