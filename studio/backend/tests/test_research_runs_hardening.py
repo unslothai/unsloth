@@ -401,9 +401,39 @@ def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypat
     def explode(_id):
         raise sqlite3.OperationalError("database is locked")
 
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
     monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
     inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
     assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
+    """Neither signal is confirmable, so the smaller of the two is what gets spent."""
+
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 4_096}
+    assert _synthesis_max_tokens(inference) == 4_096
+
+
+def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
+    """A read that lost the writer lock is transient; one retry beats guessing."""
+    calls = {"n": 0}
+
+    def flaky(_id):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"max_output_tokens": 65_536}
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", flaky)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+    assert calls["n"] == 2
 
 
 def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):

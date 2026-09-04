@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -85,6 +86,8 @@ _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
 # Streaming progress is persisted as a full row snapshot; these bound how often that happens.
 _CAP_UNREADABLE = object()
+_CAP_LOOKUP_ATTEMPTS = 3
+_CAP_LOOKUP_RETRY_SECONDS = 0.2
 _PROGRESS_FLUSH_CHARS = 512
 _PROGRESS_FLUSH_SECONDS = 0.25
 _PROGRESS_FLUSH_CHARS_PER_SECOND = 1_048_576
@@ -443,9 +446,13 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     floor = _provider_output_floor(inference.get("providerType"))
     saved = _saved_connection_cap(inference.get("providerId"))
     if saved is _CAP_UNREADABLE:
-        # The current cap could not be confirmed, so the client's older ceiling is not
-        # spendable; the default is the only budget known to have been allowed before.
-        return max(_SYNTHESIS_MAX_TOKENS, floor)
+        # The cap could not be confirmed even after retrying, so neither signal can be
+        # trusted on its own: take the smaller of the client's ceiling and the budget every
+        # run spent before any of this existed. A saved cap lower than that is unknowable
+        # here, and failing a run that has already done all of its research over a transient
+        # lock costs the user far more than one report at the previous default.
+        unconfirmed = _positive_int_or_none(inference.get("maxOutputTokens"))
+        return max(min(unconfirmed or _SYNTHESIS_MAX_TOKENS, _SYNTHESIS_MAX_TOKENS), floor)
     resolved = _positive_int_or_none(inference.get("maxOutputTokens"))
     if resolved:
         # The client resolved this against the run's own model, but the run is durable: the
@@ -482,12 +489,19 @@ def _saved_connection_cap(provider_id: object) -> int | None | object:
     """
     if not isinstance(provider_id, str):
         return None
-    try:
-        provider = providers_db.get_provider(provider_id) or {}
-    except Exception:
-        logger.debug("research.provider_cap_probe_failed", exc_info = True)
-        return _CAP_UNREADABLE
-    return _positive_int_or_none(provider.get("max_output_tokens"))
+    for attempt in range(_CAP_LOOKUP_ATTEMPTS):
+        try:
+            provider = providers_db.get_provider(provider_id) or {}
+        except Exception:
+            logger.debug("research.provider_cap_probe_failed", exc_info = True)
+            # A read that lost a writer lock is transient, and this runs off the loop in a
+            # thread, so a short retry is worth more than a guess about the user's cap.
+            if attempt + 1 < _CAP_LOOKUP_ATTEMPTS:
+                time.sleep(_CAP_LOOKUP_RETRY_SECONDS)
+                continue
+            return _CAP_UNREADABLE
+        return _positive_int_or_none(provider.get("max_output_tokens"))
+    return _CAP_UNREADABLE
 
 
 def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
