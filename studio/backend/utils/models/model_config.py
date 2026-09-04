@@ -1018,6 +1018,7 @@ def is_vision_model(
     revision: Optional[str] = None,
     gguf_variant: Optional[str] = None,
     require_image: bool = True,
+    gguf_companion_roots: Optional[Tuple[str, ...]] = None,
 ) -> bool:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
@@ -1041,7 +1042,21 @@ def is_vision_model(
             gguf_file = detect_gguf_model(local_path)
         if gguf_file:
             companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
-            mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+            companion_roots = gguf_companion_roots or (companion_root,)
+            mmproj_file = next(
+                (
+                    found
+                    for root in companion_roots
+                    if (
+                        found := detect_mmproj_file(
+                            gguf_file,
+                            search_root = root,
+                            allow_disjoint_search_root = gguf_companion_roots is not None,
+                        )
+                    )
+                ),
+                None,
+            )
             # An audio-only projector serves this model's audio input, never an image.
             is_vision = mmproj_file is not None and (
                 not require_image or mmproj_accepts_image(mmproj_file)
@@ -1746,13 +1761,18 @@ def _local_gguf_load_path(path: Path) -> Path:
     return (first or path).absolute()
 
 
-def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+def detect_mmproj_file(
+    path: str,
+    search_root: Optional[str] = None,
+    allow_disjoint_search_root: bool = False,
+) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
     ``path``: directory or a .gguf file. ``search_root``: optional ancestor
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
-    but the projector sits at ``snapshot/``). Returns the projector path or
-    ``None``."""
+    but the projector sits at ``snapshot/``). A trusted cache resolver may set
+    ``allow_disjoint_search_root`` for another revision of the same repository.
+    Returns the projector path or ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1786,7 +1806,9 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         try:
             root_resolved = Path(search_root).resolve()
             start_resolved = start_dir.resolve()
-            if root_resolved == start_resolved or (
+            if allow_disjoint_search_root:
+                _add(root_resolved)
+            elif root_resolved == start_resolved or (
                 start_resolved.is_relative_to(root_resolved)
                 if hasattr(start_resolved, "is_relative_to")
                 else str(start_resolved).startswith(str(root_resolved) + "/")
@@ -3776,6 +3798,7 @@ class ModelConfig:
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
+        gguf_companion_roots: Optional[Tuple[str, ...]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3796,6 +3819,9 @@ class ModelConfig:
                 route rejects only after the read already happened. Left None by
                 every caller that has no boundary to impose, which sees the same
                 candidates in the same order as before.
+            gguf_companion_roots: Trusted snapshot directories belonging to the
+                resolver-selected local cache entry. Used only to locate a
+                compatible mmproj without changing the selected main weights.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -3876,7 +3902,20 @@ class ModelConfig:
                         candidate, gguf_file, kind, companion_root
                     )
 
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                mmproj_file = next(
+                    (
+                        found
+                        for root in (gguf_companion_roots or (companion_root,))
+                        if (
+                            found := detect_mmproj_file(
+                                gguf_file,
+                                search_root = root,
+                                allow_disjoint_search_root = gguf_companion_roots is not None,
+                            )
+                        )
+                    ),
+                    None,
+                )
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")

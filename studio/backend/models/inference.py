@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    PrivateAttr,
     Tag,
     field_validator,
     model_validator,
@@ -36,6 +37,7 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,

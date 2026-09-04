@@ -129,6 +129,32 @@ def _resolve_gguf_load_snapshot(p):
     return selected
 
 
+def local_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
+    """Trusted sibling snapshots for a resolver-selected HF cache path.
+
+    The selected snapshot remains first so a colocated companion wins. Other
+    revisions are returned newest first for the case where a later download
+    contains only a compatible mmproj. Paths outside an exact ``models--*``
+    cache-repo layout never widen their companion search.
+    """
+    from pathlib import Path
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    selected = Path(load_path)
+    snapshots = selected.parent
+    repo = snapshots.parent
+    if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
+        return ()
+    try:
+        if not selected.is_dir():
+            return ()
+        siblings = [path for path in snapshots.iterdir() if path.is_dir() and path != selected]
+    except OSError:
+        return ()
+    siblings.sort(key = snapshot_selection_key, reverse = True)
+    return (str(selected), *(str(path) for path in siblings))
+
+
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local

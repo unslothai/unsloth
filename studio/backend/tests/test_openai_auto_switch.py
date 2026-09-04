@@ -1891,6 +1891,96 @@ def test_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     assert resolver.local_servable_model(info) == (True, ("UD-Q4_K_XL",))
 
 
+def test_hf_cache_entry_keeps_newer_mmproj_for_auto_switch(tmp_path):
+    """The selected weights stay pinned while request and load probes see mmproj."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from utils.models.model_config import ModelConfig, detect_mmproj_file
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    mmproj = newer / "mmproj-vision-model-F16.gguf"
+    mmproj.write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    entry = resolver._local_gguf_entry(
+        "org/Vision-GGUF",
+        SimpleNamespace(id = "org/Vision-GGUF", path = str(repo)),
+    )
+
+    assert entry is not None
+    assert Path(entry.load_path) == old
+    roots = resolver.local_gguf_companion_roots(entry.load_path)
+    assert tuple(map(Path, roots)) == (old, newer)
+    assert detect_mmproj_file(str(old / "vision-model-Q4_K_M.gguf"), search_root = str(newer)) is None
+    assert inference_route._target_accepts_request_input(
+        entry.load_path,
+        True,
+        True,
+        False,
+        entry.variants[0],
+        True,
+        False,
+        roots,
+    )
+    config = ModelConfig.from_identifier(
+        entry.load_path,
+        gguf_variant = entry.variants[0],
+        gguf_companion_roots = roots,
+    )
+    assert config is not None
+    assert config.gguf_mmproj_file == str(mmproj.resolve())
+
+
+def test_auto_switch_carries_hf_cache_companion_roots_into_load(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    repo = tmp_path / "models--org--Vision-GGUF"
+    old = repo / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    newer = repo / "snapshots" / "companion-revision"
+    newer.mkdir(parents = True)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/Vision-GGUF",
+            object(),
+            "tester",
+            require_vision = True,
+        )
+    )
+
+    assert len(recorder.calls) == 1
+    assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
+    assert "_gguf_companion_roots" not in recorder.calls[0].model_dump()
+    assert (
+        LoadRequest(
+            model_path = str(old),
+            _gguf_companion_roots = (str(tmp_path / "untrusted"),),
+        )._gguf_companion_roots
+        == ()
+    )
+
+
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     """Inactive cache rows point at a snapshot but still select complete weights."""
     import os
