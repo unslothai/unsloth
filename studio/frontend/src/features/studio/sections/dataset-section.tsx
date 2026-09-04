@@ -38,34 +38,28 @@ export function DatasetPanel() {
     datasetSource,
     restoreBrowseDatasetSource,
     isVisionModel,
-    isAudioModel,
     modelType,
   } = useTrainingConfigStore(
     useShallow((state) => ({
       datasetSource: state.datasetSource,
       restoreBrowseDatasetSource: state.restoreBrowseDatasetSource,
       isVisionModel: state.isVisionModel,
-      isAudioModel: state.isAudioModel,
       modelType: state.modelType,
     })),
   );
   const localDatasetInventory = useLocalDatasetInventory(datasetSource);
   const uploads = useDatasetUploads();
-  const effectiveModelType = modelType ?? "text";
-  const isMultimodalModel =
-    effectiveModelType === "vision" ||
-    effectiveModelType === "audio" ||
-    isVisionModel ||
-    isAudioModel;
+  // Vision only: audio S3 datasets load since #4539 (audio downloaded beside its manifest).
+  const isVisionTraining = (modelType ?? "text") === "vision" || isVisionModel;
 
   useEffect(() => {
-    if (datasetSource === "s3" && isMultimodalModel) {
+    if (datasetSource === "s3" && isVisionTraining) {
       restoreBrowseDatasetSource();
       toast.info(t("studio.training.validation.s3MultimodalUnsupported"), {
         id: "training-s3-multimodal-source-reset",
       });
     }
-  }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource, t]);
+  }, [datasetSource, isVisionTraining, restoreBrowseDatasetSource, t]);
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
