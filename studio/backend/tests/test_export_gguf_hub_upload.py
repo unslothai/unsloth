@@ -182,3 +182,57 @@ def test_gguf_hub_export_uploads_only_the_export_artifacts(tmp_path, monkeypatch
     assert (Path(output_path) / "notes.txt").is_file()
     assert (Path(output_path) / "dataset.jsonl").is_file()
     assert (leftover / "model-00001-of-00002.safetensors").is_file()
+
+
+def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkeypatch):
+    """A glob character in the model name must not skip its file or match another."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_glob_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    save_dir = tmp_path / "llama-3[8b]"
+    save_dir.mkdir()
+    # An earlier quant in the same folder, named so a bare "a*.gguf" would sweep it in.
+    (save_dir / "a-previous-quant.gguf").write_bytes(b"GGUF")
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            calls.append("convert")
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "a*.gguf").write_bytes(b"GGUF")
+            (output / "llama-3[8b].Q4_K_M.gguf").write_bytes(b"GGUF")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, _path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    # The bracketed name is published, and "a*.gguf" matches only itself.
+    # Every .gguf in the export folder is published, as the model card lists them, but
+    # "a*.gguf" is matched literally rather than as a pattern.
+    assert seen["uploaded"] == ["a*.gguf", "a-previous-quant.gguf", "llama-3[8b].Q4_K_M.gguf"]

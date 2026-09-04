@@ -3,6 +3,7 @@
 
 """Export backend - exports models in various formats."""
 
+import glob
 import json
 import structlog
 import tempfile
@@ -1333,8 +1334,11 @@ class ExportBackend:
                         folder_path = output_path,
                         repo_id = repo_id,
                         repo_type = "model",
+                        # glob.escape: these are literal names, and a folder named e.g.
+                        # "model[v2]" makes a pattern that skips its own file, while one
+                        # holding "*" would match files this export never made.
                         allow_patterns = [
-                            *(os.path.basename(f) for f in final_ggufs),
+                            *(glob.escape(os.path.basename(f)) for f in final_ggufs),
                             "Modelfile",
                         ],
                     )
