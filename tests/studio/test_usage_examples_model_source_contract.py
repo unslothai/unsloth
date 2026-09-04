@@ -43,7 +43,7 @@ def test_examples_name_a_model_the_server_can_serve():
     assert "catalog?.find((m) => m.loaded) ??" in resolver
     assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in resolver
     # The snippet pins the quant so the request names the file on disk.
-    assert "return pinQuant(pick.id, pick.quant);" in resolver
+    assert "return pinQuant(pick.id, vouchedQuant(pick));" in resolver
     assert 'return quant && !id.includes(":") ? `${id}:${quant}` : id;' in resolver
 
     api = OPENAI_MODELS_TS.read_text(encoding = "utf-8")
@@ -132,8 +132,11 @@ def test_the_pinned_quant_comes_from_the_catalog():
     # Catalog membership proves the repo, not the saved quant: the stored one can name a file deleted while another
     # quant remains, so pinning it 404d on a missing quant with a runnable one listed.
     resolver = _resolver()
-    assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in resolver
+    assert "catalog === null ? (ggufVariant ?? undefined) : vouchedQuant(entry)" in resolver
     assert "`${checkpoint}:${ggufVariant}`" not in resolver
+    # An explicit empty `quants` is the server declining to vouch for any pin on that
+    # id, so neither path may fall back to the singular field there.
+    assert "model.quants?.length === 0" in resolver
 
 
 def test_usage_examples_has_no_duplicate_auto_switch_control():
