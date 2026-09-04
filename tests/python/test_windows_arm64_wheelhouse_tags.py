@@ -284,6 +284,13 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         block = block[: block.index("$WoaDropCandidates")]
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
+        # $WoaWheelAbi, not $WoaWheelTag: the ABI a free-threaded venv can install is
+        # cp313t while its python tag is still cp313, so the two are only the same string
+        # on a GIL build. Requiring the python tag here would keep exactly the wheels such
+        # a venv cannot use.
         assert (
-            "$abiTags -contains $WoaWheelTag" in first
+            "$abiTags -contains $WoaWheelAbi" in first
         ), "the exact-python-tag branch must also require a usable ABI"
+        assert (
+            "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first
+        ), "and abi3 is not installable on a free-threaded build"

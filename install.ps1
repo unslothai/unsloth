@@ -465,8 +465,9 @@ function Install-UnslothStudio {
     # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
     # unselected rather than half-configured.
     function Get-WoaPyarrowSource {
-        param([string]$PythonMinor)
+        param([string]$PythonMinor, [string]$AbiTag = "")
         $tag = "cp" + ($PythonMinor -replace '\.', '')
+        if (-not $AbiTag) { $AbiTag = $tag }
         # Existence was not enough: every other branch here checks the interpreter and
         # platform tags, and this one accepted any file at all. An x64 wheel, a wheel for
         # another minor, or something that is not a wheel selected the native path, and
@@ -477,7 +478,7 @@ function Install-UnslothStudio {
             $_paWheel = $env:UNSLOTH_PYARROW_WHEEL
             if (Test-Path -LiteralPath $_paWheel -PathType Leaf) {
                 $_paName = Split-Path -Leaf $_paWheel
-                if (($_paName -like "pyarrow-*") -and ($_paName -like "*$tag-$tag*") -and
+                if (($_paName -like "pyarrow-*") -and ($_paName -like "*$tag-$AbiTag*") -and
                     ($_paName -like "*win_arm64.whl")) {
                     # Two bytes off a stream, not ReadAllBytes: a pyarrow wheel is tens of
                     # megabytes and none of it but the signature is being inspected.
@@ -500,19 +501,19 @@ function Install-UnslothStudio {
         try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                if ($match.Value -like "*$tag-$tag*") { return "pypi" }
+                if ($match.Value -like "*$tag-$AbiTag*") { return "pypi" }
             }
         } catch {}
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
+                Where-Object { $_.Name -like "*$tag-$AbiTag*" } | Select-Object -First 1
             if ($local) { return "wheelhouse" }
             return ""
         }
         try {
             $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                if ($match.Value -like "*$tag-$tag*") { return "wheelhouse" }
+                if ($match.Value -like "*$tag-$AbiTag*") { return "wheelhouse" }
             }
         } catch {}
         return ""
@@ -560,6 +561,28 @@ function Install-UnslothStudio {
         return $null
     }
 
+    # Is $PythonExe a free-threaded build? Its wheels carry a different ABI tag (cp313t,
+    # not cp313), so an index or wheelhouse holding only ordinary GIL wheels has nothing
+    # this interpreter can install. Unknown answers as $false, which is the historical
+    # assumption and keeps every GIL host on exactly the path it had.
+    function Test-PythonFreeThreaded {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+        $out = ""
+        try {
+            $out = (& $PythonExe -c "import sysconfig; print(1 if sysconfig.get_config_var('Py_GIL_DISABLED') else 0)" 2>$null | Out-String).Trim()
+        } catch { return $false }
+        return ($out -eq "1")
+    }
+
+    # The wheel ABI tag for CPython $PythonMinor: cp313 normally, cp313t free-threaded.
+    function Get-WoaAbiTag {
+        param([string]$PythonMinor, [bool]$FreeThreaded)
+        $tag = "cp" + ($PythonMinor -replace '\.', '')
+        if ($FreeThreaded) { return "${tag}t" }
+        return $tag
+    }
+
     # The version of the newest win_arm64 CUDA wheel of $Project on $IndexUrl for CPython
     # $PythonMinor, or $null when the index publishes none.
     #
@@ -573,9 +596,12 @@ function Install-UnslothStudio {
     # CUDA wheels carry no +cu tag now reads as unknown and takes the x64 path -- the safe
     # direction, since that path works.
     function Get-WoaCudaWheelVersion {
-        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
+        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "")
         if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $null }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
+        # Free-threaded interpreters install cp313-cp313t, not cp313-cp313. Defaulting to
+        # the python tag keeps every GIL host answering exactly as before.
+        if (-not $AbiTag) { $AbiTag = $tag }
         $projectUrl = Join-UrlPath $IndexUrl "$Project/"
         try {
             $body = [string](Invoke-RestMethod -Uri $projectUrl -UseBasicParsing -TimeoutSec 20)
@@ -588,7 +614,7 @@ function Install-UnslothStudio {
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
             try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-            if ($name -notlike "*$tag-$tag*") { continue }
+            if ($name -notlike "*$tag-$AbiTag*") { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
             # Order on the numeric release only: "2.15.0.dev20260819+cu134" and
@@ -611,8 +637,8 @@ function Install-UnslothStudio {
     # Does $IndexUrl publish such a wheel at all? The probe's original question, kept as
     # the name every call site and simulation already asks by.
     function Test-WoaCudaWheel {
-        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch")
-        return [bool](Get-WoaCudaWheelVersion -IndexUrl $IndexUrl -PythonMinor $PythonMinor -Project $Project)
+        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "")
+        return [bool](Get-WoaCudaWheelVersion -IndexUrl $IndexUrl -PythonMinor $PythonMinor -Project $Project -AbiTag $AbiTag)
     }
 
     # torch and torchaudio agree on major.minor when they are built for each other
@@ -634,7 +660,14 @@ function Install-UnslothStudio {
     # Windows-on-ARM host with an NVIDIA GPU and some index serves a win_arm64 CUDA
     # torch wheel for $PythonMinor. Safe to call more than once.
     function Initialize-WoaNativeCudaTorch {
-        param([string]$PythonMinor)
+        param([string]$PythonMinor, [bool]$FreeThreaded = $false)
+        # The interpreter's ABI, not just its minor. A free-threaded build installs
+        # cp313-cp313t wheels; probing for cp313-cp313 found the GIL wheels on the index,
+        # enabled the native stack, and left the resolve to fail on wheels this venv
+        # cannot use -- after the x64 fallback had already been given up. Nothing changes
+        # for a GIL interpreter, where the two tags are the same string.
+        $_woaAbiTag = Get-WoaAbiTag -PythonMinor $PythonMinor -FreeThreaded $FreeThreaded
+        $script:WoaFreeThreaded = $FreeThreaded
         $script:WoaNativeCudaTorch = $false
         $script:WoaTorchIndexUrl = $null
         # Cleared too, so a re-probe for another interpreter cannot inherit the first
@@ -673,7 +706,7 @@ function Install-UnslothStudio {
         }
         $torchIndex = $null
         foreach ($candidate in $candidates) {
-            if (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torch") {
+            if (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Project "torch") {
                 $torchIndex = $candidate
                 break
             }
@@ -683,7 +716,7 @@ function Install-UnslothStudio {
         # wheel on PyPI yet and cannot be built here. Requiring both up front means the
         # host either gets the whole native stack or stays on the emulated one -- never a
         # native venv that dies at the datasets step.
-        $pyarrowSource = Get-WoaPyarrowSource -PythonMinor $PythonMinor
+        $pyarrowSource = Get-WoaPyarrowSource -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         if (-not $pyarrowSource) {
             substep "windows on arm: native CUDA torch is available, but no win_arm64 pyarrow wheel could be found." "Yellow"
             substep "using the x64 stack instead. Set UNSLOTH_PYARROW_WHEEL to a win_arm64 pyarrow wheel for the native install." "Yellow"
@@ -700,8 +733,8 @@ function Install-UnslothStudio {
         # extension would fail to load against a libtorch three minors newer. When no
         # matching pair exists the host installs without audio, which is what every
         # Windows-on-ARM install did before this index published one at all.
-        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor
-        $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio"
+        $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
+        $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag
         $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
         if ($_woaAudioVersion -and -not $script:WoaTorchAudio) {
             substep "windows on arm: this index has torchaudio $_woaAudioVersion but torch $_woaTorchVersion; skipping torchaudio."
@@ -3933,7 +3966,8 @@ exit 0
     if ($DetectedPython -and $DetectedPython.Version -ne $PythonVersion) {
         $WoaNativeBeforeReprobe = $script:WoaNativeCudaTorch
         $WoaProbedMinor = $DetectedPython.Version
-        Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version
+        Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
+            -FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)
         if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
             # $null only if every candidate vanished between the two passes; keep the
             # interpreter already in hand rather than continuing without one.
@@ -3964,7 +3998,8 @@ exit 0
             # confirmed for it rather than for a minor that is no longer in play.
             if ($DetectedPython.Version -ne $WoaProbedMinor) {
                 $WoaProbedMinor = $DetectedPython.Version
-                Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version
+                Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
+                    -FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)
                 if (-not $script:WoaNativeCudaTorch) {
                     substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
                 }
@@ -4872,6 +4907,10 @@ exit 0
                 $_woaVenvVersion = (& $VenvPython -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null | Out-String).Trim()
             } catch { $_woaVenvVersion = "" }
             if ($_woaVenvVersion -match '^\d+\.\d+$') { $WoaVenvMinor = $_woaVenvVersion }
+            # And its ABI: a free-threaded venv installs cp313-cp313t, so staging keyed on
+            # the python tag alone would keep the GIL wheels it cannot use and discard the
+            # ones it can.
+            $script:WoaVenvFreeThreaded = Test-PythonFreeThreaded -PythonExe $VenvPython
         }
     }
 
@@ -4943,9 +4982,10 @@ exit 0
             # The minor the probe answered for, which is the venv's interpreter, not
             # $PythonVersion, which is only the minor this run asked for.
             $tag = "cp" + ($WoaVenvMinor -replace '\.', '')
+            $AbiTag = Get-WoaAbiTag -PythonMinor $WoaVenvMinor -FreeThreaded ([bool]$script:WoaVenvFreeThreaded)
             if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
                 $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -like "*$tag-$tag*" } | Select-Object -First 1
+                    Where-Object { $_.Name -like "*$tag-$AbiTag*" } | Select-Object -First 1
                 if ($found) {
                     Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $WoaWheelDir $found.Name) -Force
                     $script:WoaPyarrowWheelName = $found.Name
@@ -4958,7 +4998,7 @@ exit 0
                 try {
                     $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
                     foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                        if ($match.Value -like "*$tag-$tag*") { $wheelName = $match.Value; break }
+                        if ($match.Value -like "*$tag-$AbiTag*") { $wheelName = $match.Value; break }
                     }
                 } catch {}
                 if ($wheelName) {
@@ -5050,6 +5090,8 @@ exit 0
         # compatibility, the parts a wheelhouse can produce: this interpreter's own cp tag,
         # a lower cp tag against the stable ABI, or py3/py3x-none.
         $WoaWheelTag = "cp" + ($WoaVenvMinor -replace '\.', '')
+        $WoaWheelAbi = Get-WoaAbiTag -PythonMinor $WoaVenvMinor -FreeThreaded ([bool]$script:WoaVenvFreeThreaded)
+        $WoaWheelStable = -not $script:WoaVenvFreeThreaded
         $WoaWheelMinor = 0
         if ($WoaVenvMinor -match '^\d+\.(\d+)') { $WoaWheelMinor = [int]$Matches[1] }
         $WoaWheelNames = @{}
@@ -5064,8 +5106,8 @@ exit 0
                 # matching on the python tag alone would drop the override and send the
                 # resolve to the sdist the override exists to avoid.
                 if ($pyTag -eq $WoaWheelTag -and (
-                        ($abiTags -contains $WoaWheelTag) -or
-                        ($abiTags -contains 'abi3') -or
+                        ($abiTags -contains $WoaWheelAbi) -or
+                        ($WoaWheelStable -and ($abiTags -contains 'abi3')) -or
                         ($abiTags -contains 'none'))) {
                     $compatible = $true; break
                 }
@@ -5074,7 +5116,9 @@ exit 0
                         $compatible = $true; break
                     }
                 }
-                if (($abiTags -contains 'abi3') -and ($pyTag -match '^cp3(\d+)$')) {
+                # abi3 only on a GIL build: free-threaded CPython does not implement the
+                # stable ABI (CPython #111506, PEP 703). Mirrors _wheel_matches_interpreter.
+                if ($WoaWheelStable -and ($abiTags -contains 'abi3') -and ($pyTag -match '^cp3(\d+)$')) {
                     if ([int]$Matches[1] -le $WoaWheelMinor) { $compatible = $true; break }
                 }
             }
