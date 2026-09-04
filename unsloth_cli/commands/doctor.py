@@ -162,7 +162,21 @@ def parity_probe_source(deep: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-_ACTIVATE = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+def _activate() -> str:
+    """Where the peer's venv activate lives, resolved rather than assumed.
+
+    UNSLOTH_STUDIO_HOME moves the venv, and a hardcoded ~/.unsloth/studio path then
+    sources nothing on the peer. The visible symptom is not an error but a false
+    negative: the probe runs without the venv, `torchrun` is absent, and doctor reports
+    "could not measure NCCL bandwidth" on a perfectly healthy pair. Imported lazily and
+    behind a fallback so doctor keeps working if spark_cluster is unavailable.
+    """
+    try:
+        from studio.spark_cluster import venv_activate
+
+        return venv_activate()
+    except Exception:
+        return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
 
 
 def _probe_wrapper(source: str) -> str:
@@ -176,7 +190,8 @@ def _probe_wrapper(source: str) -> str:
     import base64
 
     blob = base64.b64encode(source.encode()).decode()
-    return f"[ -f {_ACTIVATE} ] && . {_ACTIVATE}; " f"echo {blob} | base64 -d | python3 -"
+    act = _activate()
+    return f"[ -f {act} ] && . {act}; " f"echo {blob} | base64 -d | python3 -"
 
 
 def _extract(stdout: str, stderr: str):

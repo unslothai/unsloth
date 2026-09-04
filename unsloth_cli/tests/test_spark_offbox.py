@@ -745,3 +745,55 @@ def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", boom)
     LU._SPARK_NOTICE_SHOWN[0] = False
     LU.notify_device_map_cannot_span_sparks("balanced")
+
+
+# ── UNSLOTH_STUDIO_HOME must move the venv that provision copies ─────────────
+# A user who sets UNSLOTH_STUDIO_HOME installs somewhere other than
+# ~/.unsloth/studio. `spark provision` copying the hardcoded default from such a
+# machine copies a stale venv, or nothing at all, and then prints "Peer now matches
+# this node" -- handing the user the exact 601 s `DistStoreError: 1/2 clients joined`
+# that provision exists to prevent, while reporting success.
+
+
+def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere"))
+    venv, label = sc.provision_paths()[0]
+    assert label == "Unsloth venv"
+    assert venv == str(tmp_path / "elsewhere" / "unsloth_studio"), venv
+    # The caches are genuinely per-user and are not moved by STUDIO_HOME.
+    assert [p for p, _ in sc.provision_paths()[1:]] == [
+        "~/.cache/flashinfer",
+        "~/.cache/vllm/flashinfer_autotune_cache",
+        "~/.cache/vllm/torch_compile_cache",
+    ]
+
+
+def test_provision_paths_unchanged_without_studio_home(monkeypatch) -> None:
+    """The default must stay byte-identical: most users never set the variable."""
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    venv, _ = sc.provision_paths()[0]
+    assert venv == str(Path.home() / ".unsloth" / "studio" / "unsloth_studio")
+
+
+def test_peer_activate_stays_home_relative_by_default(monkeypatch) -> None:
+    """`$HOME` is left unexpanded on purpose so it resolves on the PEER.
+
+    That stays correct when the two nodes have different usernames or home
+    directories. Only a custom STUDIO_HOME forces an absolute path, which is right
+    because provision copies to that same absolute path on the peer.
+    """
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    assert sc.venv_activate() == "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+
+
+def test_peer_activate_is_absolute_under_studio_home(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "custom"))
+    act = sc.venv_activate()
+    assert act == str(tmp_path / "custom" / "unsloth_studio" / "bin" / "activate")
+    assert "$HOME" not in act

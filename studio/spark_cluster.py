@@ -1087,7 +1087,7 @@ def nccl_bandwidth(
     # A non-interactive ssh shell does not have the Unsloth venv on PATH, so `torchrun`
     # is simply missing on the peer -- the peer side never starts, and the local side sits
     # at the rendezvous until it times out. Source the venv when it is there.
-    activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+    activate = venv_activate()
     peer_cmd = (
         f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
         f"exec env {common} --node_rank=1 {remote_probe}' "
@@ -1199,7 +1199,7 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
             "print('yes' if os.path.isfile(p) else 'no')\n"
         )
         b64 = base64.b64encode(probe.encode()).decode()
-        activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+        activate = venv_activate()
         remote = f"[ -f {activate} ] && . {activate}; " f"echo {b64} | base64 -d | python3 -"
         try:
             r = subprocess.run(
@@ -1328,7 +1328,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         import base64
 
         b64 = base64.b64encode(probe.encode()).decode()
-        act = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+        act = venv_activate()
         cmd = (
             f"[ -f {act} ] && . {act}; nvidia-smi -L >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; "
             f"echo {b64} | base64 -d | python3 -"
@@ -1505,12 +1505,35 @@ def _cmd_env() -> int:
 # internet cannot supply here: HuggingFace measures ~20 KB/s from these boxes while the
 # RoCE link does ~444 MB/s. Installing on the peer is therefore both slower and a source of
 # resolver drift; copying is faster and bit-identical.
-PROVISION_PATHS = (
-    ("~/.unsloth/studio/unsloth_studio", "Unsloth venv"),
-    ("~/.cache/flashinfer", "FlashInfer JIT cache"),
-    ("~/.cache/vllm/flashinfer_autotune_cache", "vLLM FlashInfer autotune cache"),
-    ("~/.cache/vllm/torch_compile_cache", "vLLM torch.compile cache"),
-)
+# The venv path is resolved, not hardcoded, because UNSLOTH_STUDIO_HOME moves it. Copying
+# `~/.unsloth/studio/unsloth_studio` from a machine whose venv lives somewhere else copies
+# a stale venv or nothing at all, and then reports "Peer now matches this node" -- which
+# hands the user the exact 601 s `DistStoreError: 1/2 clients joined` this command exists
+# to prevent, while telling them everything is fine.
+_DEFAULT_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
+
+
+def provision_paths() -> Tuple[Tuple[str, str], ...]:
+    return (
+        (str(_studio_root() / "unsloth_studio"), "Unsloth venv"),
+        ("~/.cache/flashinfer", "FlashInfer JIT cache"),
+        ("~/.cache/vllm/flashinfer_autotune_cache", "vLLM FlashInfer autotune cache"),
+        ("~/.cache/vllm/torch_compile_cache", "vLLM torch.compile cache"),
+    )
+
+
+def venv_activate() -> str:
+    """The peer's `activate`, for a non-interactive ssh that has no venv on PATH.
+
+    Left as the literal `$HOME/...` in the default case so it expands on the PEER, which
+    stays correct even if the two nodes have different usernames or home directories.
+    Only a custom UNSLOTH_STUDIO_HOME forces an absolute path, and that is right because
+    `provision` copies to the same absolute path on the peer.
+    """
+    root = _studio_root()
+    if root == _DEFAULT_STUDIO_ROOT:
+        return "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+    return str(root / "unsloth_studio" / "bin" / "activate")
 
 
 # A process holding less than this is a CUDA context and scratch, not a job. Anything
@@ -1643,17 +1666,30 @@ def provision_peer(
             )
             return results
     user = os.environ.get("USER", "nvidianew")
-    for path, label in PROVISION_PATHS:
+    for path, label in provision_paths():
         local = osp.expanduser(path)
         if not osp.isdir(local):
             results["skipped"].append((label, "not present locally"))
             continue
+        # rsync creates only the LAST component of the destination, so a peer that does
+        # not yet have the parent fails with `mkdir "<dest>" failed: No such file or
+        # directory`. That is the normal case for the thing this command is for: pairing
+        # a brand-new second Spark, which has no ~/.unsloth/studio yet. Create the parent
+        # remotely first. `~` is rewritten to "$HOME" because a quoted ~ does not expand,
+        # and it must expand on the PEER, whose home may differ from ours.
+        remote_parent = osp.dirname(path)
+        if remote_parent == "~":
+            remote_parent = "$HOME"
+        elif remote_parent.startswith("~/"):
+            remote_parent = "$HOME/" + remote_parent[2:]
         # Trailing slashes matter: copy the CONTENTS into the same path on the peer.
         # --delete is OFF by default: a stale extra file on the peer costs disk, while a
         # deleted live one takes a running interpreter out from under a job mid-flight.
         cmd = [
             "rsync",
             "-a",
+            "--rsync-path",
+            f'mkdir -p "{remote_parent}" && rsync',
             "-e",
             "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
             local + "/",
@@ -2505,7 +2541,7 @@ def _cmd_setup(
     peer_now = peer_ip_for()
     changes = [f"rewrite {config_path()} with the plan above"]
     if peer_now:
-        for path, label in PROVISION_PATHS:
+        for path, label in provision_paths():
             if osp.isdir(osp.expanduser(path)):
                 changes.append(f"rsync {path}/ -> {peer_now}:{path}/  ({label})")
     print("\n  This command would then:")
@@ -2789,7 +2825,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     `DistStoreError: Timed out ... 1/2 clients joined` and never says why its peer left.
     """
     user = os.environ.get("USER", "nvidianew")
-    activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
+    activate = venv_activate()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
     remote = (
         f"cd {os.getcwd()} && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
