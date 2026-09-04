@@ -26,6 +26,8 @@ written to; both caches are re-downloadable, which is the PIP_CACHE_DIR case and
 not the MPLCONFIGDIR one.
 """
 
+from __future__ import annotations
+
 import ast
 import importlib.util
 import os
