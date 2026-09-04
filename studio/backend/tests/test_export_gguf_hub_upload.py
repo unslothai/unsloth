@@ -37,6 +37,17 @@ def _hub_doubles(calls, seen):
             seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
             return _RepoUrl("https://huggingface.co/owner/model")
 
+        def upload_file(
+            self,
+            path_or_fileobj,
+            path_in_repo,
+            repo_id,
+            repo_type = None,
+            commit_message = None,
+        ):
+            calls.append(f"upload_file:{path_in_repo}")
+            seen[path_in_repo] = path_or_fileobj
+
         def upload_folder(
             self,
             folder_path,
@@ -66,6 +77,7 @@ def _hub_doubles(calls, seen):
             token = None,
             commit_message = None,
         ):
+            calls.append("model_card")
             seen["card_repo"] = repo_id
 
     return _HfApi, _ModelCard
@@ -113,7 +125,8 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
     )
 
     assert success is True, message
-    assert calls == ["convert", "upload_folder"]
+    # One conversion, and the card lands after the files it advertises.
+    assert calls == ["convert", "upload_folder", "model_card"]
     assert seen["folder"] == output_path
     assert seen["repo"] == {"repo_id": "owner/model", "private": True, "exist_ok": True}
     assert "model.Q4_K_M.gguf" in seen["uploaded"]
@@ -195,7 +208,7 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
 
     save_dir = tmp_path / "llama-3[8b]"
     save_dir.mkdir()
-    # An earlier quant in the same folder, named so a bare "a*.gguf" would sweep it in.
+    # An earlier export's file, named so a bare "a*.gguf" pattern would sweep it in.
     (save_dir / "a-previous-quant.gguf").write_bytes(b"GGUF")
 
     calls: list[str] = []
@@ -232,7 +245,68 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
     )
 
     assert success is True, message
-    # The bracketed name is published, and "a*.gguf" matches only itself.
-    # Every .gguf in the export folder is published, as the model card lists them, but
-    # "a*.gguf" is matched literally rather than as a pattern.
-    assert seen["uploaded"] == ["a*.gguf", "a-previous-quant.gguf", "llama-3[8b].Q4_K_M.gguf"]
+    # The bracketed name is published rather than skipped, and "a*.gguf" is matched as a
+    # literal, so it neither misses itself nor sweeps in the earlier export's file.
+    assert seen["uploaded"] == ["a*.gguf", "llama-3[8b].Q4_K_M.gguf"]
+
+
+def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, monkeypatch):
+    """Only this run's GGUFs are published, even when the folder holds an older one."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_stale_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    save_dir = tmp_path / "shared-export-folder"
+    save_dir.mkdir()
+    # A different model, exported here earlier. It must not ride along.
+    (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            merged = Path(model_save_path)
+            merged.mkdir(parents = True)
+            (merged / "config.json").write_text('{"model_type": "llama"}')
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            (output / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == ["Modelfile", "model.Q4_K_M.gguf"]
+    assert "some-other-model.Q8_0.gguf" not in seen["card"]
+    # Still on disk, just not republished under this repo.
+    assert (Path(output_path) / "some-other-model.Q8_0.gguf").is_file()
+    # config.json comes from the merged directory, which is deleted before the upload,
+    # and it is never written into the export folder.
+    assert seen["config.json"] == b'{"model_type": "llama"}'
+    assert not (Path(output_path) / "config.json").exists()
+    # The card advertises the files, so it must land after them.
+    assert calls.index("model_card") > calls.index("upload_folder")

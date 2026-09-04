@@ -1160,6 +1160,10 @@ class ExportBackend:
         )
 
         output_path: Optional[str] = None
+        # What this run actually produced, for the Hub leg: the merged config.json is read
+        # here because the temp root holding it is deleted before the upload.
+        exported_ggufs: List[str] = []
+        exported_config: Optional[bytes] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
@@ -1244,6 +1248,12 @@ class ExportBackend:
                             "GGUF conversion produced no files: no .gguf outputs for "
                             f"{abs_save_dir}"
                         )
+                    exported_ggufs = list(relocated_ggufs)
+                    # Kept in memory, not relocated: a config.json in the export folder
+                    # would make _is_model_dir read it as a checkpoint directory.
+                    merged_config = Path(_model_tmp) / "config.json"
+                    if merged_config.is_file():
+                        exported_config = merged_config.read_bytes()
 
                     if modelfiles:
                         modelfile = sorted(modelfiles)[0]
@@ -1321,27 +1331,38 @@ class ExportBackend:
                     hf_api = HfApi(token = hf_token)
                     repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     repo_id = getattr(repo_url, "repo_id", repo_id)
-                    ModelCard(
-                        GGUF_MODEL_CARD.format(
-                            name = repo_id.split("/")[-1],
-                            repo_id = repo_id,
-                            files = "\n".join(f"- `{os.path.basename(f)}`" for f in final_ggufs),
-                        )
-                    ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
-                    # Allow-list, not ignore_patterns: the save directory is user-picked and
-                    # may hold unrelated files, or a _tmp_model_* merge a failed export kept.
+                    # Allow-list over exported_ggufs, not the folder: the save directory is
+                    # user-picked, so it can hold unrelated files, a _tmp_model_* merge a
+                    # failed export kept, or GGUFs from an earlier export of another model.
+                    # glob.escape keeps a name like "model[v2].gguf" a literal, which
+                    # otherwise neither matches itself nor stays confined to itself.
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
                         repo_type = "model",
-                        # glob.escape: these are literal names, and a folder named e.g.
-                        # "model[v2]" makes a pattern that skips its own file, while one
-                        # holding "*" would match files this export never made.
                         allow_patterns = [
-                            *(glob.escape(os.path.basename(f)) for f in final_ggufs),
+                            *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
                             "Modelfile",
                         ],
                     )
+                    if exported_config is not None:
+                        hf_api.upload_file(
+                            path_or_fileobj = exported_config,
+                            path_in_repo = "config.json",
+                            repo_id = repo_id,
+                            repo_type = "model",
+                            commit_message = "Unsloth config.json",
+                        )
+                    # Last: the card advertises files, so it must not land before them.
+                    ModelCard(
+                        GGUF_MODEL_CARD.format(
+                            name = repo_id.split("/")[-1],
+                            repo_id = repo_id,
+                            files = "\n".join(
+                                f"- `{os.path.basename(f)}`" for f in exported_ggufs
+                            ),
+                        )
+                    ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
                 else:
                     self.current_model.push_to_hub_gguf(
                         repo_id,
