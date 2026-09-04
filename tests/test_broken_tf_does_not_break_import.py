@@ -507,10 +507,10 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
     _exec_guard(modules, {})
     assert import_utils._tf_available is False
     assert import_utils._flax_available is False
+    # jax in play means Flax is genuinely in use.
     import_utils._flax_available = True
     _exec_guard(dict(modules, jax = object()), {})
     assert import_utils._flax_available is True
-    # jax in play means Flax is genuinely in use.
     import_utils._flax_available = True
     _exec_guard(modules, {"USE_FLAX": "yes"})
     assert import_utils._flax_available is True

@@ -857,6 +857,7 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
             json.dump(index, fh)
 
+    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     _with_free(monkeypatch, save_mod, 20)
     assert _reclaim(save_mod, merge, gguf, bases) > 0
@@ -869,7 +870,6 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
     # Second export into the same directory, provenance snapshotted the way `unsloth_save_pretrained_gguf` does, before
     # the merge writes.
     preexisting = frozenset(os.listdir(merge))
-    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)
     assert freed > 0, "the second export reclaimed nothing"

@@ -443,6 +443,7 @@ if code == 200 and isinstance(body, dict):
 else:
     fail(f"/v1/models -> {code}: {_shape(body)}")
 
+# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
 code, body = http(
     "POST",
     "/v1/embeddings",
@@ -457,7 +458,6 @@ elif 400 <= code < 600 and code != 500:
 else:
     fail(f"/v1/embeddings -> {code} (expected 200 or 4xx/501)")
 
-# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
 code, body = http(
     "POST",
     "/v1/responses",

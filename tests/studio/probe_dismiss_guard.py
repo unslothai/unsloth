@@ -317,6 +317,7 @@ async def one_case(
         await page.evaluate(BLOCK_JS, HOLD_MS)
         await page.mouse.up()
     elif case == "held_modifier":
+        # Modifiers may be pressed during a held gesture.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -325,7 +326,7 @@ async def one_case(
         await page.mouse.up()
         await page.keyboard.up("Shift")
     elif case == "held_enter":
-        # Modifiers may be pressed during a held gesture.
+        # Enter activates the focused button while the pointer remains down.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -333,7 +334,7 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.mouse.up()
     elif case == "held_space":
-        # Enter activates the focused button while the pointer remains down.
+        # Space activates on keyup, after the pointer click.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -343,7 +344,6 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
     elif case == "held_space_then_space":
-        # Space activates on keyup, after the pointer click.
         # Ensure the swallowed press does not leave the button focused.
         await page.mouse.move(x, y)
         await page.mouse.down()

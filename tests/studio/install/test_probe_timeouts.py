@@ -111,6 +111,7 @@ class TestPowerShellBoundedProbe:
         assert (
             "WaitForExit($TimeoutSec * 1000)" in src
         ), f"{path.name} bounded probe must use WaitForExit with a timeout"
+        # Kill + sentinel on timeout (mirrors Invoke-AmdSmiNoElevate).
         assert (
             "$proc.Kill()" in src and "124" in src
         ), f"{path.name} must kill nvidia-smi and signal a timeout exit code"
@@ -118,7 +119,6 @@ class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_probe_requires_gpu_row(self, path):
         src = path.read_text(encoding = "utf-8")
-        # Kill + sentinel on timeout (mirrors Invoke-AmdSmiNoElevate).
         assert (
             "function Test-NvidiaSmiHasGpu" in src
         ), f"{path.name} must define Test-NvidiaSmiHasGpu"
@@ -130,13 +130,13 @@ class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_detection_uses_validated_probe(self, path):
         src = path.read_text(encoding = "utf-8")
+        # The exit-code-only probe must be gone from the detection block.
         assert (
             "& $nvSmiCmd.Source *> $null" not in src
         ), f"{path.name} must not use the exit-code-only nvidia-smi probe"
         assert (
             "Test-NvidiaSmiHasGpu $nvSmiCmd.Source" in src
         ), f"{path.name} PATH probe must use Test-NvidiaSmiHasGpu"
-        # The exit-code-only probe must be gone from the detection block.
         assert (
             "Test-NvidiaSmiHasGpu $p" in src
         ), f"{path.name} hardcoded-path fallback must use Test-NvidiaSmiHasGpu"

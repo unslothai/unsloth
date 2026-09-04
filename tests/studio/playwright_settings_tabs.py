@@ -295,7 +295,11 @@ def run_chunk_fail(page) -> None:
     click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
     # Read the nav size instead of hardcoding it. The invariant is that blocking a
-    # error-handling regression and was a stale constant.
+    # panel does not collapse the dialog, not that the dialog has any particular
+    # number of tabs. The hardcoded 12 outlived its truth once a page was added,
+    # and this smoke started failing with "took the dialog down" while reporting
+    # dialog: True, which reads like an error-handling regression and was a stale
+    # constant.
     nav_before = page.evaluate(
         "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
     )

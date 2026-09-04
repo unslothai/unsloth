@@ -486,13 +486,13 @@ def test_st_fallback_module_loads_forward_revision():
     }
     assert set(funcs) == {"_module_path", "_read_pooling_mode", "_load_modules"}
 
+    # (a) each helper takes a revision parameter.
     for name, fn in funcs.items():
         arg_names = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
         assert "revision" in arg_names, f"{name} must accept a revision argument"
 
     # (b) every download primitive inside the helpers forwards revision.
     downloads = 0
-    # (a) each helper takes a revision parameter.
     for name, fn in funcs.items():
         for node in ast.walk(fn):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):

@@ -289,7 +289,10 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     )
 
 
-# Images GitHub still schedules.
+# Images GitHub still schedules. macos-14 is absent deliberately: brownouts from 2026-10-05,
+# removal 2026-11-02. Add to this set when GitHub ships an image, and remove from it when GitHub
+# announces a retirement -- the removal is the point, because that is when this guard starts
+# naming the jobs that have to move.
 LIVE_MACOS_IMAGES = {
     "macos-15",
     "macos-15-intel",
