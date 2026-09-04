@@ -153,6 +153,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { ragScopeContextLength } from "./rag-context-length";
+import { isLimitedGrantCurrent } from "../tool-isolation";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -188,7 +189,11 @@ import {
   toolThreadScope,
 } from "../tool-output-scope";
 import type { ModelType, ThreadRecord } from "../types";
-import { isMultimodalResponse } from "../types/api";
+import {
+  isMultimodalResponse,
+  parseToolExecutionRecord,
+  TOOL_EXECUTION_RECORD_ARG_KEY,
+} from "../types/api";
 import type {
   CpuFallbackReason,
   MmprojFallbackReason,
@@ -199,6 +204,7 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
+  ToolExecutionRecord,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1088,7 +1094,15 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const argumentsStr = toolCallReplayArguments(tc.argsText, tc.args);
+  const replayArgs =
+    tc.args && typeof tc.args === "object" && !Array.isArray(tc.args)
+      ? Object.fromEntries(
+          Object.entries(tc.args as Record<string, unknown>).filter(
+            ([key]) => key !== TOOL_EXECUTION_RECORD_ARG_KEY,
+          ),
+        )
+      : tc.args;
+  const argumentsStr = toolCallReplayArguments(tc.argsText, replayArgs);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -4935,6 +4949,70 @@ export function createOpenAIStreamAdapter(
           externalProvider?.providerType,
         ),
       });
+      const runsStudioPythonOrTerminal =
+        supportsStudioToolsForThisTurn &&
+        studioLocalCodeTools.some(
+          (name) => name === "python" || name === "terminal",
+        );
+      let toolIsolationRequestFields: Pick<
+        OpenAIChatCompletionsRequest,
+        "tool_execution_mode" | "tool_ui_session_id" | "limited_grant"
+      > = {};
+      if (runsStudioPythonOrTerminal) {
+        const requestedMode = useChatRuntimeStore.getState().toolExecutionMode;
+        if (requestedMode === "full") {
+          // Full access predates capability discovery and keeps its existing
+          // explicit semantics. The backend still records the launch-time host
+          // state; a failed advisory endpoint must not silently redefine Full.
+          toolIsolationRequestFields = { tool_execution_mode: "full" };
+        } else {
+          await useChatRuntimeStore
+            .getState()
+            .refreshToolIsolationCapability();
+          const isolation = useChatRuntimeStore.getState();
+          const mode = isolation.toolExecutionMode;
+          const capability = isolation.toolIsolationCapability;
+          const limitedGrant = isolation.limitedToolGrant;
+          const currentLimitedGrant = isLimitedGrantCurrent(
+            limitedGrant,
+            capability,
+          )
+            ? limitedGrant
+            : null;
+          if (mode !== requestedMode) {
+            if (capability?.protection_state === "unavailable") {
+              isolation.setToolIsolationConsentOpen(true);
+            }
+            clearSelectedImageEditReference();
+            throw new Error(
+              "The tool-isolation capability changed while preparing this request. Review the current protection level and send the message again.",
+            );
+          }
+          if (
+            (mode === "os_isolation_required" &&
+              capability?.protection_state !== "protected" &&
+              capability?.protection_state !== "preview") ||
+            (mode === "limited" && !currentLimitedGrant)
+          ) {
+            isolation.setToolIsolationConsentOpen(true);
+            clearSelectedImageEditReference();
+            const reason =
+              capability?.reason ??
+              isolation.toolIsolationError ??
+              "No qualified OS isolation backend is available.";
+            throw new Error(
+              `OS isolation is unavailable: ${reason} Review the protection level and explicitly choose Limited mode to run this command without OS isolation.`,
+            );
+          }
+          toolIsolationRequestFields = {
+            tool_execution_mode: mode,
+            tool_ui_session_id: isolation.toolIsolationUiSessionId,
+            ...(mode === "limited" && currentLimitedGrant
+              ? { limited_grant: currentLimitedGrant.grant }
+              : {}),
+          };
+        }
+      }
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -6245,6 +6323,7 @@ export function createOpenAIStreamAdapter(
                       ...hostedCodeToolsForThisTurn,
                     ],
                     mcp_enabled: mcpEnabledForChat,
+                    ...toolIsolationRequestFields,
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"
                       ? {}
@@ -6464,6 +6543,7 @@ export function createOpenAIStreamAdapter(
             // no-stream exception. "ask" sends true; off/full send false (full
             // also drops the sandbox).
             permission_mode: permissionMode,
+            ...toolIsolationRequestFields,
             ...(permissionMode === "auto"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6993,6 +7073,10 @@ export function createOpenAIStreamAdapter(
                     toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const executionRecord =
+                    toolEvent.execution_state === "started"
+                      ? parseToolExecutionRecord(toolEvent.execution_record)
+                      : null;
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -7000,11 +7084,29 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
+                    const existingExecutionRecord =
+                      existing.args && typeof existing.args === "object"
+                        ? parseToolExecutionRecord(
+                            (existing.args as Record<string, unknown>)[
+                              TOOL_EXECUTION_RECORD_ARG_KEY
+                            ],
+                          )
+                        : null;
+                    const cardExecutionRecord =
+                      executionRecord ?? existingExecutionRecord;
                     toolCallParts[idx] = {
                       ...existing,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
-                      args: toolArgs,
+                      args: {
+                        ...toolArgs,
+                        ...(cardExecutionRecord
+                          ? {
+                              [TOOL_EXECUTION_RECORD_ARG_KEY]:
+                                cardExecutionRecord,
+                            }
+                          : {}),
+                      } as ToolCallMessagePart["args"],
                       provenance: mergeToolProvenance(
                         existing.provenance,
                         toolProvenance,
@@ -7016,7 +7118,14 @@ export function createOpenAIStreamAdapter(
                       toolCallId: id,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
-                      args: toolArgs,
+                      args: {
+                        ...toolArgs,
+                        ...(executionRecord
+                          ? {
+                              [TOOL_EXECUTION_RECORD_ARG_KEY]: executionRecord,
+                            }
+                          : {}),
+                      } as ToolCallMessagePart["args"],
                       textCursor: cumulativeText.length,
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
                     } as PositionedToolCallPart);
@@ -7091,6 +7200,7 @@ export function createOpenAIStreamAdapter(
                           images: string[];
                           sessionId: string;
                           files?: SandboxFile[];
+                          execution_record?: ToolExecutionRecord;
                         }
                       | McpImageToolResult
                       | SearchImagesToolResult
@@ -7102,6 +7212,9 @@ export function createOpenAIStreamAdapter(
                           background?: string;
                           prompt?: string;
                         };
+                    const executionRecord = parseToolExecutionRecord(
+                      toolEvent.execution_record,
+                    );
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     // A valid MCP image envelope wins; an invalid marker falls
                     // through so a sandbox __IMAGES__ suffix still renders and
@@ -7155,6 +7268,9 @@ export function createOpenAIStreamAdapter(
                           images,
                           sessionId,
                           files: createdFiles,
+                          ...(executionRecord
+                            ? { execution_record: executionRecord }
+                            : {}),
                         };
                       } catch {
                         parsedResult = rawResult;
@@ -7176,11 +7292,31 @@ export function createOpenAIStreamAdapter(
                         images: [],
                         sessionId: sandboxSessionId || "_default",
                         files: createdFiles,
+                        ...(executionRecord
+                          ? { execution_record: executionRecord }
+                          : {}),
                       };
                     } else if (webImages.length > 0) {
                       parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
+                    }
+                    if (
+                      executionRecord &&
+                      SANDBOX_FILE_TOOLS.has(
+                        toolCallParts[idx].toolName ?? "",
+                      ) &&
+                      (typeof parsedResult !== "object" ||
+                        parsedResult === null ||
+                        !("execution_record" in parsedResult))
+                    ) {
+                      parsedResult = {
+                        text: rawResult,
+                        images: [],
+                        sessionId: sandboxSessionId || "_default",
+                        files: createdFiles,
+                        execution_record: executionRecord,
+                      };
                     }
                     // Merge tool_end args first, then Gemini native_part.
                     const nextArgs =

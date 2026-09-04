@@ -25,6 +25,10 @@ import { pythonToolImagePath } from "./python-tool-image-path";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { toolArgText } from "./tool-arg-text";
 import {
+  toolExecutionRecordFromCard,
+  toolExecutionRecordLabel,
+} from "@/features/chat/types/api";
+import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
@@ -144,6 +148,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const code = toolArgText((args as { code?: unknown })?.code);
+  const executionLabel = toolExecutionRecordLabel(
+    toolExecutionRecordFromCard(args, result),
+  );
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the code, not running it yet.
@@ -211,6 +218,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={CodeIcon}
       />
+      {executionLabel ? (
+        <div
+          data-slot="tool-execution-protection"
+          className="ml-5 w-fit rounded-full border border-border px-2 py-0.5 text-ui-11 text-muted-foreground"
+        >
+          {executionLabel}
+        </div>
+      ) : null}
       {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
         {collapseByDefault && scriptCell}

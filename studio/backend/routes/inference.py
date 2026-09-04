@@ -4856,6 +4856,7 @@ async def _select_request_tools(
     from core.inference.tools import (
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
+        apply_limited_tool_descriptions,
         get_enabled_mcp_tools,
     )
 
@@ -4896,6 +4897,8 @@ async def _select_request_tools(
     # how that server runs.
     if payload.bypass_permissions:
         tools = apply_full_access_tool_descriptions(tools)
+    elif payload.tool_execution_mode == "limited":
+        tools = apply_limited_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -15928,7 +15931,7 @@ def get_tool_isolation_capability(
     via_api_key: _ToolIsolationViaApiKey = False,
 ):
     require_ui_session_for_local_commands(via_api_key)
-    return _read_tool_isolation_capability(force = False)
+    return _read_tool_isolation_capability(force = True)
 
 
 @studio_router.post(
@@ -15948,6 +15951,15 @@ def create_tool_isolation_limited_grant(
                 "code": "CAPABILITY_CHANGED",
                 "message": "Tool-isolation capability changed; review it before using Limited mode.",
                 "retryable": True,
+            },
+        )
+    if snapshot.qualified:
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "OS_ISOLATION_AVAILABLE",
+                "message": "OS isolation is available; Limited mode was not granted.",
+                "retryable": False,
             },
         )
     try:

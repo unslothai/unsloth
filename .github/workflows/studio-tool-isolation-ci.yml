@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Studio Tool Isolation CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/**'
+      - 'studio/backend/models/inference.py'
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/tests/test_os_sandbox.py'
+      - 'studio/backend/tests/test_tool_isolation_api.py'
+      - 'studio/backend/tests/test_tool_output_streaming.py'
+      - 'studio/backend/tests/test_studio_tool_loop.py'
+      - 'studio/backend/tests/test_safetensors_tool_loop.py'
+      - 'studio/backend/tests/test_tool_loop_controller.py'
+      - 'studio/frontend/**'
+      - '.github/workflows/studio-tool-isolation-ci.yml'
+  push:
+    branches:
+      - 'codex/studio-minimal-os-sandbox-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  linux-bubblewrap:
+    name: Linux Bubblewrap live qualification
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify preinstalled Bubblewrap and install test dependencies
+        run: |
+          command -v bwrap
+          bwrap --version
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          python -m pip install 'transformers>=4.51,<5.5'
+      - name: Require a native Linux qualified backend
+        working-directory: studio/backend
+        run: |
+          python - <<'PY'
+          from core.inference.os_sandbox import capability_snapshot
+          capability = capability_snapshot(force=True)
+          print(capability)
+          assert capability.environment == "native_linux", capability
+          assert capability.qualified, capability
+          assert capability.protection_state == "protected", capability
+          PY
+      - name: Focused backend and live enforcement tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_os_sandbox.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
+
+  limited-hosts:
+    name: ${{ matrix.label }} Limited fail-closed behavior
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: macOS
+          - runner: windows-latest
+            label: Windows
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install 'torch>=2.4,<2.11' 'transformers>=4.51,<5.5'
+      - name: Verify unsupported native backend and explicit Limited execution
+        working-directory: studio/backend
+        run: >-
+          python -m pytest -q -s --tb=short
+          tests/test_os_sandbox.py
+          tests/test_tool_isolation_api.py
+          tests/test_full_access_tool_prompt.py
+          -k "not qualified_native_capability"
+
+  nested-container:
+    name: Nested container Bubblewrap probe
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise the live probe inside a fresh outer container
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD:/repo:ro" \
+            -w /repo/studio/backend \
+            ubuntu:22.04 \
+            bash -ceu '
+              apt-get update
+              apt-get install -y bubblewrap python3 python3-pip
+              python3 -m pip install structlog
+              PYTHONPATH=. python3 - <<"PY"
+          from core.inference.os_sandbox import capability_snapshot
+          capability = capability_snapshot(force=True)
+          print(capability)
+          assert capability.environment == "container", capability
+          assert capability.qualified, capability
+          assert capability.protection_state == "preview", capability
+          PY
+            '
+
+  frontend:
+    name: Frontend consent and execution-record UX
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node --experimental-strip-types --test tests/tool-isolation-adapter.test.ts

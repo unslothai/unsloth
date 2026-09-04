@@ -2677,6 +2677,7 @@ type ChatRuntimeStore = {
   toolIsolationCapabilityLoading: boolean;
   toolIsolationGrantLoading: boolean;
   toolIsolationError: string | null;
+  toolIsolationConsentOpen: boolean;
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -3017,6 +3018,7 @@ type ChatRuntimeStore = {
   refreshToolIsolationCapability: () => Promise<void>;
   requestLimitedToolGrant: () => Promise<LimitedToolGrant>;
   clearLimitedToolGrant: () => void;
+  setToolIsolationConsentOpen: (open: boolean) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -4494,6 +4496,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolIsolationCapabilityLoading: false,
   toolIsolationGrantLoading: false,
   toolIsolationError: null,
+  toolIsolationConsentOpen: false,
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -5928,6 +5931,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : state.toolExecutionMode,
       toolIsolationError: null,
     })),
+  setToolIsolationConsentOpen: (toolIsolationConsentOpen) =>
+    set(() => ({ toolIsolationConsentOpen })),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
     set(() => ({ bypassConfirmOpen })),
   allowToolAlways: (sessionId, toolName) =>

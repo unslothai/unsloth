@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from __future__ import annotations
@@ -250,12 +251,12 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 200
     assert response.json() == asdict(_capability())
-    assert calls == [False]
+    assert calls == [True]
 
     with _client(via_api_key=True) as client:
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 403
-    assert calls == [False]
+    assert calls == [True]
 
 
 def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
@@ -274,6 +275,23 @@ def test_grant_endpoint_reprobes_and_rejects_stale_generation(monkeypatch):
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "CAPABILITY_CHANGED"
     assert calls == [True]
+
+
+def test_grant_endpoint_does_not_downgrade_a_qualified_backend(monkeypatch):
+    monkeypatch.setattr(
+        inference_route,
+        "tool_isolation_capability_snapshot",
+        lambda *, force: _capability(qualified = True),
+    )
+
+    with _client(via_api_key = False) as client:
+        response = client.post(
+            "/api/inference/tool-isolation/limited-grant",
+            json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "OS_ISOLATION_AVAILABLE"
 
 
 def test_grant_endpoint_issues_opaque_session_grant_and_is_ui_only(monkeypatch):

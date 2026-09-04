@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
 import os
 import platform
 import shutil
@@ -18,7 +20,7 @@ import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass, field, replace
-from typing import BinaryIO, Callable, Protocol
+from typing import BinaryIO, Callable, Literal, Protocol
 
 from loggers import get_logger
 
@@ -66,17 +68,63 @@ class SandboxCapability:
     qualified: bool
     reason: str
     transient: bool = False
+    environment: str = "unknown"
+    protection_state: str = "unavailable"
+    profile_id: str = "none"
+    probe_generation: str = ""
+    environment_fingerprint: str = ""
+    remediation: str = "Use Limited mode only for a trusted task, or install a qualified backend."
+    retryable: bool = False
+
+
+ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
 
 
 @dataclass(frozen = True)
-class SandboxLaunchSpec:
-    """Everything the backend needs to prepare one existing process launch."""
+class ToolExecutionRecord:
+    requested_mode: ToolExecutionMode
+    effective_mode: ToolExecutionMode
+    environment: str
+    backend: str
+    profile_id: str
+    probe_generation: str
+    os_isolation: bool
+    retained_safeguards: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested_mode": self.requested_mode,
+            "effective_mode": self.effective_mode,
+            "environment": self.environment,
+            "backend": self.backend,
+            "profile_id": self.profile_id,
+            "probe_generation": self.probe_generation,
+            "os_isolation": self.os_isolation,
+            "retained_safeguards": list(self.retained_safeguards),
+        }
+
+
+@dataclass(frozen = True)
+class ToolLaunchPlan:
+    """Complete policy inputs for one final Python or Terminal process launch."""
 
     argv: tuple[str, ...]
     workdir: str
     env: dict[str, str]
     preexec_fn: Callable[[], None] | None = None
     launcher_preexec_fn: Callable[[], None] | None = None
+    requested_mode: ToolExecutionMode = "os_isolation_required"
+    current_subject: str | None = None
+    tool_ui_session_id: str | None = None
+    limited_grant: str | None = None
+    timeout_seconds: int | None = None
+    close_fds: bool = True
+    terminate_descendants: bool = True
+
+
+# Compatibility for focused tests and callers written against the first narrow
+# sandbox checkpoint. New integrations should use ToolLaunchPlan.
+SandboxLaunchSpec = ToolLaunchPlan
 
 
 @dataclass
@@ -88,9 +136,13 @@ class PreparedSandboxLaunch:
     env: dict[str, str]
     preexec_fn: Callable[[], None] | None
     backend: str
+    execution_record: ToolExecutionRecord | None = None
     pass_fds: tuple[int, ...] = ()
     owned_files: list[BinaryIO] = field(default_factory = list)
     cleanup_paths: list[str] = field(default_factory = list)
+    timeout_seconds: int | None = None
+    close_fds: bool = True
+    terminate_descendants: bool = True
 
     def cleanup(self) -> None:
         while self.owned_files:
@@ -108,7 +160,7 @@ class SandboxBackend(Protocol):
 
     def probe(self) -> SandboxCapability: ...
 
-    def prepare(self, spec: SandboxLaunchSpec) -> PreparedSandboxLaunch: ...
+    def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch: ...
 
 
 def _linux_seccomp_filter() -> BinaryIO:
@@ -253,23 +305,72 @@ def _validate_workdir(workdir: str) -> str:
     return wd
 
 
-def _linux_mount_points() -> tuple[str, ...]:
-    points: list[str] = []
+@dataclass(frozen = True)
+class _LinuxMount:
+    mount_id: str
+    parent_id: str
+    major_minor: str
+    root: str
+    mount_point: str
+    mount_options: str
+    fs_type: str
+    source: str
+    super_options: str
+
+
+def _unescape_mountinfo(value: str) -> str:
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _linux_mounts() -> tuple[_LinuxMount, ...]:
+    mounts: list[_LinuxMount] = []
     try:
         with open("/proc/self/mountinfo", encoding = "utf-8") as stream:
             for line in stream:
                 fields = line.split()
-                if len(fields) > 4:
-                    points.append(
-                        fields[4]
-                        .replace("\\040", " ")
-                        .replace("\\011", "\t")
-                        .replace("\\012", "\n")
-                        .replace("\\134", "\\")
+                try:
+                    separator = fields.index("-")
+                except ValueError as exc:
+                    raise SandboxUnavailableError("cannot parse Linux mount topology") from exc
+                if len(fields) < 6 or len(fields) <= separator + 3:
+                    raise SandboxUnavailableError("cannot parse Linux mount topology")
+                mounts.append(
+                    _LinuxMount(
+                        mount_id = fields[0],
+                        parent_id = fields[1],
+                        major_minor = fields[2],
+                        root = _unescape_mountinfo(fields[3]),
+                        mount_point = os.path.realpath(_unescape_mountinfo(fields[4])),
+                        mount_options = fields[5],
+                        fs_type = fields[separator + 1],
+                        source = _unescape_mountinfo(fields[separator + 2]),
+                        super_options = fields[separator + 3],
                     )
+                )
     except OSError as exc:
         raise SandboxUnavailableError("cannot inspect Linux nested mounts") from exc
-    return tuple(points)
+    return tuple(mounts)
+
+
+def _linux_mount_points() -> tuple[str, ...]:
+    return tuple(mount.mount_point for mount in _linux_mounts())
+
+
+def _linux_mount_for_path(path: str) -> _LinuxMount | None:
+    canonical = os.path.realpath(path)
+    candidates = [
+        mount
+        for mount in _linux_mounts()
+        if _contained(canonical, mount.mount_point) or canonical == mount.mount_point
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key = lambda mount: len(mount.mount_point))
 
 
 def _runtime_read_paths() -> tuple[str, ...]:
@@ -310,6 +411,7 @@ def _validate_runtime_paths(
     workdir: str,
     *,
     include_system_roots: bool = False,
+    allow_nested_mounts: bool = False,
 ) -> None:
     """User-managed runtimes may be read-only, but must not carry host IPC into the jail."""
     scan_roots: list[str] = []
@@ -339,7 +441,7 @@ def _validate_runtime_paths(
         scan_roots = [existing for existing in scan_roots if not _contained(existing, root)]
         scan_roots.append(root)
 
-    if sys.platform == "linux":
+    if sys.platform == "linux" and not allow_nested_mounts:
         for mount in _linux_mount_points():
             if any(_contained(mount, root, strict = True) for root in scan_roots):
                 raise SandboxUnavailableError(
@@ -462,21 +564,22 @@ def _trusted_linux_executable(path: str) -> bool:
         current = parent
 
 
-def _excluded_linux_environment() -> str | None:
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding = "utf-8") as stream:
+            return stream.read()
+    except OSError:
+        return ""
+
+
+def _linux_environment() -> str:
     release = ""
-    try:
-        with open("/proc/sys/kernel/osrelease", encoding = "utf-8") as stream:
-            release = stream.read().lower()
-    except OSError:
-        pass
+    release = _read_text("/proc/sys/kernel/osrelease").lower()
     if "microsoft" in release or os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
-        return "WSL is not a qualified sandbox host"
-    cgroup = ""
-    try:
-        with open("/proc/1/cgroup", encoding = "utf-8") as stream:
-            cgroup = stream.read().lower()
-    except OSError:
-        pass
+        return "wsl2"
+    if os.environ.get("COLAB_RELEASE_TAG") or "google.colab" in sys.modules:
+        return "colab"
+    cgroup = _read_text("/proc/1/cgroup").lower()
     container_markers = ("docker", "kubepods", "containerd", "libpod", "podman", "lxc")
     if (
         os.path.exists("/.dockerenv")
@@ -484,28 +587,116 @@ def _excluded_linux_environment() -> str | None:
         or os.environ.get("container")
         or any(marker in cgroup for marker in container_markers)
     ):
-        return "containers are not qualified sandbox hosts"
+        return "container"
     detector = "/usr/bin/systemd-detect-virt"
-    if not _trusted_linux_executable(detector):
-        return "cannot verify that this Linux host is outside a container"
-    try:
-        detected = subprocess.run(
-            [detector, "--container", "--quiet"],
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-            timeout = 3,
-            close_fds = True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "cannot verify that this Linux host is outside a container"
-    if detected.returncode == 0:
-        return "containers are not qualified sandbox hosts"
-    if detected.returncode != 1:
-        return "cannot verify that this Linux host is outside a container"
-    if os.environ.get("COLAB_RELEASE_TAG") or "google.colab" in sys.modules:
-        return "Colab is not a qualified sandbox host"
+    if _trusted_linux_executable(detector):
+        try:
+            detected = subprocess.run(
+                [detector, "--container", "--quiet"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 3,
+                close_fds = True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            detected = None
+        if detected is not None and detected.returncode == 0:
+            return "container"
+        if detected is not None and detected.returncode == 1:
+            return "native_linux"
+    # Qualification still depends on the live sandbox probe. The conservative
+    # label prevents an unusual container from receiving the stronger native
+    # Linux claim merely because the outer environment could not be classified.
+    return "linux_unknown"
+
+
+def _environment_class() -> str:
+    if sys.platform == "linux":
+        return _linux_environment()
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    return f"unsupported-{sys.platform}"
+
+
+def _excluded_linux_environment() -> str | None:
+    """Compatibility hook: environment labels no longer reject qualification alone."""
     return None
+
+
+def _environment_fingerprint(backend: "SandboxBackend | None") -> str:
+    data: dict[str, object] = {
+        "platform": sys.platform,
+        "architecture": platform.machine().lower(),
+        "environment": _environment_class(),
+        "python": os.path.realpath(sys.executable),
+    }
+    try:
+        executable = os.stat(os.path.realpath(sys.executable))
+        data["python_stat"] = [
+            executable.st_dev,
+            executable.st_ino,
+            executable.st_size,
+            executable.st_mtime_ns,
+        ]
+    except OSError:
+        data["python_stat"] = None
+    if sys.platform == "linux":
+        data["namespaces"] = {
+            name: os.readlink(f"/proc/self/ns/{name}")
+            for name in ("mnt", "pid", "net", "ipc", "user")
+            if os.path.exists(f"/proc/self/ns/{name}")
+        }
+        try:
+            data["mounts"] = [
+                [
+                    mount.mount_point,
+                    mount.root,
+                    mount.fs_type,
+                    mount.source,
+                    mount.mount_options,
+                    mount.super_options,
+                ]
+                for mount in _linux_mounts()
+            ]
+        except SandboxUnavailableError as exc:
+            data["mount_error"] = str(exc)
+        data["namespace_policy"] = {
+            path: _read_text(path).strip()
+            for path in (
+                "/proc/sys/kernel/unprivileged_userns_clone",
+                "/proc/sys/user/max_user_namespaces",
+                "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            )
+        }
+        status = _read_text("/proc/self/status")
+        data["outer_status"] = [
+            line
+            for line in status.splitlines()
+            if line.startswith(("CapEff:", "CapBnd:", "NoNewPrivs:", "Seccomp:"))
+        ]
+        candidate = shutil.which("bwrap")
+        if candidate:
+            candidate = os.path.realpath(os.path.abspath(candidate))
+            data["backend_executable"] = candidate
+            try:
+                info = os.stat(candidate)
+                data["backend_stat"] = [
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_uid,
+                    stat.S_IMODE(info.st_mode),
+                ]
+            except OSError:
+                data["backend_stat"] = None
+    elif backend is not None:
+        data["backend"] = backend.identity
+    encoded = json.dumps(data, sort_keys = True, separators = (",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _identity_files() -> tuple[str, str, str]:
@@ -546,6 +737,58 @@ def _nproc_limit() -> int:
         return 10000
 
 
+def _validate_linux_workdir_environment(workdir: str) -> None:
+    if _linux_environment() != "wsl2":
+        return
+    mount = _linux_mount_for_path(workdir)
+    if mount is None:
+        raise SandboxUnavailableError("cannot identify the WSL session-workdir filesystem")
+    marker = f"{mount.fs_type} {mount.source}".lower()
+    if mount.fs_type.lower() in {"9p", "drvfs"} or "drvfs" in marker:
+        raise SandboxUnavailableError(
+            "WSL OS isolation requires the session workdir on the Linux filesystem, not a Windows-mounted filesystem"
+        )
+
+
+def _nested_exposed_mounts(roots: tuple[str, ...]) -> tuple[_LinuxMount, ...]:
+    candidates = [
+        mount
+        for mount in _linux_mounts()
+        if any(_contained(mount.mount_point, root, strict = True) for root in roots)
+    ]
+    selected: list[_LinuxMount] = []
+    for mount in sorted(candidates, key = lambda item: len(item.mount_point)):
+        if any(_contained(mount.mount_point, prior.mount_point) for prior in selected):
+            continue
+        selected.append(mount)
+    return tuple(selected)
+
+
+def _sanitize_linux_environment(env: dict[str, str], environment: str) -> dict[str, str]:
+    sanitized = dict(env)
+    if environment == "wsl2":
+        for key in (
+            "WSL_INTEROP",
+            "WSLENV",
+            "WSL_DISTRO_NAME",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "PULSE_SERVER",
+            "XDG_RUNTIME_DIR",
+        ):
+            sanitized.pop(key, None)
+        path = sanitized.get("PATH", "")
+        sanitized["PATH"] = os.pathsep.join(
+            entry
+            for entry in path.split(os.pathsep)
+            if entry
+            and not entry.lower().startswith(("/mnt/", "/run/desktop/", "/usr/lib/wsl/"))
+            and "windowsapps" not in entry.lower()
+        )
+        sanitized["XDG_RUNTIME_DIR"] = "/tmp/runtime"
+    return sanitized
+
+
 class LinuxBubblewrapBackend:
     identity = "linux-bubblewrap"
 
@@ -553,9 +796,12 @@ class LinuxBubblewrapBackend:
         self._bwrap: str | None = None
 
     def probe(self) -> SandboxCapability:
-        excluded = _excluded_linux_environment()
-        if excluded:
-            return SandboxCapability(self.identity, False, excluded)
+        if platform.machine().lower() not in _LINUX_SECCOMP_ABIS:
+            return SandboxCapability(
+                self.identity,
+                False,
+                f"Linux architecture {platform.machine() or 'unknown'} has no reviewed seccomp ABI",
+            )
         candidate = shutil.which("bwrap")
         if not candidate:
             return SandboxCapability(
@@ -578,6 +824,7 @@ class LinuxBubblewrapBackend:
                 system_roots,
                 "/__unsloth_sandbox_probe_workdir__",
                 include_system_roots = True,
+                allow_nested_mounts = True,
             )
         except SandboxUnavailableError as exc:
             return SandboxCapability(
@@ -588,19 +835,39 @@ class LinuxBubblewrapBackend:
         self._bwrap = candidate
         return _live_probe(self)
 
-    def prepare(self, spec: SandboxLaunchSpec) -> PreparedSandboxLaunch:
+    def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if self._bwrap is None:
             raise SandboxUnavailableError("Bubblewrap was not qualified in this process")
         workdir = _validate_workdir(spec.workdir)
+        _validate_linux_workdir_environment(workdir)
         runtime_paths = _runtime_read_paths()
-        _validate_runtime_paths(runtime_paths, workdir)
+        _validate_runtime_paths(runtime_paths, workdir, allow_nested_mounts = True)
+        exposed_roots = tuple(
+            path
+            for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *runtime_paths)
+            if os.path.exists(path) and not _contained(path, workdir)
+        )
+        nested_mounts: list[tuple[_LinuxMount, bool]] = []
+        for mount in _nested_exposed_mounts(exposed_roots):
+            try:
+                mode = os.stat(mount.mount_point).st_mode
+            except OSError as exc:
+                raise SandboxUnavailableError(
+                    f"a nested host mount cannot be safely masked: {mount.mount_point}"
+                ) from exc
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise SandboxUnavailableError(
+                    f"a nested host mount has an unsupported type: {mount.mount_point}"
+                )
+            nested_mounts.append((mount, stat.S_ISDIR(mode)))
         seccomp_filter = _linux_seccomp_filter()
         try:
             identity_dir, passwd, group = _identity_files()
         except Exception:
             seccomp_filter.close()
             raise
-        env = dict(spec.env)
+        environment = _linux_environment()
+        env = _sanitize_linux_environment(spec.env, environment)
         env["HOME"] = workdir
         env["TMPDIR"] = "/tmp"
 
@@ -644,8 +911,22 @@ class LinuxBubblewrapBackend:
                 private_tmp_runtime_paths.append(path)
                 continue
             argv.extend(("--ro-bind", path, path))
+        empty_mask = os.path.join(identity_dir, "empty")
+        try:
+            with open(empty_mask, "wb"):
+                pass
+        except Exception:
+            seccomp_filter.close()
+            shutil.rmtree(identity_dir, ignore_errors = True)
+            raise
+        for mount, is_directory in nested_mounts:
+            if is_directory:
+                argv.extend(("--tmpfs", mount.mount_point))
+            else:
+                argv.extend(("--ro-bind", empty_mask, mount.mount_point))
         argv.extend(("--dir", workdir, "--remount-ro", "/"))
         argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
+        argv.extend(("--dir", "/tmp/runtime"))
         for path in private_tmp_runtime_paths:
             argv.extend(("--ro-bind", path, path))
         argv.extend(("--bind", workdir, workdir, "--chdir", workdir))
@@ -671,6 +952,9 @@ class LinuxBubblewrapBackend:
             pass_fds = (seccomp_filter.fileno(),),
             owned_files = [seccomp_filter],
             cleanup_paths = [identity_dir],
+            timeout_seconds = spec.timeout_seconds,
+            close_fds = spec.close_fds,
+            terminate_descendants = spec.terminate_descendants,
         )
 
 
@@ -685,7 +969,7 @@ class MacOSSeatbeltBackend:
             "be reliably terminated",
         )
 
-    def prepare(self, spec: SandboxLaunchSpec) -> PreparedSandboxLaunch:
+    def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise SandboxUnavailableError("macOS Seatbelt is not qualified for Studio tool execution")
 
 
@@ -698,6 +982,8 @@ def _probe_payload(
     ipv4_address: tuple[str, int],
     ipv6_address: tuple[str, int, int, int],
     udp_address: tuple[str, int],
+    host_namespaces: dict[str, str],
+    inherited_fds: tuple[int, ...],
 ) -> str:
     abstract_check = ""
     if abstract_socket is not None:
@@ -711,17 +997,49 @@ except OSError:
 finally:
     s.close()
 """
-    return f"""import os, socket
+    return f"""import ctypes, errno, os, socket, sys
 wd = {workdir!r}
+with open(os.path.join(wd, 'probe-read'), encoding='utf-8') as f:
+    assert f.read() == 'readable'
 with open(os.path.join(wd, 'probe-write'), 'w', encoding='utf-8') as f:
     f.write('ok')
 assert not os.path.exists({external_file!r})
+try:
+    open(os.path.join(wd, 'escape'), encoding='utf-8').close()
+    raise AssertionError('followed a workdir symlink outside the sandbox')
+except OSError:
+    pass
 try:
     open('/unsloth-host-escape', 'w').close()
     raise AssertionError('wrote outside workdir')
 except OSError:
     pass
+try:
+    with open(sys.executable, 'ab') as f:
+        f.write(b'x')
+    raise AssertionError('modified the interpreter')
+except OSError:
+    pass
 assert not os.path.exists('/proc/{host_pid}/environ')
+for name, outer in {host_namespaces!r}.items():
+    assert os.readlink('/proc/self/ns/' + name) != outer, name + ' namespace was inherited'
+status = {{}}
+with open('/proc/self/status', encoding='utf-8') as f:
+    for line in f:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            status[key] = value.strip()
+assert status.get('NoNewPrivs') == '1', status.get('NoNewPrivs')
+assert status.get('Seccomp') == '2', status.get('Seccomp')
+assert int(status.get('CapEff', '1'), 16) == 0
+assert int(status.get('CapBnd', '1'), 16) == 0
+for fd in {inherited_fds!r}:
+    try:
+        os.fstat(fd)
+    except OSError as exc:
+        assert exc.errno == errno.EBADF
+    else:
+        raise AssertionError('inherited host descriptor remained open: ' + str(fd))
 if hasattr(socket, 'AF_VSOCK'):
     try:
         vsock = socket.socket(socket.AF_VSOCK)
@@ -730,6 +1048,9 @@ if hasattr(socket, 'AF_VSOCK'):
     else:
         vsock.close()
         raise AssertionError('AF_VSOCK remained available')
+libc = ctypes.CDLL(None, use_errno=True)
+result = libc.syscall(425, 1, 0)
+assert result == -1 and ctypes.get_errno() == errno.EPERM, 'io_uring_setup was not denied'
 for family, address in ((socket.AF_INET, {ipv4_address!r}), (socket.AF_INET6, {ipv6_address!r})):
     s = socket.socket(family)
     s.settimeout(0.2)
@@ -753,6 +1074,13 @@ try:
     raise AssertionError('DNS was reachable')
 except socket.gaierror:
     pass
+for forbidden in (
+    '/sys', '/run', '/var/run', '/init', '/mnt/c', '/mnt/wsl', '/mnt/wslg',
+    '/dev/kvm', '/dev/dxg', '/dev/dri', '/dev/fuse', '/dev/vsock', '/dev/mem',
+    '/var/run/docker.sock', '/run/containerd/containerd.sock',
+    '/var/run/podman/podman.sock', '/var/run/secrets/kubernetes.io',
+):
+    assert not os.path.exists(forbidden), forbidden + ' was exposed'
 s = socket.socket(socket.AF_UNIX)
 try:
     s.connect({host_socket!r})
@@ -785,14 +1113,18 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
     host_ipv4_socket: socket.socket | None = None
     host_ipv6_socket: socket.socket | None = None
     host_udp_socket: socket.socket | None = None
+    inherited_fds: list[int] = []
     prepared: PreparedSandboxLaunch | None = None
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-sandbox-probe-") as base:
             workdir = os.path.join(base, "work")
             os.mkdir(workdir)
+            with open(os.path.join(workdir, "probe-read"), "w", encoding = "utf-8") as stream:
+                stream.write("readable")
             external = os.path.join(base, "host-secret")
             with open(external, "w", encoding = "utf-8") as stream:
                 stream.write("secret")
+            os.symlink(external, os.path.join(workdir, "escape"))
             host_socket_path = os.path.join(base, "host.sock")
             host_path_socket = socket.socket(socket.AF_UNIX)
             host_path_socket.bind(host_socket_path)
@@ -808,6 +1140,22 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
             host_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             host_udp_socket.bind(("127.0.0.1", 0))
             udp_address = host_udp_socket.getsockname()
+            import fcntl
+
+            probe_sources: list[int] = []
+            try:
+                probe_sources.append(os.open(external, os.O_RDONLY))
+                probe_sources.append(os.open(base, os.O_RDONLY))
+                read_fd, write_fd = os.pipe()
+                probe_sources.extend((read_fd, write_fd, host_path_socket.fileno()))
+                for source_fd in probe_sources:
+                    high_fd = fcntl.fcntl(source_fd, fcntl.F_DUPFD, 200)
+                    os.set_inheritable(high_fd, True)
+                    inherited_fds.append(high_fd)
+            finally:
+                for source_fd in probe_sources:
+                    if source_fd != host_path_socket.fileno():
+                        os.close(source_fd)
             abstract_name: str | None = None
             if sys.platform == "linux":
                 abstract_name = "\0unsloth-sandbox-probe-" + str(os.getpid())
@@ -820,6 +1168,10 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
                 "TMPDIR": "/tmp",
                 "LANG": "C.UTF-8",
                 "PYTHONIOENCODING": "utf-8",
+            }
+            host_namespaces = {
+                name: os.readlink(f"/proc/self/ns/{name}")
+                for name in ("mnt", "pid", "net", "ipc", "user")
             }
             spec = SandboxLaunchSpec(
                 argv = (
@@ -836,6 +1188,8 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
                         ipv4_address,
                         ipv6_address,
                         udp_address,
+                        host_namespaces,
+                        tuple(inherited_fds),
                     ),
                 ),
                 workdir = workdir,
@@ -905,6 +1259,11 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
             host_ipv6_socket.close()
         if host_udp_socket is not None:
             host_udp_socket.close()
+        for inherited_fd in inherited_fds:
+            try:
+                os.close(inherited_fd)
+            except OSError:
+                pass
     return SandboxCapability(backend.identity, True, "restrictive live probe passed")
 
 
@@ -922,42 +1281,196 @@ def _platform_backend() -> SandboxBackend | None:
     return None
 
 
-def sandbox_capability() -> SandboxCapability:
-    backend = _platform_backend()
-    if backend is None:
-        return SandboxCapability(
-            f"unsupported-{sys.platform}",
-            False,
-            f"OS sandboxing is unsupported on {sys.platform}; use Full/Bypass Permissions "
-            "only when host execution is explicitly intended",
+def _capability_with_identity(
+    capability: SandboxCapability,
+    *,
+    environment: str,
+    fingerprint: str,
+) -> SandboxCapability:
+    protection_state = "unavailable"
+    if capability.qualified:
+        protection_state = "protected" if environment == "native_linux" else "preview"
+    profile_id = "linux-bubblewrap-v2" if capability.qualified else "none"
+    generation_payload = "\0".join(
+        (
+            fingerprint,
+            capability.backend,
+            str(capability.qualified),
+            capability.reason,
+            protection_state,
+            profile_id,
         )
-    cached = _capability_cache.get(backend.identity)
-    if cached is not None:
+    ).encode()
+    generation = hashlib.sha256(generation_payload).hexdigest()
+    remediation = (
+        "No remediation required."
+        if capability.qualified
+        else "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
+    )
+    return replace(
+        capability,
+        environment = environment,
+        protection_state = protection_state,
+        profile_id = profile_id,
+        probe_generation = generation,
+        environment_fingerprint = fingerprint,
+        remediation = remediation,
+        retryable = capability.transient,
+    )
+
+
+def capability_snapshot(*, force: bool = False) -> SandboxCapability:
+    backend = _platform_backend()
+    environment = _environment_class()
+    fingerprint = _environment_fingerprint(backend)
+    if backend is None:
+        return _capability_with_identity(
+            SandboxCapability(
+                f"unsupported-{sys.platform}",
+                False,
+                f"OS sandboxing is unsupported on {sys.platform}",
+            ),
+            environment = environment,
+            fingerprint = fingerprint,
+        )
+    cached = _capability_cache.get(fingerprint)
+    if cached is not None and not force:
         return cached
     with _probe_lock:
-        cached = _capability_cache.get(backend.identity)
-        if cached is not None:
+        current_fingerprint = _environment_fingerprint(backend)
+        cached = _capability_cache.get(current_fingerprint)
+        if cached is not None and not force:
             return cached
-        result = backend.probe()
+        if force:
+            _capability_cache.clear()
+        result = _capability_with_identity(
+            backend.probe(),
+            environment = _environment_class(),
+            fingerprint = current_fingerprint,
+        )
         if not result.transient:
-            _capability_cache[backend.identity] = result
+            _capability_cache.clear()
+            _capability_cache[current_fingerprint] = result
         return result
 
 
-def prepare_tool_launch(spec: SandboxLaunchSpec) -> PreparedSandboxLaunch:
-    """Prepare one ordinary tool launch; never fall back to the host process."""
+def sandbox_capability() -> SandboxCapability:
+    """Backward-compatible capability accessor."""
+    return capability_snapshot()
+
+
+_LIMITED_SAFEGUARDS = (
+    "process_guard",
+    "command_and_code_analysis",
+    "sanitized_environment",
+    "resource_limits",
+    "descriptor_closure",
+    "workdir_policy",
+    "streaming",
+    "timeout",
+    "cancellation",
+    "reaping",
+    "cleanup",
+)
+_FULL_SAFEGUARDS = ("timeout", "cancellation", "reaping", "cleanup")
+
+
+def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
+    """Finalize one launch in its requested mode without fallback or replay."""
     if not spec.argv:
-        raise ValueError("sandbox launch argv must not be empty")
-    backend = _platform_backend()
-    capability = sandbox_capability()
-    if backend is None or not capability.qualified:
-        raise SandboxUnavailableError(capability.reason)
+        raise ValueError("tool launch argv must not be empty")
+    if spec.requested_mode not in ("os_isolation_required", "limited", "full"):
+        raise SandboxUnavailableError("unknown tool execution mode")
+    if not spec.close_fds or not spec.terminate_descendants:
+        raise SandboxUnavailableError(
+            "tool launches must close inherited descriptors and own descendant cleanup"
+        )
     canonical = replace(spec, workdir = os.path.realpath(spec.workdir))
+    backend = _platform_backend()
+    capability = capability_snapshot()
+
+    if canonical.requested_mode == "limited":
+        if not canonical.current_subject or not canonical.tool_ui_session_id:
+            raise SandboxUnavailableError("Limited mode requires an authenticated Studio UI session")
+        try:
+            from .tool_isolation import LimitedGrantError, validate_limited_grant
+        except ImportError as exc:
+            raise SandboxUnavailableError("Limited mode authorization is unavailable") from exc
+        try:
+            validate_limited_grant(
+                canonical.limited_grant,
+                current_subject = canonical.current_subject,
+                tool_ui_session_id = canonical.tool_ui_session_id,
+                probe_generation = capability.probe_generation,
+                requested_mode = "limited",
+            )
+        except LimitedGrantError as exc:
+            raise SandboxUnavailableError(f"Limited mode authorization failed: {exc}") from exc
+        record = ToolExecutionRecord(
+            requested_mode = "limited",
+            effective_mode = "limited",
+            environment = capability.environment,
+            backend = "process-guard",
+            profile_id = "limited-software-safeguards-v1",
+            probe_generation = capability.probe_generation,
+            os_isolation = False,
+            retained_safeguards = _LIMITED_SAFEGUARDS,
+        )
+        return PreparedSandboxLaunch(
+            argv = canonical.argv,
+            workdir = canonical.workdir,
+            env = canonical.env,
+            preexec_fn = canonical.preexec_fn,
+            backend = record.backend,
+            execution_record = record,
+            timeout_seconds = canonical.timeout_seconds,
+            close_fds = canonical.close_fds,
+            terminate_descendants = canonical.terminate_descendants,
+        )
+
+    if canonical.requested_mode == "full":
+        record = ToolExecutionRecord(
+            requested_mode = "full",
+            effective_mode = "full",
+            environment = capability.environment,
+            backend = "none",
+            profile_id = "full-access-v1",
+            probe_generation = capability.probe_generation,
+            os_isolation = False,
+            retained_safeguards = _FULL_SAFEGUARDS,
+        )
+        return PreparedSandboxLaunch(
+            argv = canonical.argv,
+            workdir = canonical.workdir,
+            env = canonical.env,
+            preexec_fn = canonical.preexec_fn,
+            backend = record.backend,
+            execution_record = record,
+            timeout_seconds = canonical.timeout_seconds,
+            close_fds = canonical.close_fds,
+            terminate_descendants = canonical.terminate_descendants,
+        )
+
+    if backend is None or not capability.qualified:
+        raise SandboxUnavailableError(
+            f"OS_ISOLATION_UNAVAILABLE: {capability.reason}. {capability.remediation}"
+        )
     try:
-        return backend.prepare(canonical)
+        prepared = backend.prepare(canonical)
     except SandboxUnavailableError:
         raise
     except Exception as exc:
         raise SandboxUnavailableError(
             f"{backend.identity} could not prepare the process: {exc}"
         ) from exc
+    prepared.execution_record = ToolExecutionRecord(
+        requested_mode = "os_isolation_required",
+        effective_mode = "os_isolation_required",
+        environment = capability.environment,
+        backend = capability.backend,
+        profile_id = capability.profile_id,
+        probe_generation = capability.probe_generation,
+        os_isolation = True,
+        retained_safeguards = (*_LIMITED_SAFEGUARDS, "os_isolation"),
+    )
+    return prepared

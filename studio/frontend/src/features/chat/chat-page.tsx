@@ -207,6 +207,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
+import { ToolIsolationConsentDialog } from "./permission-mode-select";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
@@ -3974,6 +3975,7 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {active && <ToolIsolationConsentDialog />}
       {/* The MCP servers dialog: its chord has to work before MCP is switched
           on, and the pill that used to own it only renders once it is. Mounted
           through the route change, not gated on `active`, so it can close

@@ -602,6 +602,105 @@ export interface OpenAIChatMessage {
   name?: string;
 }
 
+export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
+
+/** Launch-time protection facts emitted by the backend that ran the tool. */
+export interface ToolExecutionRecord {
+  requested_mode: ToolExecutionMode;
+  effective_mode: ToolExecutionMode;
+  environment: string;
+  backend: string;
+  profile_id: string;
+  probe_generation: string;
+  os_isolation: boolean;
+  retained_safeguards: string[];
+}
+
+/** Internal card metadata. It is stripped from replayed tool arguments. */
+export const TOOL_EXECUTION_RECORD_ARG_KEY =
+  "__unsloth_execution_record" as const;
+
+export function parseToolExecutionRecord(
+  value: unknown,
+): ToolExecutionRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const modes = new Set<ToolExecutionMode>([
+    "os_isolation_required",
+    "limited",
+    "full",
+  ]);
+  if (
+    !modes.has(record.requested_mode as ToolExecutionMode) ||
+    !modes.has(record.effective_mode as ToolExecutionMode) ||
+    typeof record.environment !== "string" ||
+    typeof record.backend !== "string" ||
+    typeof record.profile_id !== "string" ||
+    typeof record.probe_generation !== "string" ||
+    typeof record.os_isolation !== "boolean" ||
+    !Array.isArray(record.retained_safeguards) ||
+    !record.retained_safeguards.every((item) => typeof item === "string")
+  ) {
+    return null;
+  }
+  return {
+    requested_mode: record.requested_mode as ToolExecutionMode,
+    effective_mode: record.effective_mode as ToolExecutionMode,
+    environment: record.environment,
+    backend: record.backend,
+    profile_id: record.profile_id,
+    probe_generation: record.probe_generation,
+    os_isolation: record.os_isolation,
+    retained_safeguards: [...record.retained_safeguards] as string[],
+  };
+}
+
+export function toolExecutionRecordFromCard(
+  args: unknown,
+  result: unknown,
+): ToolExecutionRecord | null {
+  const resultRecord =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? (result as Record<string, unknown>).execution_record
+      : null;
+  const argsRecord =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? (args as Record<string, unknown>)[TOOL_EXECUTION_RECORD_ARG_KEY]
+      : null;
+  return (
+    parseToolExecutionRecord(resultRecord) ??
+    parseToolExecutionRecord(argsRecord)
+  );
+}
+
+/** A card label derived only from the backend's launch-time record. */
+export function toolExecutionRecordLabel(
+  record: ToolExecutionRecord | null,
+): string | null {
+  if (!record) return null;
+  if (record.effective_mode === "full") {
+    return "Full access · security restrictions disabled";
+  }
+  if (record.effective_mode === "limited") {
+    return "Limited · no OS isolation";
+  }
+  if (!record.os_isolation) return null;
+  const environment = record.environment.toLowerCase();
+  const backend = record.backend.toLowerCase().includes("bubblewrap")
+    ? "Bubblewrap"
+    : record.backend;
+  if (environment === "wsl2") {
+    return `Preview OS isolation · ${backend} (WSL2)`;
+  }
+  if (environment === "container") {
+    return `Preview OS isolation · ${backend} (Container)`;
+  }
+  if (environment === "colab") {
+    return `Preview OS isolation · ${backend} (Colab)`;
+  }
+  return `Protected · ${backend}`;
+}
+
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
@@ -655,6 +754,12 @@ export interface OpenAIChatCompletionsRequest {
   permission_mode?: "ask" | "auto" | "off" | "full";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
+  /** Requested Python/Terminal protection mode, revalidated at launch. */
+  tool_execution_mode?: ToolExecutionMode;
+  /** Page-lifetime identity bound to a Limited grant. */
+  tool_ui_session_id?: string;
+  /** Opaque, session-only consent proof. Sent only for current Limited mode. */
+  limited_grant?: string;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

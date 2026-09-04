@@ -23,11 +23,12 @@ from unittest.mock import Mock
 import pytest
 
 from core.inference import os_sandbox
+from core.inference import tool_isolation
 from core.inference import tools as inference_tools
 
 
-def _spec(workdir: Path, *argv: str) -> os_sandbox.SandboxLaunchSpec:
-    return os_sandbox.SandboxLaunchSpec(
+def _spec(workdir: Path, *argv: str) -> os_sandbox.ToolLaunchPlan:
+    return os_sandbox.ToolLaunchPlan(
         argv = tuple(argv) or (sys.executable, "-c", "pass"),
         workdir = str(workdir),
         env = {
@@ -59,14 +60,14 @@ class _RecordingBackend:
             os_sandbox.SandboxCapability(self.identity, True, "qualified")
         ]
         self.probe_calls = 0
-        self.prepared_specs: list[os_sandbox.SandboxLaunchSpec] = []
+        self.prepared_specs: list[os_sandbox.ToolLaunchPlan] = []
 
     def probe(self) -> os_sandbox.SandboxCapability:
         result = self.capabilities[min(self.probe_calls, len(self.capabilities) - 1)]
         self.probe_calls += 1
         return result
 
-    def prepare(self, spec: os_sandbox.SandboxLaunchSpec) -> os_sandbox.PreparedSandboxLaunch:
+    def prepare(self, spec: os_sandbox.ToolLaunchPlan) -> os_sandbox.PreparedSandboxLaunch:
         self.prepared_specs.append(spec)
         return os_sandbox.PreparedSandboxLaunch(
             argv = ("native-sandbox", *spec.argv),
@@ -100,7 +101,7 @@ def test_backend_neutral_launch_spec_is_canonicalized_and_prepared(
 def test_prepare_rejects_empty_inner_argv(tmp_path):
     with pytest.raises(ValueError, match = "argv must not be empty"):
         os_sandbox.prepare_tool_launch(
-            os_sandbox.SandboxLaunchSpec(argv = (), workdir = str(tmp_path), env = {})
+            os_sandbox.ToolLaunchPlan(argv = (), workdir = str(tmp_path), env = {})
         )
 
 
@@ -123,9 +124,60 @@ def test_unsupported_platform_fails_closed(monkeypatch, tmp_path, isolated_capab
     capability = os_sandbox.sandbox_capability()
     assert not capability.qualified
     assert capability.backend == "unsupported-win32"
-    assert "Full/Bypass Permissions" in capability.reason
+    assert "Limited mode" in capability.remediation
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unsupported on win32"):
         os_sandbox.prepare_tool_launch(_spec(tmp_path))
+
+
+def test_full_mode_keeps_lifecycle_plan_without_claiming_os_isolation(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
+    plan = os_sandbox.replace(_spec(tmp_path), requested_mode = "full")
+
+    prepared = os_sandbox.prepare_tool_launch(plan)
+
+    assert prepared.argv == plan.argv
+    assert prepared.execution_record is not None
+    assert prepared.execution_record.effective_mode == "full"
+    assert prepared.execution_record.os_isolation is False
+    assert prepared.execution_record.backend == "none"
+
+
+def test_limited_mode_requires_current_generation_bound_grant(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    store = tool_isolation.LimitedGrantStore(ttl_seconds = 60, max_entries = 4)
+    monkeypatch.setattr(tool_isolation, "_LIMITED_GRANTS", store)
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
+    fingerprint = {"value": "environment-a"}
+    monkeypatch.setattr(
+        os_sandbox, "_environment_fingerprint", lambda _backend: fingerprint["value"]
+    )
+    capability = os_sandbox.capability_snapshot()
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = capability.probe_generation,
+    )
+    plan = os_sandbox.replace(
+        _spec(tmp_path),
+        requested_mode = "limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        limited_grant = grant.token,
+    )
+
+    prepared = os_sandbox.prepare_tool_launch(plan)
+
+    assert prepared.execution_record is not None
+    assert prepared.execution_record.effective_mode == "limited"
+    assert prepared.execution_record.os_isolation is False
+    assert "process_guard" in prepared.execution_record.retained_safeguards
+
+    fingerprint["value"] = "environment-b"
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "capability changed"):
+        os_sandbox.prepare_tool_launch(plan)
 
 
 @pytest.mark.parametrize("qualified", [False, True])
@@ -162,6 +214,53 @@ def test_transient_probe_failure_is_retried_then_success_is_cached(
     assert backend.probe_calls == 2
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [("native_linux", "protected"), ("wsl2", "preview"), ("container", "preview")],
+)
+def test_qualified_capability_label_depends_on_environment(
+    environment, expected, monkeypatch, isolated_capability_cache
+):
+    backend = _RecordingBackend()
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    monkeypatch.setattr(os_sandbox, "_environment_class", lambda: environment)
+    monkeypatch.setattr(os_sandbox, "_environment_fingerprint", lambda _backend: "fingerprint")
+
+    capability = os_sandbox.capability_snapshot()
+
+    assert capability.protection_state == expected
+    assert capability.environment == environment
+    assert capability.profile_id == "linux-bubblewrap-v2"
+    assert capability.probe_generation
+
+
+def test_mount_topology_changes_environment_fingerprint(monkeypatch):
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_environment_class", lambda: "container")
+    monkeypatch.setattr(os_sandbox.shutil, "which", lambda _name: None)
+    mounts = [
+        os_sandbox._LinuxMount("1", "0", "0:1", "/", "/", "rw", "overlay", "overlay", "rw")
+    ]
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: tuple(mounts))
+
+    before = os_sandbox._environment_fingerprint(None)
+    mounts.append(
+        os_sandbox._LinuxMount(
+            "2", "1", "0:2", "/", "/run/secrets", "ro", "tmpfs", "tmpfs", "ro"
+        )
+    )
+
+    assert os_sandbox._environment_fingerprint(None) != before
+
+
+@pytest.mark.parametrize("field", ["close_fds", "terminate_descendants"])
+def test_prepare_rejects_weakened_launch_lifecycle(field, tmp_path):
+    plan = os_sandbox.replace(_spec(tmp_path), **{field: False})
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "descriptors.*descendant"):
+        os_sandbox.prepare_tool_launch(plan)
+
+
 def _mount_sources(argv: tuple[str, ...], option: str) -> list[str]:
     return [argv[index + 1] for index, value in enumerate(argv[:-2]) if value == option]
 
@@ -177,7 +276,7 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     group.write_text("studio:x:1:\n", encoding = "utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
     monkeypatch.setattr(
         os_sandbox,
@@ -217,6 +316,51 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     assert prepared.env["TMPDIR"] == "/tmp"
 
 
+def test_linux_nested_mount_beneath_exposed_root_is_masked(monkeypatch, tmp_path):
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    runtime = tmp_path / "runtime"
+    nested = runtime / "foreign"
+    nested.mkdir(parents = True)
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    passwd = identity / "passwd"
+    group = identity / "group"
+    passwd.touch()
+    group.touch()
+    mount = os_sandbox._LinuxMount(
+        "2", "1", "0:2", "/", str(nested), "rw", "9p", "drvfs", "rw"
+    )
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: (mount,))
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(
+        os_sandbox, "_identity_files", lambda: (str(identity), str(passwd), str(group))
+    )
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+
+    prepared = backend.prepare(_spec(workdir))
+    try:
+        index = prepared.argv.index(str(nested))
+        assert prepared.argv[index - 1] == "--tmpfs"
+    finally:
+        prepared.cleanup()
+
+
+def test_wsl_workdir_on_drvfs_is_ineligible(monkeypatch, tmp_path):
+    mount = os_sandbox._LinuxMount(
+        "2", "1", "0:2", "/", str(tmp_path), "rw", "9p", "drvfs", "rw"
+    )
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "wsl2")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_for_path", lambda _path: mount)
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Linux filesystem"):
+        os_sandbox._validate_linux_workdir_environment(str(tmp_path))
+
+
 def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration(
     monkeypatch, tmp_path
 ):
@@ -244,7 +388,7 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
     assert str(pyvenv_cfg) in paths
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", (str(base_python.parent),))
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
-    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     workdir = tmp_path / "work"
     workdir.mkdir()
     backend = os_sandbox.LinuxBubblewrapBackend()
@@ -262,10 +406,10 @@ def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, t
     workdir.mkdir()
     runtime = "/tmp/studio-venv/bin/python"
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (runtime,))
-    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda paths, workdir: None)
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
-    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     identity = tmp_path / "identity"
     identity.mkdir()
     passwd = identity / "passwd"
@@ -373,12 +517,9 @@ def test_linux_runtime_scan_follows_symlinked_root(monkeypatch, tmp_path):
         server.close()
 
 
-@pytest.mark.parametrize(
-    ("detector_returncode", "expected"),
-    [(0, "containers are not qualified"), (1, None), (2, "cannot verify")],
-)
-def test_linux_container_qualification_uses_trusted_detector(
-    detector_returncode, expected, monkeypatch
+@pytest.mark.parametrize("detector_returncode", [0, 1, 2])
+def test_linux_environment_classifies_containers_without_blanket_rejection(
+    detector_returncode, monkeypatch
 ):
     monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda path: True)
     monkeypatch.setattr(os_sandbox.os.path, "exists", lambda path: False)
@@ -394,15 +535,18 @@ def test_linux_container_qualification_uses_trusted_detector(
     )
     monkeypatch.setattr("builtins.open", Mock(side_effect = OSError("unavailable")))
 
-    result = os_sandbox._excluded_linux_environment()
+    expected = (
+        "container"
+        if detector_returncode == 0
+        else "native_linux"
+        if detector_returncode == 1
+        else "linux_unknown"
+    )
+    assert os_sandbox._linux_environment() == expected
+    assert os_sandbox._excluded_linux_environment() is None
 
-    if expected is None:
-        assert result is None
-    else:
-        assert expected in result
 
-
-def test_linux_qualification_fails_closed_without_trusted_container_detector(monkeypatch):
+def test_linux_environment_without_detector_is_eligible_for_live_probe(monkeypatch):
     monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda path: False)
     monkeypatch.setattr(os_sandbox.os.path, "exists", lambda path: False)
     monkeypatch.delenv("container", raising = False)
@@ -410,7 +554,8 @@ def test_linux_qualification_fails_closed_without_trusted_container_detector(mon
     monkeypatch.delenv("WSL_DISTRO_NAME", raising = False)
     monkeypatch.setattr("builtins.open", Mock(side_effect = OSError("unavailable")))
 
-    assert "cannot verify" in os_sandbox._excluded_linux_environment()
+    assert os_sandbox._linux_environment() == "linux_unknown"
+    assert os_sandbox._excluded_linux_environment() is None
 
 
 def test_workdir_validation_rejects_boundary_crossing_hardlink(tmp_path):
@@ -537,10 +682,12 @@ def _patch_tool_harness(monkeypatch, workdir: Path):
     monkeypatch.setattr(inference_tools, "_build_bypass_env", lambda _path: {"MODE": "bypass"})
 
 
-def _invoke_tool(kind: str, *, disable_sandbox: bool = False) -> str:
+def _invoke_tool(kind: str, *, disable_sandbox: bool = False, **kwargs) -> str:
     if kind == "python":
-        return inference_tools._python_exec("print('ok')", disable_sandbox = disable_sandbox)
-    return inference_tools._bash_exec("printf ok", disable_sandbox = disable_sandbox)
+        return inference_tools._python_exec(
+            "print('ok')", disable_sandbox = disable_sandbox, **kwargs
+        )
+    return inference_tools._bash_exec("printf ok", disable_sandbox = disable_sandbox, **kwargs)
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
@@ -550,13 +697,23 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     workdir = tmp_path / "work"
     workdir.mkdir()
     _patch_tool_harness(monkeypatch, workdir)
-    specs: list[os_sandbox.SandboxLaunchSpec] = []
+    specs: list[os_sandbox.ToolLaunchPlan] = []
     prepared = os_sandbox.PreparedSandboxLaunch(
         argv = ("qualified-native-sandbox", "opaque-inner-command"),
         workdir = str(workdir),
         env = {"MODE": "prepared"},
         preexec_fn = None,
         backend = "test-native",
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = "os_isolation_required",
+            effective_mode = "os_isolation_required",
+            environment = "native_linux",
+            backend = "test-native",
+            profile_id = "test-v1",
+            probe_generation = "generation",
+            os_isolation = True,
+            retained_safeguards = ("os_isolation",),
+        ),
     )
     prepared.cleanup = Mock()
 
@@ -565,15 +722,20 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
         return prepared
 
     popen_calls = []
+    lifecycle_events = []
 
     def popen(argv, **kwargs):
+        lifecycle_events.append("popen")
         popen_calls.append((tuple(argv), kwargs))
         return _FakeProcess()
 
     monkeypatch.setattr(inference_tools, "prepare_tool_launch", prepare)
     monkeypatch.setattr(inference_tools.subprocess, "Popen", popen)
 
-    assert _invoke_tool(kind) == "ok\n"
+    assert _invoke_tool(
+        kind,
+        launch_record_callback = lambda record: lifecycle_events.append(record),
+    ) == "ok\n"
     assert len(specs) == 1
     assert len(popen_calls) == 1
     launched_argv, launched_kwargs = popen_calls[0]
@@ -584,6 +746,7 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     assert launched_kwargs["close_fds"] is True
     assert launched_kwargs["stdin"] is subprocess.DEVNULL
     assert prepared.cleanup.call_count == 1
+    assert lifecycle_events == ["popen", prepared.execution_record]
     if kind == "python":
         assert specs[0].argv[0:2] == (sys.executable, "-u")
         assert specs[0].argv[2].endswith(".py")
@@ -612,11 +775,22 @@ def test_failed_prepare_blocks_before_popen(kind, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
-def test_explicit_disable_sandbox_preserves_direct_host_launch(kind, monkeypatch, tmp_path):
+def test_explicit_disable_sandbox_uses_full_launch_plan(kind, monkeypatch, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     _patch_tool_harness(monkeypatch, workdir)
-    prepare = Mock(side_effect = AssertionError("bypass must not prepare an OS sandbox"))
+    specs = []
+
+    def prepare(spec):
+        specs.append(spec)
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = spec.env,
+            preexec_fn = spec.preexec_fn,
+            backend = "none",
+        )
+
     monkeypatch.setattr(inference_tools, "prepare_tool_launch", prepare)
     popen_calls = []
 
@@ -627,7 +801,8 @@ def test_explicit_disable_sandbox_preserves_direct_host_launch(kind, monkeypatch
     monkeypatch.setattr(inference_tools.subprocess, "Popen", popen)
 
     assert _invoke_tool(kind, disable_sandbox = True) == "ok\n"
-    prepare.assert_not_called()
+    assert len(specs) == 1
+    assert specs[0].requested_mode == "full"
     assert len(popen_calls) == 1
     argv, kwargs = popen_calls[0]
     assert kwargs["env"]["MODE"] == "bypass"
@@ -638,6 +813,99 @@ def test_explicit_disable_sandbox_preserves_direct_host_launch(kind, monkeypatch
         assert argv[2].endswith(".py")
     else:
         assert argv == tuple(inference_tools._get_shell_cmd("printf ok"))
+
+
+@pytest.mark.skipif(
+    sys.platform not in ("darwin", "win32"),
+    reason = "Limited compatibility evidence is collected on macOS and Windows",
+)
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(
+    kind, monkeypatch, tmp_path
+):
+    workdir = tmp_path / "limited-work"
+    workdir.mkdir()
+    monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    capability = os_sandbox.capability_snapshot(force = True)
+    assert not capability.qualified
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page",
+        probe_generation = capability.probe_generation,
+    )
+    records = []
+
+    result = _invoke_tool(
+        kind,
+        timeout = 20,
+        tool_execution_mode = "limited",
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page",
+        limited_grant = grant.token,
+        launch_record_callback = records.append,
+    )
+
+    assert result.strip() == "ok"
+    assert len(records) == 1
+    assert records[0].effective_mode == "limited"
+    assert records[0].os_isolation is False
+    assert "resource_limits" in records[0].retained_safeguards
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object behavior")
+def test_windows_limited_resource_setup_fails_before_payload_runs(
+    monkeypatch, tmp_path
+):
+    workdir = tmp_path / "limited-work"
+    workdir.mkdir()
+    sentinel = workdir / "payload-ran"
+    monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_AS_GB", "invalid")
+    capability = os_sandbox.capability_snapshot(force = True)
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page-fail",
+        probe_generation = capability.probe_generation,
+    )
+
+    result = inference_tools._python_exec(
+        f"open({str(sentinel)!r}, 'w').write('ran')",
+        timeout = 20,
+        tool_execution_mode = "limited",
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page-fail",
+        limited_grant = grant.token,
+    )
+
+    assert "could not establish Windows process resource limits" in result
+    assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "POSIX pre-exec resource limits")
+def test_posix_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp_path):
+    workdir = tmp_path / "limited-work"
+    workdir.mkdir()
+    sentinel = workdir / "payload-ran"
+    monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_AS_GB", "invalid")
+    capability = os_sandbox.capability_snapshot(force = True)
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page-posix-fail",
+        probe_generation = capability.probe_generation,
+    )
+
+    result = inference_tools._python_exec(
+        f"open({str(sentinel)!r}, 'w').write('ran')",
+        timeout = 20,
+        tool_execution_mode = "limited",
+        current_subject = "test:limited-user",
+        tool_ui_session_id = "test-page-posix-fail",
+        limited_grant = grant.token,
+    )
+
+    assert "Limited mode resource-limit configuration is invalid" in result
+    assert not sentinel.exists()
 
 
 @pytest.fixture(scope = "module")

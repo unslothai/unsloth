@@ -196,6 +196,7 @@ function ToolIsolationMenuSection({
   const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
   const error = useChatRuntimeStore((s) => s.toolIsolationError);
   const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+  const setMode = useChatRuntimeStore((s) => s.setToolExecutionMode);
   const presentation = toolIsolationPresentation(mode, capability, grant);
 
   useEffect(() => {
@@ -282,6 +283,15 @@ function ToolIsolationMenuSection({
           Use Limited mode for this session
         </DropdownMenuItem>
       ) : null}
+      {presentation.state === "limited" ? (
+        <DropdownMenuItem
+          onSelect={() => setMode("os_isolation_required")}
+          className="text-ui-13"
+        >
+          <ShieldCheck className="size-4" strokeWidth={2} />
+          Require OS isolation
+        </DropdownMenuItem>
+      ) : null}
       {!loading && (!capability || capability.retryable) ? (
         <DropdownMenuItem
           onSelect={(event) => {
@@ -338,6 +348,14 @@ export function LimitedModeConfirmDialog({
       </AlertDialogContent>
     </AlertDialog>
   );
+}
+
+/** Page-root dialog used by the pre-send gate when Required cannot launch. */
+export function ToolIsolationConsentDialog() {
+  const open = useChatRuntimeStore((s) => s.toolIsolationConsentOpen);
+  const setOpen = useChatRuntimeStore((s) => s.setToolIsolationConsentOpen);
+
+  return <LimitedModeConfirmDialog open={open} onOpenChange={setOpen} />;
 }
 
 /**
