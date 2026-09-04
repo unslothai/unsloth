@@ -25778,7 +25778,10 @@ def _embedding_payload(vector, encoding_format: str):
 
 
 async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
-    from core.inference.llama_keepwarm import untrack_current_request
+    from core.inference.llama_keepwarm import (
+        untrack_admitted_inference,
+        untrack_current_request,
+    )
     from core.rag import config as rag_config
     from core.rag import embeddings as rag_embeddings
 
@@ -25787,7 +25790,12 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     # here would otherwise claim the llama slot and clear preview ownership, hold the in-flight
     # count for the whole encode (blocking a preview swap), and stamp the idle-unload TTL for a
     # model that did no work.
-    untrack_current_request(getattr(request, "scope", None))
+    _scope = getattr(request, "scope", None)
+    untrack_current_request(_scope)
+    # The auto-switch hook already admitted this request before the route knew it would be served
+    # here, and the preview busy guard reads the admitted tally rather than _inflight, so a slow
+    # encode would go on rejecting preview swaps with 503.
+    untrack_admitted_inference(_scope)
 
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format") or "float"
@@ -25799,19 +25807,28 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     model_name = rag_config.effective_embedding_model()
 
     def _embed():
-        limit = rag_embeddings.max_tokens()
-        count = rag_embeddings.token_counter()
+        # Every helper takes the model captured above. Left to default they each re-read the
+        # live setting, so a Settings change while this request queues on the semaphore would
+        # mix one model's limit and dimension with another model's vectors.
+        limit = rag_embeddings.max_tokens(model_name)
+        count = rag_embeddings.token_counter(model_name)
         token_counts = [count(text) for text in texts]
         if limit and max(token_counts) > limit:
             raise HTTPException(
                 status_code = 400,
                 detail = f"'input' exceeds the {limit}-token limit of {model_name}.",
             )
-        if dimensions is not None and dimensions != rag_embeddings.dim():
+        if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {model_name}."
             )
-        return rag_embeddings.encode(texts, normalize = True), sum(token_counts), limit
+        # encode_with_identity, not encode: an ST failure swaps the process to llama-server
+        # mid-encode, which is a different embedding space. Reporting the configured name for
+        # those vectors is how a client ends up storing two spaces under one label.
+        vectors, identity = rag_embeddings.encode_with_identity(
+            texts, model_name = model_name, normalize = True
+        )
+        return vectors, identity, sum(token_counts), limit
 
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -25839,7 +25856,7 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
 
     worker.add_done_callback(_release_embed_permit)
     try:
-        vectors, prompt_tokens, limit = await asyncio.shield(worker)
+        vectors, identity, prompt_tokens, limit = await asyncio.shield(worker)
     except HTTPException as exc:
         api_monitor.fail(monitor_id, str(exc.detail))
         raise
@@ -25858,7 +25875,7 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
             }
             for index, vector in enumerate(vectors)
         ],
-        "model": model_name,
+        "model": identity,
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
     }
     # limit is the per-text token cap but prompt_tokens is the batch sum, so the monitor's

@@ -448,6 +448,20 @@ def _note_admitted_end() -> None:
         _admitted_inference = max(0, _admitted_inference - 1)
 
 
+def untrack_admitted_inference(scope) -> None:
+    """Drop an already-admitted request from the preview busy guard once the route knows it
+    will not run against the resident GGUF after all.
+
+    ``untrack_current_request`` covers only the in-flight counters; the admitted tally is
+    what ``load_model_for_preview`` reads, so a route that admitted at the auto-switch hook
+    and then served the request some other way keeps blocking preview swaps for its whole
+    duration. Pops the marker so the middleware's finally, which balances only a scope that
+    still carries it, cannot decrement a second time. Idempotent."""
+    if not isinstance(scope, dict) or not scope.pop(_ADMITTED_SCOPE_KEY, False):
+        return
+    _note_admitted_end()
+
+
 def begin_preview_serializer_wait(scope) -> bool:
     """Move a tracked preview from active to pending while it waits on the route lock."""
     global _inflight, _pending, _preview_inflight, _preview_pending

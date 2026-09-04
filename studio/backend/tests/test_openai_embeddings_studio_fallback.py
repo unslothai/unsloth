@@ -20,6 +20,7 @@ rag_embeddings = pytest.importorskip("core.rag.embeddings", reason = "rag stack 
 rag_config = pytest.importorskip("core.rag.config", reason = "rag stack not installed")
 
 MODEL = "unsloth/bge-small-en-v1.5"
+IDENTITY = f"sentence-transformers:{MODEL}"
 
 
 class _Request:
@@ -54,6 +55,14 @@ def studio_embedder(monkeypatch):
     monkeypatch.setattr(inference_route, "_cancelable_nonstreaming_client", no_proxy)
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: MODEL)
     monkeypatch.setattr(rag_embeddings, "encode", _vectors)
+
+    def _encode_with_identity(texts, *, model_name = None, normalize = True):
+        # Delegates to whatever encode the test installed, so a test that makes encode
+        # blow up or block still drives the real route.
+        return rag_embeddings.encode(texts, model_name = model_name,
+                                     normalize = normalize), IDENTITY
+
+    monkeypatch.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
     monkeypatch.setattr(rag_embeddings, "token_counter", lambda model_name = None: len)
     monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(rag_embeddings, "dim", lambda model_name = None: 2)
@@ -81,7 +90,7 @@ def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     )
     payload = _call({"input": ["alpha", "beta"], "model": "text-embedding-3-small"})
     assert payload["object"] == "list"
-    assert payload["model"] == MODEL
+    assert payload["model"] == IDENTITY
     assert [row["index"] for row in payload["data"]] == [0, 1]
     assert payload["data"][0]["embedding"] == [1.0, 0.0]
     assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
@@ -98,7 +107,7 @@ def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
         inference_route, "_direct_llama_request_started", lambda: started.append(1)
     )
     payload = _call({"input": "alpha"})
-    assert payload["model"] == MODEL
+    assert payload["model"] == IDENTITY
     assert started == []
 
 
@@ -349,3 +358,74 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
 
     asyncio.run(run())
     assert active["peak"] == cap
+
+
+def test_reported_model_follows_the_backend_that_made_the_vectors(studio_embedder):
+    # _SentenceTransformersBackend.encode swaps the process to llama-server when ST encode
+    # fails, and that is a different embedding space. The response must name the space the
+    # vectors are actually in, or a client stores two spaces under one label.
+    llama_identity = f"llama-server:{MODEL}:unsloth/bge-small-en-v1.5-GGUF"
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(
+        rag_embeddings,
+        "encode_with_identity",
+        lambda texts, **_kwargs: (_vectors(texts), llama_identity),
+    )
+    payload = _call({"input": "alpha"})
+    assert payload["model"] == llama_identity
+
+
+def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
+    # A Settings change while the request queues must not mix one model's limit/dim with
+    # another model's vectors: every helper is called with the model captured up front.
+    seen = {"max_tokens": [], "token_counter": [], "dim": [], "encode": []}
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "max_tokens",
+        lambda model_name = None: (seen["max_tokens"].append(model_name), None)[1],
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "token_counter",
+        lambda model_name = None: (seen["token_counter"].append(model_name), len)[1],
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "dim",
+        lambda model_name = None: (seen["dim"].append(model_name), 2)[1],
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "encode_with_identity",
+        lambda texts, **kw: (seen["encode"].append(kw.get("model_name")),
+                             (_vectors(texts), IDENTITY))[1],
+    )
+    _call({"input": "alpha", "dimensions": 2})
+    assert seen == {
+        "max_tokens": [MODEL], "token_counter": [MODEL], "dim": [MODEL], "encode": [MODEL],
+    }
+
+
+def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
+    # The auto-switch hook admits every /v1/embeddings request before the route decides how to
+    # serve it. load_model_for_preview reads the admitted tally, not _inflight, so without
+    # clearing it a slow studio encode keeps rejecting preview swaps with 503.
+    from core.inference import llama_keepwarm as kw
+
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    request = _Request({"input": "alpha"})
+    kw.note_admitted_inference(request.scope)
+    assert kw.other_admitted_inference_count() == 1
+    assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is True
+    try:
+        asyncio.run(inference_route.openai_embeddings(request, "tester"))
+        assert kw.other_admitted_inference_count() == 0
+        # Popped, so the middleware's finally cannot decrement the tally a second time.
+        assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is None
+    finally:
+        kw._admitted_inference = 0
