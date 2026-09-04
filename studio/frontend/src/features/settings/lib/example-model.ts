@@ -172,10 +172,11 @@ function servability(
   // still needs a switch, so the resident shortcut applies only to the quant the
   // catalog said is loaded -- never to one inferred from the offered list, which can
   // have come from a different copy of the repo.
-  if (
-    option.loaded &&
-    (pinned === null || pinned === option.residentQuant)
-  ) {
+  // Quant labels compare case-insensitively, as they do in the resolver: `q4_k_m`
+  // loaded and `Q4_K_M` picked are the same file, not a switch.
+  const sameQuant = (a: string | null, b: string | null) =>
+    a !== null && b !== null && a.toLowerCase() === b.toLowerCase();
+  if (option.loaded && (pinned === null || sameQuant(pinned, option.residentQuant))) {
     return { servable: true, blockedBy: null };
   }
   if (keylessOnly) {
@@ -204,7 +205,9 @@ export function resolveExampleModel(
     // A pick the catalog no longer lists (deleted, or /v1 not answered yet) follows.
     if (option !== null) {
       const pinned =
-        quant && option.quants.includes(quant) ? quant : option.quants[0];
+        (quant &&
+          option.quants.find((q) => q.toLowerCase() === quant.toLowerCase())) ||
+        option.quants[0];
       return {
         model: pinQuant(option.id, pinned),
         followed,

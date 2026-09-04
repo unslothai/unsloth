@@ -25259,8 +25259,19 @@ def _servable_catalog_rows(
 
 
 def _quant_list(first: str, quants) -> list[str]:
-    """`first`, then every other quant once, in the order the scan reported them."""
-    return [first, *dict.fromkeys(q for q in quants if q != first)]
+    """`first`, then every other quant once, in the order the scan reported them.
+
+    Labels compare case-insensitively, like the resolver's own variant match: a
+    resident `q4_k_m` and a scanned `Q4_K_M` name one file, and listing both would
+    offer the picker two rows for it.
+    """
+    seen = {first.lower()}
+    out = [first]
+    for quant in quants:
+        if quant.lower() not in seen:
+            seen.add(quant.lower())
+            out.append(quant)
+    return out
 
 
 async def _openai_catalog_objects() -> list[dict]:

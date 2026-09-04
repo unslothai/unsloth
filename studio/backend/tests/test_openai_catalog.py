@@ -645,3 +645,11 @@ def test_case_variant_copies_that_disagree_advertise_no_quants(monkeypatch):
     assert {"org/Foo", "Org/Foo"} <= set(ids)
     assert "quants" not in ids["org/Foo"]
     assert "quants" not in ids["Org/Foo"]
+
+
+def test_a_quant_spelled_two_ways_is_listed_once(monkeypatch):
+    # A user-loaded `q4_k_m` and the scanned `Q4_K_M` name one file; the resolver
+    # matches variants case-insensitively, so the picker must not offer both.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q4_K_M", "BF16"), resident = "q4_k_m")
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["q4_k_m", "BF16"]

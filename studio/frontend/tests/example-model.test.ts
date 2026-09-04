@@ -342,3 +342,26 @@ test("merging case variants keeps whichever row carries the quants", () => {
   assert.equal(mixed.servable, false);
   assert.equal(mixed.blockedBy, "autoSwitchOff");
 });
+
+// The resident label and the scanned one can differ only in case; picking the scanned
+// spelling is not a switch, so it must not warn.
+test("a quant that differs only in case is the resident one", () => {
+  const catalog = [
+    {
+      id: "unsloth/Qwen3-GGUF",
+      loaded: true,
+      quant: "q4_k_m",
+      quants: ["q4_k_m", "Q8_0"],
+    },
+  ];
+  const resolved = resolveExampleModel({
+    ...base,
+    catalog,
+    picked: "unsloth/Qwen3-GGUF:Q4_K_M",
+    options: exampleModelOptions(catalog),
+  });
+  assert.equal(resolved.servable, true);
+  assert.equal(resolved.blockedBy, null);
+  // The spelling the server gave is the one pinned, so the request names a real file.
+  assert.equal(resolved.model, "unsloth/Qwen3-GGUF:q4_k_m");
+});
