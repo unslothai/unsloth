@@ -7916,11 +7916,7 @@ async def _resident_model_is_loaded() -> bool:
     """True when either llama.cpp or the inference orchestrator has a live model."""
     if get_llama_cpp_backend().is_loaded:
         return True
-    return bool(
-        getattr(
-            await asyncio.to_thread(get_inference_backend), "active_model_name", None
-        )
-    )
+    return bool(getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None))
 
 
 async def _resolve_last_local_model_for_cold_start(

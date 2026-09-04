@@ -221,6 +221,7 @@ def test_cold_start_reload_only_loads_last_local_model(monkeypatch):
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "unsloth/A-GGUF"
 
+
 def test_unknown_model_falls_through(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     rec = _LoadRecorder(backend)
