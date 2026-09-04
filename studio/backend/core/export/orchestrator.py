@@ -280,7 +280,7 @@ class ExportOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
-            self._proc = _CTX.Process(
+            proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
@@ -290,11 +290,16 @@ class ExportOrchestrator:
                 },
                 daemon = True,
             )
-            self._proc.start()
+            proc.start()
+            # Installed under the same guard the reaper compares against, so a liveness check
+            # that decided the previous worker was dead cannot clear this live one. start()
+            # stays outside: the guard is never held across process creation.
+            with self._state_guard():
+                self._proc = proc
         from utils.process_lifetime import adopt_pid
 
-        adopt_pid(self._proc.pid)
-        logger.info("Export subprocess started (pid=%s)", self._proc.pid)
+        adopt_pid(proc.pid)
+        logger.info("Export subprocess started (pid=%s)", proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         """Gracefully shut down the export subprocess.

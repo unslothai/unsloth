@@ -1742,3 +1742,20 @@ def test_a_sweep_never_takes_the_store_a_concurrent_reload_just_published():
         o._token_store = None
         o._token_store_pending = False
         o._sweep_token_stores()
+
+
+def test_spawn_installs_the_worker_under_the_same_guard_the_reaper_uses():
+    """Locking only the reader leaves the writer free to install a process the reaper then
+    clears. Both sides have to take _state_guard."""
+    import inspect
+    import re
+
+    from core.export import orchestrator as orch
+
+    src = inspect.getsource(orch.ExportOrchestrator._spawn_subprocess)
+    assert "with self._state_guard():" in src, "the writer must take the guard"
+    # And the assignment has to be inside it, not merely near it.
+    guarded = src[src.index("with self._state_guard():") :]
+    assert re.search(r"with self\._state_guard\(\):\s*\n\s+self\._proc = proc", guarded)
+    # start() must stay outside the guard so process creation never holds it.
+    assert src.index("proc.start()") < src.index("with self._state_guard():")
