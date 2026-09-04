@@ -95,6 +95,19 @@ export function permissionModeOption(mode: PermissionMode) {
   );
 }
 
+function useToolIsolationCapabilityRefresh() {
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+
+  useEffect(() => {
+    if (!capability && !loading && !error) {
+      refresh().catch(() => undefined);
+    }
+  }, [capability, error, loading, refresh]);
+}
+
 /** The option rows shared by every permission dropdown/submenu. Non-full
  *  levels apply directly; picking Full access must go through the caller's
  *  danger confirmation, so it's a separate callback. */
@@ -190,6 +203,7 @@ function ToolIsolationMenuSection({
 }: {
   onRequestLimited: () => void;
 }) {
+  useToolIsolationCapabilityRefresh();
   const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
   const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
@@ -198,13 +212,6 @@ function ToolIsolationMenuSection({
   const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
   const setMode = useChatRuntimeStore((s) => s.setToolExecutionMode);
   const presentation = toolIsolationPresentation(mode, capability, grant);
-
-  useEffect(() => {
-    if (capability || loading || error) {
-      return;
-    }
-    refresh().catch(() => undefined);
-  }, [capability, error, loading, refresh]);
 
   const unavailable =
     presentation.state === "unavailable" &&
@@ -371,6 +378,7 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
+  useToolIsolationCapabilityRefresh();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
@@ -456,6 +464,7 @@ export function PermissionModeComposerPill({
 }: {
   side?: "top" | "bottom";
 } = {}) {
+  useToolIsolationCapabilityRefresh();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);

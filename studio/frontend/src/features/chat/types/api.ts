@@ -686,9 +686,11 @@ export function toolExecutionRecordLabel(
   }
   if (!record.os_isolation) return null;
   const environment = record.environment.toLowerCase();
-  const backend = record.backend.toLowerCase().includes("bubblewrap")
-    ? "Bubblewrap"
-    : record.backend;
+  const usesBubblewrap = record.backend.toLowerCase().includes("bubblewrap");
+  const backend = usesBubblewrap ? "Bubblewrap" : record.backend;
+  if (usesBubblewrap && environment === "native_linux") {
+    return `Protected · ${backend}`;
+  }
   if (environment === "wsl2") {
     return `Preview OS isolation · ${backend} (WSL2)`;
   }
@@ -697,6 +699,9 @@ export function toolExecutionRecordLabel(
   }
   if (environment === "colab") {
     return `Preview OS isolation · ${backend} (Colab)`;
+  }
+  if (usesBubblewrap) {
+    return `Preview OS isolation · ${backend} (${record.environment})`;
   }
   return `Protected · ${backend}`;
 }

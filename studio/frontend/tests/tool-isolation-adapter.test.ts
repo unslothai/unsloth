@@ -46,6 +46,10 @@ test("cards use exact labels from the backend execution record", () => {
     "Preview OS isolation · Bubblewrap (WSL2)",
   );
   assert.equal(
+    toolExecutionRecordLabel(record({ environment: "linux_unknown" })),
+    "Preview OS isolation · Bubblewrap (linux_unknown)",
+  );
+  assert.equal(
     toolExecutionRecordLabel(
       record({ effective_mode: "limited", os_isolation: false }),
     ),

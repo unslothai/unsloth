@@ -93,6 +93,13 @@ export function toolIsolationPresentation(
         "Software safeguards remain active, but Limited is not an OS sandbox.",
     };
   }
+  if (!capability) {
+    return {
+      state: "unavailable",
+      label: "Checking OS isolation…",
+      description: "Python and Terminal wait for a live capability check.",
+    };
+  }
   if (capability?.protection_state === "protected") {
     return {
       state: "protected",
