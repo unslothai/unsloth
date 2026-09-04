@@ -4,8 +4,11 @@
 import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { XIcon } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -36,22 +39,6 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 type McpPreset = {
   id: string;
   displayName: string; // stored row name
@@ -61,8 +48,8 @@ type McpPreset = {
   disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
 };
 
-// Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Manage MCP servers".
+// Keyless remote MCP presets (rate-limited free tiers, no API key). Hugging Face runs
+// anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "unsloth-docs",
@@ -82,8 +69,7 @@ const MCP_PRESETS: readonly McpPreset[] = [
   },
 ] as const;
 
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle
-// reuses its row instead of duplicating.
+// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle reuses its row instead of duplicating.
 function normalizeMcpUrl(url: string): string {
   return (url || "").trim().toLowerCase().replace(/\/+$/, "");
 }
@@ -119,8 +105,8 @@ export function McpComposerButton({
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet,
-  // MCP can still be pre-selected, like the other composer tools.
+  // Grey out only when a loaded model lacks tool support; with no model yet, MCP can still be
+  // pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(
@@ -171,8 +157,8 @@ export function McpComposerButton({
     };
   }, [refresh]);
 
-  // Load the server list on mount, and again when the dialog closes: it can
-  // be opened from the chord as well as from this menu.
+  // Load the server list on mount, and again when the dialog closes: it can be opened from the
+  // chord as well as from this menu.
   useEffect(() => {
     if (dialogOpen) return;
     let cancelled = false;
@@ -341,7 +327,7 @@ export function McpComposerButton({
               <XIcon className="composer-pill-x" />
             </span>
             <span>MCP</span>
-            <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent

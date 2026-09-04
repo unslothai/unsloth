@@ -50,6 +50,13 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    find: {
+      label: "在页面中查找",
+      previous: "上一个匹配项",
+      next: "下一个匹配项",
+      close: "关闭查找",
+      truncated: "此页面过长，无法搜索全部内容。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -220,6 +227,10 @@ export const zhCN = {
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
+        findInPage: {
+          label: "在页面中查找",
+          description: "搜索此页面上的文本",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -479,6 +490,12 @@ export const zhCN = {
           "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
+        sttDeviceLabel: "加载到",
+        sttDeviceAuto: "有 GPU 时使用 GPU",
+        sttDeviceCpu: "CPU 内存",
+        sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",
+        sttDeviceCpuDescription:
+          "将模型保留在系统内存中。转写速度较慢，但不占用显存。",
         sttModelSearchPlaceholder: "搜索模型",
         sttModelSearching: "正在搜索 Hugging Face…",
         sttModelValidating: "正在检查 Whisper 兼容性…",
@@ -811,6 +828,16 @@ export const zhCN = {
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
       },
+      repairInstall: {
+        label: "修复安装",
+        description:
+          "对托管环境重新运行安装程序。如果未检测到 GPU 或应用无法启动，可使用此功能。",
+        action: "修复安装",
+        confirmTitle: "要修复此安装吗？",
+        confirmDescription:
+          "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmAction: "立即修复",
+      },
       resetPreferences: {
         sectionTitle: "危险区域",
         label: "重置所有本地偏好设置",
@@ -1061,6 +1088,8 @@ export const zhCN = {
         currentLoad: "当前负载",
         free: "{value} 可用",
         noGpu: "无可见 GPU",
+        gpuUnusable: "GPU 不可用",
+        gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
       },
       gpu: {
         title: "GPU 设备",
@@ -1069,6 +1098,10 @@ export const zhCN = {
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
+        mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
+        mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1189,7 +1222,7 @@ export const zhCN = {
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
       intro:
-        "可将 Claude Code、Codex、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
+        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
       copy: "复制",
       copied: "已复制",

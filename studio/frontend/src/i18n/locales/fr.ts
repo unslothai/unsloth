@@ -55,6 +55,13 @@ export const fr = {
     shutdown: "Arrêter",
   },
   shell: {
+    find: {
+      label: "Rechercher dans la page",
+      previous: "Résultat précédent",
+      next: "Résultat suivant",
+      close: "Fermer la recherche",
+      truncated: "Cette page est trop longue pour être parcourue en entier.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -226,6 +233,10 @@ export const fr = {
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       actions: {
+        findInPage: {
+          label: "Rechercher dans la page",
+          description: "Rechercher le texte de cette page",
+        },
         openSettings: {
           label: "Ouvrir les paramètres",
           description: "Ouvrir la fenêtre des paramètres",
@@ -486,6 +497,13 @@ export const fr = {
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttDeviceLabel: "Charger dans",
+        sttDeviceAuto: "GPU si disponible",
+        sttDeviceCpu: "RAM du CPU",
+        sttDeviceAutoDescription:
+          "Utiliser le GPU quand il y en a un, sinon le CPU.",
+        sttDeviceCpuDescription:
+          "Garder le modèle dans la RAM système. La transcription est plus lente, mais n'utilise pas de mémoire GPU.",
         sttModelSearchPlaceholder: "Rechercher un modèle",
         sttModelSearching: "Recherche sur Hugging Face…",
         sttModelValidating: "Vérification de la compatibilité Whisper…",
@@ -853,6 +871,16 @@ export const fr = {
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
       },
+      repairInstall: {
+        label: "Réparer l'installation",
+        description:
+          "Relance le programme d'installation sur l'environnement géré. Utile si le GPU n'est pas détecté ou si l'application ne démarre pas.",
+        action: "Réparer l'installation",
+        confirmTitle: "Réparer cette installation ?",
+        confirmDescription:
+          "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Réparer maintenant",
+      },
       resetPreferences: {
         sectionTitle: "Zone de danger",
         label: "Réinitialiser toutes les préférences locales",
@@ -1111,6 +1139,8 @@ export const fr = {
         currentLoad: "Charge actuelle",
         free: "Disponible : {value}",
         noGpu: "Aucun GPU visible",
+        gpuUnusable: "GPU inutilisable",
+        gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
       },
       gpu: {
         title: "Périphériques GPU",
@@ -1120,6 +1150,12 @@ export const fr = {
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
+        noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1241,7 +1277,7 @@ export const fr = {
       description:
         "Connectez des agents de codage comme Claude Code et Codex à un modèle local avec unsloth start.",
       intro:
-        "connecte Claude Code, Codex, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
+        "connecte Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
       readDocs: "Lire la documentation",
       copy: "Copier",
       copied: "Copié",

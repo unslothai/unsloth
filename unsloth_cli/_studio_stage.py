@@ -72,7 +72,13 @@ def _copy_command(source: Path, destination: Path) -> Optional[list[str]]:
 def clone_tree(source: Path, destination: Path) -> None:
     command = _copy_command(source, destination)
     if command is not None:
-        result = subprocess.run(command, capture_output = True, text = True)
+        result = subprocess.run(
+            command,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+        )
         if result.returncode == 0:
             return
         shutil.rmtree(destination, ignore_errors = True)
@@ -136,6 +142,8 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Co
         env = env,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = PROBE_TIMEOUT_SECONDS,
     )
 
@@ -188,8 +196,7 @@ def probe_console_script(venv: Path, env: dict[str, str]) -> None:
     try:
         result = _run([str(script), "-h"], cwd = venv.parent, env = env)
     except OSError as exc:
-        # A shebang naming an interpreter that is not there fails here, not with a
-        # return code: the kernel refuses the exec.
+        # A shebang naming a missing interpreter fails here, not with a return code: the kernel refuses the exec.
         raise StageError(f"staged launcher is not executable: {exc}") from exc
     if result.returncode != 0:
         raise StageError(f"staged launcher failed to start: {result.stderr.strip()[-2000:]}")

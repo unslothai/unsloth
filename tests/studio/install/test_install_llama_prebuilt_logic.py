@@ -5598,6 +5598,70 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
+def test_multiline_fallback_reason_logs_one_prefixed_line_each(tmp_path, monkeypatch, capsys):
+    """Every line of the reason has to carry the component prefix.
+
+    The preflight failure lists one binary per line, and the unprefixed system
+    report follows immediately, so a reader (the Studio updater) can only tell
+    the reason's continuation lines from the report by that prefix.
+    """
+
+    def boom(*args, **kwargs):
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "linux extracted binary preflight failed:\n"
+            "llama-server: missing=libcuda.so.1 ld_library_path=none\n"
+            "llama-quantize: missing=libgomp.so.1 ld_library_path=none"
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", True)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    with pytest.raises(SystemExit):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    reason = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "preflight failed" in line or "missing=" in line
+    ]
+    assert len(reason) == 3
+    assert all(line.startswith("[llama-prebuilt] ") for line in reason)
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_github_api_rate_limit_status_carries_the_token_hint(monkeypatch, status):
+    """GitHub answers an exceeded rate limit with 403 or 429, and the raw
+    "HTTP Error 429: Too Many Requests" says nothing a user can act on."""
+    url = "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679-mix-67dfc8b"
+
+    def raise_status(_url, **_kw):
+        raise urllib.error.HTTPError(_url, status, "rate limited", {}, io.BytesIO(b""))
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_status)
+    with pytest.raises(RuntimeError) as caught:
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+    assert f"GitHub API returned {status}" in str(caught.value)
+    assert "GH_TOKEN" in str(caught.value)
+
+
+def test_non_github_rate_limit_status_is_not_rewritten(monkeypatch):
+    """huggingface.co has its own 429; it must not collect GitHub token advice."""
+    url = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
+
+    def raise_429(_url, **_kw):
+        raise urllib.error.HTTPError(_url, 429, "Too Many Requests", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_429)
+    with pytest.raises(urllib.error.HTTPError):
+        INSTALL_LLAMA_PREBUILT.fetch_json(url)
+
+
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -6636,3 +6700,51 @@ def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kin
     )
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["supported_sms"] == []
+
+
+# What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173). The
+# banner leads with GBK 0x81 0x40 so a cp1252 host cannot decode it either.
+_LOCALIZED_NVIDIA_SMI = (
+    "import sys\n"
+    "a = sys.argv[1:]\n"
+    "if a == ['-L']:\n"
+    "    sys.stdout.buffer.write(b'GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-a)\\n')\n"
+    "elif a and a[0].startswith('--query-gpu'):\n"
+    "    sys.stdout.buffer.write(b'0, GPU-a, 8.6\\n')\n"
+    "else:\n"
+    "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
+    "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_run_capture_keeps_ascii_lines_when_a_child_writes_another_code_page():
+    result = INSTALL_LLAMA_PREBUILT.run_capture(
+        [sys.executable, "-c", _LOCALIZED_NVIDIA_SMI], timeout = 30
+    )
+    assert "CUDA Version: 13.1" in result.stdout
+    assert "\ufffd" in result.stdout
+
+
+def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
+    monkeypatch, tmp_path
+):
+    fake = tmp_path / "nvidia-smi.py"
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    real_run = subprocess.run
+
+    def run_fake_nvidia_smi(command, *args, **kwargs):
+        if command and command[0] == "nvidia-smi":
+            command = [sys.executable, str(fake), *command[1:]]
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.subprocess, "run", run_fake_nvidia_smi)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "which",
+        lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    host = INSTALL_LLAMA_PREBUILT.detect_host()
+    assert host.compute_caps == ["86"]
+    assert host.driver_cuda_version == (13, 1)

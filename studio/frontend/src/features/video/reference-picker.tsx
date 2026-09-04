@@ -11,15 +11,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  CHAT_AUDIO_DROP_ACCEPT,
-  CHAT_VIDEO_DROP_ACCEPT,
-} from "@/features/native-intents/drop-paths";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-import { createReferenceSelectionGate, readReferenceFile } from "./reference-budget";
+import {
+  REFERENCE_DROP_ACCEPT,
+  REFERENCE_PICKER_ACCEPT,
+  createReferenceSelectionGate,
+  readReferenceFile,
+} from "./reference-budget";
+import { classifiedAttachmentFile } from "@/lib/video-utils";
 
 /** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
@@ -31,13 +33,10 @@ export interface ReferenceMedia {
 /** How long to wait for a browser to report a clip's duration before giving up on it. */
 export const REFERENCE_DURATION_TIMEOUT_MS = 15_000;
 
-/** Read a clip's duration, resolving undefined when the browser cannot report one.
- *
- * An element firing neither loadedmetadata nor error would leave this pending forever, and
- * its picker slot with it, so the wait is bounded; callers already treat an unknown duration
- * as "no auto trim". The source stays a data URL because WebKit reports no metadata for an
- * object URL, and losing the duration costs more than the extra parse saves.
- */
+/** Read a clip's duration, resolving undefined when the browser cannot report one. An element
+ *  firing neither loadedmetadata nor error would leave this pending forever, and its picker slot
+ *  with it, so the wait is bounded; callers already treat an unknown duration as "no auto trim".
+ *  The source stays a data URL because WebKit reports no metadata for an object URL. */
 function readVideoDuration(dataUrl: string): Promise<number | undefined> {
   return new Promise((resolve) => {
     const media = document.createElement("video");
@@ -91,9 +90,13 @@ export function ReferenceMediaPicker({
   }, [value, gate]);
 
   const readFile = useCallback(
-    (file: File | undefined | null) => {
-      if (!file) return;
+    async (picked: File | undefined | null) => {
+      if (!picked) return;
       const claim = gate.begin();
+      // A .3gp is a recording or a clip and its name says neither, so read the
+      // container's tracks before the kind check, as chat and compare do.
+      const file = await classifiedAttachmentFile(picked);
+      if (!claim.isCurrent()) return;
       readReferenceFile(kind, file, {
         onLoaded: (dataUrl) => {
           if (!claim.isCurrent()) return;
@@ -116,11 +119,11 @@ export function ReferenceMediaPicker({
     [gate, kind, onChange],
   );
 
-  // Tauri suppresses the webview's own drop events, so the handlers below never
-  // fire on the desktop app; this claims the OS drop for the button (#9036).
+  // Tauri suppresses the webview's own drop events, so the handlers below never fire on the desktop
+  // app; this claims the OS drop for the button (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
-    onFiles: (files) => readFile(files[0]),
-    accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,
+    onFiles: (files) => void readFile(files[0]),
+    accept: REFERENCE_DROP_ACCEPT[kind],
     multiple: false,
   });
 
@@ -184,9 +187,9 @@ export function ReferenceMediaPicker({
       <input
         ref={inputRef}
         type="file"
-        accept={`${kind}/*`}
+        accept={REFERENCE_PICKER_ACCEPT[kind]}
         className="hidden"
-        onChange={(e) => readFile(e.target.files?.[0])}
+        onChange={(e) => void readFile(e.target.files?.[0])}
       />
     </button>
   );

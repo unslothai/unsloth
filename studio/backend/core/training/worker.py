@@ -3888,16 +3888,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
@@ -4343,6 +4337,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )

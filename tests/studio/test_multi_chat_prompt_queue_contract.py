@@ -325,8 +325,8 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     """
     release = _between(
         THREAD,
-        "// Fire the parked send once indexing clears",
-        "// Drop any queued send + toast on unmount",
+        "      parkIfWaitingOnAttachments,\n    ],\n  );",
+        "  useEffect(\n    () => () => {\n      pendingSendRef.current = false;",
     )
     code = re.sub(r"//[^\n]*", "", release)
     assert "const waitForCurrentRun =" in code
@@ -468,7 +468,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
-        "// Re-read store after auto-load / model-ready wait.",
+        "      const liveRuntime = useChatRuntimeStore.getState();",
         "const { params } = runtime",
     )
     assert "...queuedRunSettings.params" in auto_load_merge
@@ -476,15 +476,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.params.checkpoint" in auto_load_merge
     assert "liveRuntime.supportsTools" in auto_load_merge
     assert "liveRuntime.supportsReasoning" in auto_load_merge
-    assert "liveRuntime.ggufContextLength" in auto_load_merge
+    assert "liveRuntime.loadedContextLength" in auto_load_merge
     assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
     assert "snapshotVisibleModelState(" in CHAT_ADAPTER
     assert "restoreVisibleModelState(visibleExternalState)" in CHAT_ADAPTER
-    assert '"ggufContextLength"' in CHAT_ADAPTER
-    assert '"ggufMaxContextLength"' in CHAT_ADAPTER
-    assert '"ggufNativeContextLength"' in CHAT_ADAPTER
+    assert '"loadedContextLength"' in CHAT_ADAPTER
+    assert '"maxContextLength"' in CHAT_ADAPTER
+    assert '"nativeContextLength"' in CHAT_ADAPTER
     assert '"loadedIsMultimodal"' in CHAT_ADAPTER
     assert '"loadedIsDiffusion"' in CHAT_ADAPTER
     assert (
@@ -518,13 +518,30 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "async function resolveQueuedEmptyLocalModel(",
         "export function createOpenAIStreamAdapter",
     )
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index("await getInferenceStatus()")
-    assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
-        "await autoLoadSmallestModel("
-    )
+    # The probe waits out an in-flight load rather than reading a status taken
+    # mid-replacement, which names the outgoing model alongside the incoming one.
+    probe = "await waitForSettledServerStatus({ abortSignal })"
+    assert lifecycle.index("beginModelLoading()") < lifecycle.index(probe)
+    assert lifecycle.index(probe) < lifecycle.index("await autoLoadSmallestModel(")
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
-    assert "const status = await getInferenceStatus();" in lifecycle
+    assert f"const settled = {probe};" in lifecycle
+    assert "const status = settled.status;" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
+    # Into the request, not only around it, and capped by the loop's own deadline, or a
+    # half-open read parks the send past its cancellation. The abort goes ahead of the failure
+    # counter, or a cancelled read surfaces as "could not reach the model server".
+    poll = _between(
+        CHAT_ADAPTER,
+        "const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;",
+        "function reportBlockedServerLoad(",
+    )
+    assert "const poll = statusPollSignal(options?.abortSignal);" in poll
+    assert "await getInferenceStatus(poll.signal)" in poll
+    assert "poll.dispose();" in poll
+    assert poll.index("options?.abortSignal?.throwIfAborted();") < poll.index("++failures")
+    # And the loop registers as a settlement wait, so a refresh cannot publish a status taken
+    # mid-replacement as the pick that stopEarly then reads as a user selection.
+    assert "const release = beginServerModelWait(options?.abortSignal);" in poll
     assert (
         len(
             re.findall(
@@ -635,15 +652,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "useChatRuntimeStore.subscribe(" not in compare_handle
     gpu_discovery = _between(
         SHARED_COMPOSER,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "await ensureGpuDeviceCache();" in gpu_discovery
     assert "catch (error) {\n        releaseCompareModelLifecycle();" in gpu_discovery
     side_one = _between(
         SHARED_COMPOSER,
-        "// Side 1: load → generate → wait",
-        "// Side 2: load → generate → wait",
+        "        if (handle1 && model1?.id) {",
+        "        if (handle2 && model2?.id) {",
     )
     assert (
         side_one.index("const status1 = await ensureModelLoaded(model1)")
@@ -652,7 +669,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     side_two = _between(
         SHARED_COMPOSER,
-        "// Side 2: load → generate → wait",
+        "        if (handle2 && model2?.id) {",
         "compareStepSucceededRef.current = true",
     )
     assert (
@@ -762,7 +779,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     apply_compare_stop = _between(
         send_flow,
         "const applyCompareStopDecision = () => {",
-        "// Helper: load a model and update store checkpoint",
+        "      async function ensureModelLoaded(",
     )
     assert "cancelPreStreamRunReservations(" in apply_compare_stop
     assert "compareStopDecision?.preStreamRunTokens ?? []" in apply_compare_stop
@@ -771,7 +788,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ensure_compare_model = _between(
         send_flow,
         "async function ensureModelLoaded(",
-        "// Side 1: load",
+        "        if (handle1 && model1?.id) {",
     )
     already_active = _between(
         ensure_compare_model,
@@ -884,8 +901,8 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     failed_gpu_discovery = _between(
         send_flow,
-        "// Warm the device cache before the snapshot below",
-        "// The GPU/offload knobs both compare loads must use",
+        "      try {\n        if (store.selectedGpuIds != null) {",
+        "      const compareLoadKnobs = {",
     )
     assert "resetPromptQueue();" in failed_gpu_discovery
 
@@ -1066,7 +1083,7 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
     append = _between(
         RUNTIME_PROVIDER,
         "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
-        "\n  // Always register the adapter so the mic stays clickable",
+        "\n  const dictation = useMemo(() => new StudioDictationAdapter(), []);",
     )
 
     assert (
