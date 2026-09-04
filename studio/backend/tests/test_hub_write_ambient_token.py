@@ -1805,3 +1805,25 @@ def test_liveness_reads_the_process_once():
     src = inspect.getsource(orch.ExportOrchestrator._ensure_subprocess_alive)
     assert "proc = self._proc" in src
     assert "self._proc.is_alive()" not in src, "must not re-read the attribute to call it"
+
+
+def test_a_cached_adapter_snapshot_cannot_launder_a_local_base(monkeypatch, tmp_path):
+    """A snapshot path is local by spelling but remote by provenance, so caching the adapter
+    first and then naming its path must not buy the local-checkpoint exemption."""
+    from core.export import export as export_backend_module
+    from utils.models import model_config
+
+    snap = tmp_path / "models--someone--public-adapter" / "snapshots" / "abc123"
+    snap.mkdir(parents = True)
+    local_base = str(tmp_path / "operator-model")
+    monkeypatch.setattr(
+        model_config, "get_base_model_from_lora_identifier", lambda path, token: local_base
+    )
+
+    with pytest.raises(export_backend_module._BaseUnresolved):
+        list(export_backend_module._remote_load_targets(str(snap), False))
+
+    # A genuinely local checkpoint with a local base is still the trained-here case.
+    plain = tmp_path / "outputs" / "run"
+    plain.mkdir(parents = True)
+    assert list(export_backend_module._remote_load_targets(str(plain), False)) == []

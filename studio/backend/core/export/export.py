@@ -113,6 +113,9 @@ def _remote_load_targets(
     named = _cache_snapshot_ref(checkpoint_path)
     if named is None and not is_local_path(checkpoint_path):
         named = (checkpoint_path, None)
+    # Provenance, not spelling: a cache snapshot path is absolute and local-looking but is
+    # the operator's copy of a Hub repo, and /hub/cached-models hands those paths out.
+    checkpoint_is_remote = named is not None
     if named:
         seen.add(named[0])
         yield named
@@ -134,10 +137,12 @@ def _remote_load_targets(
         raise _BaseUnresolved(checkpoint_path)
     resolved = None
     if base:
-        if is_local_path(base) and not is_local_path(checkpoint_path):
+        if is_local_path(base) and _cache_snapshot_ref(base) is None and checkpoint_is_remote:
             # A remote adapter must not redirect its load into a server-local checkpoint:
             # /api/models/checkpoints hands out those paths, so a small public adapter
             # pointing at one would load the operator's weights with nothing to authorize.
+            # Keyed on provenance, so caching the adapter first and then naming its snapshot
+            # path does not launder it into the local exemption.
             raise _BaseUnresolved(checkpoint_path)
         resolved = _cache_snapshot_ref(base) or (None if is_local_path(base) else (base, None))
     if resolved and resolved[0] not in seen:
