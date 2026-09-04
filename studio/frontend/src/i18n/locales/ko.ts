@@ -1635,7 +1635,12 @@ export const ko = {
       revokeAction: '"{name}" 폐기',
       revoking: "폐기 중...",
       usageNoModel:
-        "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
+        "아직 다운로드된 모델이 없어 이 예제는 이 서버에 없는 모델을 지정합니다. Hub에서 하나를 다운로드하면 예제에 그 모델이 표시됩니다.",
+      usageModelNotLoaded:
+        "{model}이(가) 로드되지 않았습니다. 이 예제를 실행하기 전에 위의 \"요청에 따라 모델 전환\"을 켜거나 채팅에서 로드하세요.",
+      exampleModel: "모델",
+      exampleQuant: "양자화",
+      modelLoaded: "로드됨",
     },
     about: {
       title: "정보",

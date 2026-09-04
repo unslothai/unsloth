@@ -1598,7 +1598,12 @@ export const zhCN = {
       revokeAction: "撤销“{name}”",
       revoking: "撤销中...",
       usageNoModel:
-        "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",
+        "尚未下载任何模型，因此此示例指定的是此服务器上没有的模型。从 Hub 下载一个后，示例会改为指定它。",
+      usageModelNotLoaded:
+        "{model} 尚未加载。运行此示例前，请先在上方开启“按请求切换模型”，或在聊天中加载它。",
+      exampleModel: "模型",
+      exampleQuant: "量化",
+      modelLoaded: "已加载",
     },
     about: {
       title: "关于",

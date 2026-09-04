@@ -29,9 +29,13 @@ export interface SettingsPanelPrefsState {
   apiExampleLang: string | null;
   apiExampleOs: ExampleOs | null;
   apiExampleAgent: string | null;
+  // null means "name whichever model the server has resident"; otherwise a
+  // `repo` or `repo:quant` picked in the usage examples.
+  apiExampleModel: string | null;
   setApiExampleLang: (lang: string) => void;
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
+  setApiExampleModel: (model: string | null) => void;
 
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
@@ -85,6 +89,7 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    apiExampleModel: text(raw.apiExampleModel),
     resourcesLiveUpdates:
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
@@ -112,9 +117,11 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       apiExampleLang: null,
       apiExampleOs: null,
       apiExampleAgent: null,
+      apiExampleModel: null,
       setApiExampleLang: (apiExampleLang) => set({ apiExampleLang }),
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
+      setApiExampleModel: (apiExampleModel) => set({ apiExampleModel }),
 
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>

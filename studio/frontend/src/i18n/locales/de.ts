@@ -1684,7 +1684,12 @@ export const de = {
       revokeAction: "„{name}“ widerrufen",
       revoking: "Wird widerrufen...",
       usageNoModel:
-        "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
+        "Es ist noch nichts heruntergeladen, daher nennt dieses Beispiel ein Modell, das dieser Server nicht hat. Laden Sie eines aus dem Hub herunter, dann nennt das Beispiel dieses.",
+      usageModelNotLoaded:
+        "{model} ist nicht geladen. Aktivieren Sie oben „Modell je Anfrage wechseln“ oder laden Sie es im Chat, bevor Sie dieses Beispiel ausführen.",
+      exampleModel: "Modell",
+      exampleQuant: "Quantisierung",
+      modelLoaded: "Geladen",
     },
     about: {
       title: "Info",

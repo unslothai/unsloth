@@ -6,6 +6,13 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -41,6 +48,14 @@ import type {
 } from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import {
+  type ExampleModelOption,
+  type ResolvedExampleModel,
+  exampleModelOptions,
+  pinQuant,
+  resolveExampleModel,
+  splitPinnedQuant,
+} from "../lib/example-model";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   agentRunsOnActiveModel,
@@ -386,30 +401,22 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
-// A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
-function looksLikePath(id: string): boolean {
-  return (
-    id.startsWith("/") ||
-    id.startsWith("~") ||
-    id.startsWith(".") ||
-    id.includes("\\") ||
-    id.toLowerCase().endsWith(".gguf") ||
-    (id.match(/\//g)?.length ?? 0) >= 2
-  );
-}
+type ExampleModelState = ResolvedExampleModel & {
+  options: ExampleModelOption[];
+};
 
-// The model the examples name: always an id /v1 resolves against, null when there is none.
-function useExampleModelName(keylessOnly: boolean): string | null {
+// The model the examples name: the pick when the catalog still lists it, else the
+// one the server would serve on its own. `picked` is `repo` or `repo:quant`.
+function useExampleModel(
+  keylessOnly: boolean,
+  picked: string | null,
+): ExampleModelState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
-  const usableCheckpoint =
-    !!checkpoint &&
-    !checkpoint.startsWith("external::") &&
-    !looksLikePath(checkpoint);
 
   // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
@@ -454,45 +461,20 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   }, [checkpoint, ggufVariant]);
 
   return useMemo(() => {
-    // Name something held here, with its quant to pin the file on disk.
-    const fromCatalog = (): string | null => {
-      const pick =
-        catalog?.find((m) => m.loaded) ??
-        (!keylessOnly && autoSwitch ? catalog?.[0] : undefined);
-      if (!pick) {
-        return null;
-      }
-      return pick.quant && !pick.id.includes(":")
-        ? `${pick.id}:${pick.quant}`
-        : pick.id;
+    const options = exampleModelOptions(catalog);
+    return {
+      ...resolveExampleModel({
+        catalog,
+        autoSwitch,
+        keylessOnly,
+        checkpoint,
+        ggufVariant,
+        picked,
+        options,
+      }),
+      options,
     };
-    // The store keeps a checkpoint across an idle unload and across the model being
-    // deleted, so it only names a runnable model while the catalog still lists it:
-    // resident, or downloaded with switching able to reload it. A null catalog means
-    // /v1/models has not answered, which is not evidence against it.
-    const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
-    const backed =
-      (!keylessOnly && catalog === null) ||
-      (!!entry && (entry.loaded || (!keylessOnly && autoSwitch)));
-    if (usableCheckpoint && checkpoint && backed) {
-      if (checkpoint.includes(":")) {
-        return checkpoint;
-      }
-      // Pin the quant the catalog advertises, not the stored one: membership proves the
-      // repo, and the saved quant can name a file deleted while another quant remains.
-      // Fall back to the store only before /v1/models answers.
-      const quant = catalog === null ? ggufVariant : entry?.quant;
-      return quant ? `${checkpoint}:${quant}` : checkpoint;
-    }
-    return fromCatalog();
-  }, [
-    autoSwitch,
-    catalog,
-    checkpoint,
-    ggufVariant,
-    keylessOnly,
-    usableCheckpoint,
-  ]);
+  }, [autoSwitch, catalog, checkpoint, ggufVariant, keylessOnly, picked]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns
@@ -565,6 +547,10 @@ export function UsageExamples({
   const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
   const setStoredAgent = useSettingsPanelPrefsStore(
     (s) => s.setApiExampleAgent,
+  );
+  const pickedModel = useSettingsPanelPrefsStore((s) => s.apiExampleModel);
+  const setPickedModel = useSettingsPanelPrefsStore(
+    (s) => s.setApiExampleModel,
   );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
@@ -639,7 +625,8 @@ export function UsageExamples({
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
+  const example = useExampleModel(keylessBase && !apiKey, pickedModel);
+  const { model, followed } = example;
 
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
@@ -698,7 +685,7 @@ export function UsageExamples({
               : publicModelId(statusAnswer.resident),
         }
       : null,
-    model,
+    followed,
   );
 
   useEffect(() => {
@@ -804,7 +791,7 @@ export function UsageExamples({
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
-  // Null model: nothing is servable, so there is no snippet worth copying.
+  // Null model: /v1 has not answered yet and nothing is resident.
   const snippets = useMemo(
     () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
     [base, key, toolsKey, model, os],
@@ -830,6 +817,18 @@ export function UsageExamples({
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }
+  };
+
+  const handlePickModel = (id: string) => {
+    // Picking the model the server serves on its own means "follow it" again.
+    setPickedModel(
+      followed !== null && sameBaseModelId(id, followed) ? null : id,
+    );
+  };
+
+  const handlePickQuant = (quant: string) => {
+    if (example.option === null) return;
+    setPickedModel(pinQuant(example.option.id, quant));
   };
 
   const handleToggleTunnel = (next: boolean) => {
@@ -913,6 +912,73 @@ export function UsageExamples({
             </button>
           </div>
         ) : null}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
+          <Select
+            value={example.option?.id ?? ""}
+            onValueChange={handlePickModel}
+            disabled={example.options.length === 0}
+          >
+            <SelectTrigger
+              size="sm"
+              aria-label={t("settings.apiKeys.exampleModel")}
+              title={model ?? undefined}
+              className="h-7 min-w-0 max-w-full flex-1 rounded-md px-2 font-mono text-ui-11 sm:max-w-[24rem]"
+            >
+              <SelectValue placeholder={t("settings.apiKeys.exampleModel")}>
+                {/* The trigger reads the pick even before its option arrives, and a
+                    path-loaded model that /v1 never lists still shows its name. */}
+                <span className="truncate">
+                  {example.option?.id ??
+                    (model ? splitPinnedQuant(model).repo : null)}
+                </span>
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent align="start" className="max-w-[calc(100vw-2rem)]">
+              {example.options.map((option) => (
+                <SelectItem
+                  key={option.id}
+                  value={option.id}
+                  className="font-mono text-ui-11"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate">{option.id}</span>
+                    {option.loaded ? (
+                      <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px font-sans text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                        {t("settings.apiKeys.modelLoaded")}
+                      </span>
+                    ) : null}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {example.option && example.option.quants.length > 0 ? (
+            <Select
+              value={splitPinnedQuant(model ?? "").quant ?? ""}
+              onValueChange={handlePickQuant}
+              disabled={example.option.quants.length === 1}
+            >
+              <SelectTrigger
+                size="sm"
+                aria-label={t("settings.apiKeys.exampleQuant")}
+                className="h-7 min-w-0 rounded-md px-2 font-mono text-ui-11"
+              >
+                <SelectValue placeholder={t("settings.apiKeys.exampleQuant")} />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {example.option.quants.map((quant) => (
+                  <SelectItem
+                    key={quant}
+                    value={quant}
+                    className="font-mono text-ui-11"
+                  >
+                    {quant}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
         <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
           <div className="flex min-w-0 flex-wrap items-center gap-0.5">
             {TYPE_TABS.map((tab) => {
@@ -976,6 +1042,11 @@ export function UsageExamples({
             </button>
           </div>
         ) : null}
+        {example.placeholder ? (
+          <div className="min-w-0 border-b border-border px-3 py-2 text-ui-11 leading-snug text-muted-foreground">
+            {t("settings.apiKeys.usageNoModel")}
+          </div>
+        ) : null}
         {snippets ? (
           <div className="relative min-w-0">
             <button
@@ -999,11 +1070,14 @@ export function UsageExamples({
               redactFromReload={Boolean(apiKey)}
             />
           </div>
-        ) : (
-          <div className="min-w-0 px-3 py-2.5 text-ui-11 leading-snug text-muted-foreground">
-            {t("settings.apiKeys.usageNoModel")}
-          </div>
-        )}
+        ) : null}
+        {model && !example.placeholder && !example.servable ? (
+          <p className="min-w-0 border-t border-border px-3 py-2 text-ui-11 leading-snug text-amber-700 dark:text-amber-400">
+            {t("settings.apiKeys.usageModelNotLoaded", {
+              model: splitPinnedQuant(model).repo,
+            })}
+          </p>
+        ) : null}
         <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
           <span className="text-ui-11 font-semibold text-foreground">
             {t("settings.apiKeys.codingAgents")}

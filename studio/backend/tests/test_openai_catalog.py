@@ -427,6 +427,31 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
+    # Every on-disk quant of the repo is listed too, the resident one first.
+    assert ids["publisher/Qwen3"]["quants"] == ["Q8_0", "Q4_K_M"]
+
+
+def test_catalog_lists_every_on_disk_quant_per_repo(monkeypatch):
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    async def _fake_catalog():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(
+        resolver,
+        "local_servable_model",
+        lambda info: (True, ("UD-Q4_K_XL", "Q8_0")) if info.is_gguf else (False, ()),
+    )
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # `quant` stays the pin a client appends by default; `quants` names the alternatives.
+    assert ids["org/Foo"]["quant"] == "UD-Q4_K_XL"
+    assert ids["org/Foo"]["quants"] == ["UD-Q4_K_XL", "Q8_0"]
+    assert "quants" not in ids["Mistral-7B"]
 
 
 def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):

@@ -25258,6 +25258,10 @@ def _servable_catalog_rows(
     ]
 
 
+def _quant_list(first: str, quants) -> list[str]:
+    return [first, *[q for q in quants if q != first]]
+
+
 async def _openai_catalog_objects() -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
@@ -25280,7 +25284,14 @@ async def _openai_catalog_objects() -> list[dict]:
         _servable_catalog_rows, catalog, catalog_at
     ):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
-        if not cid or cid in by_id:
+        if not cid:
+            continue
+        if cid in by_id:
+            # The resident row already names its quant; list the other on-disk quants
+            # of the same repo beside it so a client can pin any of them.
+            resident_row = by_id[cid]
+            if resident_row.get("quant") and quants:
+                resident_row["quants"] = _quant_list(resident_row["quant"], quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25298,8 +25309,10 @@ async def _openai_catalog_objects() -> list[dict]:
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
         if is_gguf and loaded and resident_quant:
             obj["quant"] = resident_quant
+            obj["quants"] = _quant_list(resident_quant, quants)
         elif quants:
             obj["quant"] = quants[0]
+            obj["quants"] = list(quants)
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display

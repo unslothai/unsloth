@@ -26,6 +26,7 @@ store.set(
       apiExampleLang: "pythonTools",
       apiExampleOs: "windows",
       apiExampleAgent: "codex",
+      apiExampleModel: "unsloth/Foo-GGUF:UD-Q4_K_XL",
       resourcesLiveUpdates: false,
       fineTuneAction: "recipes",
     },
@@ -43,6 +44,7 @@ test("a version 0 record hydrates every field", () => {
   assert.equal(s.agentsOs, null);
   assert.equal(s.agentsVariant, "UD-Q4_K_XL");
   assert.equal(s.apiExampleOs, "windows");
+  assert.equal(s.apiExampleModel, "unsloth/Foo-GGUF:UD-Q4_K_XL");
   assert.equal(s.resourcesLiveUpdates, false);
   assert.equal(s.fineTuneAction, "recipes");
 });

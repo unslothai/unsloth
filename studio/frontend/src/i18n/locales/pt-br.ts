@@ -1657,7 +1657,12 @@ export const ptBR = {
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
       usageNoModel:
-        "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
+        "Nada foi baixado ainda, então este exemplo indica um modelo que este servidor não tem. Baixe um no Hub e o exemplo passará a indicá-lo.",
+      usageModelNotLoaded:
+        "{model} não está carregado. Ative \"Trocar de modelo por requisição\" acima, ou carregue-o no Chat, antes de executar este exemplo.",
+      exampleModel: "Modelo",
+      exampleQuant: "Quantização",
+      modelLoaded: "Carregado",
     },
     about: {
       title: "Sobre",
