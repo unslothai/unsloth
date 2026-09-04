@@ -797,3 +797,41 @@ def test_peer_activate_is_absolute_under_studio_home(monkeypatch, tmp_path) -> N
     act = sc.venv_activate()
     assert act == str(tmp_path / "custom" / "unsloth_studio" / "bin" / "activate")
     assert "$HOME" not in act
+
+
+# ── Splitting a model that fits: no longer a single number ───────────────────
+# The flat 0.92x holds only for a llama.cpp whose RPC backend predates
+# ggml-org/llama.cpp#18626. With it, what overlaps is prefill, so the answer becomes a
+# function of prompt length. Getting this backwards in either direction gives users bad
+# deployment advice, so pin both branches.
+
+
+def test_layer_split_speedup_defaults_to_the_conservative_number() -> None:
+    """Without async RPC it is still a flat loss, whatever the prompt length."""
+    sc = _load("studio/spark_cluster.py")
+    for tokens in (128, 1024, 4096, None):
+        assert sc.layer_split_speedup(tokens, 8) == sc.LAYER_SPLIT_FITTING_SPEEDUP
+
+
+def test_layer_split_speedup_is_prompt_dependent_with_async_rpc() -> None:
+    sc = _load("studio/spark_cluster.py")
+    # Short prompts still lose; long prompts win; and it is monotonic in prompt length.
+    assert sc.layer_split_speedup(128, 8, async_rpc = True) < 1.0
+    assert sc.layer_split_speedup(4096, 8, async_rpc = True) > 1.4
+    seq = [sc.layer_split_speedup(t, 8, async_rpc = True) for t in (128, 256, 512, 1024, 2048, 4096)]
+    assert seq == sorted(seq), seq
+
+
+def test_layer_split_speedup_refuses_to_guess_without_a_prompt_length() -> None:
+    """With async RPC the answer genuinely depends on prompt length, so say nothing."""
+    sc = _load("studio/spark_cluster.py")
+    assert sc.layer_split_speedup(None, 8, async_rpc = True) is None
+
+
+def test_layer_split_speedup_snaps_down_to_a_measured_row() -> None:
+    """Six measured points, not a fitted curve: do not interpolate precision we lack."""
+    sc = _load("studio/spark_cluster.py")
+    assert sc.layer_split_speedup(2047, 8, async_rpc = True) == \
+        sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[1024][8]
+    assert sc.layer_split_speedup(99999, 8, async_rpc = True) == \
+        sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[4096][8]

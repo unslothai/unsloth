@@ -1815,7 +1815,60 @@ TP_SPEEDUP_2 = {1: 2.09, 2: 2.13, 4: 2.10, 8: 1.97}
 PP_SPEEDUP_2 = {1: 1.08, 2: 1.11, 4: 1.09, 8: 1.07}
 TP_TPOT_MS_2 = (332.7, 162.4)
 PP_TPOT_MS_2 = (320.0, 320.0)
+# Splitting a model that ALREADY FITS on one node. This was a flat 0.92x loss, and that is
+# still what you get from a llama.cpp whose RPC backend predates ggml-org/llama.cpp#18626
+# ("rpc: implement event and async backend APIs", merged 2026-08-26). Without it the RPC
+# backend advertises neither async nor events, ggml_backend_sched therefore refuses to
+# pipeline across RPC devices, and the two halves run strictly one after the other.
 LAYER_SPLIT_FITTING_SPEEDUP = 0.92
+
+# WITH that commit the answer stops being a constant and becomes a function of prompt length,
+# because what overlaps is prefill. Measured end to end on two Sparks, Qwen3-27B Q4_K_XL,
+# same binary both arms, so the only variable is whether the model is split:
+#
+#   prompt tokens |  c=1    c=4    c=8
+#           128   | 0.94x  0.95x  0.95x
+#           256   | 0.98x  1.00x  1.00x     <- break-even
+#           512   | 0.96x  1.05x  1.07x
+#          1024   | 1.02x  1.12x  1.17x
+#          2048   | 1.07x  1.23x  1.29x
+#          4096   | 1.11x  1.35x  1.45x
+#
+# Decode is 0.93-0.98x throughout and cannot be otherwise: a layer split moves the same
+# weight bytes per token, so the whole gain is prefill and the whole question is prompt
+# length. Below ~256 tokens splitting costs 2-6%; above ~1024 it wins, and the win grows with
+# both prompt length and concurrency.
+LAYER_SPLIT_ASYNC_RPC_SPEEDUP = {
+    128:  {1: 0.94, 4: 0.95, 8: 0.95},
+    256:  {1: 0.98, 4: 1.00, 8: 1.00},
+    512:  {1: 0.96, 4: 1.05, 8: 1.07},
+    1024: {1: 1.02, 4: 1.12, 8: 1.17},
+    2048: {1: 1.07, 4: 1.23, 8: 1.29},
+    4096: {1: 1.11, 4: 1.35, 8: 1.45},
+}
+LAYER_SPLIT_BREAK_EVEN_TOKENS = 256
+
+
+def layer_split_speedup(prompt_tokens = None, concurrency = 1, async_rpc = False):
+    """End-to-end speedup from splitting a model that already fits on one node.
+
+    `async_rpc=False` is the conservative default and reports the flat 0.92x, because that is
+    what a stock fork build still does. Pass True only for a build carrying #18626. Returns
+    the nearest measured row at or below `prompt_tokens` rather than interpolating: these are
+    six measured points, not a fitted curve, and pretending otherwise would invent precision.
+    """
+    if not async_rpc:
+        return LAYER_SPLIT_FITTING_SPEEDUP
+    if prompt_tokens is None:
+        return None  # genuinely unknown; the caller must not guess
+    rows = sorted(LAYER_SPLIT_ASYNC_RPC_SPEEDUP)
+    key = rows[0]
+    for r in rows:
+        if prompt_tokens >= r:
+            key = r
+    by_c = LAYER_SPLIT_ASYNC_RPC_SPEEDUP[key]
+    near = min(by_c, key = lambda c: abs(c - max(1, int(concurrency))))
+    return by_c[near]
 REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
 # Training, GPipe pipeline parallel with M=4 microbatches, 2 nodes:
 # 3024 tok/s against a 2032 tok/s single-node control.
@@ -1909,7 +1962,12 @@ def expected_gain(
             measured = True,
             note = (
                 f"measured {LAYER_SPLIT_FITTING_SPEEDUP:.2f}x -- SLOWER than a single "
-                f"Spark. Splitting a model that fits is a loss, always."
+                f"Spark, on a llama.cpp whose RPC backend predates ggml-org#18626. "
+                f"With that commit it depends on prompt length instead: roughly "
+                f"break-even at {LAYER_SPLIT_BREAK_EVEN_TOKENS} prompt tokens, a 2-6% "
+                f"loss below it, and a win above ~1024 that grows with prompt length and "
+                f"concurrency (measured up to 1.45x at 4096 tokens, 8 concurrent). So "
+                f"this is a loss for chat-shaped traffic and a win for prompt-heavy work."
             ),
         )
         return out
@@ -1986,7 +2044,9 @@ def plan_deployment(
 
     Measured behaviour, not theory. Two facts drive everything:
 
-    * a model that FITS on one Spark is *slower* layer-split across two (0.92x),
+    * a model that FITS on one Spark is *slower* layer-split across two (0.92x) on a
+      llama.cpp predating ggml-org#18626; with it, prompt-length dependent (see
+      LAYER_SPLIT_ASYNC_RPC_SPEEDUP),
       because ggml walks the split graph device by device and the nodes take turns.
       Splitting buys capacity, never speed.
     * TP is the only axis that shortens a single request (2.09x on two Sparks);
