@@ -41,10 +41,12 @@ SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 BUNDLE_JOB = "pinned-symbol-matrix"
 
 # Suites with no pull_request home today.
-# This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file
+# This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file.
 # Neither can join the bundle, because the bundle installs nothing but pytest: test_import_leaves_torch_globals_alone.py
 # runs `import torch` inside a subprocess probe (_PROBE at module scope), so it needs a real torch.
 # test_trl_vllm_generation_lora_patch.py needs an installed TRL.
+# Both are swept by the cron-only `daily-fresh-fetch` job, so they are checked daily rather than never. Anything
+# added here needs the same kind of reason written down.
 CRON_ONLY = {
     "tests/version_compat/test_import_leaves_torch_globals_alone.py",
     "tests/version_compat/test_trl_vllm_generation_lora_patch.py",

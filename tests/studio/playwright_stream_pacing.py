@@ -60,7 +60,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5186"))
-# Unset: start and stop our own server.
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -69,22 +70,36 @@ OWNS_SERVER = not _EXTERNAL
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 
-# The reply and the rate it arrives at.
-# the arrival count stays modest because throttling slows the feed's own timers too, and 1,000 arrivals at 6x stretched
-# a one-second stream to 43s of wall clock for no extra signal.
+# The reply and the rate it arrives at. Length is what the renderer's cost is superlinear
+# in, so it is the knob that matters; the arrival count stays modest because throttling
+# slows the feed's own timers too, and 1,000 arrivals at 6x stretched a one-second stream
+# to 43s of wall clock for no extra signal.
 TOTAL_CHARS = int(os.environ.get("SMOKE_STREAM_CHARS", "24000"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_STREAM_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_STREAM_GAP_MS", "2"))
 THROTTLE = int(os.environ.get("SMOKE_STREAM_THROTTLE", "6"))
 
-# Budgets, not targets, chosen against real regressions rather than by feel.
-# main #8750 reverted #7892 reverted long tasks 5.0-8.0s 13.1s/74.4s 6.7-7.9s long task count 49-71 144/598 14-23
-# longest stall 1.05-1.23s 0.97-1.40s 5.03-6.35s Reverting #8750 (incremental Markdown parsing) blows up the long-task
-# total and leaves the longest stall alone.
-# Machine spread: the "main" column above is 5,029/5,901ms on one machine and 6,687-8,003ms on another, so clean
-# readings vary ~60% ACROSS boxes even though a single box repeats to within ~15%.
-# The 10,000ms budget is NOT raised for that headroom, because the same two machines read the #8750 revert as 13,059ms
-# and 74,353ms: a budget loose enough for the slower box would stop catching that regression on the faster one.
+# Budgets, not targets, chosen against real regressions rather than by feel. Two merged
+# fixes were reverted in this harness, on two machines, and they move the two numbers in
+# opposite directions, which is why there are two budgets and not one headline metric.
+#
+#                        main   #8750 reverted   #7892 reverted
+#   long tasks      5.0-8.0s      13.1s/74.4s        6.7-7.9s
+#   long task count    49-71          144/598           14-23
+#   longest stall   1.05-1.23s     0.97-1.40s        5.03-6.35s
+#
+# Reverting #8750 (incremental Markdown parsing) blows up the long-task total and leaves
+# the longest stall alone. Reverting #7892 (Streamdown's `animated` config, which keeps
+# block updates out of an interruptible transition) does the opposite: the stall goes 4-5x
+# while the long-task total stays in the clean range. A single headline metric would have
+# missed one of the two outright.
+#
+# Machine spread: the "main" column above is 5,029/5,901ms on one machine and 6,687-8,003ms
+# on another, so clean readings vary ~60% ACROSS boxes even though a single box repeats to
+# within ~15%. That is what keeps the CI step non-gating. The 10,000ms budget is NOT raised
+# for that headroom, because the same two machines read the #8750 revert as 13,059ms and
+# 74,353ms: a budget loose enough for the slower box would stop catching that regression on
+# the faster one. Retune from observed runner numbers, not from one machine.
 MAX_LONGEST_STALL_MS = int(os.environ.get("SMOKE_STREAM_STALL_BUDGET_MS", "2500"))
 MAX_LONG_TASK_MS = int(os.environ.get("SMOKE_STREAM_LONG_TASK_BUDGET_MS", "10000"))
 

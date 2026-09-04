@@ -759,6 +759,9 @@ def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".whisper.cpp.old-*"))
 
 
+# ── Host/GPU token helpers (component-independent core functions) ──
+# Value tables moved verbatim from the llama characterization suite; these are pure functions with no
+# descriptor sensitivity, so they run unparameterized.
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -790,7 +793,6 @@ def test_normalize_compute_caps(values, expected):
     assert core.normalize_compute_caps(values) == expected
 
 
-# Host/GPU token helpers (component-independent core functions) ── Value tables moved verbatim from the llama
 @pytest.mark.parametrize(
     "value,expected",
     [

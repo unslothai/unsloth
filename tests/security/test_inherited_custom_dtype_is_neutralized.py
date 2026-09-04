@@ -26,7 +26,10 @@ def _import_with(value, marker = None):
     environment = dict(os.environ)
     environment[_ENV_KEY] = value.format(marker = marker) if marker else value
     # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host with no torch accelerator.
-    # studio/backend/tests/conftest.py does, with setdefault
+    # In-process this file rides on whatever set the variable earlier in the session
+    # (studio/backend/tests/conftest.py does, with setdefault), so whether the child inherited it came down to what
+    # else was in the run. It was not set in Repo tests (CPU), and the child died before reaching the module under
+    # test. Pin it: this test is about the dtype field, and it should read the same with a card and without one.
     environment.setdefault("UNSLOTH_ALLOW_CPU", "1")
     program = (
         "import unsloth.models._custom_dtype as module, os;"

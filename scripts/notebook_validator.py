@@ -877,12 +877,12 @@ def cmd_drift(args: argparse.Namespace) -> int:
                         )
                 rc = 0 if not findings else 1
     finally:
+        # Restore the working tree (both commands run regardless of exit path).
         subprocess.run(
             ["git", "-C", str(nbdir), "checkout", "."],
             check = False,
             capture_output = True,
         )
-        # Restore the working tree (both commands run regardless of exit path).
         subprocess.run(
             ["git", "-C", str(nbdir), "stash", "pop"],
             check = False,

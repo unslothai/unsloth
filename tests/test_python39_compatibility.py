@@ -22,7 +22,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
 
-# studio/ ships under the same requires-python, so it is held to the syntax check.
+# studio/ ships under the same requires-python, so it is held to the syntax check. Its
+# evaluated-union debt is ratcheted rather than fixed here: the files involved include FastAPI routers and pydantic
+# models, where `from __future__ import annotations` is supported but has real failure modes around class
+# dependencies, so converting them needs Unsloth actually booted and its routes exercised.
+#
+# The SET, not just a count, so a breach can name the files it added. Shrinking is the only edit that should ever be
+# made here: a new entry means a new file evaluates a union on the floor, and the fix is the future import in that
+# file, not a longer list.
 STUDIO_UNION_DEBT_FILES = frozenset(
     {
         "studio/backend/auth/hashing.py",

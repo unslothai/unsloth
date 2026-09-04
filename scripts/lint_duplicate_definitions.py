@@ -437,7 +437,8 @@ def _rename_map(before: str, after: str):
     """
     # -z, because git quotes and backslash-escapes any non-ASCII path by default (core.quotePath), and the escaped
     # spelling matches nothing.
-    # Under -z each rename is three NUL-terminated records, "R100", old, new
+    # Under -z each rename is three NUL-terminated records, "R100", old, new -- the status is its own field
+    # rather than tab-joined to the paths.
     listed = _git(["diff", "--name-status", "-z", "-M", "--diff-filter=R", before, after])
     if listed.returncode != 0:
         return {}

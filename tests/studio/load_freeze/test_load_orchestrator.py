@@ -542,6 +542,7 @@ def test_50_concurrent_probes_complete_without_deadlock():
                 results = [f.result(60.0) for f in futs]
             elapsed = time.perf_counter() - t0
     assert all(r.status_code == 200 for r in results)
+    # Generous bound absorbs CI jitter but still catches serialisation (~20s).
     assert (
         elapsed < 15.0
     ), f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
@@ -592,11 +593,11 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     text = f.read_text(encoding = "utf-8")
-    # Generous bound absorbs CI jitter but still catches serialisation (~20s).
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
-    # Either call shape satisfies the guard;
+    # Either call shape satisfies the guard; _detect_audio_type_strict was a follow-up to distinguish
+    # definitive non-audio from transient probe failure.
     assert (
         "self._audio_type = self.detect_audio_type()" in text
         or "detected = self.detect_audio_type()" in text

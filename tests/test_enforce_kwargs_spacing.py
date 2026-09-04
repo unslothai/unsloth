@@ -344,7 +344,8 @@ def test_fstring_fold_applied_inside_large_multiline_call():
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
 
 
-# collapse_short_asserts: strip the magic comma holding a short assert open ── Strips the trailing comma so ruff joins
+# ── collapse_short_asserts: strip the magic comma holding a short assert open ──
+# Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
 @pytest.mark.parametrize(
     "name,src",
     [

@@ -202,7 +202,9 @@ LOCALES = FRONTEND / "src/i18n/locales"
 
 # The only locale entries allowed to say "Unsloth Studio": prose that names the *remote server* a user points this app
 # at, which genuinely is an Unsloth Studio.
-# modelAutoSwitch.apiOnlyDescription does NOT belong here.
+# modelAutoSwitch.apiOnlyDescription does NOT belong here. It renders as a settings-row description and describes a
+# model you loaded from this UI, not from a remote server, so exempting it would let the display name back in on a
+# rendered surface.
 LOCALE_REMOTE_SERVER_KEYS = frozenset(
     {
         "settings.agents.remote.title",

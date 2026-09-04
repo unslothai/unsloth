@@ -203,9 +203,10 @@ def test_dpo_patch_generates_valid_source():
     _assert_quantized_cast_neutralized(src, "DPOTrainer")
 
 
-# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity downgrade is never exercised by the fake-run
-# above.
-# Lock both arities by monkeypatching rl_replacements.trl_version and re-generating the injected
+# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity
+# downgrade is never exercised by the fake-run above. Lock both arities by
+# monkeypatching rl_replacements.trl_version and re-generating the injected
+# _get_per_token_logps_and_entropies source directly (no TRL install needed).
 def test_per_token_logps_arity_gate_both_directions(monkeypatch):
     if importlib.util.find_spec("unsloth") is None:
         pytest.skip("unsloth not installed")

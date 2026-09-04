@@ -178,11 +178,11 @@ def test_css_font_sizes_reference_the_scale():
         for m in re.finditer(r"(font-size|line-height):[^;{}]*;", text):
             decl = m.group(0)
             if re.search(r"[0-9.]+(px|rem)", decl) is None:
-                continue
-            if "--ui-font-scale" in decl:
-                continue  # library layout tricks (KaTeX-style), not text
-            if "1px" in decl:
                 continue  # unitless ratios and vars scale naturally
+            if "--ui-font-scale" in decl:
+                continue
+            if "1px" in decl:
+                continue  # library layout tricks (KaTeX-style), not text
             offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "

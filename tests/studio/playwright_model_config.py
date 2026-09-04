@@ -67,8 +67,12 @@ MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT", "gemma-3-270m")
 # A distinctive valid (>=128, multiple of 128, below the model's 32768 ceiling) Context Length, clearly not a default
 DISTINCT_CTX = int(os.environ.get("STUDIO_DISTINCT_CTX", "4096"))
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
-# Settle window after run-settings opens, before staging an edit.
+# Settle window after run-settings opens, before staging an edit. An edit made in the panel's first moments is
+# silently discarded: it re-derives its baseline once mount-time work lands and drops whatever was staged, so Save
+# reports "Default settings kept" and stores nothing.
 # Measured on gemma-3-270m: fails at 0ms, passes from 500ms.
+# The panel exposes no readiness signal to poll (the input value, the Reset state and the primary button label are
+# all identical before and after), so this is a bounded wait rather than a condition.
 CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)

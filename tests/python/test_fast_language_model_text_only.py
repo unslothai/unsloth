@@ -278,7 +278,8 @@ def test_text_only_guard_predicate_across_vlm_families():
     # Dedicated text decoder remaps language_model.* -> strip vision.
     assert takes_text_only(transformers.Gemma3Config()) is True
 
-    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would load random weights
+    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
+    # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
     for name in [
         "Qwen2VLConfig",
         "Qwen2_5_VLConfig",

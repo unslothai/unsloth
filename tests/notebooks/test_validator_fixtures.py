@@ -32,6 +32,9 @@ COLAB_2026_05 = {
 }
 
 
+# ---------- R-INST-001 : forbid git+ HEAD ------------------------------- #
+
+
 def test_r_inst_001_fires_on_transformers_git_head():
     cell = """%%capture
 !pip install --force-reinstall git+https://github.com/huggingface/transformers.git
@@ -108,7 +111,6 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
 
 
 # ---------- R-INST-005 : transformers + tokenizers window (PRs #261b/#264) -- #
-# ---------- R-INST-001 : forbid git+ HEAD ------------------------------- #
 
 
 def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeypatch):
