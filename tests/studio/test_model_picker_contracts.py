@@ -2781,10 +2781,8 @@ def test_override_writes_are_ordered_per_model():
     requests with no sequencing, so the older response could commit last and resurrect
     the entry the newer one meant to replace."""
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
-    # One in-flight promise per key is the ordering. What that promise resolves
-    # TO is not: #10160 made it a ModelOverrideWriteResult so a forget can report
-    # removedKeys, and naming the old `void` here failed a change that reordered
-    # nothing.
+    # One in-flight promise per key is the ordering; what it resolves to is not,
+    # so pinning the old `void` failed #10160, which reordered nothing.
     assert (
         "const writesByKey = new Map<string, Promise<" in src
     ), "writes are no longer serialised through one in-flight promise per model"
@@ -2795,7 +2793,7 @@ def test_override_writes_are_ordered_per_model():
     )
     # Chained on the settled tail, so one failed write cannot cancel the next.
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
-    # And the tail is stored, or every writer chains on the same empty slot.
+    # The tail is stored, or every writer chains on the same empty slot.
     assert "writesByKey.set(key, write);" in src
     # Only the last writer clears the slot, or a queue still building loses order.
     assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src
