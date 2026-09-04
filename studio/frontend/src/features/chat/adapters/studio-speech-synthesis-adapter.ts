@@ -10,9 +10,9 @@ import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 
-/** Voice for a stored voiceURI. "default" resolves to the voice the platform
- * marks as its default, so the "System default" choice means what it says
- * instead of falling back to a curated pick. Undefined lets the browser pick. */
+/** Voice for a stored voiceURI. "default" resolves to the voice the platform marks as its
+ *  default, so the "System default" choice means what it says instead of falling back to a
+ *  curated pick. Undefined lets the browser pick. */
 export function findTtsVoice(
   voiceURI: string,
 ): SpeechSynthesisVoice | undefined {
@@ -65,8 +65,8 @@ function voiceBaseName(voice: SpeechSynthesisVoice): string {
   return name;
 }
 
-// Well-known natural English voices, best first. Breaks ties when the name
-// carries no quality hint, so basic voices are not just alphabetical.
+// Well-known natural English voices, best first. Breaks ties when the name carries no quality
+// hint, so basic voices are not just alphabetical.
 const PREFERRED_VOICE_NAMES = [
   "samantha",
   "alex",
@@ -119,11 +119,9 @@ function langBase(tag: string): string {
 
 const MAX_CURATED_VOICES = 20;
 
-/**
- * Keep the best, most relevant voices: drop low-quality ones, keep English,
- * the browser language, and the dictation language, rank by quality hints,
- * and cap the list. The selected voice is always kept.
- */
+/** Keep the best, most relevant voices: drop low-quality ones, keep English, the browser
+ *  language and the dictation language, rank by quality hints, and cap the list. The selected
+ *  voice is always kept. */
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
@@ -137,8 +135,8 @@ export function curateSystemVoices(
     wantedLangs.add(langBase(dictationLanguage));
   }
 
-  // WebKit and Linux engines report voices with empty or duplicate voiceURIs;
-  // drop them so the Radix Select never gets an empty or colliding value.
+  // WebKit and Linux engines report voices with empty or duplicate voiceURIs; drop them so the
+  // Radix Select never gets an empty or colliding value.
   const seenVoiceURIs = new Set<string>();
   const kept = voices.filter((voice) => {
     if (!voice.voiceURI || seenVoiceURIs.has(voice.voiceURI)) return false;
@@ -159,9 +157,8 @@ export function curateSystemVoices(
     return a.name.localeCompare(b.name);
   });
 
-  // macOS reports some voices twice (compact + enhanced) under one name. Keep
-  // one per name and language, preferring the selected voice then the best
-  // ranked, so no duplicates show.
+  // macOS reports some voices twice (compact + enhanced) under one name. Keep one per name and
+  // language, preferring the selected voice then the best ranked.
   const keyOf = (voice: SpeechSynthesisVoice) =>
     `${voiceBaseName(voice)}|${voice.lang.toLowerCase()}`;
   const winners = new Map<string, string>();
@@ -188,10 +185,8 @@ export function curateSystemVoices(
   return curated;
 }
 
-/**
- * Best voice when none is chosen. The browser default on macOS is often a
- * robotic legacy voice, so fall back to the top curated voice instead.
- */
+/** Best voice when none is chosen. The browser default on macOS is often a robotic legacy
+ *  voice, so fall back to the top curated voice instead. */
 function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   if (typeof window === "undefined" || !window.speechSynthesis) {
     return undefined;
@@ -275,8 +270,8 @@ export async function generateCustomTtsAudio(
       "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
     );
   }
-  // A browser whose key migration failed keeps the connection selectable on a
-  // retained legacy key; send it like chat and STT do, or this call is unauthenticated.
+  // A browser whose key migration failed keeps the connection selectable on a retained legacy
+  // key; send it like chat and STT do, or this call is unauthenticated.
   const provider = providersState.providers.find(
     (candidate) => candidate.id === ttsProviderId,
   );
@@ -293,9 +288,9 @@ export async function generateCustomTtsAudio(
     ? await encryptProviderApiKey(legacyApiKey)
     : "";
 
-  // Encryption and auth refresh both yield. Reuse this check before the first
-  // request and every authFetch retry so neither path can release assistant text
-  // or a retained key after the frontend-only connection policy changes.
+  // Encryption and auth refresh both yield. Reuse this check before the first request and every
+  // authFetch retry so neither path can release assistant text or a retained key after the
+  // frontend-only connection policy changes.
   const assertConnectionSnapshot = () => {
     const currentProvidersState = useExternalProvidersStore.getState();
     if (!currentProvidersState.connectionsEnabled) {
@@ -398,8 +393,8 @@ function speakWithBackendAudio(
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
-      // Some browsers reset playbackRate to 1 once the source loads; reapply
-      // it on loadedmetadata so the speed setting reliably takes effect.
+      // Some browsers reset playbackRate to 1 once the source loads; reapply it on loadedmetadata so
+      // the speed setting reliably takes effect.
       audio.addEventListener("loadedmetadata", () => {
         if (audio) audio.playbackRate = ttsRate;
       });
@@ -431,10 +426,8 @@ function speakWithBackendAudio(
   };
 }
 
-/**
- * Text-to-speech for assistant messages. Reads Voice settings at speak time.
- * Engines: "system" (speechSynthesis), "studio" (local TTS model), "custom" (a connection).
- */
+/** Text-to-speech for assistant messages. Reads Voice settings at speak time. Engines:
+ *  "system" (speechSynthesis), "studio" (local TTS model), "custom" (a connection). */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   /** Web Speech synthesis, used by the "system" engine. */
   static systemVoicesSupported(): boolean {
@@ -445,8 +438,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  // The "studio" engine only needs fetch + Audio playback, so a WebView
-  // without Web Speech synthesis can still read aloud through the backend.
+  // The "studio" engine only needs fetch plus Audio playback, so a WebView without Web Speech
+  // synthesis can still read aloud through the backend.
   static isSupported(): boolean {
     return (
       StudioSpeechSynthesisAdapter.systemVoicesSupported() ||
@@ -464,8 +457,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       error?: unknown,
     ) => {
       if (res.status.type === "ended") return;
-      // Surface genuine read-aloud failures; a cancelled/interrupted utterance
-      // is a normal stop, not an error, and must not toast.
+      // Surface genuine read-aloud failures; a cancelled or interrupted utterance is a normal stop,
+      // not an error, and must not toast.
       if (
         reason === "error" &&
         error !== "interrupted" &&
@@ -502,8 +495,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       },
     };
 
-    // Fall back to the backend model when the runtime lacks Web Speech
-    // synthesis (e.g. an audio-only WebView), so read-aloud still works.
+    // Fall back to the backend model when the runtime lacks Web Speech synthesis, so read-aloud
+    // still works.
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
@@ -514,8 +507,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
           : generateStudioTtsAudio;
       const session = speakWithBackendAudio(generate, text, handleEnd, () => {
         if (res.status.type === "ended") return;
-        // Notify subscribers of the async starting -> running transition;
-        // the adapter contract drives UI state off these subscribe callbacks.
+        // Notify subscribers of the async starting -> running transition; the adapter contract drives
+        // UI state off these subscribe callbacks.
         res.status = { type: "running" };
         for (const handler of subscribers) handler();
       });
@@ -527,8 +520,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     utterance.addEventListener("end", () => handleEnd("finished"));
     utterance.addEventListener("error", (e) => handleEnd("error", e.error));
 
-    // Chrome silently drops speak() while another utterance is queued from a
-    // cancelled run; clearing first keeps read-aloud deterministic.
+    // Chrome silently drops speak() while another utterance is queued from a cancelled run;
+    // clearing first keeps read-aloud deterministic.
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
     res.status = { type: "running" };
