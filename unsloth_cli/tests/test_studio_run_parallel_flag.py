@@ -14,7 +14,9 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
+import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -910,19 +912,44 @@ def test_reexec_forwards_api_only(monkeypatch, extra, present):
     assert ("--api-only" in argv) is present, argv
 
 
-def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
-    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
-    it, because api-only has no login page and the bootstrap deadline does not
-    apply, so the seeded password could never be changed."""
+def test_secure_api_only_autogenerates_then_reexecs(monkeypatch, tmp_path):
+    """`--secure --api-only` proceeds again, on an auto-generated admin password.
+
+    It used to be refused outright: api-only has no login page, so the bootstrap
+    SHUTDOWN DEADLINE never armed, and the seeded default would have stayed live on
+    a public URL indefinitely. Auto-generation removes that premise rather than
+    working around it -- the gate rotates the seeded credential and prints the new
+    one once BEFORE any re-exec, so nothing public is ever reachable under a
+    default password and there is no deadline left to depend on.
+    """
     studio_mod = _load_run_command()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
+    # CliRunner's captured stderr is not a tty and the one-time-secret selector
+    # refuses to write a credential to a non-tty; hand it a console so this test
+    # reaches the rotation rather than stopping at the preflight (which has its own
+    # test, test_studio_password_prompt.py).
+    shown = io.StringIO()
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: shown)
 
     result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
 
-    assert captured == [], captured
-    assert result.exit_code != 0
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "default admin password was never changed" in combined.lower()
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1, captured
+    banner = shown.getvalue()
+    assert "auto-generated for this public launch" in banner.lower()
+
+    # The seeded default is gone: must_change cleared, bootstrap file removed.
+    with sqlite3.connect(tmp_path / "auth" / "auth.db") as conn:
+        must_change = conn.execute(
+            "SELECT must_change_password FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()[0]
+    assert must_change == 0
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+
+    # The credential never crosses to the child on argv.
+    assert not any("password" in tok.lower() for tok in captured[0]["argv"]), captured[0]["argv"]
 
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])

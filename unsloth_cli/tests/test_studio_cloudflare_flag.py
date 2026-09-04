@@ -88,6 +88,13 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
         "resolve_tool_policy",
         lambda host, flag, yes, silent: False if flag is None else bool(flag),
     )
+    # This suite asserts what reaches the re-exec'd child's argv. The pre-exposure
+    # password gate is not part of that: on a headless launch it now rotates the
+    # admin password against the real STUDIO_HOME (which this helper does not
+    # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
+    # here; it has a dedicated suite in test_studio_password_prompt.py.
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+
     monkeypatch.setattr(sys, "platform", platform)
 
     def fake_execvp(file, argv):
@@ -164,6 +171,13 @@ def _invoke_studio_default(
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
+    # This suite asserts what reaches the re-exec'd child's argv. The pre-exposure
+    # password gate is not part of that: on a headless launch it now rotates the
+    # admin password against the real STUDIO_HOME (which this helper does not
+    # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
+    # here; it has a dedicated suite in test_studio_password_prompt.py.
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+
     monkeypatch.setattr(sys, "platform", platform)
 
     def fake_execvp(file, argv):

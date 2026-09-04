@@ -3,6 +3,7 @@
 
 """Colab helpers for Unsloth Studio. Uses Colab's built-in proxy."""
 
+import os
 from pathlib import Path
 import sys
 
@@ -366,13 +367,386 @@ def _bootstrap_password_pending() -> bool:
         return True
 
 
+def _display_channel_active() -> bool:
+    """True only where IPython.display actually renders a card to the operator.
+
+    display() does NOT raise outside a notebook, so a non-raising call is no proof
+    the credential was seen: with no InteractiveShell it just prints repr(obj)
+    ("<IPython.core.display.HTML object>") and a terminal shell renders only the
+    text/plain repr. Treating that as success would publish the shared link after
+    rotating to a password nobody ever read. Only an ipykernel-backed shell
+    (Jupyter, and Colab whose google.colab._shell.Shell subclasses it) publishes
+    display_data out of band on iopub, so require one: the `kernel` attribute is
+    set on the shell by ipykernel and, unlike comparing __class__.__name__ to
+    "ZMQInteractiveShell", it is also true under Colab's subclass.
+    """
+    try:
+        from IPython import get_ipython
+    except Exception:
+        return False
+    try:
+        shell = get_ipython()
+    except Exception:
+        return False
+    if shell is None:
+        return False
+    if getattr(shell, "kernel", None) is not None:
+        return True
+    try:
+        from ipykernel.zmqshell import ZMQInteractiveShell
+    except Exception:
+        return False
+    return isinstance(shell, ZMQInteractiveShell)
+
+
+def _auto_generate_colab_admin_password() -> "str | None":
+    """Secure a Colab public (Cloudflare) launch that has no admin password set.
+
+    While the admin still owes its bootstrap-password change, a shared link would
+    leak admin access, so today the tunnel is refused. Instead auto-generate a
+    strong password and commit it via the normal update path (which clears the
+    must-change flag, rotates the JWT secret, revokes refresh tokens, and deletes
+    the on-disk bootstrap password), then return it for one-time display in the
+    cell. Returns None when a password is already set (nothing to do) or on error.
+    The value is never persisted to disk or placed on argv.
+
+    The commit is a compare-and-set on ``must_change_password``: another tab can
+    finish /change-password against the reused server between the check below and
+    the write, and an unconditional update would either discard the password the
+    user just chose or display a generated one that has already been replaced,
+    publishing the tunnel under credentials nobody can use. Losing that race means
+    a password is now set, so we return None exactly as if one always had been.
+
+    Entering this path also purges the pre-#7392 ``.colab_notebook_login`` cache:
+    the removed finalize flow wrote the admin username and password there in
+    plaintext, and an upgraded runtime must not keep a readable copy of a
+    credential this flow promises is never persisted (CWE-256).
+
+    The display channel is resolved BEFORE rotating (mirroring run.py's
+    _one_time_secret_stream preflight): a runtime that cannot render the card is
+    refused here, while the seeded recovery credential is still intact.
+    """
+    try:
+        from auth.storage import (
+            DEFAULT_ADMIN_USERNAME,
+            ensure_default_admin,
+            requires_password_change,
+            update_password,
+        )
+    except Exception as e:
+        logger.warning(f"Could not load auth storage to secure the public link ({e}).")
+        return None
+    try:
+        ensure_default_admin()
+        if not requires_password_change(DEFAULT_ADMIN_USERNAME):
+            # A password is already set, so there is nothing to rotate. Before
+            # dropping the pre-#7392 plaintext cache, hand its credential back
+            # ONCE if it still authenticates.
+            #
+            # An upgrading runtime is the case that matters. The removed finalize
+            # flow re-displayed this cache on every cell re-run, so it was a
+            # standing recovery surface; purging it silently would delete the only
+            # copy a user who cleared their earlier cell output still had, leaving
+            # a working password nobody can discover. Showing it once and then
+            # removing it keeps the CWE-256 fix and still leaves the user a way in.
+            cached = _load_colab_login_credentials()
+            if cached is not None and _colab_credentials_still_valid(*cached):
+                _display_admin_credentials(*cached, final_cached_copy = True)
+            _clear_colab_login_credentials()
+            return None
+        _clear_colab_login_credentials()
+        if not _display_channel_active():
+            # Nowhere to render the one-time card, so rotating would destroy the
+            # only recovery credential for a password nobody could read. Refuse
+            # BEFORE the write; the caller's pending check then blocks the link.
+            logger.warning(
+                "No notebook display channel to show a one-time admin password, so the "
+                "admin password is left unchanged. Set one with `unsloth studio "
+                "reset-password` (or log in locally and change it), then re-run start()."
+            )
+            return None
+        import secrets
+
+        generated = secrets.token_urlsafe(24)
+        try:
+            # update_password returns the rotated JWT secret, or None when a guard
+            # rejected the write. Narrow to a bool here: the except branch below
+            # assigns one, and this variable must not hold a secret on one path.
+            committed = (
+                update_password(
+                    DEFAULT_ADMIN_USERNAME,
+                    generated,
+                    revoke_refresh_tokens = True,
+                    require_must_change = True,
+                )
+                is not None
+            )
+        except Exception as e:
+            # update_password commits the row BEFORE its best-effort cleanup
+            # (clear_bootstrap_password, which can still raise -- e.g. printing its
+            # own warning to a closed stderr). A raise there leaves the new password
+            # live, and discarding it would publish
+            # the link -- must_change is already 0 -- under a credential nobody
+            # holds. Ask the stored hash which password actually won.
+            logger.warning(f"Admin password commit reported an error ({e}); checking what landed.")
+            committed = _colab_credentials_still_valid(DEFAULT_ADMIN_USERNAME, generated)
+        if not committed:
+            # Lost the race: a password was set elsewhere, so ours was never
+            # written. Never show it -- it would not authenticate.
+            logger.info("An admin password was set concurrently; keeping it for the public link.")
+            return None
+        # Committed but not yet rendered. Until the caller confirms the card
+        # reached the notebook, this password exists only in memory; the sentinel
+        # keeps a re-run of the cell from publishing under it. Cleared by
+        # start_cloudflare_tunnel once _display_admin_credentials succeeds.
+        try:
+            from auth.storage import mark_credential_undelivered
+
+            mark_credential_undelivered(DEFAULT_ADMIN_USERNAME)
+        except Exception:
+            pass
+        return generated
+    except Exception as e:
+        logger.warning(f"Could not auto-generate an admin password for the public link ({e}).")
+        return None
+
+
+def _display_admin_credentials(
+    username: str,
+    password: str,
+    *,
+    final_cached_copy: bool = False,
+) -> bool:
+    """Show an admin credential once, in the notebook cell.
+
+    ``final_cached_copy`` re-displays a credential recovered from the pre-#7392
+    ``.colab_notebook_login`` cache on an upgraded runtime, immediately before
+    that cache is deleted. It is not newly generated, so the card says so and
+    tells the user this is the last time it will appear.
+
+    Renders a branded HTML card with a plain-text fallback. Both paths publish
+    through the IPython display channel (iopub display_data), NOT sys.stdout, so
+    the credential never reaches the server's tee'd session log on disk (see
+    run._setup_server_disk_logging) and is never logged; if no display channel is
+    available we intentionally show nothing rather than fall back to
+    stdout/logging, which would retain the password in the log file.
+
+    The cell is the only surface a notebook has, and a notebook SAVES its cell
+    output: Colab autosaves to Drive, and an exported or shared .ipynb carries the
+    output with it, so this password lives in the notebook document until the
+    output is cleared or the password is changed. The card says exactly that
+    instead of promising the value is never written to disk -- readers who get the
+    notebook must be assumed to have the credential.
+
+    Returns True only when the credential was published to the display channel, and
+    False when no channel is available or every publish raised, so the caller can
+    fail closed rather than expose a shared link under a password nobody ever saw.
+    """
+    try:
+        from IPython.display import HTML, display
+    except Exception:
+        return False
+    _lede = (
+        "This is your existing admin password, recovered from the credential file an "
+        "older Unsloth cached on this runtime. That file has now been removed, so this "
+        "is the last time it will be shown."
+        if final_cached_copy
+        else "Auto-generated for this public launch."
+    )
+    try:
+        display(
+            HTML(f"""
+    <div style="display: inline-block; padding: 18px 20px; background: #fff8e1; border: 2px solid #000000;
+                border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <h3 style="color:#000;margin:0 0 8px 0;font-size:18px;font-weight:800;">Unsloth Studio admin login</h3>
+        <p style="margin:2px 0;font-size:14px;color:#000;">Username: <b style="font-family:monospace;">{username}</b></p>
+        <p style="margin:2px 0;font-size:14px;color:#000;">Password: <b style="font-family:monospace;">{password}</b></p>
+        <p style="margin:10px 0 0 0;font-size:12px;color:#333;">
+            {_lede} The server never writes it to its logs, but
+            this notebook saves cell output: copy the password now, then clear this cell's output
+            before you share, export or download the notebook. Change it any time in Settings, or
+            with <b style="font-family:monospace;">unsloth studio reset-password</b>.
+        </p>
+    </div>
+    """)
+        )
+        return True
+    except Exception:
+        # HTML render failed; show a plain-text copy through the SAME display
+        # channel (still iopub, never sys.stdout, so still out of the server log).
+        try:
+            display(
+                {
+                    "text/plain": (
+                        "Unsloth Studio admin login  "
+                        f"username: {username}  password: {password}  "
+                        f"({_lede} this cell's output is saved "
+                        "with the notebook, so clear it before sharing or exporting)"
+                    )
+                },
+                raw = True,
+            )
+            return True
+        except Exception:
+            return False
+
+
+def _mint_same_tab_link_token() -> "str | None":
+    """Opt-in: mint a ONE-TIME link token for the SAME-TAB Colab proxy URL only.
+
+    Never call this for the shared Cloudflare link. Returns None on any failure,
+    in which case the same-tab URL simply carries no token and the login page
+    still works. The returned token is a bearer credential: it is placed ONLY on
+    the private same-tab URL and is never logged.
+    """
+    try:
+        from auth.storage import DEFAULT_ADMIN_USERNAME, ensure_default_admin
+        from auth.authentication import create_link_token
+
+        ensure_default_admin()
+        return create_link_token(DEFAULT_ADMIN_USERNAME)
+    except Exception as e:
+        logger.info(f"Could not mint a same-tab link token ({e}); showing the plain URL.")
+        return None
+
+
+def _append_link_token(url: str, token: "str | None") -> str:
+    """Append ``?link_token=...`` to the same-tab URL. No-op when token is None."""
+    if not token:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}link_token={token}"
+
+
+def _link_token_opt_in(explicit: bool) -> bool:
+    """Whether to mint a same-tab link token: the explicit arg OR the env flag."""
+    if explicit:
+        return True
+    return os.environ.get("UNSLOTH_STUDIO_COLAB_LINK_TOKEN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+# Literal on purpose: the strip below must run even if importing auth fails, so it
+# cannot depend on auth.terminal_prompt.SUPPLIED_PASSWORD_ENV being importable. A
+# test asserts the two stay equal.
+_SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
+
+
+def _consume_supplied_password_on_reuse() -> None:
+    """Apply-or-strip ``UNSLOTH_STUDIO_PASSWORD`` on start()'s server-reuse path.
+
+    A normal launch goes through ``run_server`` -> ``run._apply_supplied_password``,
+    which reads the variable and then unconditionally pops it, so no child process
+    inherits the plaintext. The fast path (a re-run cell reusing an already-healthy
+    server) never calls ``run_server``, so without this the variable is still set
+    when ``start_cloudflare_tunnel`` spawns cloudflared, and every process spawned
+    from the kernel afterwards inherits the admin password through its environment
+    (CWE-214/CWE-526: readable via ``/proc/<pid>/environ`` and crash dumps for
+    anything running as this user, including Studio's own code-execution tools).
+
+    So the variable is popped FIRST and unconditionally, even when the auth imports
+    or the update fail. If a value was supplied and the admin still owes its
+    bootstrap change, it is then applied through the same compare-and-set update the
+    normal path uses, so the password the user asked for is the one that protects
+    the shared link instead of being silently replaced by an auto-generated one.
+    An already-set password is never overwritten (that is `reset-password`'s job),
+    and a value that fails the length/whitespace rules is ignored, leaving
+    ``start_cloudflare_tunnel`` to auto-generate and display one. Never logs the
+    value, and never exits the process: this runs inside a notebook cell.
+    """
+    supplied = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
+    if not supplied:
+        return
+    try:
+        from auth.storage import (
+            DEFAULT_ADMIN_USERNAME,
+            MIN_PASSWORD_LENGTH,
+            ensure_default_admin,
+            requires_password_change,
+            update_password,
+        )
+
+        ensure_default_admin()
+        if not requires_password_change(DEFAULT_ADMIN_USERNAME):
+            logger.info(
+                f"An admin password is already set, so {_SUPPLIED_PASSWORD_ENV} was "
+                "ignored (it only sets the initial password). Change it with "
+                "`unsloth studio reset-password`."
+            )
+            return
+        if len(supplied) < MIN_PASSWORD_LENGTH or any(ch.isspace() for ch in supplied):
+            logger.warning(
+                f"Ignoring {_SUPPLIED_PASSWORD_ENV}: a password must be at least "
+                f"{MIN_PASSWORD_LENGTH} characters and contain no spaces. A strong "
+                "one will be generated and shown in this cell instead."
+            )
+            return
+        if update_password(
+            DEFAULT_ADMIN_USERNAME,
+            supplied,
+            revoke_refresh_tokens = True,
+            require_must_change = True,
+        ):
+            logger.info(f"Applied the admin password supplied in {_SUPPLIED_PASSWORD_ENV}.")
+        else:
+            # Lost the compare-and-set: a password was set elsewhere between the
+            # check and the write, so keep theirs (same rule as auto-generation).
+            logger.info("An admin password was set concurrently; keeping it.")
+    except Exception as e:
+        # Never log the value itself. Falling through leaves the bootstrap password
+        # pending, so the tunnel path still auto-generates or refuses.
+        logger.warning(f"Could not apply the supplied admin password ({e}).")
+
+
 def start_cloudflare_tunnel(port: int) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
-    run_server suppresses the tunnel on Colab, so we start it directly. Refused while the
-    bootstrap password is pending; any failure collapses to None (Colab proxy still works).
+    run_server suppresses the tunnel on Colab by design, so we start it directly.
+    When no admin password is set, one is auto-generated and shown in the cell so
+    the shareable link is never published under the default bootstrap credential;
+    any failure collapses to None and the Colab proxy still works. As a backstop it
+    is still refused while the bootstrap password is pending.
     """
+    from auth.storage import (
+        DEFAULT_ADMIN_USERNAME,
+        clear_credential_undelivered,
+        credential_undelivered,
+    )
+
+    if credential_undelivered(DEFAULT_ADMIN_USERNAME):
+        # An earlier run of this cell rotated the password and could not render
+        # the card. must_change is 0 now, so nothing below would object, and the
+        # link would go up for an account whose password was never shown.
+        logger.warning(
+            "Cloudflare link not started: the admin password generated by an earlier "
+            "run was committed but never shown, so the shared link would be unusable. "
+            "Reset it with `unsloth studio reset-password`, then re-run "
+            "start(cloudflare=True)."
+        )
+        return None
+    generated = _auto_generate_colab_admin_password()
+    if generated is not None and not _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated):
+        # The password was rotated and committed, but it could not be surfaced in
+        # this notebook (no IPython display channel, or every publish raised). The
+        # shared link would then be live under a password nobody saw, locking every
+        # user out. Fail closed: do NOT publish the tunnel, and never fall back to
+        # stdout/logging (which the server tees to an on-disk log). Tell the operator
+        # to reset the credential.
+        logger.warning(
+            "Cloudflare link not started: the auto-generated admin password could not "
+            "be shown in this notebook, so the shared link would be unusable. Reset it "
+            "with `unsloth studio reset-password`, then re-run start(cloudflare=True)."
+        )
+        return None
+    if generated is not None:
+        # The card rendered, so the operator has the credential.
+        clear_credential_undelivered()
     if _bootstrap_password_pending():
+        # Auto-generation is the primary protection; only reached if it failed
+        # (e.g. the auth DB could not be read/written). Fail safe: no shared link.
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
             "bootstrap password, which is exposed to anyone who can load the page. "
@@ -506,14 +880,28 @@ def _embed_kernel_port_iframe(port: int) -> bool:
         return False
 
 
-def _embed_html_iframe(url: str, port: int) -> bool:
-    """Fallback embed: raw HTML iframe when the Colab helper is unavailable."""
+def _embed_html_iframe(
+    url: str,
+    port: int,
+    *,
+    same_tab_url: "str | None" = None,
+) -> bool:
+    """Fallback embed: raw HTML iframe when the Colab helper is unavailable.
+
+    *same_tab_url* (opt-in) is the token-bearing same-tab proxy URL used ONLY as the
+    iframe ``src``; it may carry a one-time ``?link_token=...`` bearer credential and is
+    never logged. The visible header still shows the truncated, token-free *url*, and
+    when *same_tab_url* is None the plain *url* is used as the src.
+    """
     try:
         from IPython.display import HTML, display
     except ImportError:
         return False
 
+    # Header shows the truncated, token-free URL; the token (if any) rides only on the
+    # iframe src via *same_tab_url*, never in the visible header or logs.
     short_url = _short_colab_url(url, port)
+    iframe_src = same_tab_url or url
     iframe_id = f"unsloth-studio-{port}"
     try:
         display(
@@ -528,7 +916,7 @@ def _embed_html_iframe(url: str, port: int) -> bool:
   </div>
   <iframe
     id="{iframe_id}"
-    src="{url}"
+    src="{iframe_src}"
     style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
     allow="clipboard-read; clipboard-write"
   ></iframe>
@@ -547,16 +935,32 @@ def _show_and_embed(
     cloudflare_url: "str | None" = None,
     colab_login: "tuple[str, str] | None" = None,
     cloudflare_requested: bool = False,
+    same_tab_link_token: "str | None" = None,
 ):
     """Render the Unsloth ready card + iframe for *port*.
 
     Prefer Colab's ``serve_kernel_port_as_iframe`` on real Colab; raw HTML iframe is the
     fallback. Cloudflare cards stay clickable.
+
+    *same_tab_link_token* (opt-in) is appended as ``?link_token=...`` to the SAME-TAB
+    proxy URL ONLY (never the shared *cloudflare_url*) and rides solely on the HTML
+    iframe ``src``. It is a bearer credential, so it is never logged and never placed on
+    the visible header. The kernel-port helper takes only the port and so cannot carry it.
+
+    TODO(frontend): the built UI does not yet read ``?link_token`` from the URL, POST it
+    to ``/api/auth/link-exchange``, store the returned JWT, and scrub the query with
+    ``history.replaceState``. Until it does, the token is emitted but unused; the same-tab
+    login page still works normally. Wire the frontend exchange + scrub to complete the
+    one-time auto-login handoff.
     """
     url = get_colab_url(port)
+    # Log the token-free URL; the token must never be written to logs.
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
+
+    # Same-tab URL may carry the one-time token; the shared link never does.
+    same_tab_url = _append_link_token(url, same_tab_link_token)
 
     _warn_colab_cloudflare_missing(
         use_cloudflare = cloudflare_requested,
@@ -599,44 +1003,72 @@ def _show_and_embed(
     if _is_colab_runtime() and cloudflare_url:
         return
 
-    # Real Colab: kernel helper needs only the port (works when eval_js failed).
+    # Real Colab: kernel helper needs only the port (works when eval_js failed). It
+    # cannot carry a query token, so the opt-in same-tab link token applies only to the
+    # HTML iframe fallback below.
     if _is_colab_runtime():
         if _embed_kernel_port_iframe(port):
             return
-    _embed_html_iframe(url, port)
+    _embed_html_iframe(url, port, same_tab_url = same_tab_url)
 
 
-def start(port: int = 8888, *, cloudflare: "bool | None" = None):
+def start(
+    port: int = 8888,
+    *,
+    cloudflare: "bool | None" = None,
+    link_token: bool = False,
+):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:
         port: Port to bind/serve on.
         cloudflare: Shareable Cloudflare HTTPS link. ``None`` (default) auto-enables on
             real Colab because the in-cell proxy embed is often blank; pass ``False`` to
-            skip the tunnel or ``True`` to force it on other runtimes.
+            skip the tunnel or ``True`` to force it on other runtimes. The shared link is
+            protected: when the admin still owes its bootstrap password one is
+            auto-generated and shown in the cell, and the tunnel fails closed if that
+            credential cannot be surfaced, so the link is never published under the
+            default credential. The cell output is saved with the notebook, so clear
+            it before sharing or exporting (the card says so too).
+        link_token: Opt in (default OFF; also enabled by
+            ``UNSLOTH_STUDIO_COLAB_LINK_TOKEN=1``) to append a ONE-TIME, short-TTL
+            link token to the SAME-TAB proxy URL for a one-click login handoff. The
+            token is never added to the shared Cloudflare link. See the frontend
+            TODO in ``_show_and_embed``: the token is emitted but the UI does not
+            consume it yet, so today it is a no-op the login page ignores.
 
     Usage:
         start()                    # Cloudflare link on Colab (auto); proxy iframe elsewhere
         start(cloudflare=False)    # Colab proxy iframe only (often blank on current Colab)
         start(cloudflare=True)     # force Cloudflare link on any runtime
+        start(link_token=True)     # same-tab URL carries a one-time link token
     """
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
+    want_link_token = _link_token_opt_in(link_token)
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
+        # run_server (and with it run._apply_supplied_password) is skipped here, so
+        # apply-or-strip UNSLOTH_STUDIO_PASSWORD ourselves BEFORE spawning
+        # cloudflared: otherwise the supplied password is ignored while the
+        # bootstrap one is still pending, and the plaintext stays in os.environ for
+        # every child process to inherit.
+        _consume_supplied_password_on_reuse()
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            colab_login = _finalize_colab_admin_password() if use_cloudflare else None
+            # start_cloudflare_tunnel owns the shared-link credential: it auto-generates
+            # and shows a strong admin password (fail-closed if it cannot be surfaced) and
+            # never persists it, so we do NOT finalize/cache the bootstrap password here.
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
             _show_and_embed(
                 port,
                 cloudflare_url = cf_url,
-                colab_login = colab_login,
                 cloudflare_requested = use_cloudflare,
+                same_tab_link_token = _mint_same_tab_link_token() if want_link_token else None,
             )
             for _ in range(10000):
                 time.sleep(300)
@@ -698,15 +1130,17 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         )
         return
 
-    # Server healthy: finalize Colab auth, open the tunnel, publish URL, tear down on interrupt.
+    # Server healthy: secure Colab auth, open the tunnel, publish URL, tear down on interrupt.
     try:
-        colab_login = _finalize_colab_admin_password() if use_cloudflare else None
+        # start_cloudflare_tunnel owns the shared-link credential: it auto-generates and
+        # shows a strong admin password (fail-closed if it cannot be surfaced) and never
+        # persists it, so we do NOT finalize/cache the bootstrap password here.
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
         _show_and_embed(
             actual_port,
             cloudflare_url = cf_url,
-            colab_login = colab_login,
             cloudflare_requested = use_cloudflare,
+            same_tab_link_token = _mint_same_tab_link_token() if want_link_token else None,
         )
 
         # Keep kernel alive so the daemon server thread runs.
