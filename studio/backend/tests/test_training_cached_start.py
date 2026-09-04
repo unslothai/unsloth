@@ -3186,6 +3186,19 @@ def test_mlx_adapter_accepts_and_preserves_dataset_cache_pins():
     assert adapter._dataset_config["require_exact_dataset_resource"] is True
 
 
+def test_mlx_adapter_accepts_dataset_hf_token():
+    from core.training.training import _MLXTrainerAdapter
+
+    adapter = _MLXTrainerAdapter()
+
+    result = adapter.load_and_format_dataset(
+        "org/dataset",
+        hf_token = "hf_explicit",
+    )
+
+    assert result is not None
+
+
 def test_strict_resume_cached_dataset_none_never_loads_remote():
     from core.training import worker
     config = {
