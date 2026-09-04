@@ -937,28 +937,34 @@ def _user_set_hf_home() -> bool:
     return bool(_EXPLICIT_CACHE_ENV.get("HF_HOME"))
 
 
-def _portable_pip_cache_dir(root: Path) -> Path:
-    """Where install.sh points PIP_CACHE_DIR, given *root* = cache_root().
+def _portable_master_cache_dir(root: Path, name: str) -> Path:
+    """Where install.sh points a `<master>/cache/<name>` variable, given *root* = cache_root().
 
-    `<master>/cache/pip`, the shape _export_portable_roots exports and the CLI's
-    _portable_root_env rebuilds, so the direct backend launch and the launchers
-    share one cache instead of two. In the flat layout the master root IS the
-    Studio root, so this is the same directory as `root / "pip"`; in the nested
-    one the master is a level up and cache_root() alone cannot name it.
+    `<master>/cache/<name>` is the shape _export_portable_roots exports, share/studio.conf
+    restates, the generated bin/unsloth wrapper repeats and the CLI's _portable_root_env
+    rebuilds, so the direct backend launch and the launchers share one cache instead of two.
+    In the flat layout the master root IS the Studio root, so this is already the same
+    directory as `root / name`; in the nested one the master is a level up and cache_root()
+    alone cannot name it.
 
     UNSLOTH_PORTABLE=1 with no root of its own is the one case with no master to
     ask about. Containment is still what was asked for, so the pin falls back
-    inside the Studio root rather than being dropped back onto ~/.cache/pip.
+    inside the Studio root rather than being dropped back onto the host default.
     """
     master = unsloth_home()
-    return (master / "cache" / "pip") if master is not None else root / "pip"
+    return (master / "cache" / name) if master is not None else root / name
 
 
 def _portable_cache_defaults(root: Path) -> dict[str, str]:
-    """Cache vars that only move under the root in portable mode, since they hold shared user data
-    or large re-downloads. The hub and xet caches are handled inside hf_cache_settings, which must
-    agree with the Settings UI. HF_HOME never moves: credentials should not follow a cache onto a
-    removable volume.
+    """Cache vars portable mode moves, since they hold shared user data or large re-downloads.
+    The hub and xet caches are handled inside hf_cache_settings, which must agree with the
+    Settings UI. HF_HOME never moves: credentials should not follow a cache onto a removable
+    volume.
+
+    Applied over the _setup_cache_env defaults, so an entry here either adds a variable that a
+    normal install leaves on the host (PIP_CACHE_DIR, TORCH_HOME) or REDIRECTS one that is
+    already pinned under cache_root() to the master root the launchers use (UV_CACHE_DIR,
+    CUDA_CACHE_PATH).
     """
     if not portable_mode():
         return {}
@@ -982,7 +988,22 @@ def _portable_cache_defaults(root: Path) -> dict[str, str]:
         # existing ~/.cache/pip is left where it is and only stops being written to,
         # and pip's cache is by definition re-downloadable, unlike MPLCONFIGDIR or
         # DATA_DESIGNER_HOME below.
-        "PIP_CACHE_DIR": str(_portable_pip_cache_dir(root)),
+        "PIP_CACHE_DIR": str(_portable_master_cache_dir(root, "pip")),
+        # The same split, for the same reason, in the two variables _setup_cache_env
+        # already pins from cache_root() AND the launchers pin from the master root.
+        # Both were landing at <master>/studio/cache/... on a direct launch while every
+        # launcher used <master>/cache/..., so a nested install kept two of each:
+        # uv's is the expensive one, since utils/wheel_utils.install_wheel and
+        # core/training/worker._pip_install_cmd both prefer `uv pip install` at runtime
+        # and would re-download wheels the installer had already cached. Overriding the
+        # base defaults rather than editing them, so a NON-portable install keeps its
+        # cache_root()-relative path: there is no master root to share with there.
+        # Nothing is stranded that was not already ours -- an existing
+        # <master>/studio/cache/uv from an earlier direct launch stays on disk, inside
+        # the same portable root, and merely stops being written to; both caches are
+        # re-downloadable, so this is the PIP_CACHE_DIR case, not the MPLCONFIGDIR one.
+        "UV_CACHE_DIR": str(_portable_master_cache_dir(root, "uv")),
+        "CUDA_CACHE_PATH": str(_portable_master_cache_dir(root, "cuda")),
     }
     if _user_set_hf_home():
         # hf_cache_settings keeps the hub and xet caches under an explicit
@@ -1250,6 +1271,8 @@ def _setup_cache_env() -> None:
 
     initialize_hf_cache_environment()
     defaults: dict[str, str] = {
+        # Portable mode moves this to <master>/cache/uv, where every launcher points it;
+        # see _portable_cache_defaults. Same for CUDA_CACHE_PATH below.
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
         # unsloth_zoo defaults this to a bare relative name.

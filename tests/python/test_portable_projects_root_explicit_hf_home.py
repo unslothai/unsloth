@@ -13,11 +13,15 @@ project files are written, and losing it sends them to
 `~/Documents/Unsloth Studio/Projects`, outside the portable root, even though
 only the Hugging Face cache was ever meant to escape containment.
 
-TORCH_HOME and PIP_CACHE_DIR are checked alongside it as the variables that were
-already on the right side of the early return, so a future edit cannot fix one by
-breaking the others. PIP_CACHE_DIR is the odd one out in shape: it names
-`<master>/cache/pip`, the path install.sh exports, which is a level ABOVE the
-Studio root under the nested layout the fixture builds.
+TORCH_HOME, PIP_CACHE_DIR, UV_CACHE_DIR and CUDA_CACHE_PATH are checked alongside
+it as the variables that were already on the right side of the early return, so a
+future edit cannot fix one by breaking the others. The last three share a shape:
+they name `<master>/cache/...`, the paths install.sh exports, which are a level
+ABOVE the Studio root under the nested layout the fixture builds. The uv and cuda
+ones are also the only two entries here that OVERRIDE a default _setup_cache_env
+already set from cache_root() rather than adding a new one, so they have to stay
+on this side of the early return for a second reason: an explicit HF_HOME must not
+hand a nested install back the split cache tree.
 
 Subprocess per case: hf_cache_settings snapshots the explicit cache variables at
 import time, and _setup_cache_env seeds os.environ once.
@@ -50,6 +54,8 @@ print("__JSON__" + json.dumps({
     "projects_root": str(sr.project_workspaces_root()),
     "torch_home": os.environ.get("TORCH_HOME"),
     "pip_cache": os.environ.get("PIP_CACHE_DIR"),
+    "uv_cache": os.environ.get("UV_CACHE_DIR"),
+    "cuda_cache": os.environ.get("CUDA_CACHE_PATH"),
 }))
 """
 
@@ -99,6 +105,10 @@ def main() -> int:
         # The master root, not cache_root(): install.sh exports
         # PIP_CACHE_DIR="$UNSLOTH_ROOT/cache/pip" and the two must agree.
         pip_cache = master / "cache" / "pip"
+        # Same reason, and unlike PIP_CACHE_DIR these two REPLACE a cache_root()-relative
+        # default: <master>/studio/cache/uv would be a second tree beside the installer's.
+        uv_cache = master / "cache" / "uv"
+        cuda_cache = master / "cache" / "cuda"
 
         print("\n[1] control: no explicit HF_HOME")
         r = _run({"UNSLOTH_HOME": str(master)}, home)
@@ -107,14 +117,18 @@ def main() -> int:
         check("projects root inside the root", str(projects), r["projects_root"])
         check("torch home inside the root", str(torch_home), r["torch_home"])
         check("pip cache where install.sh puts it", str(pip_cache), r["pip_cache"])
+        check("uv cache where install.sh puts it", str(uv_cache), r["uv_cache"])
+        check("cuda cache where install.sh puts it", str(cuda_cache), r["cuda_cache"])
         check(
             "every default is pinned",
             [
+                "CUDA_CACHE_PATH",
                 "HF_ASSETS_CACHE",
                 "HF_DATASETS_CACHE",
                 "PIP_CACHE_DIR",
                 "TORCH_HOME",
                 "UNSLOTH_STUDIO_PROJECTS_HOME",
+                "UV_CACHE_DIR",
             ],
             r["default_keys"],
         )
@@ -126,9 +140,17 @@ def main() -> int:
         check("projects root still inside the root", str(projects), r["projects_root"])
         check("torch home still inside the root", str(torch_home), r["torch_home"])
         check("pip cache still where install.sh puts it", str(pip_cache), r["pip_cache"])
+        check("uv cache still where install.sh puts it", str(uv_cache), r["uv_cache"])
+        check("cuda cache still where install.sh puts it", str(cuda_cache), r["cuda_cache"])
         check(
             "only the HF-derived caches are dropped",
-            ["PIP_CACHE_DIR", "TORCH_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME"],
+            [
+                "CUDA_CACHE_PATH",
+                "PIP_CACHE_DIR",
+                "TORCH_HOME",
+                "UNSLOTH_STUDIO_PROJECTS_HOME",
+                "UV_CACHE_DIR",
+            ],
             r["default_keys"],
         )
 
