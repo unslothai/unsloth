@@ -638,7 +638,7 @@ def rule_inst_005_transformers_tokenizers(
     tf = res.get("transformers")
     tok = res.get("tokenizers")
     if not tf or tok is None:
-        return findings  # unknown torch minor, don't flag
+        return findings  # unknown torch minor — don't flag
     # Find the transformers pin and check for --no-deps.
     transformers_line_no_deps = False
     for inv in iter_pip_invocations(install_cell):
