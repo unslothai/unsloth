@@ -847,6 +847,27 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         "3/28" in page.locator('[role="search"]').inner_text(),
         page.locator('[role="search"]').inner_text(),
     )
+    loaded.fill("studio")
+    loaded.evaluate(
+        """input => {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'f',
+            code: 'KeyF',
+            ctrlKey: true,
+            bubbles: true,
+          }));
+        }""",
+    )
+    page.wait_for_timeout(500)
+    check(
+        engine,
+        mode,
+        "a repeated find chord clears pending navigation",
+        "1/8" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
+    )
+
     context.close()
 
     context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
@@ -861,6 +882,18 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
+    )
+    page.evaluate(
+        "() => window.__findSmoke.stream("
+        "'definitely-no-such-match definitely-no-such-match', 1)",
+    )
+    page.wait_for_timeout(1600)
+    check(
+        engine,
+        mode,
+        "a zero-result search consumes queued navigation",
+        "1/2" in page.locator('[role="search"]').inner_text(),
+        page.locator('[role="search"]').inner_text(),
     )
     loaded = page.locator('[role="search"] input')
     loaded.fill("unsloth")

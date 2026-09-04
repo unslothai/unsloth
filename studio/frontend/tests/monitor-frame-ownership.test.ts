@@ -235,6 +235,10 @@ test("the lazy Settings mount survives an auth-route round trip", () => {
   assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
   assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
 
+  assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /event\.target === event\.currentTarget/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /restoreSettingsOpener\(opener, openerFallback\)/);
+
   assert.match(
     SETTINGS_MOUNT_SOURCE,
     /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*setMonitorOpen\(false\);/,

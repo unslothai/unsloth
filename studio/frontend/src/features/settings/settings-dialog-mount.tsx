@@ -25,6 +25,19 @@ const SettingsDialog = lazy(() =>
   })),
 );
 
+function restoreSettingsOpener(
+  opener: HTMLElement | null,
+  openerFallback: HTMLElement | null,
+): void {
+  requestAnimationFrame(() => {
+    const focusTarget = [opener, openerFallback].find(
+      (element) =>
+        element?.isConnected && !element.closest("[inert], [hidden]"),
+    );
+    focusTarget?.focus({ preventScroll: true });
+  });
+}
+
 function SettingsDialogLoading({ active }: { active: boolean }) {
   const t = useT();
 
@@ -57,6 +70,13 @@ function SettingsDialogLoading({ active }: { active: boolean }) {
       className="fixed inset-0 z-[100] m-0 grid h-full max-h-none w-full max-w-none place-items-center border-0 bg-black/50 p-4"
       data-testid="settings-dialog-loading"
       aria-label={t("common.loading")}
+      onCancel={(event) => {
+        event.preventDefault();
+        closeDialog();
+      }}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) closeDialog();
+      }}
     >
       <div className="rounded-xl border border-border bg-popover px-6 py-4 text-popover-foreground shadow-xl">
         {t("common.loading")}
@@ -69,6 +89,11 @@ export function SettingsDialogMount({ active }: { active: boolean }) {
   const t = useT();
 
   const closeDialog = useSettingsDialogStore((state) => state.closeDialog);
+
+  const opener = useSettingsDialogStore((state) => state.opener);
+  const openerFallback = useSettingsDialogStore(
+    (state) => state.openerFallback,
+  );
   const open = useSettingsDialogStore((state) => state.open);
   const monitorOpen = useMonitorOverlayStore((state) => state.isOpen);
 
@@ -91,6 +116,7 @@ export function SettingsDialogMount({ active }: { active: boolean }) {
             onDismiss={() => {
               closeDialog();
               setMonitorOpen(false);
+              restoreSettingsOpener(opener, openerFallback);
             }}
             testId="settings-dialog-load-failure"
             className="fixed top-1/2 left-1/2 z-[100] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-popover p-5 text-popover-foreground shadow-xl"

@@ -70,13 +70,24 @@ export default function FindBar({
 }: FindBarProps) {
   const t = useT();
   const [settledQuery, settleQuery] = useSettledQuery(query);
+
+  const [completedQuery, setCompletedQuery] = useState<string | null>(null);
   const queryPending = query !== settledQuery;
   const { count, active, capped, truncated, next, previous } = useFindInPage(
     settledQuery,
     queryPending,
   );
+
+  useEffect(() => {
+    if (!queryPending) {
+      setCompletedQuery(settledQuery);
+    }
+  }, [queryPending, settledQuery]);
   const inputRef = useRef<HTMLInputElement>(null);
-  const queuedStepsRef = useRef(pendingSteps);
+  const queuedStepsRef = useRef([...pendingSteps]);
+  useEffect(() => {
+    queuedStepsRef.current = [...pendingSteps];
+  }, [pendingSteps]);
   const stepWhenSettled = (delta: -1 | 1) => {
     if (queryPending) {
       queuedStepsRef.current.push({ query, delta });
@@ -100,16 +111,30 @@ export default function FindBar({
   }, [clearPendingSteps, query]);
 
   useEffect(() => {
-    if (queryPending || count === 0 || queuedStepsRef.current.length === 0)
+    if (
+      queryPending ||
+      completedQuery !== settledQuery ||
+      queuedStepsRef.current.length === 0
+    )
       return;
     const steps = queuedStepsRef.current;
     queuedStepsRef.current = [];
-    for (const step of steps) {
-      if (step.delta < 0) previous();
-      else next();
+    if (count > 0) {
+      for (const step of steps) {
+        if (step.delta < 0) previous();
+        else next();
+      }
     }
     clearPendingSteps();
-  }, [clearPendingSteps, count, next, previous, queryPending]);
+  }, [
+    clearPendingSteps,
+    completedQuery,
+    count,
+    next,
+    previous,
+    queryPending,
+    settledQuery,
+  ]);
   // Hand focus back to whatever had it, usually the composer, so closing a search leaves the reader
   // typing. Declared above the focus effect so it reads `activeElement` before the field takes it.
   const barRef = useRef<HTMLDivElement>(null);

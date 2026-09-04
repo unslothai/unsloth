@@ -2260,7 +2260,11 @@ test("every navigation waits for the query to settle, buttons included", async (
   );
 
   assert.match(bar, /filter\([\s\S]*?\(step\) => step\.query === query/);
+
+  assert.match(bar, /queuedStepsRef\.current = \[\.\.\.pendingSteps\]/);
   assert.match(bar, /for \(const step of steps\)/);
+
+  assert.match(bar, /if \(count > 0\) \{\s*for \(const step of steps\)/);
 });
 
 test("the seam between the workspace and the surfaces in front of it is recorded", () => {
