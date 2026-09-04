@@ -1088,3 +1088,61 @@ def test_base_site_packages_never_returns_a_pythonpath_entry(shim, tmp_path, mon
     scope = shim._base_site_packages()
     assert scope, "the base site-packages must be locatable"
     assert str(sidecar) not in scope, scope
+
+
+# uv's command path is `uv [opts] pip [opts] install`, but it has other subcommands
+# ending in `install`. Selecting the first bare "install" claimed those too: `uv python
+# install 3.13` and `uv tool install ruff` got the protected --constraint appended,
+# which neither accepts, and `uv tool install transformers` was filtered to nothing and
+# reported ok, so NO tool was installed at all.
+def _full_argv(shim, argv):
+    """The whole command line the shim would run, or None when it ran nothing."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim.sys, "argv", argv)
+        try:
+            shim.main()
+            return None
+        except _Exec as exc:
+            return list(exc.argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["uv", "python", "install", "3.13"],
+        ["uv", "tool", "install", "ruff"],
+        ["uv", "tool", "install", "transformers"],
+    ],
+    ids = ["python-install", "tool-install", "tool-install-protected-name"],
+)
+def test_non_pip_uv_subcommands_pass_through_untouched(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"), ("torch", "2.11.0"))
+    ran = _full_argv(shim, argv)
+    assert ran is not None, f"{' '.join(argv)} installed NOTHING"
+    assert ran[1:] == argv[1:], ran
+    assert "--constraint" not in ran, "this uv subcommand takes no --constraint"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["uv", "pip", "install", "snac"],
+        ["uv", "pip", "--quiet", "install", "snac"],
+        ["uv", "--directory", "/x", "pip", "install", "snac"],
+    ],
+    ids = ["plain", "opt-before-install", "global-opt-before-pip"],
+)
+def test_real_uv_pip_installs_are_still_intercepted(shim, monkeypatch, argv):
+    """Narrowing the match must not stop protecting the command that matters."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"), ("torch", "2.11.0"))
+    ran = _full_argv(shim, argv)
+    assert ran is not None
+    assert "--constraint" in ran, ran
+
+
+def test_a_protected_target_under_uv_tool_install_is_not_swallowed(shim, monkeypatch):
+    """The silent shape: filtering left nothing to run and reported success."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    ran = _full_argv(shim, ["uv", "tool", "install", "transformers"])
+    assert ran is not None, "the tool install was swallowed and reported ok"
+    assert ran[-1] == "transformers", ran

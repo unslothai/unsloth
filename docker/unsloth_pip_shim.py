@@ -649,6 +649,31 @@ def _selfcheck_value_flags():
     sys.exit(0)
 
 
+def _install_index(tool, argv):
+    """Index of the install SUBCOMMAND, or None when this is not a package install.
+
+    pip's command path is `pip [opts] install`, but uv's is `uv [opts] pip [opts]
+    install`, and uv has other subcommands ending in `install`. A bare
+    argv.index("install") matched those too, which was not merely a wasted rewrite:
+    `uv python install 3.13` and `uv tool install ruff` got the protected
+    `--constraint` appended, which neither accepts, and `uv tool install transformers`
+    was filtered down to nothing and reported ok, installing NO tool at all.
+
+    So for uv the nearest preceding non-option token has to be `pip`. Scanning back
+    over options keeps `uv pip --quiet install` and `uv --directory X pip install`
+    working."""
+    for i, tok in enumerate(argv):
+        if tok != "install":
+            continue
+        if tool == "pip":
+            return i
+        for j in range(i - 1, -1, -1):
+            if not argv[j].startswith("-"):
+                return i if argv[j] == "pip" else None
+        return None
+    return None
+
+
 def main():
     tool = "uv" if os.path.basename(sys.argv[0]).startswith("uv") else "pip"
     argv = sys.argv[1:]
@@ -660,9 +685,8 @@ def main():
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
-    try:
-        i = argv.index("install")
-    except ValueError:
+    i = _install_index(tool, argv)
+    if i is None:
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
