@@ -348,6 +348,9 @@ _RELATIVE_PATH_ENV = (
     # Authoritative when non-blank (storage_roots.py), so `unsloth studio update` would install
     # from a different cache after a move.
     "UV_CACHE_DIR",
+    # Same shape: install_wheel and worker._pip_install_cmd fall back to pip whenever uv is
+    # missing or fails, so a relative value would repopulate a cache under the new directory.
+    "PIP_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
