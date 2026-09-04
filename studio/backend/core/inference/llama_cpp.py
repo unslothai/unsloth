@@ -6184,6 +6184,13 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
+    # Which llama-server slot an instance is. "" is the chat slot; the voice slot
+    # sets its own so the two pidfile records cannot overwrite each other. Declared
+    # on the class as well as in __init__ because teardown reads it, and teardown
+    # also runs on a backend built through __new__ (a partially constructed one, and
+    # the stubs the tests stand in for it).
+    _pid_slot: str = ""
+
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
@@ -6484,6 +6491,11 @@ class LlamaCppBackend:
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
+        # Set when THIS instance called init_audio_codec(); guards codec teardown
+        # so the voice slot's codec survives main-slot unloads.
+        self._owns_codec: bool = False
+        self._pid_slot = ""
+        self._n_parallel: int = 1  # --parallel slots the current server launched with
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         # Video INPUT capability, from llama-server's /props modalities. True
@@ -17967,7 +17979,7 @@ class LlamaCppBackend:
         )
         # Cross-session backstop: record the PID so a later startup can reap this
         # server if parent-death cleanup did not run (macOS / best-effort failure).
-        self._record_server_pid(self._process.pid)
+        self._record_own_server_pid(self._process.pid)
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
@@ -18589,6 +18601,9 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+            # Remember the launched --parallel so callers can detect a change and
+            # force a reload (the voice slot exposes this to hot-swap slot count).
+            self._n_parallel = n_parallel
 
             # Auto resolves to DSpark whenever a sidecar is available and this
             # binary can run it: 1.84x decode on 4x B200 and 1.91x on one, against
@@ -23256,7 +23271,7 @@ class LlamaCppBackend:
                             **_windows_hidden_subprocess_kwargs(),
                             **_child_popen_kwargs(),
                         )
-                        self._record_server_pid(self._process.pid)
+                        self._record_own_server_pid(self._process.pid)
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
 
@@ -25778,7 +25793,7 @@ class LlamaCppBackend:
                 except Exception:
                     pass
             self._process = None
-            self._clear_server_pid()
+            self._clear_own_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
@@ -25813,12 +25828,47 @@ class LlamaCppBackend:
             return None
 
     @classmethod
-    def _record_server_pid(cls, pid: int) -> None:
+    def _slot_pidfile_path(cls, slot: str = "") -> Optional[Path]:
+        """Pidfile for one llama-server slot, derived from the chat slot's path.
+
+        Two slots can run at once -- the chat model and the voice (TTS) model each own
+        a llama-server. With one shared record whichever spawned second overwrote the
+        first, so after an unclean exit the orphan reaper knew about only one of the
+        two and the other kept its memory. The chat slot keeps the historical filename
+        so an orphan recorded by an older build is still found.
+        """
+        base = cls._server_pidfile_path()
+        if base is None or not slot:
+            return base
+        return base.with_name(f"{base.stem}-{slot}{base.suffix}")
+
+    def _record_own_server_pid(self, pid: int) -> None:
+        """Record this backend's llama-server PID under its own slot key.
+
+        The chat slot calls ``_record_server_pid`` with the single argument it has
+        always taken, so the seam stays exactly as it was for everything that stubs
+        it. Only a named slot -- today just the voice slot -- passes a key.
+        """
+        if not self._pid_slot:
+            self._record_server_pid(pid)
+            return
+        self._record_server_pid(pid, self._pid_slot)
+
+    def _clear_own_server_pid(self) -> None:
+        """Remove this backend's own slot pidfile. Mirrors _record_own_server_pid."""
+        if not self._pid_slot:
+            self._clear_server_pid()
+            return
+        self._clear_server_pid(self._pid_slot)
+
+    @classmethod
+    def _record_server_pid(cls, pid: int, slot: str = "") -> None:
         """Best-effort record of the spawned llama-server PID for orphan reaping.
 
         Stores ``pid:starttime`` so a later startup can reject a PID that has
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
+        ``slot`` keys the record so a second slot cannot overwrite the first's.
         """
         # Track it generically too: the pidfile holds one server, while the
         # process-lifetime record covers every child and is what the startup
@@ -25828,7 +25878,7 @@ class LlamaCppBackend:
             adopt_pid(pid)
         except Exception as e:
             logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
-        path = cls._server_pidfile_path()
+        path = cls._slot_pidfile_path(slot)
         if path is None:
             return
         try:
@@ -25838,9 +25888,9 @@ class LlamaCppBackend:
             logger.debug(f"Could not write llama-server pidfile: {e}")
 
     @classmethod
-    def _clear_server_pid(cls) -> None:
-        """Best-effort removal of the llama-server pidfile."""
-        path = cls._server_pidfile_path()
+    def _clear_server_pid(cls, slot: str = "") -> None:
+        """Best-effort removal of one slot's llama-server pidfile."""
+        path = cls._slot_pidfile_path(slot)
         if path is None:
             return
         try:
@@ -25946,6 +25996,25 @@ class LlamaCppBackend:
 
     @classmethod
     def _reap_recorded_pid(cls) -> int:
+        """Reap every recorded llama-server orphan, one per slot.
+
+        Each slot writes its own pidfile (see _slot_pidfile_path), so this sweeps the
+        chat slot's record and every sibling slot record beside it rather than only one
+        path. Returns the total killed."""
+        base = cls._server_pidfile_path()
+        if base is None:
+            return 0
+        paths = [base]
+        try:
+            paths += sorted(
+                q for q in base.parent.glob(f"{base.stem}-*{base.suffix}") if q != base
+            )
+        except Exception:
+            pass
+        return sum(cls._reap_pidfile(q) for q in paths)
+
+    @classmethod
+    def _reap_pidfile(cls, path: Path) -> int:
         """Kill the exact llama-server PID recorded at spawn, but only when it is a
         genuine orphan -- its parent (the Unsloth that spawned it) is gone. This is
         the cross-session backstop the parent-death reaper (Job Object /
@@ -25960,8 +26029,7 @@ class LlamaCppBackend:
         and the llama-server name check, so unrelated user processes are never
         touched. SIGKILL falls back to SIGTERM on Windows, where os.kill maps it to
         TerminateProcess and SIGKILL is undefined."""
-        path = cls._server_pidfile_path()
-        if path is None or not path.exists():
+        if not path.exists():
             return 0
 
         pid = -1
@@ -27692,6 +27760,16 @@ class LlamaCppBackend:
                 elif now - last_chunk_at >= stall_timeout_s:
                     raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
                 continue
+            except httpx.RequestError:
+                # A barge-in cancel closes the upstream response mid-read, which
+                # surfaces here as a RequestError (e.g. ReadError / WinError 10038).
+                # That is an expected cancellation, not a failure -- stop cleanly,
+                # same as the top-of-loop cancel check above, so a GeneratorExit
+                # never has to propagate up the async streaming wrapper (which was
+                # logging "coroutine ignored GeneratorExit" on every interruption).
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                raise
 
     @staticmethod
     def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
@@ -32605,14 +32683,53 @@ class LlamaCppBackend:
         ),
     }
 
-    _codec_mgr = None  # Shared AudioCodecManager instance
+    # orpheus-3b-0.1-ft speaker names. Orpheus is a named-voice model: the prompt
+    # "voice: text" pins the speaker. Without the prefix it free-runs a random
+    # voice every utterance, which is why the voice kept changing. Fallback: tara.
+    _ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
 
-    @staticmethod
-    def _unload_audio_codec() -> None:
-        if LlamaCppBackend._codec_mgr is None:
+    _codec_mgr = None  # Shared AudioCodecManager instance
+    # Serializes codec decode across concurrent --parallel synths: llama-server
+    # parallelizes token generation, but the codec (SNAC/BiCodec) is one shared
+    # torch model on the GPU, so decodes must not overlap.
+    import threading as _threading
+    _codec_decode_lock = _threading.Lock()
+    # The chat slot and the voice slot can both hold a GGUF TTS model, and they share
+    # this one manager. A per-instance "I loaded it" flag is not enough to decide who
+    # may free it: whichever slot unloaded first would drop the codec the other is
+    # still decoding through, and that slot's next generate_audio_response() would
+    # then dereference a None _codec_mgr. Count the slots holding it and free on the
+    # last release. Guarded because loads and unloads run on different threads.
+    _codec_owners: int = 0
+    _codec_owner_lock = _threading.Lock()
+
+    def _claim_audio_codec(self) -> None:
+        """Register this slot as a holder of the shared codec. Idempotent per slot."""
+        with LlamaCppBackend._codec_owner_lock:
+            if self._owns_codec:
+                return
+            self._owns_codec = True
+            LlamaCppBackend._codec_owners += 1
+
+    def _unload_audio_codec(self) -> None:
+        """Release this slot's claim; free the shared codec once nobody holds it."""
+        with LlamaCppBackend._codec_owner_lock:
+            if self._owns_codec:
+                self._owns_codec = False
+                LlamaCppBackend._codec_owners = max(0, LlamaCppBackend._codec_owners - 1)
+            if LlamaCppBackend._codec_owners > 0:
+                # Somebody else is still decoding through it. Never free it here:
+                # that is the whole point of counting.
+                return
+            # Zero owners and a manager still installed means it was never claimed --
+            # a load cancelled between constructing the manager and claiming it, which
+            # is exactly when the cancel path calls this. An unowned manager has to be
+            # freed or it is leaked for the life of the process.
+            mgr = LlamaCppBackend._codec_mgr
+            LlamaCppBackend._codec_mgr = None
+        if mgr is None:
             return
-        LlamaCppBackend._codec_mgr.unload()
-        LlamaCppBackend._codec_mgr = None
+        mgr.unload()
         import torch
 
         if torch.cuda.is_available():
@@ -32641,12 +32758,204 @@ class LlamaCppBackend:
             model_repo_path = os.path.abspath(repo_path)
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+        self._claim_audio_codec()
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
+
+    def _orpheus_voice_prefix_ok(self) -> bool:
+        """Whether the loaded Orpheus GGUF quant is high enough to treat a
+        "voice: " prefix as a speaker cue. Ultra-low quants (IQ1/IQ2/Q2) read the
+        prefix aloud instead, stapling the speaker name into the audio, so skip it
+        for those. The quant tag lives in both the variant and the file name."""
+        tag = f"{self._hf_variant or ''} {self._gguf_path or ''}".lower()
+        return not any(bad in tag for bad in ("iq1", "iq2", "q2_k"))
+
+    @staticmethod
+    def _trim_leading_silence(wav_bytes: bytes, sample_rate: int) -> bytes:
+        """Cut the dead air Orpheus emits before speech starts, keeping a ~40 ms
+        pre-roll so the first consonant's attack isn't clipped. This is straight
+        first-audio latency: the user waits through it before hearing anything.
+        Returns the audio unchanged on any failure or if there's no clear onset."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))
+            n = mono.size // frame
+            if n < 3:
+                return wav_bytes
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return wav_bytes
+            voiced = energy > peak * 0.05
+            if not voiced.any():
+                return wav_bytes
+            onset = int(np.argmax(voiced))
+            preroll = max(1, int(0.04 / 0.02))  # keep ~40 ms before the onset
+            cut = max(0, onset - preroll)
+            if cut <= 0:
+                return wav_bytes  # already starts promptly; nothing to trim
+            trimmed = mono[cut * frame:]
+            if trimmed.size < frame:
+                return wav_bytes
+            buf = io.BytesIO()
+            sf.write(buf, trimmed, sr, format = "WAV")
+            return buf.getvalue()
+        except Exception:
+            return wav_bytes
+
+    @staticmethod
+    def _leading_voiced_ms(wav_bytes: bytes, sample_rate: int) -> Optional[float]:
+        """Length in ms of the first voiced run at the very start of a clip (onset
+        to the first silence gap). Used to CALIBRATE how long the spoken speaker
+        name is on a low quant: synthesize the name once and measure it here so the
+        trim can key off the real name length instead of guessing. Returns None if
+        no clear leading word is present."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))
+            n = mono.size // frame
+            if n < 4:
+                return None
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return None
+            voiced = energy > peak * 0.06
+            if not voiced.any():
+                return None
+            onset = int(np.argmax(voiced))
+            if onset > int(0.5 / 0.02):  # first sound must be near the start
+                return None
+            end = onset
+            while end < n and voiced[end]:
+                end += 1
+            return (end - onset) * 20.0
+        except Exception:
+            return None
+
+    @staticmethod
+    def _trim_leading_word(
+        wav_bytes: bytes, sample_rate: int, expected_ms: Optional[float] = None
+    ) -> bytes:
+        """Slice the leading spoken speaker name off Orpheus audio on low quants.
+
+        The name is ONE short word at the very start, set off by the colon's pause.
+        When ``expected_ms`` is given (this voice's name length, measured by
+        calibrating on the loaded model -- see ``_orpheus_name_length_ms``), we ONLY
+        cut a leading voiced run whose length MATCHES it. So a genuine short first
+        word like "Yes," -- which the model synthesizes on the sentences where it
+        does NOT read the name -- is left alone instead of being clipped, because
+        its length won't match the measured name. Without a calibration we fall back
+        to a broad plausible-name window. Either way, no clear "short word + real
+        pause at the very start" -> return the audio unchanged (a stray name beats a
+        clipped reply)."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))  # 20 ms frames
+            n = mono.size // frame
+            if n < 6:
+                return wav_bytes
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return wav_bytes
+            voiced = energy > peak * 0.06
+
+            def f(ms: float) -> int:  # ms -> number of 20 ms frames
+                return max(1, int((ms / 1000.0) / 0.02))
+
+            onset = int(np.argmax(voiced))
+            # The name must start near the very beginning.
+            if onset > f(500):
+                return wav_bytes
+            # End + length of the leading (name) voiced run.
+            name_end = onset
+            while name_end < n and voiced[name_end]:
+                name_end += 1
+            name_ms = (name_end - onset) * 20.0
+            # Length gate. With a calibrated name length, require the leading run to
+            # match it (tight window) so a real first word of a different length is
+            # never cut. Otherwise use a broad plausible-name window.
+            if expected_ms and expected_ms > 0:
+                if not (0.6 * expected_ms <= name_ms <= 1.5 * expected_ms):
+                    return wav_bytes
+                span_cap = f(expected_ms) + f(600)
+            else:
+                if not (100.0 <= name_ms <= 600.0):
+                    return wav_bytes
+                span_cap = f(900)
+            # Require a real pause right after the name.
+            gap_end = name_end
+            while gap_end < n and not voiced[gap_end]:
+                gap_end += 1
+            if gap_end - name_end < f(80):
+                return wav_bytes  # no clear pause -> not a name we can safely cut
+            # The name + pause must sit near the start, with real speech after it.
+            # Back off ~40 ms so the reply's first consonant isn't clipped.
+            if gap_end > onset + span_cap or gap_end >= n:
+                return wav_bytes
+            cut = max(name_end + 1, gap_end - f(40))
+            trimmed = mono[cut * frame:]
+            if trimmed.size < frame:
+                return wav_bytes
+            buf = io.BytesIO()
+            sf.write(buf, trimmed, sr, format = "WAV")
+            return buf.getvalue()
+        except Exception:
+            return wav_bytes
+
+    def _orpheus_name_length_ms(self, voice: str, audio_type: str) -> Optional[float]:
+        """Measured spoken length (ms) of this voice's name on the loaded low quant,
+        so the trim knows EXACTLY how much to cut instead of guessing. Calibrated
+        once per (model, voice) by synthesizing a short throwaway line with the
+        "{voice}:" prefix and measuring the leading voiced run (the spoken name).
+        Cached and keyed by the loaded quant, so a model/quant swap re-calibrates; a
+        failed measurement is stored as 0.0 so the trim falls back to its broad
+        heuristic instead of re-calibrating every sentence."""
+        cache = getattr(self, "_orpheus_name_ms", None)
+        if cache is None:
+            cache = {}
+            self._orpheus_name_ms = cache
+        key = f"{self._hf_variant or ''}|{self._gguf_path or ''}|{voice}"
+        if key in cache:
+            return cache[key] or None
+        ms: Optional[float] = None
+        try:
+            wav, sr = self.generate_audio_response(
+                "Okay, sounds good.", audio_type, voice = voice, _calibration = True
+            )
+            measured = self._leading_voiced_ms(wav, sr)
+            if measured is not None and 120.0 <= measured <= 700.0:
+                ms = measured
+        except Exception as e:
+            logger.debug("Orpheus name calibration failed for %s: %s", voice, e)
+        cache[key] = ms or 0.0
+        if ms:
+            logger.info("Orpheus name length calibrated: voice=%s ~%.0fms", voice, ms)
+        return ms
 
     def generate_audio_response(
         self,
         text: str,
         audio_type: str,
+        voice: str = "tara",
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 50,
@@ -32654,6 +32963,8 @@ class LlamaCppBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
+        seed: int = 42,
+        _calibration: bool = False,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -32662,16 +32973,52 @@ class LlamaCppBackend:
         ``cancel_event`` lets a Stop or a forced model swap end the request: the
         decode is one blocking POST, so a watcher closes the client out from under
         it rather than polling. Raises RuntimeError once cancelled.
+        seed: fixed by default so the same text yields the SAME audio every time --
+        deterministic output (reproducible benchmarks, a stable voice) and no
+        occasional slow/rambling take. Temperature is unchanged, so voice quality is
+        the same; only the RNG is pinned.
+        _calibration: internal. Skips the low-quant name-trim so this call can be
+        used to MEASURE the spoken name length (see _orpheus_name_length_ms) without
+        recursing back into calibration.
         """
         if audio_type not in self._TTS_PROMPTS:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
+
+        # The codec manager is shared class-level, so swapping/unloading another
+        # audio model (e.g. a speech-LLM chat model) can tear it down while this
+        # voice slot stays loaded -- then decode() would hit None. Re-ensure our
+        # codec here so the voice slot survives chat-model swaps.
+        if (
+            LlamaCppBackend._codec_mgr is None
+            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        ):
+            self.init_audio_codec(audio_type)
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
         # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
+        # Orpheus (snac) selects a speaker with a "voice: text" prefix. High quants
+        # use it as a SILENT cue; ultra-low quants (IQ1/IQ2/Q2) read the name aloud.
+        # Keep the prefix either way so the speaker stays pinned, and on the low
+        # quants trim the spoken name off the front of the audio (see below).
+        # Neutralize first, then add the speaker prefix, so the prefix is built on
+        # text that can no longer carry codec delimiters and is not itself mangled.
+        prompt_text = neutralize_tts_prompt_text(text, audio_type)
+        trim_name = False
+        if audio_type == "snac":
+            v = voice if voice in self._ORPHEUS_VOICES else "tara"
+            # A colon inside the CONTENT reads to Orpheus like a "name: text"
+            # speaker tag (that's the format it was trained on for voice select),
+            # so a colon mid-reply can flip or garble the voice. Drop content colons
+            # (replace with a space) so the ONLY colon Orpheus sees is our intended
+            # "{voice}:" speaker prefix -- the voice stays stable across the reply.
+            clean = prompt_text.replace(":", " ")
+            prompt_text = f"{v}: {clean}"
+            trim_name = not self._orpheus_voice_prefix_ok()
+
         payload: dict = {
-            "prompt": tpl.format(text = neutralize_tts_prompt_text(text, audio_type)),
+            "prompt": tpl.format(text = prompt_text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,
@@ -32680,6 +33027,7 @@ class LlamaCppBackend:
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
         }
+        _apply_seeded_llama_request(payload, seed)
         if stop:
             payload["stop"] = stop
         if need_ids:
@@ -32746,6 +33094,135 @@ class LlamaCppBackend:
         import torch
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        return LlamaCppBackend._codec_mgr.decode(
-            audio_type, device, token_ids = token_ids, text = data.get("content", "")
-        )
+        with LlamaCppBackend._codec_decode_lock:
+            wav_bytes, sample_rate = LlamaCppBackend._codec_mgr.decode(
+                audio_type, device, token_ids = token_ids, text = data.get("content", "")
+            )
+        if audio_type == "snac" and not _calibration:
+            if trim_name:
+                # Low quant: calibrate this voice's spoken-name length (once, cached),
+                # then trim only a leading run that matches it -- real short first
+                # words aren't clipped. This also removes the leading silence.
+                expected = self._orpheus_name_length_ms(v, audio_type)
+                wav_bytes = self._trim_leading_word(wav_bytes, sample_rate, expected)
+            else:
+                # High quant (no spoken name): Orpheus still emits ~0.3-0.6s of dead
+                # air before speech, which is pure first-audio latency. Trim it (keep
+                # a small pre-roll so the first consonant isn't clipped).
+                wav_bytes = self._trim_leading_silence(wav_bytes, sample_rate)
+        return wav_bytes, sample_rate
+
+    def generate_audio_response_stream(
+        self,
+        text: str,
+        audio_type: str,
+        voice: str = "tara",
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+        seed: int = 42,
+    ):
+        """Stream TTS audio for `text` as it generates: yields raw 16-bit PCM (mono,
+        24 kHz) so playback can start on the first fraction of a second instead of
+        waiting for the whole clip to synthesize. SNAC (Orpheus) only.
+
+        The llama-server completion is consumed token-by-token; every ~8 SNAC frames
+        we re-decode the growing code list and emit the newly-finished samples, with
+        an 80 ms right-context holdback so chunk seams stay click-free. Decoding from
+        frame 0 each step keeps full left context (no boundary artifacts); SNAC decode
+        is cheap next to token generation, so the re-decode overhead is negligible.
+
+        Note: this does NOT apply the low-quant spoken-name trim (that needs the whole
+        clip). Use the one-shot generate_audio_response where the name-trim matters."""
+        if audio_type != "snac":
+            raise RuntimeError("Streaming TTS is currently SNAC (Orpheus) only.")
+        if (
+            LlamaCppBackend._codec_mgr is None
+            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        ):
+            self.init_audio_codec(audio_type)
+
+        tpl, stop, _need_ids = self._TTS_PROMPTS[audio_type]
+        # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
+        # The blocking path neutralizes them; the stream builds the same prompt, so it
+        # has to do the same or streaming would be the way around that guard.
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
+        v = voice if voice in self._ORPHEUS_VOICES else "tara"
+        clean = neutralize_tts_prompt_text(text, audio_type).replace(":", " ")
+        prompt_text = f"{v}: {clean}"
+        payload: dict = {
+            "prompt": tpl.format(text = prompt_text),
+            "stream": True,
+            "n_predict": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+            "n_probs": 1,
+        }
+        _apply_seeded_llama_request(payload, seed)
+        if stop:
+            payload["stop"] = stop
+
+        import json as _json
+
+        import numpy as _np
+        import torch as _torch
+
+        # Preference only: decode_snac_pcm pins it to where the codec actually lives.
+        device = "cuda" if _torch.cuda.is_available() and not self.holds_no_vram else "cpu"
+        HOLDBACK = int(0.08 * 24000)  # 80 ms right-context held back for clean seams
+        DECODE_EVERY = 56             # ~8 SNAC frames (7 tokens each) between decodes
+
+        ids: list = []
+        state = {"emitted": 0}
+
+        def _decode_emit(final: bool) -> bytes:
+            wave = LlamaCppBackend._codec_mgr.decode_snac_pcm(ids, device)
+            if wave is None:
+                return b""
+            end = len(wave) if final else max(0, len(wave) - HOLDBACK)
+            if end <= state["emitted"]:
+                return b""
+            chunk = wave[state["emitted"]:end]
+            state["emitted"] = end
+            pcm = _np.clip(chunk, -1.0, 1.0)
+            return (pcm * 32767.0).astype("<i2").tobytes()
+
+        since_decode = 0
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+        ) as client:
+            with client.stream(
+                "POST", f"{self.base_url}/completion", json = payload
+            ) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"llama-server returned {resp.status_code}")
+                for line in resp.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    try:
+                        obj = _json.loads(line[len("data:"):].strip())
+                    except _json.JSONDecodeError:
+                        continue
+                    for p in obj.get("completion_probabilities", []) or []:
+                        if "id" in p:
+                            ids.append(p["id"])
+                            since_decode += 1
+                    if since_decode >= DECODE_EVERY:
+                        since_decode = 0
+                        with LlamaCppBackend._codec_decode_lock:
+                            pcm = _decode_emit(final = False)
+                        if pcm:
+                            yield pcm
+                    if obj.get("stop"):
+                        break
+        with LlamaCppBackend._codec_decode_lock:
+            pcm = _decode_emit(final = True)
+        if pcm:
+            yield pcm

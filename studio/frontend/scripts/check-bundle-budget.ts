@@ -41,7 +41,14 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  // Raised again for voice conversation mode: same build both sides, merge base
+  // 1,571.5 KB transfer / 79 chunks against branch 1,582.2 KB / 79 chunks, so the
+  // 10.7 KB is the feature itself and not a chunk that stopped being lazy. It
+  // crossed the old 1,582.0 KB ceiling by two tenths of a kilobyte. Lazy-loading
+  // the orb and the pickers behind React.lazy was measured first and made both
+  // numbers worse -- more eagerly preloaded chunks, and more transfer -- so it was
+  // reverted rather than shipped to buy the headroom.
+  transferBytes: 1_632_000,
   rawBytes: 5_500_000,
 };
 

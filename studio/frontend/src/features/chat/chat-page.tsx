@@ -19,6 +19,14 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  getVoiceMode,
+  requestVoiceToggle,
+} from "@/features/chat/voice/voice-loop-bridge";
+import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
+import { authFetch } from "@/features/auth";
+import { VOICE_SLOT_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -65,6 +73,7 @@ import {
   downloadManager,
   jobKeyOf,
   useRepoDownload,
+  subscribeJobListeners,
 } from "@/features/hub/download-manager";
 import {
   INVENTORY_FRESHNESS_WINDOW_MS,
@@ -323,6 +332,16 @@ const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
+// A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
+// separate TTS voice slot doesn't apply and must not be auto-loaded. Module-level
+// so both the render-time greying and the voice-slot ensure-load effect can share
+// one definition.
+const SPEECH_LLM_CHECKPOINT_RE =
+  /(?:orpheus|csm|spark|bark|parler|musicgen|text-to-speech|[-_]tts)/i;
+function isSpeechLLMCheckpoint(checkpoint: string | null | undefined): boolean {
+  return SPEECH_LLM_CHECKPOINT_RE.test(checkpoint ?? "");
+}
+
 const SingleContent = memo(function SingleContent({
   threadId,
   artifact,
@@ -431,6 +450,35 @@ const SingleContent = memo(function SingleContent({
     onCloseArtifact();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, onCloseArtifact]);
+
+  // Thread-switch voice reset. Lives here (not in VoiceEngine) because SingleContent
+  // is stable across the ThreadWelcome → ThreadComposerDock remount that fires on
+  // first-send; VoiceEngine remounts there and never observes null → __LOCALID_xxx,
+  // leaving its prev-thread ref stale so the later New Chat (→ null) reset is missed.
+  // We drive the module-level toggle bridge, gated on getVoiceMode() so a plain
+  // thread switch while voice is OFF can't accidentally toggle voice ON.
+  const prevVoiceThreadIdRef = useRef(activeThreadId);
+  useEffect(() => {
+    const current = activeThreadId;
+    const prev = prevVoiceThreadIdRef.current;
+    if (prev === current) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    // Thread birth (null → __LOCALID_xxx on first send) is the initial thread being
+    // created, not a real switch, so it must NOT kill voice mid-conversation. Skip
+    // the reset but still advance the ref, so the later New Chat (__LOCALID_xxx → null)
+    // is still detected as a genuine switch. Real switches — non-null → null (New Chat)
+    // and non-null → different non-null (sidebar) — fall through below.
+    if (prev === null && current !== null) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    if (getVoiceMode() !== "off") {
+      requestVoiceToggle();
+    }
+    prevVoiceThreadIdRef.current = current;
+  }, [activeThreadId]);
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -2419,6 +2467,368 @@ export function ChatPage({
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const selectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.selectedVoiceModelId,
+  );
+  const setSelectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.setSelectedVoiceModelId,
+  );
+  const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
+  const setVoiceSlotLoading = useChatRuntimeStore((s) => s.setVoiceSlotLoading);
+  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
+  const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
+  const cachedGgufsFetchedRef = useRef(false);
+
+  const handleVoiceModelChange = useCallback(
+    async (id: string | null) => {
+      // Captured before we optimistically switch the selection so a cancelled
+      // download can roll back to whatever voice was active.
+      const previousId = useChatRuntimeStore.getState().selectedVoiceModelId;
+      setSelectedVoiceModelId(id);
+      if (!id) {
+        // Browser voice — just unload any loaded TTS voice slot. Selecting a
+        // voice only configures it; entering the ball is a separate, explicit
+        // action ("Start voice mode" in the popover) so picking a voice never
+        // yanks you out of the text chat you might still be reading.
+        void authFetch("/api/inference/voice/unload", { method: "POST" });
+        return;
+      }
+
+      // The specific quant the user picked from the expander (not the repo
+      // default), so an undownloaded non-default quant is handled correctly.
+      const variant = useChatRuntimeStore.getState().selectedVoiceVariant;
+
+      // Is that exact quant already on disk? A repo can be partially cached
+      // (some quants present, others not), so ask gguf-variants for the picked
+      // one rather than doing a repo-level "is it cached" check.
+      let needsDownload = false;
+      let expectedBytes = 0;
+      try {
+        const vr = await authFetch(
+          `/api/models/gguf-variants?repo_id=${encodeURIComponent(id)}`,
+        );
+        if (vr.ok) {
+          const vdata = (await vr.json()) as {
+            default_variant?: string;
+            variants?: {
+              quant: string;
+              size_bytes: number;
+              download_size_bytes?: number;
+              downloaded: boolean;
+            }[];
+          };
+          const picked =
+            vdata.variants?.find((v) => v.quant === variant) ??
+            vdata.variants?.find((v) => v.quant === vdata.default_variant) ??
+            vdata.variants?.[0];
+          if (picked && !picked.downloaded) {
+            needsDownload = true;
+            // download_size_bytes first, as every other download path does: a
+            // sharded GGUF reports one shard in size_bytes and the whole set here.
+            expectedBytes = picked.download_size_bytes || picked.size_bytes;
+          }
+        }
+      } catch {
+        // gguf-variants unavailable (e.g. a local path or non-GGUF voice) —
+        // treat it as on-disk and let the load path deal with it.
+      }
+
+      // Not on disk: pull it through the same download manager the main model
+      // dropdown uses, so it shows the global progress card and only loads the
+      // voice slot once the file is complete. Letting /voice/load fetch it via
+      // llama-server -hf instead would run a multi-GB transfer inside the
+      // server's startup health-check window and time out with no progress.
+      if (needsDownload) {
+        const ok = await new Promise<boolean>((resolve) => {
+          const unsub = subscribeJobListeners(DOWNLOAD_KIND.MODEL, id, {
+            onComplete: (completedVariant) => {
+              // Listeners are repo-scoped; ignore a sibling quant finishing.
+              if (variant && completedVariant && completedVariant !== variant)
+                return;
+              unsub();
+              resolve(true);
+            },
+            onCancelled: () => {
+              unsub();
+              resolve(false);
+            },
+            onError: () => {
+              unsub();
+              resolve(false);
+            },
+          });
+          void downloadManager
+            .requestStart({
+              kind: DOWNLOAD_KIND.MODEL,
+              repoId: id,
+              variant: variant ?? null,
+              expectedBytes,
+            })
+            .then((outcome) => {
+              // "started" -> a listener above settles when the transfer ends.
+              // Any other outcome never fires a listener, so settle here.
+              if (outcome === "started") return;
+              unsub();
+              resolve(false);
+              if (outcome === "conflict") {
+                toast.info("Resume this download from the Hub", {
+                  description:
+                    "An earlier partial download used a different transport. Open the Hub tab to resume it.",
+                });
+              } else if (outcome !== "busy") {
+                toast.error("Couldn't start the voice download");
+              }
+            });
+        });
+        if (!ok) {
+          // Roll back to the prior voice; any loaded slot stays intact and the
+          // selector keeps matching what /api/inference/audio/speech will use.
+          setSelectedVoiceModelId(previousId);
+          return;
+        }
+      }
+
+      setVoiceSlotLoading(true);
+      try {
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          toast.error("Voice model failed to load", {
+            description: (body as { detail?: string }).detail ?? undefined,
+          });
+          setSelectedVoiceModelId(null);
+        }
+        // On success we just leave the model loaded and selected; entering the
+        // ball is the separate "Start voice mode" action in the popover.
+      } catch {
+        toast.error("Voice model failed to load");
+        setSelectedVoiceModelId(null);
+      } finally {
+        setVoiceSlotLoading(false);
+      }
+    },
+    [setSelectedVoiceModelId, setVoiceSlotLoading],
+  );
+
+  // Reload the backend voice slot if a voice is selected but the slot is gone
+  // (unloaded by a remount, auth bounce, or studio relaunch). Registered in the
+  // store so the TTS player can call it to self-heal a /api/inference/audio/speech 400
+  // instead of going silent. De-duped via a ref so a burst of parallel synth
+  // 400s triggers a single reload, not a stampede.
+  const voiceReloadInflightRef = useRef<Promise<boolean> | null>(null);
+  const ensureVoiceSlotLoaded = useCallback(async (): Promise<boolean> => {
+    const store = useChatRuntimeStore.getState();
+    const id = store.selectedVoiceModelId;
+    // Browser voice / nothing selected: there's no separate slot to load.
+    if (!id) return false;
+    // Speech-LLM chat models speak with their own voice; no separate slot.
+    if (isSpeechLLMCheckpoint(store.params.checkpoint)) return false;
+    if (voiceReloadInflightRef.current) return voiceReloadInflightRef.current;
+    const run = (async () => {
+      try {
+        // Already loaded with the selected voice? Nothing to do.
+        const st = await authFetch("/api/inference/voice/status");
+        const data = st.ok
+          ? ((await st.json()) as { loaded?: boolean; model?: string | null })
+          : null;
+        const loaded = data?.loaded ? (data.model ?? null) : null;
+        if (loaded && loaded.toLowerCase() === id.toLowerCase()) return true;
+        setVoiceSlotLoading(true);
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
+          }),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      } finally {
+        setVoiceSlotLoading(false);
+        voiceReloadInflightRef.current = null;
+      }
+    })();
+    voiceReloadInflightRef.current = run;
+    return run;
+  }, [setVoiceSlotLoading]);
+
+  // Expose the reloader to the store so the TTS player (a different component
+  // tree) can call it to self-heal. Cleared on unmount.
+  useEffect(() => {
+    const register = useChatRuntimeStore.getState().setEnsureVoiceSlotLoaded;
+    register(ensureVoiceSlotLoaded);
+    return () => register(null);
+  }, [ensureVoiceSlotLoaded]);
+
+  // Unload the voice slot whenever voice mode turns off.
+  useEffect(() => {
+    if (voiceMode === "off" && selectedVoiceModelId) {
+      void authFetch("/api/inference/voice/unload", { method: "POST" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode]);
+
+  // Ensure the backend voice slot matches the selected voice once voice mode is
+  // actually STARTED (active), not merely being configured -- otherwise just
+  // opening the voice picker would kick off the (slow) TTS load. selectedVoiceModelId
+  // is persisted and shows "Active", but the backend slot is empty after a restart
+  // (and the unload effect above clears it on mount), so without this /api/inference/audio/speech
+  // has no TTS slot loaded and 400s. Keyed on voiceMode (not the selection) so it
+  // fires on entering the ball, not on every pick (handleVoiceModelChange already
+  // loads on pick); the /voice/status check makes a redundant load a no-op.
+  useEffect(() => {
+    if (voiceMode !== "active") return;
+    // Speech-LLM chat models (Orpheus etc.) speak with their own voice, so the
+    // separate TTS slot is greyed out and must not be auto-loaded -- doing so
+    // wastes VRAM/time loading a voice that never gets used.
+    if (isSpeechLLMCheckpoint(useChatRuntimeStore.getState().params.checkpoint)) {
+      return;
+    }
+    const id = useChatRuntimeStore.getState().selectedVoiceModelId;
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const st = await authFetch("/api/inference/voice/status");
+        const data = st.ok
+          ? ((await st.json()) as { loaded?: boolean; model?: string | null })
+          : null;
+        const loadedModel = data?.loaded ? (data.model ?? null) : null;
+        if (loadedModel && loadedModel.toLowerCase() === id.toLowerCase()) return;
+        if (cancelled) return;
+        setVoiceSlotLoading(true);
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
+          }),
+        });
+        if (!res.ok && !cancelled) {
+          const body = await res.json().catch(() => ({}));
+          toast.error("Voice model failed to load", {
+            description: (body as { detail?: string }).detail ?? undefined,
+          });
+        }
+      } catch {
+        // status/load unavailable -- leave the slot as-is.
+      } finally {
+        if (!cancelled) setVoiceSlotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode]);
+
+
+  // Keep the top-bar speak icon honest: green only when the backend voice slot
+  // is actually loaded with the selected voice. A selection persists across
+  // reloads but the slot doesn't, so sync from /voice/status whenever the
+  // selection, voice mode, or load state changes instead of trusting the
+  // selection alone (which would show green for an unloaded slot after a reload).
+  useEffect(() => {
+    const setLoaded = useChatRuntimeStore.getState().setVoiceSlotLoaded;
+    if (voiceMode === "off" || !selectedVoiceModelId) {
+      setLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    void authFetch("/api/inference/voice/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { loaded?: boolean; model?: string | null } | null) => {
+        if (cancelled) return;
+        const id = selectedVoiceModelId;
+        setLoaded(
+          !!data?.loaded &&
+            !!id &&
+            (data.model ?? "").toLowerCase() === id.toLowerCase(),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [voiceMode, selectedVoiceModelId, voiceSlotLoading]);
+
+  // Navigating away from Chat while voice mode is still active unmounts this
+  // component without flipping voiceMode to "off", so the effect above never
+  // runs. Unload on teardown so the independent voice model can't keep holding
+  // VRAM until the backend restarts. Reads the store at cleanup time to avoid a
+  // stale closure over selectedVoiceModelId.
+  useEffect(() => {
+    return () => {
+      if (useChatRuntimeStore.getState().selectedVoiceModelId) {
+        void authFetch("/api/inference/voice/unload", { method: "POST" });
+      }
+    };
+  }, []);
+
+  // Switching the chat checkpoint to a speech-LLM means the model produces its own
+  // voice, and the picker greys out. Greying out is not enough on its own: the speech
+  // route prefers the voice slot whenever one is loaded, so a previously picked voice
+  // would keep speaking every reply while the UI said the model owned its voice. Drop
+  // the selection and unload the slot so what you hear matches what the UI claims.
+  // Derived here rather than read from the chatModelIsSpeechLLM const the picker
+  // uses: that one is declared further down this component, so reading it here
+  // would be a temporal-dead-zone throw on first render.
+  const checkpointOwnsItsVoice = isSpeechLLMCheckpoint(inferenceParams.checkpoint);
+  useEffect(() => {
+    if (!checkpointOwnsItsVoice) return;
+    if (!useChatRuntimeStore.getState().selectedVoiceModelId) return;
+    setSelectedVoiceModelId(null);
+    useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
+    void authFetch("/api/inference/voice/unload", { method: "POST" });
+  }, [checkpointOwnsItsVoice, setSelectedVoiceModelId]);
+
+  // Fetch cached GGUFs + cached safetensors once when voice mode is first
+  // activated. TTS only lists GGUFs -- /api/inference/voice/load hard-requires
+  // one (separate llama-server voice slot), so a safetensors-only TTS repo
+  // can't load there yet even if it's downloaded. Downloading itself stays in
+  // the main model dropdown's Hub search.
+  useEffect(() => {
+    if (voiceMode === "off" || cachedGgufsFetchedRef.current) return;
+    cachedGgufsFetchedRef.current = true;
+    // TTS-capable GGUFs for the voice slot: standalone TTS (bicodec/dac) plus the
+    // speech-LLMs (orpheus/snac, csm) -- those can double as a plain voice for a
+    // *different* chat model when picked here, in which case they only synthesize
+    // its replies rather than acting as the LLM. GGUF-only: the voice slot is a
+    // llama-server, so safetensors-only checkpoints (e.g. Spark's LLM) can't load.
+    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts", "orpheus", "csm"];
+    const lower = (s: string) => s.toLowerCase();
+    const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
+      id: repoId,
+      name: repoId.includes("/") ? (repoId.split("/")[1] ?? repoId) : repoId,
+      isGguf,
+    });
+
+    void authFetch("/api/models/cached-gguf")
+      .then((r) => (r.ok ? r.json() : { cached: [] }))
+      .then((data: { cached: { repo_id: string; size_bytes?: number }[] }) => {
+        setCachedGgufs(
+          (data.cached ?? [])
+            .filter((c) => TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .map((c) => toOption(c.repo_id, true)),
+        );
+      })
+      .catch(() => {});
+  }, [voiceMode]);
+
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
@@ -3809,6 +4219,41 @@ export function ChatPage({
     void localModelInventory.refreshIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
   }, [refresh, localModelInventory.refreshIfOlderThan]);
 
+  // TTS voices offerable to the voice slot: trained TTS checkpoints from the
+  // fine-tune scan, cached TTS GGUFs, and the canonical defaults (downloaded on
+  // first load if not cached).
+  //
+  // Both halves of the filter matter. The codec must be one the slot's llama-server
+  // can decode, and the checkpoint must be a GGUF export: the slot loads a GGUF, so
+  // a merged or adapter-only row would be offered here and then rejected by
+  // /voice/load. Speech-LLM codecs (Orpheus/snac) belong in this list -- picking one
+  // here uses it purely as the voice for a separate chat model, which is exactly the
+  // "hear the voice you fine-tuned" case, and it is what the Orpheus default below
+  // already offers.
+  const ttsModels = useMemo<LoraModelOption[]>(() => {
+    const fromLoras = loraModels.filter(
+      (m) =>
+        VOICE_SLOT_AUDIO_TYPES.has(m.audioType ?? "") && m.exportType === "gguf",
+    );
+    const VOICE_MODEL_DEFAULTS: LoraModelOption[] = [
+      {
+        id: "unsloth/orpheus-3b-0.1-ft-GGUF",
+        name: "orpheus-3b-0.1-ft (voice)",
+        isGguf: true,
+      },
+    ];
+    const knownIds = new Set([
+      ...cachedGgufs.map((m) => m.id),
+      ...fromLoras.map((m) => m.id),
+    ]);
+    const voiceDefaults = VOICE_MODEL_DEFAULTS.filter((d) => !knownIds.has(d.id));
+    return [...fromLoras, ...cachedGgufs, ...voiceDefaults];
+  }, [loraModels, cachedGgufs]);
+
+  // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
+  // separate TTS voice doesn't apply.
+  const chatModelIsSpeechLLM = isSpeechLLMCheckpoint(inferenceParams.checkpoint);
+
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     const controller = new AbortController();
@@ -4090,6 +4535,19 @@ export function ChatPage({
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <VoiceModelSelector
+                models={ttsModels}
+                value={selectedVoiceModelId}
+                onValueChange={(id) => void handleVoiceModelChange(id)}
+                loading={voiceSlotLoading}
+                disabled={!hasActiveModel}
+                voiceOwnedByModel={chatModelIsSpeechLLM}
+                loaded={voiceSlotLoaded}
+                className="!h-[34px]"
+              />
+            )}
+            {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
