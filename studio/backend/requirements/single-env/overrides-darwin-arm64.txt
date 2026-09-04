@@ -1,6 +1,6 @@
 # Keep mlx-vlm / mlx-lm on the same Transformers floor as the main Unsloth
 # environment when uv applies their dependency metadata.
-transformers>=5.5.0; python_version >= "3.10"
+transformers>=5.10.1; python_version >= "3.10"
 transformers>=4.57.6; python_version < "3.10"
 
 # mlx-vlm / mlx-lm pull anyio>=4.14, which fights the constraints.txt cap (needed

@@ -17,7 +17,7 @@ torch-c-dlpack-ext==0.1.5
 # unconditional pin here would reject 3.9 outright and undo that file's fallback.
 sentence_transformers==5.2.0; python_version >= "3.10"
 sentence_transformers==5.1.2; python_version < "3.10"
-transformers==5.5.0; python_version >= "3.10"
+transformers==5.10.1; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 # No macOS x86_64 wheel at any version, so uv falls back to an sdist that shells out to
 # cmake. Skipping it on Intel Macs keeps that install compiler-free.
