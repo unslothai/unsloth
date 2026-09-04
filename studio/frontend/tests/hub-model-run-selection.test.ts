@@ -98,7 +98,7 @@ test("only complete chat-loadable safetensors and GGUF models are eligible", () 
   }
 });
 
-test("MLX inventory identities never enter the Hub Run handoff", () => {
+test("MLX safetensors follow runtime availability", () => {
   const models = [
     selectedModel({ libraryName: " MLX " }),
     selectedModel({ tags: ["transformers", "MLX"] }),
@@ -110,11 +110,16 @@ test("MLX inventory identities never enter the Hub Run handoff", () => {
       id: "Org/Model-MLX-4bit",
       hubRepoId: "Org/Model-MLX-4bit",
     }),
+    localModel(String.raw`C:\Models\mlx-community\Qwen2`),
   ];
 
   for (const model of models) {
-    assert.equal(eligible(model), false);
+    assert.equal(eligible(model), true);
     assert.equal(
+      eligible(model, { safetensorsRuntimeAvailable: false }),
+      false,
+    );
+    assert.notEqual(
       createHubModelConfigHandoff({
         requestId: "request-mlx",
         model,
@@ -122,54 +127,6 @@ test("MLX inventory identities never enter the Hub Run handoff", () => {
       }),
       null,
     );
-  }
-
-  assert.equal(
-    eligible(
-      selectedModel({
-        id: "Org/XMLXModel",
-        hubRepoId: "Org/XMLXModel",
-      }),
-    ),
-    true,
-  );
-});
-
-test("local MLX identities fail closed across desktop path styles", () => {
-  const paths = [
-    "/models/mlx-community/Qwen2",
-    "/mnt/c/Models/mlx-community/Qwen2",
-    "/Users/alice/Models/mlx-community/Qwen2",
-    String.raw`C:\Models\mlx-community\Qwen2`,
-    String.raw`\\server\share\mlx-community\Qwen2`,
-    "/models/Org/Qwen2_MLX",
-  ];
-
-  for (const path of paths) {
-    const model = localModel(path);
-    assert.equal(eligible(model), false, path);
-    assert.equal(
-      createHubModelConfigHandoff({
-        requestId: path,
-        model,
-        selection: {},
-      }),
-      null,
-      path,
-    );
-  }
-});
-
-test("local MLX identity matching does not overreach", () => {
-  const paths = [
-    "/models/not-mlx-community/Qwen2",
-    "/models/Org/MyMLX",
-    String.raw`C:\Models\XMLX\Qwen2`,
-    String.raw`\\mlx-community\share\Org\Qwen2`,
-  ];
-
-  for (const path of paths) {
-    assert.equal(eligible(localModel(path)), true, path);
   }
 });
 

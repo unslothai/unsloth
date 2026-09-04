@@ -14,37 +14,11 @@ function isPresent(value: string | null | undefined): value is string {
   return Boolean(value?.trim());
 }
 
-const MLX_MODEL_NAME = /(?:^|[-_.])mlx(?:$|[-_.])/i;
-const MODEL_IDENTITY_SEPARATOR = /[\\/]+/;
-
-function identityLooksLikeMlx(value: string | null | undefined): boolean {
-  if (!value?.trim()) {
-    return false;
-  }
-  const parts = value.trim().split(MODEL_IDENTITY_SEPARATOR).filter(Boolean);
-  const leaf = parts.at(-1) ?? "";
-  const parent = parts.at(-2)?.toLowerCase();
-  return parent === "mlx-community" || MLX_MODEL_NAME.test(leaf);
-}
-
-function hasMlxRunEvidence(model: SelectedModelView): boolean {
-  return (
-    model.libraryName?.trim().toLowerCase() === "mlx" ||
-    model.tags?.some((tag) => tag.trim().toLowerCase() === "mlx") === true ||
-    [model.hubRepoId, model.id, model.loadId, model.path].some(
-      identityLooksLikeMlx,
-    )
-  );
-}
-
 function hasSupportedFormat(model: SelectedModelView): boolean {
   if (model.modelFormat === "gguf") {
     return model.isGguf;
   }
-  if (model.modelFormat !== "safetensors" || model.isGguf) {
-    return false;
-  }
-  return !hasMlxRunEvidence(model);
+  return model.modelFormat === "safetensors" && !model.isGguf;
 }
 
 function hasRunnableInventoryModel(model: SelectedModelView): boolean {
