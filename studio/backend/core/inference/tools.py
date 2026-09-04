@@ -11990,8 +11990,7 @@ def _fetch_url_raw(
             else:
                 # Pin to the validated IPs to prevent DNS rebinding.
                 request_urls = [
-                    urlunparse(cp._replace(netloc = _pinned_netloc(ip, cp.port)))
-                    for ip in pinned_ips
+                    urlunparse(cp._replace(netloc = _pinned_netloc(ip, cp.port))) for ip in pinned_ips
                 ]
 
             handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]

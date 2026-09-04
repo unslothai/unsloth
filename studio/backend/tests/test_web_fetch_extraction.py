@@ -717,7 +717,6 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 def _dual_stack_getaddrinfo(hostname, port, *args, **kwargs):
     """example.com's real records: the AAAA sorts first for a dual-stack host."""
     import socket as _socket
-
     return [
         (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:2800:220:1::1", port, 0, 0)),
         (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("93.184.216.34", port)),
@@ -757,7 +756,11 @@ def test_fetch_url_raw_falls_back_to_the_next_resolved_address(monkeypatch):
     tried = []
 
     class _FakeOpener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             tried.append(req.full_url)
             if "[" in req.full_url:
                 raise urllib.error.URLError(OSError(101, "Network is unreachable"))
@@ -779,7 +782,11 @@ def test_fetch_url_raw_reports_the_last_error_when_no_address_connects(monkeypat
     import urllib.request
 
     class _FakeOpener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             raise urllib.error.URLError(OSError(101, "Network is unreachable"))
 
     monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
