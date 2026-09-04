@@ -37,6 +37,7 @@ import {
   findMatches,
   foldText,
   normalizeQuery,
+  renumbersMatches,
   segmentAt,
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
@@ -2011,9 +2012,10 @@ test("the ordinal survives an append and nothing else", async () => {
     ),
     "utf8",
   );
+  // One rule, and it lives in the pure module so the tests below can exercise it directly.
   assert.match(
     engine,
-    /const before = indexRef\.current\.text;[\s\S]*?return !indexRef\.current\.text\.startsWith\(before\);/,
+    /return renumbersMatches\(before, indexRef\.current, activeStartRef\.current\);/,
   );
   // Every rebuild goes through it: no call site decides for itself that the numbering held.
   assert.equal(engine.includes("search(false, false)"), false);
@@ -2023,6 +2025,118 @@ test("the ordinal survives an append and nothing else", async () => {
     engine,
     /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/,
   );
+});
+
+test("every navigation waits for the query to settle, buttons included", async () => {
+  // The buttons stay enabled on the previous query's count while an edit is pending, and `apply`
+  // will not paint until it settles, so calling `next`/`previous` from a click dropped it silently.
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(-1\)\}/);
+  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(1\)\}/);
+  // No control reaches the raw pair, so a new one cannot copy the losing spelling.
+  assert.equal(/onClick=\{(next|previous)\}/.test(bar), false);
+  // The helper queues the step and forces the settle rather than dropping it.
+  assert.match(
+    bar,
+    /if \(queryPending\) \{\s*queuedStepRef\.current = delta;\s*settleQuery\(\);/,
+  );
+});
+
+test("the seam between the workspace and the surfaces in front of it is recorded", () => {
+  const workspace = el("DIV", [el("P", [text("unsloth studio")])]);
+  const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
+  const alone = buildTextIndex(workspace);
+  assert.equal(alone.rootLength, alone.text.length);
+  const withMonitor = buildTextIndex(workspace, [monitor]);
+  // The joining separator belongs to the surface, so the workspace slice is only the workspace.
+  assert.equal(withMonitor.rootLength, alone.text.length);
+  assert.equal(withMonitor.text.slice(0, withMonitor.rootLength), alone.text);
+  assert.match(withMonitor.text.slice(withMonitor.rootLength), /cpu 12%$/);
+});
+
+test("a monitor polling behind a streaming reply does not move the reader", () => {
+  // The monitor is a permanent tail that rewrites itself on a timer. Judged as one string, every
+  // poll and every streamed character reads as renumbered and re-anchors the reader.
+  const monitorAt = (load: string) => el("DIV", [el("P", [text(load)])]);
+  const reply = (body: string) => el("DIV", [el("P", [text(body)])]);
+
+  const before = buildTextIndex(reply("unsloth one"), [monitorAt("cpu 12%")]);
+  // Where the reader is: on the occurrence in the workspace.
+  const readerInWorkspace = findMatches(before, "unsloth")[0].start;
+
+  // The monitor polls; the workspace has not moved.
+  const polled = buildTextIndex(reply("unsloth one"), [monitorAt("cpu 34%")]);
+  assert.equal(renumbersMatches(before, polled, readerInWorkspace), false);
+
+  // The reply streams on; the monitor has not moved.
+  const streamed = buildTextIndex(reply("unsloth one unsloth two"), [
+    monitorAt("cpu 12%"),
+  ]);
+  assert.equal(renumbersMatches(before, streamed, readerInWorkspace), false);
+  // And the occurrence really is still at the offset the search looks it up by.
+  assert.equal(findMatches(streamed, "unsloth")[0].start, readerInWorkspace);
+
+  // Both at once, which is the ordinary case while a reply lands.
+  const both = buildTextIndex(reply("unsloth one unsloth two"), [
+    monitorAt("cpu 34%"),
+  ]);
+  assert.equal(renumbersMatches(before, both, readerInWorkspace), false);
+});
+
+test("a reader inside a surface gives up its place when the workspace grows under it", () => {
+  // Growing the workspace moves the tail along, so an occurrence inside a surface is no longer at
+  // the offset it is looked up by. That reader, and only that reader, re-anchors.
+  const monitor = el("DIV", [el("P", [text("unsloth monitor")])]);
+  const before = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
+    monitor,
+  ]);
+  const readerInMonitor = findMatches(before, "unsloth")[0].start;
+  assert.ok(readerInMonitor >= before.rootLength);
+
+  const grown = buildTextIndex(
+    el("DIV", [el("P", [text("reply one reply two")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, grown, readerInMonitor), true);
+
+  // The same growth leaves a reader in the workspace exactly where they were.
+  const workspaceReader = 0;
+  assert.equal(renumbersMatches(before, grown, workspaceReader), false);
+
+  // A poll that does not move the seam keeps even the surface's own reader in place.
+  const polled = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
+    el("DIV", [el("P", [text("unsloth monitor idle")])]),
+  ]);
+  assert.equal(renumbersMatches(before, polled, readerInMonitor), false);
+});
+
+test("history arriving above the reader still renumbers the list", () => {
+  // The rule this all rests on has not been widened: a prepend is not an append on either side.
+  const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
+  const before = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
+    monitor,
+  ]);
+  const prepended = buildTextIndex(
+    el("DIV", [el("P", [text("older unsloth one")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, prepended, 0), true);
+
+  // A surface whose reading is replaced rather than extended is the ordinary poll, and it must not
+  // renumber anything for a reader in the conversation behind it.
+  const replaced = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
+    el("DIV", [el("P", [text("gpu 12%")])]),
+  ]);
+  assert.equal(renumbersMatches(before, replaced, 0), false);
+  // A reader inside that surface does lose their place to it, because their offset was in the text
+  // that got rewritten.
+  assert.equal(renumbersMatches(before, replaced, before.rootLength + 1), true);
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {

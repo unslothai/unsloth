@@ -33,6 +33,7 @@ import {
   buildTextIndex,
   dropProbeFurthestFrom,
   findMatches,
+  renumbersMatches,
 } from "../lib/find-text-index.ts";
 
 /**
@@ -238,7 +239,7 @@ export function useFindInPage(
    */
   const reindex = useCallback((): boolean => {
     staleRef.current = false;
-    const before = indexRef.current.text;
+    const before = indexRef.current;
     const scope = scopeRef.current;
     indexRef.current = scope
       ? buildTextIndex(
@@ -248,7 +249,7 @@ export function useFindInPage(
           resolvePortalSurfaces(scope) as unknown as FindElementLike[],
         )
       : EMPTY_TEXT_INDEX;
-    return !indexRef.current.text.startsWith(before);
+    return renumbersMatches(before, indexRef.current, activeStartRef.current);
   }, []);
 
   // Open: take the index and watch for changes. Closing tears all of it down, highlights included.

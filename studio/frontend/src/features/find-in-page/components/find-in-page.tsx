@@ -256,7 +256,7 @@ function FindBar() {
         className={FIND_BUTTON_CLASS}
         disabled={count === 0}
         onMouseDown={keepFocusInField}
-        onClick={previous}
+        onClick={() => stepWhenSettled(-1)}
         aria-label={t("shell.find.previous")}
         title={t("shell.find.previous")}
       >
@@ -268,7 +268,7 @@ function FindBar() {
         className={FIND_BUTTON_CLASS}
         disabled={count === 0}
         onMouseDown={keepFocusInField}
-        onClick={next}
+        onClick={() => stepWhenSettled(1)}
         aria-label={t("shell.find.next")}
         title={t("shell.find.next")}
       >

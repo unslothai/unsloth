@@ -147,12 +147,15 @@ export interface FindTextIndex {
   segments: TextSegment[];
   /** True when `MAX_INDEX_CHARS` stopped the walk early. */
   truncated: boolean;
+  /** Where the portaled surfaces begin. The whole length when none are open. */
+  rootLength: number;
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
   text: "",
   segments: [],
   truncated: false,
+  rootLength: 0,
 };
 
 /** Dotted I, the only code point whose `toLowerCase` grows (scanned all of them). Mapped to bare
@@ -429,6 +432,9 @@ export function buildTextIndex(
   };
 
   visit(root, false);
+  // Before the surfaces and the separator joining them, so this slice is exactly the workspace.
+  // `foldText` cannot change a length, so the offset survives it.
+  const rootLength = length;
   // The reserve, handed over. Portaled surfaces come after the workspace, so without this the one
   // thing in front of the reader is the one left out. `truncated` stays as the workspace left it.
   ceiling = MAX_INDEX_CHARS;
@@ -440,7 +446,41 @@ export function buildTextIndex(
     visit(extra, false);
   }
   // Folded once, over the joined document: see foldText for why it cannot be done a node at a time.
-  return { text: foldText(parts.join("")), segments, truncated };
+  return { text: foldText(parts.join("")), segments, truncated, rootLength };
+}
+
+/**
+ * True when a rebuild renumbers the match list, so the search has to re-anchor to the viewport.
+ *
+ * The index is the workspace followed by the surfaces portaled in front of it, joined at
+ * `rootLength`. A monitor stays searchable while it is up and rewrites its reading on a timer, so
+ * judged as one string every poll reads as a renumbered document and throws the reader out of the
+ * conversation behind it. What decides is whether the reader's own offset survived.
+ *
+ * Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
+ */
+export function renumbersMatches(
+  before: FindTextIndex,
+  after: FindTextIndex,
+  /** Where the reader's occurrence started in `before`, or null when there was none. */
+  activeStart: number | null,
+): boolean {
+  const workspaceGrewAtTail = after.text
+    .slice(0, after.rootLength)
+    .startsWith(before.text.slice(0, before.rootLength));
+  // The workspace is the prefix, so no surface can move an offset inside it. `search` re-anchors on
+  // its own when there was no occurrence to keep.
+  if (activeStart === null || activeStart < before.rootLength) {
+    return !workspaceGrewAtTail;
+  }
+  // Inside a surface the seam has to hold too: growing the workspace moves the whole tail along.
+  return (
+    !workspaceGrewAtTail ||
+    after.rootLength !== before.rootLength ||
+    !after.text
+      .slice(after.rootLength)
+      .startsWith(before.text.slice(before.rootLength))
+  );
 }
 
 /** Fold a query the way the haystack was folded. Null when it cannot match: empty, or carrying the
