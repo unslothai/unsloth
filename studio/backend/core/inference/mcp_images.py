@@ -107,12 +107,20 @@ def _decoded_urls(images: Sequence[dict], limit: int = MAX_MODEL_IMAGES) -> list
     """Up to *limit* data URLs, counting only what decoded.
 
     Slicing first would spend the quota on formats Pillow cannot read -- an SVG
-    _flatten_result accepted, say -- and drop the real PNGs behind them.
+    _flatten_result accepted, say -- and drop the real PNGs behind them. So the
+    ATTEMPTS are bounded instead: the payload-byte budget caps the size of a result,
+    never the number of entries in it, and a server answering with thousands of tiny
+    unreadable ones would otherwise hold an inference worker open on Pillow for a
+    turn that can show four pictures at most. Same allowance the replay side spends,
+    for the same reason -- enough slack to look past a run of rejects.
     """
     urls = []
+    attempts = 0
+    budget = limit + DECODE_FAILURE_ALLOWANCE
     for image in images:
-        if len(urls) >= limit:
+        if len(urls) >= limit or attempts >= budget:
             break
+        attempts += 1
         url = _png_data_url(image.get("data", ""))
         if url:
             urls.append(url)
@@ -250,7 +258,11 @@ def _turn_text(
     # The tool result's own note counts every image it returned, so a turn that
     # carries fewer has to say so rather than let the model wait for the rest.
     if total > shown:
-        return f"{lead} (first {shown} of {total})"
+        # Count, not position. Which ones survive is not "the first": an oversized
+        # parallel batch keeps its NEWEST results and a partial trim removes the
+        # oldest parts of a turn, so a positional claim here named the wrong images
+        # and could ground the answer in a result the model was never shown.
+        return f"{lead} ({shown} of {total})"
     return lead
 
 
@@ -277,7 +289,7 @@ def _relabelled(kept: list, part_type: str) -> list:
     """The turn's note rewritten for what actually survived a partial trim.
 
     The label exists to tell the model which of the returned images it was really
-    shown, so a turn left holding two while still saying "first 4 of 8" defeats it.
+    shown, so a turn left holding two while still saying it carries four defeats it.
     """
     remaining = sum(1 for part in kept if isinstance(part, dict) and part.get("type") == part_type)
     out = []
@@ -302,7 +314,7 @@ def _relabelled(kept: list, part_type: str) -> list:
 def _note_total(text, remaining: int) -> int:
     """The "of N" the note already carried, so a second trim does not re-baseline it
     to whatever is left and lose how many the tool actually returned."""
-    match = re.search(r"\(first \d+ of (\d+)\)\s*$", str(text or ""))
+    match = re.search(r"\((?:first )?\d+ of (\d+)\)\s*$", str(text or ""))
     if match:
         return int(match.group(1))
     return remaining
