@@ -5,7 +5,13 @@
 // are limited to highlights, so the observer cannot retrigger itself.
 
 import { completeProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   cancelRevealPasses,
   clearHighlights,
@@ -367,7 +373,7 @@ export function useFindInPage(
   // Do not leave the previous partial word painted while the input already shows the next one.
   // The settled search below is deliberately coalesced so a broad first letter cannot stall every
   // following keystroke in a rich conversation.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (queryPending) {
       cancelRevealPasses();
       clearHighlights();

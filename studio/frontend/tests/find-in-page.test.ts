@@ -1685,6 +1685,25 @@ test("a fresh query starts from the scroll container's top, not the window's", a
   assert.equal(/top >= 0/.test(engine), false);
 });
 
+
+test("a pending query clears the previous highlight before the next paint", async () => {
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // The input value is committed during the event. A passive effect may run only after the browser
+  // has painted that new value beside the old query's ranges, which is the visible `sta`/`stan`
+  // mismatch this guards. A layout effect clears those ranges in the same commit, before paint.
+  assert.match(engine, /import \{[^}]*useLayoutEffect[^}]*\} from "react";/);
+  assert.match(
+    engine,
+    /useLayoutEffect\(\(\) => \{\s*if \(queryPending\) \{\s*cancelRevealPasses\(\);\s*clearHighlights\(\);/,
+  );
+});
+
 test("re-indexing while the document changes is a throttle, and says so", async () => {
   const engine = await readFile(
     new URL(
