@@ -140,6 +140,12 @@ export interface TextSegment {
   preserved: boolean;
 }
 
+interface IndexedSurface {
+  root: FindElementLike;
+  start: number;
+  end: number;
+}
+
 export interface FindTextIndex {
   /** Case-folded haystack, block boundaries written as `BLOCK_SEPARATOR`. */
   text: string;
@@ -149,6 +155,8 @@ export interface FindTextIndex {
   truncated: boolean;
   /** Where the portaled surfaces begin. The whole length when none are open. */
   rootLength: number;
+  /** Stable portal roots and the offsets occupied by their searchable text. */
+  surfaces: IndexedSurface[];
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
@@ -156,6 +164,7 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   segments: [],
   truncated: false,
   rootLength: 0,
+  surfaces: [],
 };
 
 /** Dotted I, the only code point whose `toLowerCase` grows (scanned all of them). Mapped to bare
@@ -351,6 +360,8 @@ export function buildTextIndex(
 ): FindTextIndex {
   const parts: string[] = [];
   const segments: TextSegment[] = [];
+
+  const surfaces: IndexedSurface[] = [];
   let length = 0;
   /** The index does not hold everything: a node was clipped, or the ceiling was reached. */
   let truncated = false;
@@ -443,10 +454,24 @@ export function buildTextIndex(
     if (full) break;
     // A boundary between roots: they are separate surfaces, and a match must not run across.
     pendingSeparator = true;
+    const firstSegment = segments.length;
     visit(extra, false);
+    if (segments.length > firstSegment) {
+      surfaces.push({
+        root: extra,
+        start: segments[firstSegment].start,
+        end: length,
+      });
+    }
   }
   // Folded once, over the joined document: see foldText for why it cannot be done a node at a time.
-  return { text: foldText(parts.join("")), segments, truncated, rootLength };
+  return {
+    text: foldText(parts.join("")),
+    segments,
+    truncated,
+    rootLength,
+    surfaces,
+  };
 }
 
 /**
@@ -478,11 +503,21 @@ export function renumbersMatches(
   if (activeStart === null || activeStart < before.rootLength) {
     return !workspaceGrewAtTail;
   }
-  // Inside a surface, only the seam is worth checking. What a monitor writes in its own panel
-  // cannot move an offset unless it changes width, and `search` already asks whether a match still
-  // starts at the offset before it keeps anyone there. Comparing the panel text as well would read
-  // a reading going from 50% to 51% as a document that renumbered, and throw the reader out of the
-  // monitor on a poll that moved nothing.
+  // A stable surface root tells whether another portal was inserted, removed, or reordered ahead of
+  // the occurrence. Equal-width polling within that root keeps its start and therefore the reader.
+  const beforeSurface = before.surfaces.find(
+    ({ start, end }) => start <= activeStart && activeStart < end,
+  );
+  if (beforeSurface !== undefined) {
+    const afterSurface = after.surfaces.find(
+      ({ root }) => root === beforeSurface.root,
+    );
+    return (
+      !workspaceGrewAtTail ||
+      afterSurface === undefined ||
+      afterSurface.start !== beforeSurface.start
+    );
+  }
   return !workspaceGrewAtTail || after.rootLength !== before.rootLength;
 }
 
@@ -536,15 +571,19 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
 }
 
 /**
- * One canonical cluster. Hangul decomposes into L + V + optional T Jamo rather than a base plus
- * combining marks, so its sequence has to win before the generic character alternative.
+ * One canonical cluster. Hangul conjoining sequences can contain repeated leading, vowel, and
+ * trailing Jamo, so the whole L*V*T* run has to win before the generic character alternative.
  */
 const CLUSTER_PATTERN =
   // biome-ignore lint/suspicious/noMisleadingCharacterClass: Jamo and combining marks intentionally form canonical clusters.
-  /(?:[ᄀ-ᅟꥠ-꥿][ᅠ-ᆧힰ-ퟆ][ᆨ-ᇿퟋ-ퟻ]?|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+  /(?:[ᄀ-ᅟꥠ-꥿]+[ᅠ-ᆧힰ-ퟆ]+[ᆨ-ᇿퟋ-ퟻ]*|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
 
 const OPEN_HANGUL_CLUSTER_PATTERN =
-  /^[\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6]$/u;
+  /^[\u1100-\u115f\ua960-\ua97f]+[\u1160-\u11a7\ud7b0-\ud7c6]+$/u;
+const CLOSED_HANGUL_CLUSTER_PATTERN =
+  /^[\u1100-\u115f\ua960-\ua97f]+[\u1160-\u11a7\ud7b0-\ud7c6]+[\u11a8-\u11ff\ud7cb-\ud7fb]+$/u;
+const VOWEL_OR_TRAILING_HANGUL_JAMO_SOURCE =
+  "[\\u1160-\\u11a7\\ud7b0-\\ud7c6\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 
 /** Any Hangul at all, asked first so an ASCII query pays one test and stops. */
@@ -560,7 +599,11 @@ const HANGUL_HINT_PATTERN = /[ᄀ-ᇿꥠ-꥿가-ퟻ]/u;
 function needsHangulBoundary(needle: string): boolean {
   if (!HANGUL_HINT_PATTERN.test(needle)) return false;
   for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
-    if (OPEN_HANGUL_CLUSTER_PATTERN.test(cluster)) return true;
+    if (
+      OPEN_HANGUL_CLUSTER_PATTERN.test(cluster) ||
+      CLOSED_HANGUL_CLUSTER_PATTERN.test(cluster)
+    )
+      return true;
   }
   return false;
 }
@@ -616,8 +659,10 @@ function canonicalSource(needle: string, dotted: boolean): string {
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
     const boundary = OPEN_HANGUL_CLUSTER_PATTERN.test(cluster)
-      ? `(?!${TRAILING_HANGUL_JAMO_SOURCE})`
-      : "";
+      ? `(?!${VOWEL_OR_TRAILING_HANGUL_JAMO_SOURCE})`
+      : CLOSED_HANGUL_CLUSTER_PATTERN.test(cluster)
+        ? `(?!${TRAILING_HANGUL_JAMO_SOURCE})`
+        : "";
     out += spellingSource + boundary;
   }
   return out;

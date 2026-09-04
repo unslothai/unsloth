@@ -985,6 +985,25 @@ test("the jamo boundary holds for Hangul that has only one spelling", () => {
   assert.deepEqual(findMatches(inOpen, closed), []);
 });
 
+test("complete Old Hangul clusters cannot match inside a longer syllable", () => {
+  const leadAndVowels = "ꥠힰힱ";
+  const withTrailing = `${leadAndVowels}ퟋ`;
+  const withTwoTrailing = `${withTrailing}ퟌ`;
+
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTrailing)])), leadAndVowels),
+    [],
+  );
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTwoTrailing)])), withTrailing),
+    [],
+  );
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTrailing)])), withTrailing),
+    [{ start: 0, end: withTrailing.length }],
+  );
+});
+
 test("a half-composed Hangul syllable is found and covered whole", () => {
   // Hangul composes in two steps, L+V into a syllable and then the trailing jamo into it, and text
   // can stop after the first. NFC and NFD both write past that spelling, so a document holding one
@@ -2109,6 +2128,18 @@ test("the seam between the workspace and the surfaces in front of it is recorded
   assert.match(withMonitor.text.slice(withMonitor.rootLength), /cpu 12%$/);
 });
 
+test("inserting an earlier surface renumbers a reader in a later one", () => {
+  const workspace = el("DIV", [el("P", [text("workspace")])]);
+  const laterSurface = el("DIV", [el("P", [text("target")])]);
+  const before = buildTextIndex(workspace, [laterSurface]);
+  const reader = findMatches(before, "target")[0].start;
+
+  const earlierSurface = el("DIV", [el("P", [text("target")])]);
+  const after = buildTextIndex(workspace, [earlierSurface, laterSurface]);
+  assert.equal(findMatches(after, "target")[0].start, reader);
+  assert.equal(renumbersMatches(before, after, reader), true);
+});
+
 test("a monitor polling behind a streaming reply does not move the reader", () => {
   // The monitor is a permanent tail that rewrites itself on a timer. Judged as one string, every
   // poll and every streamed character reads as renumbered and re-anchors the reader.
@@ -2141,7 +2172,8 @@ test("a monitor polling behind a streaming reply does not move the reader", () =
 test("a reader inside a surface gives up its place when the workspace grows under it", () => {
   // Growing the workspace moves the tail along, so an occurrence inside a surface is no longer at
   // the offset it is looked up by. That reader, and only that reader, re-anchors.
-  const monitor = el("DIV", [el("P", [text("unsloth monitor")])]);
+  const monitorText = { nodeType: 3 as const, data: "unsloth monitor" };
+  const monitor = el("DIV", [el("P", [monitorText])]);
   const before = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
     monitor,
   ]);
@@ -2159,8 +2191,9 @@ test("a reader inside a surface gives up its place when the workspace grows unde
   assert.equal(renumbersMatches(before, grown, workspaceReader), false);
 
   // A poll that does not move the seam keeps even the surface's own reader in place.
+  monitorText.data = "unsloth monitor idle";
   const polled = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
-    el("DIV", [el("P", [text("unsloth monitor idle")])]),
+    monitor,
   ]);
   assert.equal(renumbersMatches(before, polled, readerInMonitor), false);
 });
@@ -2169,22 +2202,27 @@ test("a surface reader only minds the text ahead of their occurrence", () => {
   // A monitor rewrites a reading every second. Only what sits before the occurrence can move it, so
   // an occurrence in the static label survives the number below it changing.
   const reply = el("DIV", [el("P", [text("reply one")])]);
-  const labelled = (load: string) =>
-    el("DIV", [el("P", [text(`unsloth monitor ${load}`)])]);
-  const before = buildTextIndex(reply, [labelled("cpu 12%")]);
+  const labelledText = {
+    nodeType: 3 as const,
+    data: "unsloth monitor cpu 12%",
+  };
+  const labelled = el("DIV", [el("P", [labelledText])]);
+  const before = buildTextIndex(reply, [labelled]);
   const reader = findMatches(before, "unsloth")[0].start;
   assert.ok(reader >= before.rootLength);
-  const polled = buildTextIndex(reply, [labelled("cpu 345%")]);
+  labelledText.data = "unsloth monitor cpu 345%";
+  const polled = buildTextIndex(reply, [labelled]);
   assert.equal(renumbersMatches(before, polled, reader), false);
   assert.equal(findMatches(polled, "unsloth")[0].start, reader);
 
   // A reading AHEAD of the occurrence changing width does move it, and there the offset stops
   // naming anything: `search` finds no match starting there and re-anchors itself.
-  const leading = (load: string) =>
-    el("DIV", [el("P", [text(`${load} unsloth monitor`)])]);
-  const wasLeading = buildTextIndex(reply, [leading("cpu 12%")]);
+  const leadingText = { nodeType: 3 as const, data: "cpu 12% unsloth monitor" };
+  const leading = el("DIV", [el("P", [leadingText])]);
+  const wasLeading = buildTextIndex(reply, [leading]);
   const readerAfter = findMatches(wasLeading, "unsloth")[0].start;
-  const grewLeading = buildTextIndex(reply, [leading("cpu 345%")]);
+  leadingText.data = "cpu 345% unsloth monitor";
+  const grewLeading = buildTextIndex(reply, [leading]);
   assert.equal(
     findMatches(grewLeading, "unsloth").some((m) => m.start === readerAfter),
     false,
@@ -2192,7 +2230,8 @@ test("a surface reader only minds the text ahead of their occurrence", () => {
 
   // Changing it without changing its width leaves the occurrence exactly where it was, which is
   // the ordinary poll and must not move the reader.
-  const sameWidth = buildTextIndex(reply, [leading("cpu 99%")]);
+  leadingText.data = "cpu 99% unsloth monitor";
+  const sameWidth = buildTextIndex(reply, [leading]);
   assert.equal(renumbersMatches(wasLeading, sameWidth, readerAfter), false);
   assert.equal(
     findMatches(sameWidth, "unsloth").some((m) => m.start === readerAfter),
@@ -2202,7 +2241,8 @@ test("a surface reader only minds the text ahead of their occurrence", () => {
 
 test("history arriving above the reader still renumbers the list", () => {
   // The rule this all rests on has not been widened: a prepend is not an append on either side.
-  const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
+  const monitorText = { nodeType: 3 as const, data: "cpu 12%" };
+  const monitor = el("DIV", [el("P", [monitorText])]);
   const before = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
     monitor,
   ]);
@@ -2214,8 +2254,9 @@ test("history arriving above the reader still renumbers the list", () => {
 
   // A surface whose reading is replaced rather than extended is the ordinary poll, and it must not
   // renumber anything for a reader in the conversation behind it.
+  monitorText.data = "gpu 12%";
   const replaced = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
-    el("DIV", [el("P", [text("gpu 12%")])]),
+    monitor,
   ]);
   assert.equal(renumbersMatches(before, replaced, 0), false);
   // Nor for a reader inside it: the rewrite kept its width, so nothing moved for them either.
