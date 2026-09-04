@@ -4645,6 +4645,15 @@ def _session_config(
         yield path
 
 
+def _studio_embedding_model(base: str, key: str) -> str:
+    try:
+        info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout = 10)
+    except Exception:  # noqa: BLE001 - an older or unreachable server still gets a working config
+        return "default"
+    name = info.get("embedding_model") if isinstance(info, dict) else None
+    return name if isinstance(name, str) and name.strip() else "default"
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4652,6 +4661,7 @@ def write_openclaw_config(
     path: Path,
     yolo: bool = False,
     workspace_path: Optional[str] = None,
+    embedding_model: str = "default",
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4678,7 +4688,7 @@ def write_openclaw_config(
     _subdict(_subdict(config, "memory"), "search").update(
         {
             "provider": "openai-compatible",
-            "model": "default",
+            "model": embedding_model,
             "remote": {"baseUrl": f"{base}/v1", "apiKey": key},
         }
     )
@@ -5371,6 +5381,7 @@ def openclaw(
             config_path,
             yolo = yolo,
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
+            embedding_model = _studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
