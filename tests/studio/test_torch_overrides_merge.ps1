@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
-# _build_unsloth_torch_overrides. It folds a caller-supplied UV_OVERRIDE file into the frozen
-# torch-trio pins without corrupting it: non-ASCII lines must survive (an ascii-encoded rewrite
-# turns them into "?"), and the merged file must stay beside the caller's override, because uv
-# resolves `-r nested.txt` inside an override file relative to THAT file's own directory.
+# _build_unsloth_torch_overrides. It folds a caller's UV_OVERRIDE file into the frozen torch-trio
+# pins without corrupting it: non-ASCII lines must survive, and the merged file must stay beside
+# the caller's override, as uv resolves `-r nested.txt` relative to THAT file's own directory.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
 $ErrorActionPreference = "Stop"
@@ -33,7 +32,7 @@ function Check($name, $cond) {
 # The helper reads $SkipTorch from its enclosing scope.
 $SkipTorch = $false
 
-# Stand-in interpreter: the helper only calls it as `& $PythonExe -c <code>` and reads the printed `name==version` lines.
+# Stand-in interpreter: the helper only runs `& $PythonExe -c` and reads `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $fakePy = Join-Path $work "fakepython"
@@ -98,10 +97,9 @@ try {
     $SkipTorch = $false
 
     # ── the merged copy is tracked and locked down ────────────────────────────────
-    # The caller's non-torch lines land in this copy, and one of them can be an
-    # authenticated direct URL. Three separate hazards, all of them Windows-only in
-    # effect, so the behavioural half of each is asserted where it can be and the
-    # structural half is asserted from the AST, which runs everywhere.
+    # The caller's non-torch lines land in this copy, one of which can be an authenticated URL.
+    # Three Windows-only hazards, so each is asserted behaviourally where it can be and
+    # structurally from the AST, which runs everywhere.
 
     $env:UV_OVERRIDE = $ovPath
     $script:TorchOverridesFile = $null
@@ -115,10 +113,9 @@ try {
     Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
     Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-Item -LiteralPath \$f')
 
-    # Get-Content decodes a BOM-less file with the ANSI code page on Windows PowerShell
-    # 5.1, which is where the mojibake came from. pwsh on Linux already defaults to
-    # UTF-8, so the round trip below cannot fail here even unfixed; the assertion that
-    # actually holds the fix in place is the one on the reader.
+    # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
+    # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
+    # even unfixed; the assertion holding the fix in place is the one on the reader.
     Check "the caller's override is read as UTF-8, not by the shell's default codepage" (
         ($src -match '\[System\.IO\.File\]::ReadAllLines\(') -and ($src -notmatch 'Get-Content -LiteralPath \$ovFile')
     )

@@ -192,8 +192,8 @@ def _staleness_inputs_ps1() -> set[str]:
     """
     text = SETUP_PS1.read_text(encoding = "utf-8")
     block = re.search(
-        # Terminator matched on the stable "# Provision Node" prefix, not the whole sentence: pinning the
-        # full prose would make this reader return None and fail every check below for an unrelated reason.
+        # Terminator matched on the stable "# Provision Node" prefix, not the whole sentence:
+        # pinning the full prose would make this reader return None and fail every check below.
         r'\$DistDir = Join-Path \$FrontendDir "dist"(.*?)\n# Provision Node ',
         text,
         re.S,

@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Windows twin of tests/sh/test_unsloth_torch_override.sh: install.ps1's torch-trio --overrides guard
-# (New-UnslothTorchOverridesFile) on the Step-2 unsloth installs. The generated file folds in the
-# caller's UV_OVERRIDE lines, which can carry authenticated direct URLs, so it must never outlive the
-# run: install.sh removes its twin from the EXIT/signal traps, install.ps1 from the outer finally.
+# Windows twin of tests/sh/test_unsloth_torch_override.sh: install.ps1's torch-trio --overrides
+# guard (New-UnslothTorchOverridesFile) on the Step-2 unsloth installs. The generated file folds in
+# the caller's UV_OVERRIDE lines, which can carry authenticated URLs, so it must never outlive the
+# run: install.sh removes its twin from the traps, install.ps1 from the outer finally.
 # Run: pwsh -NoProfile -File tests/studio/test_unsloth_torch_override.ps1
 
 $ErrorActionPreference = "Stop"
@@ -70,20 +70,20 @@ Check "outer try/finally around Install-UnslothStudio found" ($outer.Count -eq 1
 $finallyText = $outer[0].Finally.Extent.Text
 Check "outer finally removes the overrides temp file" ($finallyText -match 'Remove-Item -LiteralPath \$script:TorchOverridesFile -Force')
 Check "outer finally still clears UNSLOTH_KEPT_TORCH" ($finallyText -match 'Remove-Item Env:UNSLOTH_KEPT_TORCH')
-# install.sh empties _UNSLOTH_TORCH_OVERRIDES before arming its traps so an inherited value can never
-# be rm'd; under `irm | iex` the script scope is the caller's session, so the same reset must precede the outer try.
+# install.sh empties _UNSLOTH_TORCH_OVERRIDES before arming its traps so an inherited value is
+# never rm'd; under `irm | iex` the same reset must precede the outer try.
 Check "overrides path reset to null before the outer try" (
     $installText -match '(?m)^\$script:TorchOverridesFile = \$null\r?\ntry \{\r?\n\s*Install-UnslothStudio @args')
 
 Write-Host "outer finally actually deletes the file after a terminating error"
-# Behavioural: run the real finally body with a live temp file holding a credential-bearing inherited override line.
+# Behavioural: run the real finally body with a live temp file holding a credential line.
 $leakFile = [System.IO.Path]::GetTempFileName()
 Set-Content -LiteralPath $leakFile -Encoding ascii -Value @(
     "torch==2.11.0+cu128",
     "private-pkg @ https://svc:TOKEN123@pkgs.corp.example/private-1.0-py3-none-any.whl")
 $script:TorchOverridesFile = $leakFile
 $env:UNSLOTH_KEPT_TORCH = "2.11.0"
-# Strip the `finally { ... }` wrapper and run the statements themselves: Invoke-Expression evaluates in this scope.
+# Strip the `finally { ... }` wrapper and run the statements: Invoke-Expression uses this scope.
 $finallyBody = ($finallyText.Trim() -replace '(?s)^\{', '') -replace '(?s)\}$', ''
 try {
     try { throw "simulated terminating error mid-install" }
@@ -95,7 +95,7 @@ Check "tracked path reset so a rerun cannot re-remove it" ($null -eq $script:Tor
 Remove-Item -LiteralPath $leakFile -Force -ErrorAction SilentlyContinue
 
 Write-Host "the inherited-override filter drops the torch trio in any casing"
-# PowerShell's -notmatch is case-insensitive unless written -cnotmatch, so a caller override spelled `Torch<2.11` is dropped.
+# PowerShell's -notmatch is case-insensitive, so a caller override `Torch<2.11` is dropped.
 $filterPattern = $null
 if ($fnText -match '\$_ -notmatch ''([^'']+)''') { $filterPattern = $Matches[1] }
 Check "filter pattern extracted from the helper" ($null -ne $filterPattern)

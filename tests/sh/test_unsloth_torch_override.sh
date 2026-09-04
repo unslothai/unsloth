@@ -137,21 +137,17 @@ grep -qx 'torch==2.11.0+cu128' "$_merged" || _rc=1
 assert_true "inherited torch-trio lines are dropped; generated pin wins" "$_rc"
 rm -rf "$_ov_dir"
 
-# 5. The beside-the-caller override file must not be world-readable. The merge
-#    above copies every inherited non-torch requirement into it, and a direct URL
-#    requirement can carry credentials, so a caller's umask 022 would expose them
-#    for the length of a torch install. The mktemp fallback is already 0600.
+# 5. The beside-the-caller override must not be world-readable: the merge copies every inherited
+#    requirement in, and a direct URL can carry credentials. The mktemp fallback is already 0600.
 _creation=$(sed -n '/_UNSLOTH_TORCH_OVERRIDES="$_ov_dir\/.unsloth-torch-overrides/,/^            fi$/p' "$INSTALL_SH")
-# `if` rather than a bare pipeline: this file runs under `set -e`, so a failing
-# grep would abort the suite instead of reporting one FAIL.
+# `if`, not a bare pipeline: under `set -e` a failing grep would abort the suite, not report.
 if printf '%s' "$_creation" | grep -q 'umask 077'; then _rc=0; else _rc=1; fi
 assert_true "the adjacent override file is created under umask 077" "$_rc"
 
 if printf '%s' "$_creation" | grep -q 'chmod 600'; then _rc=0; else _rc=1; fi
 assert_true "and chmod'd too, since \`: >\` truncates without changing an existing mode" "$_rc"
 
-# Drive the real construct. A stale file from a recycled PID is the case the
-# umask alone cannot fix, which is why both halves are needed.
+# Drive the real construct: a recycled-PID file is what the umask alone cannot fix.
 _mode_dir=$(mktemp -d)
 (
     umask 022
@@ -175,13 +171,9 @@ if [ "$(cat "$_mode_dir/stale_both")" = "600" ]; then _rc=0; else _rc=1; fi
 assert_true "umask plus chmod brings a stale file back to 0600" "$_rc"
 rm -rf "$_mode_dir"
 
-# 6. UV_OVERRIDE is split unquoted, so field splitting is followed by pathname
-#    expansion. uv reads the literal name (verified against uv 0.11.32: an
-#    UV_OVERRIDE of "ov[1].txt" beside an "ov1.txt" resolves the bracketed file),
-#    so without `set -f` both walks iterate the sibling instead: the merge carries
-#    the wrong requirements and --overrides replaces UV_OVERRIDE, so uv never sees
-#    the file the caller configured. install.ps1 splits on \s+ and tests with
-#    -LiteralPath and has never had this. Drive the real case arm.
+# 6. UV_OVERRIDE is split unquoted, so field splitting is followed by globbing. uv reads the
+#    literal name (uv 0.11.32: "ov[1].txt" beside "ov1.txt" resolves the bracketed file), so
+#    without `set -f` both walks iterate the sibling and the merge carries wrong requirements.
 _arm=$(sed -n '/^        torch==\*)$/,/^            ;;$/p' "$INSTALL_SH")
 _arm_body=$(printf '%s\n' "$_arm" | sed '1d;$d')
 [ -n "$_arm_body" ]
@@ -205,10 +197,8 @@ if printf '%s\n' "$_glob_out" | grep -qx 'torch==2.11.0+cu128'; then _rc=0; else
 assert_true "the generated trio pin still leads the merged file" "$_rc"
 rm -rf "$_glob_dir"
 
-# set -f turns off pathname expansion but NOT field splitting, and uv takes
-# UV_OVERRIDE as a space-separated list, so the multi-file case has to keep working.
-# This is the one property the guard could plausibly break: quoting "$UV_OVERRIDE"
-# instead would also stop the globbing and would silently fold only the first file.
+# set -f stops globbing but NOT field splitting, and uv takes UV_OVERRIDE as a space-separated
+# list, so multi-file must keep working. Quoting it instead would fold only the first file.
 _multi_dir=$(mktemp -d)
 printf 'idna==3.6\n' > "$_multi_dir/a.txt"
 printf 'certifi==2024.1.1\n' > "$_multi_dir/b.txt"
@@ -224,8 +214,7 @@ if printf '%s\n' "$_multi_out" | grep -qx 'idna==3.6' &&
 assert_true "every file of a space-separated UV_OVERRIDE is still folded in" "$_rc"
 rm -rf "$_multi_dir"
 
-# The guard must not leak: install.sh runs under `set -e` and callers below this
-# point rely on globbing (_dir_has_entries walks "$1"/*).
+# The guard must not leak: callers below rely on globbing (_dir_has_entries walks "$1"/*).
 _glob_state=$(
     UV_OVERRIDE=""
     _torch_trio_pins='torch==2.11.0+cu128'

@@ -533,9 +533,8 @@ class TestKnown211SetParity:
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments, not a
-        # blanket "<2.11.0 appears nowhere", because Get-XpuTorchSpecs keeps a curated sub-2.11 cap for the
-        # whl/xpu index. The XPU CPU fallback uses the plain whl/cpu index, so it is not part of that.
+        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments,
+        # not a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
         for _stale in (
             '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',

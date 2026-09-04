@@ -61,14 +61,14 @@ foreach ($p in @("", "linux-x86_64", "macosx-14.0-arm64", "win32")) {
 Check "an uppercase arm64 is still arm64" ((Get-XpuTorchSpecs -Platform "WIN-ARM64").Count -eq 2)
 Check "the probe lowercases its answer"   ((Get-FunctionAst "Get-VenvPlatformTag").Extent.Text -match 'ToLowerInvariant')
 
-# Text, not AST, for the call count: asserting the COUNT catches a copy that quietly reintroduces its
-# own literal trio. Three sites: the fresh XPU install, the flavor repair, and the release-preservation probe.
+# Text, not AST, for the call count: the COUNT catches a copy that reintroduces its own literal
+# trio. Three sites: fresh XPU install, flavor repair, release-preservation probe.
 $src = Get-Content -Raw -LiteralPath $installPs1
 Check "builder is used at 3 sites" (([regex]::Matches($src, 'Get-XpuTorchSpecs -Platform')).Count -eq 3)
 # The literal trio must exist in exactly ONE place now (the builder itself), or the drift is back.
 Check "one literal torchaudio 2.6 pin" (([regex]::Matches($src, '"torchaudio>=2\.6,<2\.11\.0"')).Count -eq 1)
 
-# A kept-release pin substitutes into the trio one spec at a time and must be restorable the same way, so assert on $_origFixSpecs.
+# A kept-release pin substitutes one spec at a time and must restore the same way.
 $origAssign = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
     $n.Left.Extent.Text -eq '$_origFixSpecs' -and

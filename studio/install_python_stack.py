@@ -54,10 +54,10 @@ IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
 
-# amd-smi auto-elevates on Windows (UAC/DiskPart prompt); RunAsInvoker keeps this installer's probes un-elevated.
+# amd-smi auto-elevates on Windows (UAC/DiskPart); RunAsInvoker keeps probes un-elevated.
 if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
-# torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64 and win_amd64; elsewhere filter the audio extras regardless of NO_TORCH.
+# torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64 and win_amd64.
 PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
     or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
@@ -176,10 +176,10 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
     {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
 )
 
-# rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm speculatively.
+# rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 
-# Per-tag pip specs for the repair/update path. Must land on the same wheels a fresh install.sh run
+# Per-tag repair specs; must land on the same wheels a fresh install.sh run does.
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     # Floored at 2.11 (the _grouped_mm bug), matching install.sh's rocm7.2|gfx* case.
     "rocm7.2": (
@@ -187,20 +187,20 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchvision>=0.26.0,<0.27.0",
         "torchaudio>=2.11.0,<2.12.0",
     ),
-    # rocm7.1 also serves a paired 2.11 trio, so it takes install.sh's widened DEFAULT range: no floor, but a <2.11 cap would force-reinstall 2.10 over a freshly resolved 2.11.
+    # rocm7.1 also serves 2.11, so a <2.11 cap would force-reinstall 2.10 over it.
     "rocm7.1": (
         "torch>=2.4,<2.12.0",
         "torchvision>=0.19,<0.27.0",
         "torchaudio>=2.4,<2.12.0",
     ),
-    # rocm7.0 and earlier top out below 2.11 (7.0: 2.10.0, 6.4/6.3: 2.9.1, 6.2: 2.5.1), so the ceiling stays literal.
+    # rocm7.0 and earlier top out below 2.11, so the ceiling stays literal.
     "_default": (
         "torch>=2.4,<2.11.0",
         "torchvision>=0.19,<0.26.0",
         "torchaudio>=2.4,<2.11.0",
     ),
 }
-# Windows AMD per-arch companion pins for repo.amd.com; pinning stops an ABI-mismatched companion. Unlisted arches stay bare.
+# Windows AMD per-arch pins for repo.amd.com, stopping an ABI-mismatched companion.
 _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
@@ -277,18 +277,18 @@ def _torch_index_leaf(url: str) -> str:
     return path.rstrip("/").rsplit("/", 1)[-1].lower()
 
 
-# CUDA torch repair specs (see _ensure_cuda_torch); companions pinned so the exclusive --index-url can't resolve an ABI-mismatched torch major.
+# CUDA repair specs (see _ensure_cuda_torch); companions pinned against an ABI mismatch.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.4,<2.12.0",
     "torchvision>=0.19,<0.27.0",
     "torchaudio>=2.4,<2.12.0",
 )
 
-# CPU torch repair specs (see _ensure_cpu_torch): the /cpu index also serves newer torch, so a bare trio could resolve ABI-mismatched.
+# CPU repair specs (see _ensure_cpu_torch); the /cpu index also serves newer torch.
 _CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
 
 # Byte-identical to the non-XPU arm of install.ps1's $_fix*Spec scalars, NOT _CUDA_TORCH_PKG_SPEC:
-# `studio update` must repair to the same wheels install.ps1 does. On the 2.11 line with install.ps1's
+# `studio update` must repair to the same wheels install.ps1 does.
 _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.4,<2.12.0",
     "torchvision>=0.19,<0.27.0",
@@ -335,7 +335,7 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     release = str(torch_version).split("+", 1)[0]  # drop +cu130/+rocm6.4/+cpu
     parts = release.split(".")
     try:
-        # Strip any pre-release/dev suffix from the minor (e.g. '10rc1' -> '10').
+        # Strip a pre-release suffix from the minor ('10rc1' -> '10').
         minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
         major, minor = int(parts[0]), int(minor_str)
     except (IndexError, ValueError):
@@ -502,7 +502,7 @@ def _installed_torch_is_windows_rocm() -> bool:
     return bool(_hip) or "rocm" in _ver or "rocmsdk" in _ver
 
 
-# constraints.txt caps anyio <4.14 (#6483), but a pre-cap install stuck at 4.14+ is untouched by constrained installs.
+# constraints.txt caps anyio <4.14 (#6483), but a pre-cap install stuck at 4.14+ is untouched.
 _ANYIO_BAD_FLOOR = (4, 14)
 
 
@@ -579,7 +579,7 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "download/continuous-release_main/"
         "bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_aarch64.whl"
     ),
-    # The Windows ROCm wheel ships libbitsandbytes_rocm{VER}.dll; scan it and set BNB_ROCM_VERSION to match.
+    # The Windows ROCm wheel ships libbitsandbytes_rocm{VER}.dll; BNB_ROCM_VERSION must match.
     "win_amd64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
         "download/continuous-release_main/"
@@ -627,7 +627,7 @@ def _path_inside_venv(path: str) -> bool:
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         _root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Root-dir prefix (C:\ or /) would commonpath-match everything; a venv is never at root.
+        # A root prefix (C:\ or /) would commonpath-match everything; a venv is never at root.
         if os.path.dirname(_root) == _root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
@@ -720,7 +720,7 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Try amd-smi version ("ROCm version: X.Y.Z"); off on Windows without a HIP SDK (UAC prompt).
+    # amd-smi version ("ROCm version: X.Y.Z"); off on Windows without a HIP SDK (UAC prompt).
     amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
@@ -1043,7 +1043,7 @@ def _detect_windows_gfx_arch() -> str | None:
                     hipinfo = _candidate
                     break
     if not hipinfo:
-        # 2b. AMD torch wheels drop hipInfo.exe into venv Scripts, letting `studio update` re-detect on driver-only hosts.
+        # 2b. AMD torch wheels drop hipInfo.exe into venv Scripts, so driver-only hosts re-detect.
         _venv_hipinfo = os.path.join(os.path.dirname(sys.executable), "hipInfo.exe")
         if os.path.isfile(_venv_hipinfo):
             hipinfo = _venv_hipinfo
@@ -1055,7 +1055,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 stderr = subprocess.DEVNULL,
                 timeout = 10,
             )
-            # Accept partial output when hipinfo crashes (0xC0000005 on some RDNA 4, #6043): a pre-crash gcnArchName is trustworthy.
+            # Accept partial output when hipinfo crashes (0xC0000005 on some RDNA 4, #6043).
             text = result.stdout.decode(errors = "replace")
             # findall gets every gcnArchName line so multi-GPU hosts are
             # enumerable and HIP_VISIBLE_DEVICES selects correctly.
@@ -1224,7 +1224,7 @@ def _detect_windows_gfx_arch() -> str | None:
     return None
 
 
-# GPU marketing-name -> gfx arch table (mirrors setup.ps1's $nameArchTable), most-specific first; unknown names return None.
+# GPU marketing-name -> gfx arch (mirrors setup.ps1's $nameArchTable), most-specific first.
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700).
     # R9700 is listed separately: its name holds neither 9070 nor 9080, so it matched
@@ -1641,7 +1641,7 @@ def _persist_bnb_rocm_version(version: str) -> bool:
         existing = (
             sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
         )
-        # Strip all managed regions (even END-marker-less from an interrupted write), append one fresh block.
+        # Strip all managed regions (even END-less, from an interrupted write), append one block.
         pattern = re.compile(
             rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_BEGIN)}.*?"
             rf"(?:{re.escape(_BNB_ROCM_SITECUSTOMIZE_END)}\n?|\Z)",
@@ -1681,7 +1681,7 @@ def _has_rocm_gpu() -> bool:
     if _has_usable_nvidia_gpu():
         return False
     for cmd, check_fn in (
-        # rocminfo: real gfx GPU id only (gfx000 = CPU agent; generic "gfx11-generic" ISA lines are not GPUs).
+        # rocminfo: real gfx GPU ids only (gfx000 = CPU agent, "gfx11-generic" = ISA line).
         (
             ["rocminfo"],
             lambda out: bool(re.search(r"gfx[1-9][0-9a-z]{2,3}", out.lower())),
@@ -1713,8 +1713,8 @@ def _has_rocm_gpu() -> bool:
         if result.returncode == 0 and result.stdout.strip():
             if check_fn(result.stdout):
                 return True
-    # sysfs KFD topology fallback for minimal Linux installs without rocminfo/amd-smi (matches install.sh).
-    # Reject non-AMD vendors: the NVIDIA open kernel module also registers KFD nodes.
+    # sysfs KFD fallback for hosts without rocminfo/amd-smi. Non-AMD vendors are rejected: the
+    # NVIDIA open kernel module also registers KFD nodes.
     if sys.platform != "win32":
         try:
             kfd_nodes = "/sys/class/kfd/kfd/topology/nodes"
@@ -1728,7 +1728,7 @@ def _has_rocm_gpu() -> bool:
                         continue
                     if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
                         continue
-                    # Require AMD vendor_id 4098 (0x1002); a missing properties file leaves it unconfirmed.
+                    # Require AMD vendor_id 4098 (0x1002); a missing properties file stays unconfirmed.
                     props_path = os.path.join(kfd_nodes, entry, "properties")
                     try:
                         with open(props_path, encoding = "utf-8") as fh:
@@ -1776,7 +1776,7 @@ def _has_usable_nvidia_gpu() -> bool:
                 return True
         except Exception:
             pass
-    # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU regardless of nvidia-smi state.
+    # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
         try:
             gpu_dir = "/proc/driver/nvidia/gpus"
@@ -2527,7 +2527,7 @@ def _install_bnb_windows_rocm() -> bool:
         )
     if not _ok:
         return False
-    # Set BNB_ROCM_VERSION from the DLL suffix (the wheel may ship "72" while torch reports 7.13); default "72".
+    # BNB_ROCM_VERSION from the DLL suffix (the wheel may ship "72" while torch reports 7.13).
     _env_ver = os.environ.get("BNB_ROCM_VERSION")
     _env_is_persisted_default = (
         os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
@@ -2542,7 +2542,7 @@ def _install_bnb_windows_rocm() -> bool:
         _persist_detected_version = True
     if _persist_detected_version:
         _persist_bnb_rocm_version(_ver)
-    # Put venv Scripts (hipInfo.exe from the AMD torch wheel) on PATH, else bnb logs a scary but harmless ERROR at import.
+    # venv Scripts (hipInfo.exe from the AMD torch wheel) on PATH, else bnb logs a stray ERROR.
     _scripts_dir = os.path.dirname(sys.executable)
     if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")) and not shutil.which(
         "hipinfo.exe"
@@ -2918,9 +2918,9 @@ def _ensure_cuda_torch() -> None:
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         return
-    # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU probing gates below.
+    # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
     _cuda_pinned = _explicit_cuda_torch_index_url() is not None
-    # CUDA_VISIBLE_DEVICES="" / "-1" hides the NVIDIA GPU; honour it unless a CUDA index is pinned.
+    # CUDA_VISIBLE_DEVICES="" / "-1" hides the GPU; honour it unless a CUDA index is pinned.
     _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not _cuda_pinned and _cvd is not None and _cvd.strip() in ("", "-1"):
         return
@@ -2983,7 +2983,7 @@ def _ensure_cuda_torch() -> None:
     elif _marker == "cpu" and _pinned_cuda:
         _why = "torch is a CPU build but an explicit CUDA index is pinned"
     elif _marker == "cuda" and _pinned_cuda and _installed_cu != _pin_leaf:
-        # Installed cuXXX differs from the pin; an untagged build counts too (family unconfirmed, idempotent).
+        # Installed cuXXX differs from the pin; an untagged build counts too (idempotent).
         _installed_desc = _installed_cu if _installed_cu else "an untagged CUDA build"
         _why = f"torch is {_installed_desc} but the pinned CUDA index is {_pin_leaf}"
     elif _marker == "cuda" and not _pinned_cuda:
@@ -4260,7 +4260,7 @@ def _ensure_rocm_torch() -> None:
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
         return
-    # setup.ps1's marker; trust it only when torch really imports as ROCm (a wiped venv leaves it stale).
+    # setup.ps1's marker; trust it only when torch imports as ROCm (a wiped venv leaves it stale).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
         _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
@@ -4275,7 +4275,7 @@ def _ensure_rocm_torch() -> None:
         return
 
     if IS_WINDOWS:
-        # An explicit ROCm-family pin overrides the public per-arch index: retry the PINNED index, not repo.amd.com.
+        # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
         if _win_rocm_pin is None and _has_usable_nvidia_gpu():
             return
@@ -4334,7 +4334,7 @@ def _ensure_rocm_torch() -> None:
                     "later to retry ROCm."
                 )
                 return
-        # Flag ROCm torch installed so later phases don't overwrite it; a BNB failure must NOT roll it back.
+        # Flag ROCm torch installed so later phases keep it; a BNB failure must not roll it back.
         _rocm_windows_torch_installed = True
         # Always install AMD Windows bitsandbytes, even when torch was already a
         # ROCm build, so `studio update` repairs a broken bnb.
@@ -4349,7 +4349,7 @@ def _ensure_rocm_torch() -> None:
     # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
-    # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless / CI); skip the GPU gates.
+    # An explicit ROCm pin commits to ROCm wheels whatever the visible GPU (headless / CI).
     _rocm_pin = _explicit_rocm_torch_index_url()
     _inferred_linux_gfx = (
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
@@ -4402,7 +4402,7 @@ def _ensure_rocm_torch() -> None:
         _hip_marker = _hip if _hip else ("rocm" if "rocm" in _installed_torch_ver else "")
     has_hip_torch = _hip_marker != ""
 
-    # A ROCm pin whose family differs from the installed torch must reinstall. Version-tag heuristic only: a same-tag per-arch switch is undetectable.
+    # A ROCm pin of another family reinstalls; a same-tag per-arch switch is undetectable.
     _rocm_pin_mismatch = (
         _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
         if (has_hip_torch and _rocm_pin is not None)
@@ -4863,7 +4863,7 @@ def _ensure_rocm_torch() -> None:
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
                 capture_output = True,
             )
-    # bitsandbytes only when torch links ROCm; prefer the pre-release wheel (bnb #1887) via pip, not uv (filename/metadata mismatch).
+    # bitsandbytes only when torch links ROCm; the pre-release wheel (bnb #1887) needs pip, not uv.
     elif rocm_torch_ready:
         _bnb_url = _bnb_rocm_prerelease_url()
         _bnb_installed = False
@@ -4982,7 +4982,7 @@ if not _TORCH_BACKEND:
         # on an authoritative XPU pin -- see _ensure_xpu_torch.
         _TORCH_BACKEND = "xpu"
     elif _is_cuda_family_leaf(_idx_leaf):
-        # Require a digit after "cu" so /current or /custom is not branded CUDA; an unknown leaf keeps "".
+        # Require a digit after "cu" so /current or /custom is not branded CUDA.
         _TORCH_BACKEND = "cuda"
 
 
@@ -5006,7 +5006,7 @@ def _torch_step_label(suffix: str) -> str:
 # -- Verbosity control ----------------------------------------------------------
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
-# Progress bar state -- update _TOTAL if you add/remove steps in install_python_stack().
+# Progress bar state; update _TOTAL when adding/removing steps in install_python_stack().
 _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
 _PROGRESS_LINE_ACTIVE: bool = False
@@ -5028,7 +5028,7 @@ if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
     os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
-# Windows console may be a legacy code page (e.g. CP1252); _safe_print() degrades glyphs to ASCII.
+# Windows consoles may be a legacy code page (CP1252); _safe_print() degrades glyphs to ASCII.
 
 _UNICODE_TO_ASCII: dict[str, str] = {
     "\u2705": "[OK]",  # ✅
@@ -5293,7 +5293,7 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
-# Skipped when torch is unavailable (Intel Mac GGUF-only): torch extensions or a hard ``Requires-Dist: torch``, plus ``librosa``, whose numba chain fails from source on Intel Mac (#5046).
+# Skipped without torch (Intel Mac GGUF-only), plus librosa, whose numba chain fails (#5046).
 NO_TORCH_SKIP_PACKAGES = {
     "torch-stoi",
     "timm",
@@ -5473,7 +5473,7 @@ def _bootstrap_uv() -> bool:
     global UV_NEEDS_SYSTEM
     if not shutil.which("uv"):
         return False
-    # Dry-run probe with explicit --python: uv can ignore the activated venv on some platforms.
+    # Explicit --python: uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
         ["uv", "pip", "install", "--dry-run", "--python", sys.executable, "pip"],
         stdout = subprocess.PIPE,
@@ -6269,14 +6269,14 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
         cmd.append("--system")
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
-    # No --torch-backend by default (torch is pre-installed), and never on a pinned-index command: UV_TORCH_BACKEND would defeat the pin.
+    # No --torch-backend by default, and never on a pinned index: it would defeat the pin.
     _tb = os.environ.get("UV_TORCH_BACKEND", "")
     if _tb and not _is_pinned_index_cmd(cmd):
         cmd.append(f"--torch-backend={_tb}")
     return cmd
 
 
-# uv resolves --index-url at LOWEST priority, so inherited index env vars silently defeat a pinned torch repair; neutralise them (UV_CONFIG_FILE stripped, UV_NO_CONFIG=1).
+# uv ranks --index-url LOWEST, so inherited index vars defeat a pinned repair; neutralise them.
 _UV_INDEX_ENV_VARS = (
     "UV_CONFIG_FILE",
     "UV_DEFAULT_INDEX",
@@ -6287,7 +6287,7 @@ _UV_INDEX_ENV_VARS = (
     "UV_FIND_LINKS",
     "PIP_EXTRA_INDEX_URL",
     "PIP_FIND_LINKS",
-    # PIP_NO_INDEX would defeat --index-url; PIP_INDEX_URL dropped so a stale mirror can't outrank the pin.
+    # PIP_NO_INDEX would defeat --index-url; PIP_INDEX_URL dropped so a mirror cannot outrank it.
     "PIP_NO_INDEX",
     "PIP_INDEX_URL",
 )
@@ -6944,7 +6944,7 @@ def install_python_stack() -> int:
             ],
         )
     else:
-        # pip may not exist yet (uv-created venvs omit it): ensurepip, else direct upgrade.
+        # uv-created venvs omit pip: ensurepip, else direct upgrade.
         _has_pip = (
             subprocess.run(
                 [sys.executable, "-m", "pip", "--version"],
@@ -7007,7 +7007,7 @@ def install_python_stack() -> int:
         # install.sh / install.ps1 already installed both core distributions.
         pass
     elif NO_TORCH:
-        # No-torch update path: --no-deps throughout (PyPI metadata declares torch a hard dep).
+        # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
         desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
         unsloth_spec = (
@@ -7026,7 +7026,7 @@ def install_python_stack() -> int:
             unsloth_spec,
             "unsloth-zoo",
         )
-        # pydantic WITH deps so pip pins a matching pydantic-core; --no-deps trips _ensure_pydantic_core_version. Deps are torch-free.
+        # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(
             "Installing pydantic (with deps for compatible core)",
             "--no-cache-dir",
@@ -7098,7 +7098,7 @@ def install_python_stack() -> int:
             req = base_requirements,
         )
 
-    # 2b. Torch repair (wrong-family / CPU-only torch); must follow base packages so torch is present.
+    # 2b. Torch repair (wrong-family / CPU-only); must follow base packages so torch is present.
     if not IS_MACOS and not NO_TORCH:
         _progress(_torch_step_label("check"))
         _ensure_cuda_torch()
@@ -7124,7 +7124,7 @@ def install_python_stack() -> int:
             _wexe = shutil.which(_wcmd[0])
             if not _wexe:
                 continue
-            # Skip amd-smi without a HIP SDK (UAC prompt); only the best-effort note is lost.
+            # Skip amd-smi without a HIP SDK (UAC prompt); only a best-effort note is lost.
             if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
                 continue
             try:
@@ -7176,7 +7176,7 @@ def install_python_stack() -> int:
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
-        # No working Windows ROCm torchao build (crashes on import; stubbed at runtime) -- skip it.
+        # No working Windows ROCm torchao build (crashes on import; stubbed at runtime).
         _progress("dependency overrides (skipped, Windows ROCm)")
         _note("Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:

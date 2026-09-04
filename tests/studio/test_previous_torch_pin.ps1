@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for install.ps1's torch release preservation helpers (ConvertTo-TorchNumericRelease,
-# Test-TorchReleaseInWindow, Get-PreviousTorchPin), the Windows port of install.sh's _previous_torch_pin (PR 7250).
+# Test-TorchReleaseInWindow, Get-PreviousTorchPin), the Windows port of _previous_torch_pin (PR 7250).
 # Run: pwsh -NoProfile -File tests/studio/test_previous_torch_pin.ps1
 
 $ErrorActionPreference = "Stop"
 $installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1")
 $installPath = (Resolve-Path $installPath).Path
 
-# Parse install.ps1 (also serves as a syntax gate) and extract the helpers.
+# Parse install.ps1 (also a syntax gate) and extract the helpers.
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
@@ -98,11 +98,11 @@ Check "probe runs before the rollback move" (
 Check "pin decision cites the UNSLOTH_TORCH_UPGRADE escape hatch" ($src -match 'UNSLOTH_TORCH_UPGRADE=1 to get the newest')
 Check "kept-release fallback clears the pin" ($src -match '\$script:PrevTorchPin\s*=\s*\$null')
 Check "kept release exported for setup.ps1" ($src -match 'UNSLOTH_KEPT_TORCH')
-# The probe must read dist metadata: a broken CUDA/ROCm DLL would fail "import torch" and silently drop the pin.
+# The probe must read dist metadata: a broken DLL would fail "import torch" and drop the pin.
 Check "probe reads dist metadata, not import torch" (
     $src -match 'importlib\.metadata as m; print\(m\.version' -and
     $src -notmatch '-c "import torch; print\(torch\.__version__\)"')
-# Under irm | iex the script scope is the caller's session, so a second run must not inherit the earlier run's release or pin.
+# Under irm | iex the script scope is the caller's session, so a second run must not inherit it.
 Check "preservation state reset before the venv branch" (
     $src.IndexOf('$script:PrevTorchVer = ""') -ge 0 -and
     $src.IndexOf('$script:PrevTorchVer = ""') -lt $src.IndexOf('if (Test-Path -LiteralPath $VenvPython) {'))
