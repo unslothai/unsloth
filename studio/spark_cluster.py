@@ -1569,9 +1569,7 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     lines = [l.strip() for l in (proc.stdout or "").splitlines() if l.strip()]
     rc = next((l[3:] for l in lines if l.startswith("RC=")), None)
     if rc is None or rc != "0":
-        out["reason"] = (
-            f"nvidia-smi did not run on the peer (rc={rc!r}); treating the GPU as BUSY"
-        )
+        out["reason"] = f"nvidia-smi did not run on the peer (rc={rc!r}); treating the GPU as BUSY"
         return out
     for line in lines:
         if line.startswith("RC=") or line.lower().startswith("pid"):

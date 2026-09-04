@@ -644,21 +644,39 @@ def test_merge_module_imports_nothing_heavy() -> None:
 # succeeded into a crash, and that it is silent on anything that is not a cabled Spark.
 
 _PLATFORMS = [
-    ("Linux",   "x86_64"),   # linux x64: NVIDIA, AMD, CPU-only, and WSL2
-    ("Linux",   "aarch64"),  # linux arm64 that is not a Spark (GH200, Jetson)
+    ("Linux", "x86_64"),  # linux x64: NVIDIA, AMD, CPU-only, and WSL2
+    ("Linux", "aarch64"),  # linux arm64 that is not a Spark (GH200, Jetson)
     ("Windows", "AMD64"),
     ("Windows", "ARM64"),
-    ("Darwin",  "arm64"),    # Apple Silicon
-    ("Darwin",  "x86_64"),   # Intel Mac
+    ("Darwin", "arm64"),  # Apple Silicon
+    ("Darwin", "x86_64"),  # Intel Mac
 ]
 
 _DEVICE_MAPS = [
-    "balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced",
-    "sequential", "cuda:0", "cpu", "", None, 0, {"": "cuda:0"}, ["cuda:0"],
+    "balanced",
+    "balanced_low_0",
+    "auto",
+    "unsloth",
+    "unsloth_balanced",
+    "sequential",
+    "cuda:0",
+    "cpu",
+    "",
+    None,
+    0,
+    {"": "cuda:0"},
+    ["cuda:0"],
 ]
 
 
-def _spark_notice(monkeypatch, system, machine, *, opener=None, device_count=1):
+def _spark_notice(
+    monkeypatch,
+    system,
+    machine,
+    *,
+    opener = None,
+    device_count = 1,
+):
     """Call the notice with every probe pointed at a simulated host."""
     pytest.importorskip("torch")
     import builtins
@@ -692,7 +710,7 @@ def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine
     Spark, where the aarch64 case would read the machine's own /etc/dgx-release and see
     a genuine Spark. CI that ever runs on this hardware must not go red for that.
     """
-    LU = _spark_notice(monkeypatch, system, machine, opener=FileNotFoundError)
+    LU = _spark_notice(monkeypatch, system, machine, opener = FileNotFoundError)
     capsys.readouterr()  # drop unsloth's import banner, which is not ours to assert on
     for device_map in _DEVICE_MAPS:
         LU.notify_device_map_cannot_span_sparks(device_map)
@@ -710,7 +728,7 @@ def test_spark_notice_never_breaks_a_load(monkeypatch, system, machine, opener):
     themselves, so only the outer guard stops a non-OSError from escaping into
     from_pretrained and failing a load that had nothing to do with a Spark.
     """
-    LU = _spark_notice(monkeypatch, system, machine, opener=opener)
+    LU = _spark_notice(monkeypatch, system, machine, opener = opener)
     for device_map in _DEVICE_MAPS:
         LU.notify_device_map_cannot_span_sparks(device_map)
 
