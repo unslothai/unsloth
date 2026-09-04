@@ -453,8 +453,7 @@ def _ships_gpu_ggml_module(llama_bin_dir: Path, os_key: str) -> bool:
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
         glob = per_os.get(os_key)
-        # is_file() follows symlinks, so a bundle's versioned alias still counts; a
-        # directory or a dangling link with a module's name does not.
+        # is_file(): a versioned alias still counts, a directory or dangling link does not.
         if backend != "cpu" and glob and any(path.is_file() for path in llama_bin_dir.glob(glob)):
             return True
     return False
@@ -466,11 +465,8 @@ def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
 
 
 def _is_linux_libomp_soname(name: str) -> bool:
-    """Whether name is LLVM's OpenMP runtime on linux, and not a lookalike.
-
-    libomp is LLVM's and is bundled, so it can be missing at load time. libgomp is
-    GNU's and the host provides it. libomptarget is LLVM's offloading runtime, a
-    different library that a prefix match would wrongly sweep up."""
+    """LLVM's OpenMP runtime: bundled, so it can go missing. Not host-provided libgomp,
+    and not libomptarget, which a prefix match would sweep up."""
     lowered = name.lower()
     return lowered == "libomp.so" or lowered.startswith("libomp.so.")
 
@@ -478,20 +474,11 @@ def _is_linux_libomp_soname(name: str) -> bool:
 def _ggml_stack_imports_libomp(llama_bin_dir: Path, backend: str) -> bool | None:
     """Whether the ggml libraries whisper will load actually import LLVM's libomp.
 
-    True as soon as any inspected library imports it: positive evidence is conclusive.
-    False only when every relevant library was inspected successfully and none did.
-    None when any of them could not be inspected (no readelf or objdump, or a file that
-    is not ELF), because absence of evidence is not evidence of absence.
+    True on the first import found; False only once every relevant library was inspected
+    and none imported it; None when any could not be inspected.
 
-    This is the difference between trusting the arch and checking the artifact. The
-    linux-arm64 CUDA bundle links GNU libgomp.so.1 and never libomp.so.5, but the
-    linux-arm64 *Vulkan* bundle does import libomp.so.5 and ships it, so an arch-only
-    rule is right about that one only by accident, and would be wrong outright for any
-    future GPU bundle that imports libomp without shipping it.
-
-    The selected backend module is inspected alongside the core. It is dlopen'd after
-    the server is already running, so a libomp dependency that lives only there resolves
-    later than the core's and would otherwise be invisible here.
+    The selected backend module is inspected alongside the core: it is dlopen'd after
+    startup, so a dependency living only there is invisible to a --help smoke test.
     """
     patterns = ["libggml-base.so*", "libggml.so*"]
     module_glob = SLIM_BACKEND_MODULE_GLOBS.get(backend, {}).get("linux")
@@ -560,35 +547,13 @@ def slim_pairing_for_artifact(
         and _ships_gpu_ggml_module(llama_bin_dir, "linux")
         and _ggml_stack_imports_libomp(llama_bin_dir, backend) is False
     ):
-        # Same shape as the Windows case above. The linux-arm64 manifest entry lists
-        # libomp.so.5 because the arm64 cpu bundle's ggml links LLVM OpenMP; the arm64
-        # CUDA bundle neither ships nor imports it (its libggml-base needs GNU
-        # libgomp.so.1, which the host provides), so requiring the name rejected the one
-        # asset that would have worked. Confirmed against the published artifacts: the
-        # arm64 whisper-server and libwhisper themselves have no libomp in DT_NEEDED, so
-        # the requirement was transitive from the cpu bundle, not a real dependency.
-        #
-        # The ELF check is what makes this correct rather than lucky. The arm64 *Vulkan*
-        # bundle does ship and import libomp.so.5, so an arch-only rule would drop a
-        # requirement that bundle genuinely has; it happens to be harmless there because
-        # the file is present anyway, but it would not be for a future GPU bundle that
-        # imports libomp without shipping it.
-        #
-        # `is False`, so the exemption needs positive evidence that nothing imports
-        # libomp rather than merely no evidence that something does. Getting this wrong
-        # is not recoverable in the UI: the sidecar spawns whisper-server with stderr on
-        # DEVNULL, so a "libomp.so.5: cannot open shared object file" is discarded and
-        # surfaces as "the model file may be corrupt or unsupported"; a load failure does
-        # not mark the engine unavailable, so serving never falls back to transformers
-        # and every later dictation repeats it. Staged smoke-testing would have caught it
-        # but is off (_RUN_STAGED_PREBUILT_VALIDATION). A host with no readelf and no
-        # objdump therefore keeps the requirement and stays on the fallback path, which
-        # is where it already is today.
-        #
-        # arm64 only, deliberately: llama's clang-built linux-x64 slices bundle libomp
-        # beside a libggml-base that really imports it
-        # (test_linux_slim_still_requires_manifest_libomp pins that). The GPU-module gate
-        # likewise keeps the requirement for a genuine arm64 cpu bundle.
+        # Same shape as the Windows case above: the arm64 manifest names libomp only because
+        # the cpu bundle's ggml links it, so CUDA (GNU libgomp) was rejected for a file it
+        # never needs. Evidence, not arch -- the arm64 Vulkan bundle really does import it.
+        # `is False`, not `is not True`: dropping this on no evidence is unrecoverable, since
+        # the sidecar sends the loader error to DEVNULL and serving never falls back.
+        # arm64 only: linux-x64 ggml really imports its bundled libomp
+        # (test_linux_slim_still_requires_manifest_libomp).
         required_sonames = [name for name in required_sonames if not _is_linux_libomp_soname(name)]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:

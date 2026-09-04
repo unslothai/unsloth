@@ -789,9 +789,7 @@ def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch
 
 
 def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
-    # llama's clang-built linux-x64 slices bundle libomp beside a libggml-base that
-    # really imports it, so on x64 it stays mandatory even for a GPU bundle. The
-    # arm64 exemption below must not widen to this case.
+    # x64 ggml really imports its bundled libomp; the arm64 exemption must not widen here.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -804,17 +802,12 @@ def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
 
 
 def test_linux_arm64_gpu_slim_drops_manifest_libomp(tmp_path, monkeypatch):
-    # Why linux-arm64 could never install whisper at all: the manifest lists
-    # libomp.so.5 because the arm64 *cpu* bundle's ggml links LLVM OpenMP, but the
-    # arm64 CUDA bundle neither ships nor imports it -- the host provides GNU
-    # libgomp.so.1 instead. Requiring the name rejected the one asset that works.
+    # The manifest names libomp for the *cpu* bundle's ggml; CUDA imports GNU libgomp.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
     )
-    # The fake bin dir holds non-ELF blobs, so stand in for readelf/objdump reading the
-    # real arm64 CUDA bundle: GNU libgomp, which the host provides, and no LLVM libomp.
-    # Without this the test would pass on "could not inspect" rather than on the answer.
+    # Real CUDA bundle; without this the test would pass on "could not inspect".
     monkeypatch.setattr(M, "_elf_needed", lambda path: {"libgomp.so.1", "libc.so.6"})
     artifact = _slim_artifact(
         arch = "arm64",
@@ -825,20 +818,11 @@ def test_linux_arm64_gpu_slim_drops_manifest_libomp(tmp_path, monkeypatch):
 
 
 def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(tmp_path, monkeypatch):
-    """The arm64 exemption is evidence-based, not arch-based.
-
-    The published linux-arm64 *Vulkan* bundle genuinely ships and imports libomp.so.5,
-    unlike the CUDA one. An arch-only rule would drop a requirement that bundle really
-    has. That is harmless while the file happens to be present, but not for a future GPU
-    bundle that imports libomp without shipping it: whisper would install cleanly and
-    then fail at first dictation, and staged smoke-testing is off, so nothing would
-    catch it.
-    """
+    """The published arm64 Vulkan bundle really does import libomp, unlike CUDA."""
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-vulkan.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-vulkan")
     )
-    # The fake bin dir holds non-ELF blobs, so stand in for readelf/objdump saying yes.
     monkeypatch.setattr(M, "_elf_needed", lambda path: {"libomp.so.5", "libc.so.6"})
     artifact = _slim_artifact(
         arch = "arm64",
@@ -851,13 +835,7 @@ def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(tmp_path,
 def test_linux_arm64_gpu_slim_keeps_libomp_when_only_the_backend_module_imports_it(
     tmp_path, monkeypatch
 ):
-    """The selected backend module counts, not just the ggml core.
-
-    It is dlopen'd after the server is already running, so a libomp dependency that
-    lives only there resolves later than the core's. Inspecting the core alone would
-    call this bundle clean, drop the requirement, and install a whisper whose CUDA
-    module cannot load at first dictation.
-    """
+    """The module is dlopen'd after startup, so a core-only check calls this clean."""
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -880,14 +858,7 @@ def test_linux_arm64_gpu_slim_keeps_libomp_when_only_the_backend_module_imports_
 
 
 def test_linux_arm64_exemption_fails_closed_without_elf_tools(tmp_path, monkeypatch):
-    """No readelf and no objdump means no evidence, so the requirement stands.
-
-    Dropping it on no evidence is not recoverable: the sidecar spawns whisper-server
-    with stderr on DEVNULL, so a missing libomp surfaces as "the model file may be
-    corrupt", a load failure never marks the engine unavailable, and serving therefore
-    never falls back to transformers. Keeping the requirement costs such a host only the
-    fallback path it is already on.
-    """
+    """Dropping it here is unrecoverable: the loader error goes to DEVNULL."""
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -902,8 +873,7 @@ def test_linux_arm64_exemption_fails_closed_without_elf_tools(tmp_path, monkeypa
 
 
 def test_linux_arm64_exemption_fails_closed_on_partial_elf_inspection(tmp_path, monkeypatch):
-    # One unreadable library is enough to make the answer unknown. Treating the rest as
-    # a clean bill of health would move the hole rather than close it.
+    # One unreadable library makes the answer unknown; the rest are not a clean bill.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -922,8 +892,7 @@ def test_linux_arm64_exemption_fails_closed_on_partial_elf_inspection(tmp_path, 
 
 
 def test_linux_arm64_libomptarget_is_not_llvm_openmp(tmp_path, monkeypatch):
-    # libomptarget is LLVM's offloading runtime, a different library. A prefix match
-    # would read it as libomp and keep a requirement the bundle does not have.
+    # libomptarget is a different library; a prefix match would read it as libomp.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -938,8 +907,6 @@ def test_linux_arm64_libomptarget_is_not_llvm_openmp(tmp_path, monkeypatch):
 
 
 def test_linux_arm64_exemption_does_not_drop_libomptarget_requirement(tmp_path, monkeypatch):
-    # The same distinction on the filtering side: only LLVM's OpenMP runtime is exempt,
-    # so a manifest that really requires libomptarget still gets it enforced.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -958,8 +925,6 @@ def test_linux_arm64_exemption_does_not_drop_libomptarget_requirement(tmp_path, 
 
 
 def test_linux_arm64_gpu_module_must_be_a_file(tmp_path, monkeypatch):
-    # A directory (or a dangling link) carrying a module's name is not a GPU bundle.
-    # Only a real file may unlock the exemption.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
     (bin_dir / "libggml-cuda.so").mkdir()
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
@@ -977,8 +942,7 @@ def test_linux_arm64_gpu_module_must_be_a_file(tmp_path, monkeypatch):
     [("windows", "x64"), ("windows", "arm64"), ("macos", "arm64"), ("linux", "x64")],
 )
 def test_elf_inspection_never_runs_off_linux_arm64(tmp_path, monkeypatch, os_key, arch):
-    # readelf and objdump are usually absent on Windows and macOS. The gate short
-    # circuits before reaching them, and this pins that ordering.
+    # readelf/objdump are usually absent off linux; this pins the short circuit.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
     calls = []
@@ -1000,9 +964,7 @@ def test_elf_inspection_never_runs_off_linux_arm64(tmp_path, monkeypatch, os_key
 
 
 def test_linux_arm64_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch):
-    # The exemption is gated on a GPU ggml module being on disk. A genuine arm64 cpu
-    # bundle does import libomp, so a runtime that lost it must fail the pairing
-    # rather than install a whisper that cannot load.
+    # No GPU module, so no exemption: a cpu bundle's ggml really does import libomp.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
     artifact = _slim_artifact(
