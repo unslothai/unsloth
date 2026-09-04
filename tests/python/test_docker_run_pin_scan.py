@@ -279,5 +279,8 @@ def test_a_local_path_is_not_given_a_timeout(run_mod, tmp_path):
         encoding = "utf-8",
     )
     assert run_mod._load(str(path)) == {
-        "cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+        "cells": [],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
     }
