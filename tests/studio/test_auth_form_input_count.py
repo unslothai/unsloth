@@ -177,7 +177,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     # clear. The rest of the guard is lazy-mount bookkeeping that #10237 changed from one
     # flag to two, so an exact spelling stopped matching. `|| ...` after `!active` is allowed,
     # `&& ...` is not, because the return must happen on every inactive render.
-    mount_body = mount[mount.index("export function SettingsDialogMount("):]
+    mount_body = mount[mount.index("export function SettingsDialogMount(") :]
     assert re.search(r"if \(!active(\)|\s*\|\|[^\n]*\))\s*return null;", mount_body), (
         "SettingsDialogMount no longer returns null while inactive, so the settings "
         "dialog can mount on the auth routes"
