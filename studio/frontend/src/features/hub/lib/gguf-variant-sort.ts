@@ -4,18 +4,7 @@
 import type { GgufVariantDetail } from "@/features/hub/inventory";
 import { formatBytes } from "@/features/hub/lib/format";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
-import { classifyGgufFit } from "@/lib/gguf-fit";
-
-export type GgufVariantResources = {
-  gpuGb?: number;
-  systemRamGb?: number;
-  /** The saved VRAM Budget, so the sort ranks against the line the loader will
-   *  actually admit at rather than against the default. */
-  budgetFraction?: number;
-  /** GPUs gpuGb sums, so the sort charges the loader's per-card VRAM reserve as
-   *  many times as the loader does. */
-  gpuCount?: number;
-};
+import { type GgufFitInput, classifyGgufVariantFit } from "@/lib/gguf-fit";
 
 export function ggufVariantDisplayLabel(
   variant: Pick<GgufVariantDetail, "display_label" | "quant">,
@@ -27,34 +16,6 @@ export function ggufVariantDownloadSizeBytes(
   variant: Pick<GgufVariantDetail, "download_size_bytes" | "size_bytes">,
 ): number {
   return variant.download_size_bytes ?? variant.size_bytes;
-}
-
-/** Conservative byte basis for a pre-download fit verdict.
- *
- * Before a quant is on disk the load planner cannot inspect its GGUF headers,
- * so the Hub's fit badge has to work from the variant listing. `size_bytes`
- * names only the main weights, while `download_size_bytes` also includes the
- * projector and drafter GGUFs a default launch can open beside them. It can
- * also contain small support files that are not resident, so it is deliberately
- * a conservative proxy rather than a replacement for the on-disk planner.
- * Scoring only the main weights called a Muse Glimmer Q3 load a full 16 GiB GPU
- * fit even though its required projector pushed the launch well over the card.
- *
- * Take the larger figure rather than trusting `download_size_bytes` blindly:
- * old or incomplete listings may report it as zero, and a fit estimate must
- * never become smaller than the weights themselves. */
-export function ggufVariantFitSizeBytes(
-  variant: Pick<GgufVariantDetail, "download_size_bytes" | "size_bytes">,
-): number {
-  return Math.max(variant.size_bytes, variant.download_size_bytes ?? 0);
-}
-
-/** The Hub-wide fit verdict for a concrete GGUF variant. */
-export function classifyGgufVariantFit(
-  variant: Pick<GgufVariantDetail, "download_size_bytes" | "size_bytes">,
-  resources: GgufVariantResources,
-) {
-  return classifyGgufFit(ggufVariantFitSizeBytes(variant), resources);
 }
 
 type GgufVariantTransfer = Pick<
@@ -82,7 +43,7 @@ export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
 
 export function ggufVariantFitRank(
   variant: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
   switch (classifyGgufVariantFit(variant, resources)) {
     case "fits":
@@ -100,7 +61,7 @@ export function ggufVariantFitRank(
 export function compareGgufVariantFitAndSize(
   a: GgufVariantDetail,
   b: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
   const aFit = ggufVariantFitRank(a, resources);
   const bFit = ggufVariantFitRank(b, resources);
@@ -118,7 +79,7 @@ export function ggufVariantDownloadStatusRank(
 
 export function sortDownloadableGgufVariants(
   variants: readonly GgufVariantDetail[],
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
     const statusDelta =
@@ -130,7 +91,7 @@ export function sortDownloadableGgufVariants(
 
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
-  options: GgufVariantResources & {
+  options: GgufFitInput & {
     activeGgufVariant?: string | null;
     defaultVariant?: string | null;
   },
