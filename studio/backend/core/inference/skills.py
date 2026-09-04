@@ -353,7 +353,7 @@ def format_skill_catalog(skills: Optional[list[dict]] = None) -> str:
         encoded = line.encode("utf-8")
         separator = 1 if lines else 0
         if size + separator + len(encoded) > MAX_SKILL_CATALOG_BYTES:
-            break
+            continue
         lines.append(line)
         size += separator + len(encoded)
     return "\n".join(lines)

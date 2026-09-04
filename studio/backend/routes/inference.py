@@ -3751,6 +3751,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # reaches the loop anyway. Neither is a hosted-tool request.
     if not enabled or not isinstance(enabled, list):
         return False
+
+    if "read_skill" in enabled and not _enabled_agent_skills():
+        enabled = [name for name in enabled if name != "read_skill"]
+        if not enabled:
+            return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4472,13 +4477,27 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
+_AGENT_SKILLS_CACHE_TTL_S = 1.0
+_AGENT_SKILLS_CACHE_LOCK = threading.Lock()
+_AGENT_SKILLS_CACHE: tuple[float, list[dict]] = (0.0, [])
+
+
 def _enabled_agent_skills() -> list[dict]:
     from core.inference.skills import SkillError, enabled_skills
-    try:
-        return enabled_skills()
-    except SkillError as exc:
-        logger.warning("Agent Skills unavailable: %s", exc)
-        return []
+
+    global _AGENT_SKILLS_CACHE
+    now = time.monotonic()
+    with _AGENT_SKILLS_CACHE_LOCK:
+        cached_at, cached = _AGENT_SKILLS_CACHE
+        if now - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+            return cached
+        try:
+            current = enabled_skills()
+        except SkillError as exc:
+            logger.warning("Agent Skills unavailable: %s", exc)
+            current = []
+        _AGENT_SKILLS_CACHE = (now, current)
+        return current
 
 
 def _skill_tool_tip() -> str:

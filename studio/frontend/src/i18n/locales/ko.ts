@@ -1374,6 +1374,7 @@ export const ko = {
           "채팅의 + 사이드 메뉴에 항목을 고정합니다. 나머지 항목은 ‘더 보기’로 이동합니다.",
         chatWithFiles: "파일과 채팅(RAG)",
         mcp: "MCP",
+        skills: "에이전트 스킬",
         savedPrompts: "저장된 프롬프트",
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",

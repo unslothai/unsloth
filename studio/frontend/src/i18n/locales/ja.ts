@@ -1365,6 +1365,7 @@ export const ja = {
           "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
         chatWithFiles: "ファイルとチャット (RAG)",
         mcp: "MCP",
+        skills: "エージェントスキル",
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",

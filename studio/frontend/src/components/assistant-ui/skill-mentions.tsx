@@ -84,10 +84,12 @@ function useHighlightedItemScroll(root: HTMLElement | null) {
   }, [root]);
 }
 
-export function SkillMentionPopover(): ReactElement | null {
+export function SkillMentionPopover({
+  enabled: mentionsEnabled,
+}: { enabled: boolean }): ReactElement | null {
   const { skills } = useSkillsCatalog();
   const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
-  const available = enabled(skills);
+  const available = mentionsEnabled ? enabled(skills) : [];
   const items = useMemo(
     () =>
       available.map((skill) => ({
@@ -170,11 +172,13 @@ export function useTextareaSkillMentions({
   setText,
   inputRef,
   composingRef,
+  enabled: mentionsEnabled,
 }: {
   text: string;
   setText: (text: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   composingRef: MutableRefObject<boolean>;
+  enabled: boolean;
 }) {
   const { skills } = useSkillsCatalog();
   const [range, setRange] = useState<MentionRange>(null);
@@ -182,12 +186,24 @@ export function useTextareaSkillMentions({
   const results = useMemo(() => {
     if (!range) return [];
     const query = range.query.toLowerCase();
+    if (!mentionsEnabled) return [];
     return enabled(skills).filter(
       (skill) =>
         skill.name.toLowerCase().includes(query) ||
         skill.description.toLowerCase().includes(query),
     );
-  }, [range, skills]);
+  }, [mentionsEnabled, range, skills]);
+  useEffect(() => {
+    if (
+      !mentionsEnabled ||
+      (range &&
+        (text.length < range.end ||
+          !text.slice(range.start, range.end).startsWith("@")))
+    ) {
+      setRange(null);
+    }
+  }, [mentionsEnabled, range, text]);
+
   const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

@@ -1370,6 +1370,7 @@ export const en = {
           "Pin items to chat's + side menu. Others move into “More”.",
         chatWithFiles: "Chat with Files (RAG)",
         mcp: "MCP",
+        skills: "Agent Skills",
         savedPrompts: "Saved prompts",
         compareChat: "Compare chat",
         exportChat: "Export chat",

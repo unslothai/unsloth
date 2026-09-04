@@ -610,7 +610,6 @@ export function SharedComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const skillMentions = useTextareaSkillMentions({ text, setText, inputRef: textareaRef, composingRef });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -654,6 +653,14 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+
+  const skillMentions = useTextareaSkillMentions({
+    text,
+    setText,
+    inputRef: textareaRef,
+    composingRef,
+    enabled: supportsTools,
+  });
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -2286,6 +2293,8 @@ export function SharedComposer({
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
           setCompositionState(false);
+
+          skillMentions.close();
         }}
         placeholder="Send to both models..."
         // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to

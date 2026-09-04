@@ -10483,16 +10483,26 @@ def execute_tool(
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "read_skill":
-        from .skills import SkillError, read_skill_resource
+        from .skills import MAX_SKILL_PAGE_CHARS, SkillError, read_skill_resource
+
         try:
-            return _fit_result_to_room(
-                read_skill_resource(
+            page_chars = MAX_SKILL_PAGE_CHARS
+            while True:
+                result = read_skill_resource(
                     arguments.get("name", ""),
                     arguments.get("resource", "SKILL.md"),
                     arguments.get("offset", 0),
-                ),
-                name,
-            )
+                    page_chars = page_chars,
+                )
+                fitted = _fit_result_to_room(result, name)
+                if fitted == result:
+                    return result
+                if page_chars == 1:
+                    return (
+                        "Error: Not enough context room to read this skill resource. "
+                        "Reduce the conversation context and retry the same read_skill call."
+                    )
+                page_chars = max(1, page_chars // 2)
         except SkillError as exc:
             return f"Error: {exc}"
 

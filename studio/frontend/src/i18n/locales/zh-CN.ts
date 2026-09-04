@@ -1346,6 +1346,7 @@ export const zhCN = {
           "将条目固定到聊天中的“+”侧边菜单，其他条目会移到“更多”中。",
         chatWithFiles: "与文件聊天（RAG）",
         mcp: "MCP",
+        skills: "代理技能",
         savedPrompts: "已保存的提示词",
         compareChat: "对比聊天",
         exportChat: "导出聊天",

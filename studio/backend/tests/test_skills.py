@@ -211,6 +211,18 @@ def test_catalog_is_bounded_at_complete_entries():
     assert all(line.startswith("- skill-") for line in catalog.splitlines())
 
 
+def test_catalog_skips_an_oversized_entry_without_hiding_later_skills():
+    candidates = [
+        {"name": "oversized", "description": "界" * 600},
+        {"name": "usable", "description": "Use this skill."},
+    ]
+
+    catalog = skills.format_skill_catalog(candidates)
+
+    assert "oversized" not in catalog
+    assert catalog == "- usable: Use this skill."
+
+
 def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     _write_skill(home, "agents", "api-skill")
@@ -273,3 +285,30 @@ def test_read_skill_tool_registration_selection_and_prompt(isolated_skills, monk
         inference_routes._select_request_tools(payload, tools_on = True, mcp_allowed = False)
     )
     assert selected == []
+
+
+def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(
+    isolated_skills, monkeypatch
+):
+    from core.inference import tools as tools_module
+
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "paged", body = "x" * 12_000)
+    roots = (
+        ("agents", home / ".agents" / "skills"),
+        ("claude", home / ".claude" / "skills"),
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: roots)
+
+    result = tools_module.execute_tool(
+        "read_skill",
+        {"name": "paged"},
+        context_tokens = 4096,
+        result_budget_tokens = 300,
+    )
+
+    assert "Resource continues. Call read_skill again" in result
+    header = next(line for line in result.splitlines() if line.startswith("Characters:"))
+    end = int(header.split("-")[1].split()[0])
+    assert f"offset={end}." in result
+    assert "truncated to" not in result
