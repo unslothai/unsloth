@@ -4716,6 +4716,7 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     assert config["memory"]["search"] == {
         "provider": "openai-compatible",
         "model": "unsloth/bge-small-en-v1.5",
+        "fallback": "none",
         "remote": {"baseUrl": f"{BASE}/v1", "apiKey": "sk-unsloth-feedfacefeedface"},
     }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
@@ -8756,4 +8757,16 @@ def test_openclaw_memory_search_falls_back_to_default_without_the_settings_route
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
     assert config["memory"]["search"]["model"] == "default"
+    assert config["memory"]["search"]["provider"] == "openai-compatible"
+
+
+def test_openclaw_memory_search_clears_a_stale_external_fallback(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    config_path.write_text(json.dumps({"memory": {"search": {"fallback": "openai"}}}))
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads(config_path.read_text())
+    assert config["memory"]["search"]["fallback"] == "none"
     assert config["memory"]["search"]["provider"] == "openai-compatible"

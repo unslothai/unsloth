@@ -4689,6 +4689,7 @@ def write_openclaw_config(
         {
             "provider": "openai-compatible",
             "model": embedding_model,
+            "fallback": "none",
             "remote": {"baseUrl": f"{base}/v1", "apiKey": key},
         }
     )
