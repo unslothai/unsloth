@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 import platform
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -114,6 +116,20 @@ class _SECURITY_DESCRIPTOR(ctypes.Structure):
         ("Sacl", ctypes.c_void_p),
         ("Dacl", ctypes.c_void_p),
     ]
+
+
+class _ACL(ctypes.Structure):
+    _fields_ = [
+        ("revision", ctypes.c_ubyte),
+        ("reserved", ctypes.c_ubyte),
+        ("size", wintypes.WORD),
+        ("count", wintypes.WORD),
+        ("reserved2", wintypes.WORD),
+    ]
+
+
+class _ACE_HEADER(ctypes.Structure):
+    _fields_ = [("kind", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("size", wintypes.WORD)]
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -244,6 +260,10 @@ def _api() -> _WinApi:
     advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
     advapi32.FreeSid.argtypes = [ctypes.c_void_p]
     advapi32.FreeSid.restype = ctypes.c_void_p
+    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi32.GetLengthSid.restype = wintypes.DWORD
+    advapi32.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetAce.restype = wintypes.BOOL
     advapi32.GetNamedSecurityInfoW.argtypes = [
         wintypes.LPWSTR,
         wintypes.DWORD,
@@ -460,6 +480,24 @@ def _validated_private_temp(profile_folder: str, private_temp: str) -> str:
     return spelled
 
 
+def _acl_contains_sid(acl: ctypes.c_void_p, sid: ctypes.c_void_p) -> bool:
+    if not acl:
+        return False
+    api = _api()
+    sid_bytes = ctypes.string_at(sid, api.advapi32.GetLengthSid(sid))
+    header = ctypes.cast(acl, ctypes.POINTER(_ACL)).contents
+    for index in range(header.count):
+        entry = ctypes.c_void_p()
+        if not api.advapi32.GetAce(acl, index, ctypes.byref(entry)):
+            raise _winerror("GetAce(LPAC cleanup)")
+        size = ctypes.cast(entry, ctypes.POINTER(_ACE_HEADER)).contents.size
+        # Cover ordinary, inherited, object, and callback ACE layouts. A match
+        # only requests REVOKE_ACCESS for this SID; it never deletes a whole ACE.
+        if sid_bytes in ctypes.string_at(entry, size):
+            return True
+    return False
+
+
 def _set_sid_acl(
     path: str,
     sid: ctypes.c_void_p,
@@ -485,6 +523,10 @@ def _set_sid_acl(
         raise _winerror(f"GetNamedSecurityInfoW({path})", result)
     new_acl = ctypes.c_void_p()
     try:
+        # A failed grant is still in the write-ahead manifest. Cleanup must not
+        # need WRITE_DAC on a read-only host path which never received our SID.
+        if mode == _REVOKE_ACCESS and not _acl_contains_sid(old_acl, sid):
+            return
         trustee = _TRUSTEE_W(
             None,
             _NO_MULTIPLE_TRUSTEE,
@@ -690,6 +732,7 @@ def _validate_runtime_trees(roots: tuple[str, ...]) -> None:
 
 def _runtime_roots(workdir: str, argv: tuple[str, ...]) -> tuple[str, ...]:
     candidates = [sys.executable, os.path.realpath(sys.executable), sys.prefix, sys.base_prefix]
+    candidates.append(os.path.join(os.path.dirname(__file__), "sandbox_site"))
     candidates.extend(path for path in sysconfig.get_paths().values() if path)
     if argv and os.path.isabs(argv[0]):
         executable_dir = os.path.dirname(argv[0])
@@ -709,6 +752,9 @@ def _runtime_roots(workdir: str, argv: tuple[str, ...]) -> tuple[str, ...]:
         drive, tail = os.path.splitdrive(canonical)
         if not drive or tail in ("", "\\", "/") or canonical.startswith(("\\\\", "//")):
             raise SandboxUnavailableError(f"an LPAC runtime root is unsafe: {canonical}")
+        _canonical_local_directory(
+            canonical if os.path.isdir(canonical) else os.path.dirname(canonical)
+        )
         try:
             common = os.path.commonpath((canonical, workdir))
         except ValueError:
@@ -1210,7 +1256,80 @@ def _safe_environment(
     return safe
 
 
-def _probe_payload(workdir: str, external: str, expected_sid: str) -> str:
+@contextmanager
+def _probe_network_endpoints():
+    """Prove host endpoints work, then reject any traffic from the LPAC probe."""
+    with ExitStack() as stack:
+        servers = []
+        endpoints = []
+        control = secrets.token_bytes(32)
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                server = stack.enter_context(socket.socket(family, kind))
+                server.settimeout(1)
+                server.bind((host, 0))
+                address = server.getsockname()
+                if kind == socket.SOCK_STREAM:
+                    server.listen(4)
+                with socket.socket(family, kind) as client:
+                    client.settimeout(1)
+                    if kind == socket.SOCK_STREAM:
+                        client.connect(address)
+                        with server.accept()[0] as accepted:
+                            client.sendall(control)
+                            # TCP may split the control message into multiple reads.
+                            accepted.settimeout(1)
+                            received = bytearray()
+                            while len(received) < len(control):
+                                part = accepted.recv(len(control) - len(received))
+                                if not part:
+                                    break
+                                received.extend(part)
+                            if received != control:
+                                raise SandboxUnavailableError("LPAC TCP probe control failed")
+                    else:
+                        client.sendto(control, address)
+                        if server.recvfrom(128)[0] != control:
+                            raise SandboxUnavailableError("LPAC UDP probe control failed")
+                servers.append((server, kind))
+                endpoints.append((int(family), int(kind), address))
+        yield endpoints
+        for server, kind in servers:
+            server.settimeout(0.1)
+            try:
+                if kind == socket.SOCK_STREAM:
+                    connection, _ = server.accept()
+                    connection.close()
+                else:
+                    server.recvfrom(128)
+            except socket.timeout:
+                continue
+            raise SandboxUnavailableError("the LPAC live probe reached a host network endpoint")
+
+
+def _probe_network_payload(endpoints: list[tuple]) -> str:
+    return f"""import socket
+for family, kind, address in {endpoints!r}:
+    sock = None
+    try:
+        sock = socket.socket(family, kind)
+        sock.settimeout(1)
+        if kind == socket.SOCK_STREAM:
+            sock.connect(address)
+        else:
+            sock.sendto(b'UNSLOTH_LPAC_NETWORK_PROBE', address)
+    except OSError as exc:
+        # Refusal, timeout, and an absent address family are not enforcement.
+        assert exc.winerror == 10013, ('unexpected network error', repr(exc))
+    else:
+        raise AssertionError('LPAC network operation was not denied')
+    finally:
+        if sock is not None:
+            sock.close()
+"""
+
+
+def _probe_payload(workdir: str, external: str, expected_sid: str, endpoints: list[tuple]) -> str:
     return f"""import ctypes, os, socket, sys
 from ctypes import wintypes
 k = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -1262,15 +1381,7 @@ for path in ({external!r}, sys.executable):
         raise AssertionError('LPAC escaped file policy: ' + path)
     except OSError:
         pass
-for family, address in ((socket.AF_INET, ('127.0.0.1', 9)), (socket.AF_INET6, ('::1', 9))):
-    sock = socket.socket(family); sock.settimeout(0.2)
-    try:
-        sock.connect(address)
-        raise AssertionError('LPAC reached IP network')
-    except OSError:
-        pass
-    finally:
-        sock.close()
+{_probe_network_payload(endpoints)}
 assert os.path.commonpath((os.environ['TEMP'], os.environ['LOCALAPPDATA'])) == os.environ['LOCALAPPDATA']
 print({_PROBE_TOKEN!r})
 """
@@ -1315,7 +1426,10 @@ class WindowsLpacBackend:
         try:
             _api()
             self.reconcile_stale_manifests()
-            with tempfile.TemporaryDirectory(prefix = "unsloth-lpac-probe-") as base:
+            with (
+                tempfile.TemporaryDirectory(prefix = "unsloth-lpac-probe-") as base,
+                _probe_network_endpoints() as endpoints,
+            ):
                 workdir = os.path.join(base, "work")
                 os.mkdir(workdir)
                 Path(workdir, "probe-read").write_text("readable", encoding = "utf-8")
@@ -1337,7 +1451,7 @@ class WindowsLpacBackend:
                         "-I",
                         "-S",
                         "-c",
-                        _probe_payload(workdir, external, identity.sid_string),
+                        _probe_payload(workdir, external, identity.sid_string, endpoints),
                     )
                     process = prepared.spawn_callback(
                         prepared,
@@ -1360,8 +1474,8 @@ class WindowsLpacBackend:
                         if process.returncode == -1073741790:
                             detail = (
                                 "the selected interpreter could not initialize under zero-capability "
-                                "LPAC; an interpreter/runtime ancestor is not accessible to the "
-                                "AppContainer SID, and capabilities were not widened"
+                                "LPAC (STATUS_ACCESS_DENIED); this runtime is incompatible with the "
+                                "current profile, and capabilities were not widened"
                             )
                         else:
                             detail = output[-400:]
@@ -1373,6 +1487,8 @@ class WindowsLpacBackend:
                         )
                 finally:
                     prepared.cleanup()
+                    if prepared.cleanup_diagnostics:
+                        raise SandboxUnavailableError("LPAC probe cleanup failed")
         except Exception as exc:  # noqa: BLE001 - capability failure blocks Required mode
             return SandboxCapability(
                 self.identity,

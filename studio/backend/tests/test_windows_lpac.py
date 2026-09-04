@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import ctypes
+from contextlib import contextmanager
 from ctypes import wintypes
 import importlib.util
 import json
@@ -69,6 +70,60 @@ def test_source_only_public_api_and_profile_are_narrow_and_unique():
         windows_lpac.WindowsLpacBackend.profile_id,
     }
     assert len(profiles) == 3
+
+
+def test_network_probe_rejects_an_unrestricted_process():
+    # A real host launch is the negative control: these endpoints must be reachable.
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "host network endpoint"):
+        with windows_lpac._probe_network_endpoints() as endpoints:
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", windows_lpac._probe_network_payload(endpoints)],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                check = False,
+            )
+            assert result.returncode != 0
+            assert "LPAC network operation was not denied" in result.stderr
+
+
+@pytest.mark.parametrize("endpoint_index", [1, 3])
+def test_network_probe_rejects_udp_delivery(endpoint_index):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "host network endpoint"):
+        with windows_lpac._probe_network_endpoints() as endpoints:
+            family, kind, address = endpoints[endpoint_index]
+            with socket.socket(family, kind) as sender:
+                sender.sendto(b"escape", address)
+
+
+@pytest.mark.parametrize("winerror", [10061, 10060, 10047])
+def test_network_probe_does_not_accept_refusal_timeout_or_missing_family(monkeypatch, winerror):
+    error = OSError("diagnostic error")
+    error.winerror = winerror
+
+    def failing_socket(*_args):
+        raise error
+
+    monkeypatch.setattr(socket, "socket", failing_socket)
+    with pytest.raises(AssertionError, match = "unexpected network error"):
+        exec(windows_lpac._probe_network_payload([(2, 1, ("127.0.0.1", 1234))]), {})
+
+
+def test_network_probe_closes_endpoints_after_failure(monkeypatch):
+    opened = []
+    real_socket = socket.socket
+
+    def tracked_socket(*args, **kwargs):
+        sock = real_socket(*args, **kwargs)
+        opened.append(sock)
+        return sock
+
+    monkeypatch.setattr(socket, "socket", tracked_socket)
+    with pytest.raises(RuntimeError, match = "launch failed"):
+        with windows_lpac._probe_network_endpoints():
+            raise RuntimeError("launch failed")
+    assert opened
+    assert all(sock.fileno() == -1 for sock in opened)
 
 
 @pytest.mark.parametrize(
@@ -229,6 +284,105 @@ def test_environment_strips_host_channels_and_uses_private_temp(monkeypatch, tmp
     assert safe["LOCALAPPDATA"] == identity.profile_folder
     assert {safe[name] for name in ("APPDATA", "TEMP", "TMP")} == {str(private)}
     assert safe.keys().isdisjoint({"DOCKER_HOST", "HOMEDRIVE", "HOMEPATH", "SSH_AUTH_SOCK"})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows runtime path validation")
+def test_runtime_roots_include_sandbox_site_and_reject_network_drives(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    executable = runtime / "python.exe"
+    executable.touch()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(windows_lpac.sys, "executable", str(executable))
+    monkeypatch.setattr(windows_lpac.sys, "prefix", str(runtime))
+    monkeypatch.setattr(windows_lpac.sys, "base_prefix", str(runtime))
+    monkeypatch.setattr(windows_lpac.sysconfig, "get_paths", lambda: {})
+    roots = windows_lpac._runtime_roots(str(workdir), (str(executable),))
+    sandbox_site = Path(windows_lpac.__file__).parent / "sandbox_site"
+    assert os.path.realpath(sandbox_site) in roots
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "overlap"):
+        windows_lpac._runtime_roots(str(runtime), (str(executable),))
+    monkeypatch.setattr(
+        windows_lpac,
+        "_api",
+        lambda: SimpleNamespace(kernel32 = SimpleNamespace(GetDriveTypeW = lambda _drive: 4)),
+    )
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "network"):
+        windows_lpac._runtime_roots(str(workdir), (str(executable),))
+
+
+@contextmanager
+def _diagnostic_sid():
+    api = windows_lpac._api()
+    derive = api.userenv.DeriveAppContainerSidFromAppContainerName
+    derive.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    derive.restype = ctypes.c_long
+    sid = ctypes.c_void_p()
+    assert derive("unsloth.studio.acl-test." + uuid.uuid4().hex, ctypes.byref(sid)) == 0
+    try:
+        yield sid
+    finally:
+        api.advapi32.FreeSid(sid)
+
+
+def _path_contains_sid(path, sid):
+    api = windows_lpac._api()
+    acl, descriptor = ctypes.c_void_p(), ctypes.c_void_p()
+    assert (
+        api.advapi32.GetNamedSecurityInfoW(
+            str(path),
+            windows_lpac._SE_FILE_OBJECT,
+            windows_lpac._DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(acl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        == 0
+    )
+    try:
+        return windows_lpac._acl_contains_sid(acl, sid)
+    finally:
+        api.kernel32.LocalFree(descriptor)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows ACL regression")
+def test_revoke_absent_sid_never_writes_read_only_host_acl(monkeypatch):
+    api = windows_lpac._api()
+    path = os.path.join(os.environ["SystemRoot"], "System32")
+
+    def unexpected_write(*_args):
+        pytest.fail("cleanup attempted to change an ACL without its SID")
+
+    # Real ACL reads; writes are forbidden, so this test cannot modify System32.
+    monkeypatch.setattr(api.advapi32, "SetEntriesInAclW", unexpected_write)
+    monkeypatch.setattr(api.advapi32, "SetNamedSecurityInfoW", unexpected_write)
+    monkeypatch.setattr(api.advapi32, "SetFileSecurityW", unexpected_write)
+    with _diagnostic_sid() as sid:
+        assert not _path_contains_sid(path, sid)
+        windows_lpac._revoke_sid(path, sid)
+        windows_lpac._revoke_sid(path, sid, exact = True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows ACL regression")
+def test_revoke_present_sid_preserves_another_invocation_grant(tmp_path):
+    with _diagnostic_sid() as first, _diagnostic_sid() as second:
+        try:
+            windows_lpac._grant_read_execute(str(tmp_path), first)
+            windows_lpac._grant_read_execute(str(tmp_path), second)
+            assert _path_contains_sid(tmp_path, first)
+            assert _path_contains_sid(tmp_path, second)
+            windows_lpac._revoke_sid(str(tmp_path), first)
+            assert not _path_contains_sid(tmp_path, first)
+            assert _path_contains_sid(tmp_path, second)
+            windows_lpac._revoke_sid(str(tmp_path), first)
+            assert _path_contains_sid(tmp_path, second)
+        finally:
+            windows_lpac._revoke_sid(str(tmp_path), first)
+            windows_lpac._revoke_sid(str(tmp_path), second)
+        assert not _path_contains_sid(tmp_path, second)
 
 
 def test_identity_cleanup_is_lifo_and_removes_only_its_sid(monkeypatch):
