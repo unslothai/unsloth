@@ -11251,7 +11251,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         # nearer two characters per token) being charged the English four.
         return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
 
-    def _trim(hit_text, hit_sources, max_tokens, keep_first = 1):
+    def _trim(
+        hit_text,
+        hit_sources,
+        max_tokens,
+        keep_first = 1,
+    ):
         """Drop passages from the tail until the rendered block fits, else None.
 
         Re-renders only when something is dropped, so an untrimmed result comes
@@ -11308,9 +11313,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     # that will not fit falls back to it alone rather than to a
                     # truncated copy of it.
                     merged = sources + proj[1]
-                    trimmed = _trim(
-                        render_sources(merged), merged, budget, keep_first = len(sources)
-                    )
+                    trimmed = _trim(render_sources(merged), merged, budget, keep_first = len(sources))
                     if trimmed is not None:
                         text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
