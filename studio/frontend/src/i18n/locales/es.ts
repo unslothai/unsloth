@@ -2271,7 +2271,7 @@ export const es = {
         "La configuración del entrenamiento cambió mientras se comprobaba. Revísala y vuelve a iniciar el entrenamiento.",
       validation: {
         s3MultimodalUnsupported:
-          "Los conjuntos de datos de S3 todavía no son compatibles con el entrenamiento de visión o audio.",
+          "Los conjuntos de datos de S3 todavía no son compatibles con el entrenamiento de visión.",
         s3BucketRequired: "Introduce primero el nombre de un bucket de S3.",
         s3CredentialsRequired:
           "Proporciona las claves de acceso de S3 o activa el rol de IAM.",

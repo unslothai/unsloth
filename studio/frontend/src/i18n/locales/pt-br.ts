@@ -2245,7 +2245,7 @@ export const ptBR = {
         "A configuração de treinamento mudou durante a verificação. Revise-a e inicie o treinamento novamente.",
       validation: {
         s3MultimodalUnsupported:
-          "Datasets do S3 ainda não são compatíveis com treinamento de visão ou áudio.",
+          "Datasets do S3 ainda não são compatíveis com treinamento de visão.",
         s3BucketRequired: "Insira primeiro o nome de um bucket do S3.",
         s3CredentialsRequired:
           "Forneça as chaves de acesso do S3 ou ative a função do IAM.",

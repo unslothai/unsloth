@@ -2258,7 +2258,7 @@ export const it = {
       chooseModelAndDataset: "Scegli modello e dataset",
       validation: {
         s3MultimodalUnsupported:
-          "I dataset S3 non sono ancora supportati per l'addestramento visivo o audio.",
+          "I dataset S3 non sono ancora supportati per l'addestramento visivo.",
         s3BucketRequired: "Inserisci prima il nome di un bucket S3.",
         s3CredentialsRequired:
           "Fornisci le chiavi di accesso S3 oppure attiva il ruolo IAM.",

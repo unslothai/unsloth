@@ -2286,7 +2286,7 @@ export const fr = {
         "La configuration de l'entraînement a changé pendant sa vérification. Vérifiez-la, puis relancez l'entraînement.",
       validation: {
         s3MultimodalUnsupported:
-          "Les jeux de données S3 ne sont pas encore pris en charge pour l'entraînement de modèles de vision ou audio.",
+          "Les jeux de données S3 ne sont pas encore pris en charge pour l'entraînement de modèles de vision.",
         s3BucketRequired: "Saisissez d'abord le nom d'un bucket S3.",
         s3CredentialsRequired:
           "Indiquez des clés d'accès S3 ou activez le rôle IAM.",
