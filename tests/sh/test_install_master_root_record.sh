@@ -53,6 +53,12 @@ case "$blockR" in *'_PORTABLE_MARKER_PATH_3'*) : ;; *) echo "FAIL: the record sl
 # elsewhere dies as "command not found" inside a condition and the guard goes silently inert.
 case "$blockE" in *'_portable_record'*) echo "FAIL: blockE calls a helper it does not define"; exit 1 ;; *) : ;; esac
 case "$blockD" in *'_portable_record'*) echo "FAIL: blockD calls a helper it does not define"; exit 1 ;; *) : ;; esac
+# Section 12's gate, pinned to the block it has to live in. Both halves matter: the loop has to
+# be there, and the byte set has to be spelled out INSIDE it -- a set built from a variable
+# assigned elsewhere in install.sh would expand to empty in every lift here and the gate would
+# accept every root while still looking present.
+case "$blockB" in *'_rsd_uni_ws'*) : ;; *) echo "FAIL: blockB lost the Unicode-whitespace gate"; exit 1 ;; esac
+case "$blockB" in *'\302\240'*) : ;; *) echo "FAIL: blockB no longer carries the byte set inline"; exit 1 ;; esac
 # The commit has to release the slot, or a post-install failure would delete the record of the
 # install that just succeeded.
 _commit_block="$(blk '/^_commit_portable_marker\(\) \{$/ {grab=1} grab {print} grab && /^\}$/ {exit}')"
@@ -318,6 +324,153 @@ check "11 and a plain path still installs" "$R11d" "$(record_body "$R11d/studio"
 expect_ok "$H11d" "UNSLOTH_STUDIO_HOME=$H11d/normal" --
 check "11 a normal custom-root install is untouched" "reached|$H11d/normal" \
     "$(grep '^reached|' "$T/out")"
+
+echo "[12] ...and the whitespace [[:space:]] does not cover, which is where Python differs"
+# The gate in section 11 is _trim_ws, i.e. sed. The readers it defends are Python's .strip(),
+# and the two sets are not the same: .strip() with no argument removes every character
+# str.isspace() accepts, 29 of them, while [[:space:]] in the C locale is the six ASCII ones.
+# So `--root /vol/x<U+00A0>` passed that gate, was recorded verbatim, and was then read back by
+# storage_roots._env_unsloth_home and unsloth_cli's two copies as `/vol/x`: the managed node,
+# llama.cpp and whisper.cpp get installed under the requested directory and looked for under a
+# different one that need not exist.
+#
+# Driven from PYTHON, not from a copy of the installer's list. The property under test is
+# "install.sh refuses every root Python would strip a character off", so the set is generated
+# by asking Python which characters those are; a test carrying its own copy of the list would
+# still pass if both copies were wrong, and would not notice a future Python adding one.
+if command -v python3 > /dev/null 2>&1; then
+    python3 -c '
+import sys
+for c in map(chr, range(0x110000)):
+    if c.strip() == "":
+        sys.stdout.write(c.encode("utf-8").hex() + "\n")
+' > "$T/wschars"
+    _n_ws=$(wc -l < "$T/wschars" | tr -d ' ')
+    check "12 the strip set is non-empty" yes "$([ "$_n_ws" -ge 29 ] && printf yes || printf no)"
+    _ws_accepted=""
+    _ws_tested=0
+    while IFS= read -r _hex; do
+        # The byte(s) of one such character, appended to an otherwise ordinary root.
+        _esc=""; _i=0
+        while [ "$_i" -lt "${#_hex}" ]; do
+            _esc="$_esc\\x$(printf '%s' "$_hex" | cut -c$((_i+1))-$((_i+2)))"
+            _i=$((_i + 2))
+        done
+        _hw="$(new_home)"
+        # Sentinel-and-strip, because `$( )` deletes trailing newlines: built the obvious way,
+        # the U+000A case would silently lose its character and test `/vol` instead, passing
+        # while proving nothing.
+        _ch="$(printf "${_esc}X")"; _ch="${_ch%X}"
+        _hr="$_hw/vol$_ch"
+        mkdir -p "$_hr" 2>/dev/null || continue
+        _ws_tested=$((_ws_tested + 1))
+        # Passed WITH a trailing slash, the way section 11 reaches the same gate. The argument
+        # trim at the top of install.sh runs before `pwd -P`, so for the six characters sed
+        # does strip, a bare `--root /vol/x<TAB>` is trimmed to `/vol/x` and installs there --
+        # a different directory than the operator typed, but one every reader then agrees on,
+        # so there is nothing to refuse. The trailing slash hides the character from that trim
+        # and hands it to `pwd -P` intact, which is the ONE shape that puts every character in
+        # the set into a resolved root. Refusing all 29 there is the property under test.
+        # env -i, so this whole sweep runs with no locale set at all: the C locale, where
+        # [[:space:]] covers only the six ASCII characters. That is the worst case and the
+        # one a piped `curl ... | sh` on a minimal image actually gets.
+        _rc="$(run_install "$_hw" -- --root "$_hr/")"
+        if [ "$_rc" -eq 0 ]; then _ws_accepted="$_ws_accepted $_hex"; fi
+    done < "$T/wschars"
+    check "12 every character Python strips was exercised" yes \
+        "$([ "$_ws_tested" -ge 29 ] && printf yes || printf no)"
+    # Exactly one survives, and not by reaching the readers: U+000A never becomes part of a
+    # resolved root at all, because the `$(CDPATH= cd -P -- ... && pwd -P)` that produces one
+    # is a command substitution, and that strips EVERY trailing newline -- the one `pwd`
+    # itself emits and the one the path ends in. So the installer resolves `/vol/x`, creates
+    # it, installs there and records it, and the readers read back the same `/vol/x`. A
+    # directory other than the one the operator typed, which is worth knowing, but the two
+    # sides of the record still agree, and agreement is what this gate defends. Pinned as an
+    # equality rather than skipped, so a future change that DOES carry a newline through to
+    # the record fails here instead of quietly widening the accepted set.
+    check "12 and the only one not refused is U+000A" " 0a" "$_ws_accepted"
+else
+    printf '  SKIP  Python-derived whitespace sweep (no python3)\n'
+fi
+
+# U+00A0 named on its own, since it is the one a user hits by accident: a path pasted out of a
+# browser, a chat client or a rendered document carries it invisibly.
+H12="$(new_home)"; NB="$(printf '\302\240')"; R12="$H12/vol$NB"
+mkdir -p "$R12"
+_rc="$(run_install "$H12" -- --root "$R12")"
+check "12 a root ending in U+00A0 is refused" 1 "$_rc"
+check "12 that error says why" yes \
+    "$(grep -qF -- "starts or ends with whitespace" "$T/out" "$T/err" && printf yes || printf no)"
+check "12 and it names what would break" yes \
+    "$(grep -qF -- "node, llama.cpp and whisper.cpp" "$T/out" "$T/err" && printf yes || printf no)"
+check "12 nothing is recorded under it" gone "$(record_state "$R12/studio")"
+check "12 and no parent marker is published either" gone \
+    "$([ -f "$R12/.unsloth-portable-root" ] && printf present || printf gone)"
+# The env-var route reaches the identical resolver, and is the one a piped
+# `curl ... | UNSLOTH_STUDIO_HOME=... sh` has to use, since it takes no arguments.
+H12e="$(new_home)"; R12e="$H12e/vol$NB"
+mkdir -p "$R12e"
+_rc="$(run_install "$H12e" "UNSLOTH_STUDIO_HOME=$R12e" -- --portable)"
+check "12 UNSLOTH_STUDIO_HOME is refused the same way" 1 "$_rc"
+check "12 and that error says why too" yes \
+    "$(grep -qF -- "starts or ends with whitespace" "$T/out" "$T/err" && printf yes || printf no)"
+
+# Locale independence. GNU sed under a UTF-8 locale already classifies 15 of these 23 as
+# [[:space:]] and under LC_ALL=C classifies none, so a gate that leaned on the character class
+# would accept or refuse the same root depending on how the operator's shell happened to be
+# set. Run the identical root with a locale forced on, and expect the identical answer.
+H12b="$(new_home)"; R12b="$H12b/vol$NB"
+mkdir -p "$R12b"
+_rc=0
+env -i HOME="$H12b" PATH="$PATH" USER="${USER:-tester}" FAIL_MODE=ok \
+    LC_ALL=C.UTF-8 LANG=C.UTF-8 bash -c "$SNIP" _ --root "$R12b" > "$T/out" 2>"$T/err" || _rc=$?
+check "12 the answer does not depend on the locale" 1 "$_rc"
+
+# Pinned against collapsing into refusing everything. Only the ENDS are whitespace-checked:
+# a non-breaking space in the MIDDLE of a path is an ordinary character and must still install,
+# exactly as an interior ASCII space does in section 11.
+H12c="$(new_home)"; R12c="$H12c/my${NB}vol"
+expect_ok "$H12c" -- --root "$R12c"
+check "12 an interior U+00A0 still installs" "$R12c" "$(record_body "$R12c/studio")"
+# And a character that merely LOOKS like a space to Python's str.isspace() but is not stripped:
+# U+200B ZERO WIDTH SPACE is not whitespace to Python, so it is not our business to refuse it.
+H12d="$(new_home)"; ZWSP="$(printf '\342\200\213')"; R12d="$H12d/vol$ZWSP"
+expect_ok "$H12d" -- --root "$R12d"
+check "12 a trailing U+200B is left alone" "$R12d" "$(record_body "$R12d/studio")"
+
+echo "[13] the runtime half of section 12, through the real resolvers"
+# Why section 12 refuses rather than records: with the root accepted, this is what the shim
+# resolves at launch. The managed runtimes are siblings of studio/ under UNSLOTH_HOME, so all
+# three follow the master root wherever .strip() moves it.
+if command -v python3 > /dev/null 2>&1; then
+    cat > "$T/rt.py" <<'PYEOF'
+import json, os, sys
+sys.prefix = sys.exec_prefix = os.environ["_PREFIX"]
+sys.path.insert(0, os.environ["_BACKEND"])
+from utils.paths.storage_roots import unsloth_home
+from utils.node_runtime import managed_node_dir
+home = unsloth_home()
+print("__JSON__" + json.dumps({
+    "home": str(home) if home else None,
+    "agrees": str(home) == os.environ["UNSLOTH_HOME"] if home else False,
+    "node_exists": os.path.isdir(str(managed_node_dir())) if home else False,
+}))
+PYEOF
+    H13="$(new_home)"; R13="$H13/vol$NB"
+    # The tree the install WOULD have produced, had section 12 let it through.
+    mkdir -p "$R13/studio/unsloth_studio" "$R13/node/bin"
+    _rt() { # key
+        env -i HOME="$H13" PATH="$PATH" _BACKEND="$BACKEND" \
+            _PREFIX="$R13/studio/unsloth_studio" UNSLOTH_HOME="$R13" \
+            python3 "$T/rt.py" 2>/dev/null | sed -n 's/^__JSON__//p' \
+          | _K="$1" python3 -c \
+            'import json,os,sys; print(json.load(sys.stdin)[os.environ["_K"]])'
+    }
+    check "13 the resolver does NOT return the root it was given" False "$(_rt agrees)"
+    check "13 and the managed node directory is not where it was installed" False "$(_rt node_exists)"
+else
+    printf '  SKIP  runtime resolver probe (no python3)\n'
+fi
 
 if [ "$fails" -eq 0 ]; then
     printf 'ALL PASS\n'

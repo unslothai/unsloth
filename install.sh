@@ -731,6 +731,47 @@ _resolve_studio_destinations() {
             echo "       Re-run against a path without leading or trailing whitespace." >&2
             exit 1
         fi
+        # And the same refusal for the whitespace `[[:space:]]` does not cover. The check
+        # above is _trim_ws, which is sed, and the readers it is defending are Python's
+        # `.strip()`. Those two sets are NOT the same: `.strip()` with no argument removes
+        # every character `str.isspace()` accepts -- 29 of them -- while `[[:space:]]` in the
+        # C locale is the six ASCII ones. A root ending in U+00A0 therefore passes the gate
+        # above, is recorded verbatim, and is then read back by storage_roots._env_unsloth_home
+        # and unsloth_cli's two copies of it as the path WITHOUT it: `/vol/x<U+00A0>` installs
+        # the managed node, llama.cpp and whisper.cpp under itself, and the generated shim
+        # then looks for all three under `/vol/x`, a directory that need not even exist.
+        # Exactly the divergence the gate above exists to prevent, one character class over.
+        #
+        # The remaining 23 are listed as the UTF-8 bytes a POSIX path carries them as, because
+        # that is what Python decodes before stripping: os.environ and os.fsdecode use UTF-8
+        # with surrogateescape, so the encoded form is what `.strip()` actually sees, and a
+        # lone 0xA0 that is not valid UTF-8 decodes to a surrogate it does NOT strip. Matched
+        # as bytes rather than by a character class, so the answer cannot change with the
+        # caller's locale: `[[:space:]]` under C.UTF-8 already covers 15 of these and under
+        # LC_ALL=C covers none, and an installer that accepts a root only when the operator's
+        # locale happens to be set a certain way is the same disagreement in a new place.
+        # This also covers install.ps1's reader: .NET's String.Trim() uses Char.IsWhiteSpace,
+        # whose set is a strict subset of Python's, so a root that survives here survives there.
+        # Written inline, with the set spelled out in the loop: several tests lift this
+        # function out with awk and run it alone, where a helper or a variable defined
+        # elsewhere expands to empty and the guard silently accepts everything.
+        _rsd_uni_ws=""
+        for _rsd_ws in $(printf '\034\n\035\n\036\n\037\n\302\205\n\302\240\n\341\232\200\n'\
+'\342\200\200\n\342\200\201\n\342\200\202\n\342\200\203\n\342\200\204\n\342\200\205\n'\
+'\342\200\206\n\342\200\207\n\342\200\210\n\342\200\211\n\342\200\212\n\342\200\250\n'\
+'\342\200\251\n\342\200\257\n\342\201\237\n\343\200\200\n'); do
+            case "$_resolved_root" in
+                "$_rsd_ws"* | *"$_rsd_ws") _rsd_uni_ws=y ;;
+            esac
+        done
+        if [ -n "$_rsd_uni_ws" ]; then
+            echo "ERROR: $_override_var names a path that starts or ends with whitespace." >&2
+            echo "       Not a space or a tab, but one Python still strips: the readers would" >&2
+            echo "       resolve a different directory on the next launch, and the managed" >&2
+            echo "       node, llama.cpp and whisper.cpp with it." >&2
+            echo "       Re-run against a path without leading or trailing whitespace." >&2
+            exit 1
+        fi
         if [ "$_PORTABLE_MODE" = true ]; then
             UNSLOTH_ROOT="$_resolved_root"
             # A root holding the venv directly IS the Studio root (flat layout);
