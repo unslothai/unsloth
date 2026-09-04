@@ -3795,6 +3795,67 @@ function Get-PersistedWoaTorchIndex {
     return $value
 }
 
+# uv splits UV_OVERRIDE on whitespace and pip splits its repeatable options the same way,
+# so a path containing a space has to reach them by its 8.3 short name. install.ps1 carries
+# the same helper; it refuses the native route outright when this cannot be satisfied, so
+# reaching here with a spaced path means only that the volume changed under us.
+function Get-UvSafePath {
+    param([string]$Path)
+    if (-not $Path -or -not $Path.Contains(" ")) { return $Path }
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        $short = if (Test-Path -LiteralPath $Path -PathType Container) {
+            $fso.GetFolder($Path).ShortPath
+        } else {
+            $fso.GetFile($Path).ShortPath
+        }
+        if ($short -and -not $short.Contains(" ")) { return $short }
+    } catch {}
+    return $Path
+}
+
+# Windows on ARM: the resolver configuration install.ps1 generated, put back for a run that
+# did not come from install.ps1.
+#
+# The torch index above is not the only thing a fresh shell loses. install.ps1 also writes
+# StudioHome\woa\overrides.txt and stages a win_arm64 wheelhouse beside it, and exports both
+# through UV_OVERRIDE / UV_FIND_LINKS / PIP_FIND_LINKS. Those exports are process-scoped, so
+# a direct `unsloth studio update` starts without them -- and the dependency pass below
+# resolves `ddgs`, which requires httpx[brotli], which requires Brotli on CPython, which
+# publishes no win_arm64 wheel. The resolver would fall to the sdist and try to build a C
+# extension. The generated file is the record of every such drop, so restore it rather than
+# re-deriving the list here.
+function Restore-WoaResolverEnvironment {
+    if (-not (Test-WinArm64Venv)) { return }
+    # Anything already set is a caller driving the resolve itself -- usually install.ps1,
+    # which set these moments ago in this very process. Never override that.
+    if ($env:UV_OVERRIDE -or $env:UV_FIND_LINKS -or $env:PIP_FIND_LINKS) { return }
+    $woaDir = Join-Path $StudioHome "woa"
+    $overrides = Join-Path $woaDir "overrides.txt"
+    if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
+        # A native venv whose overrides file was deleted. Guessing the contents would be
+        # worse than saying so: the drops depend on what the wheelhouse turned out to hold.
+        substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
+        substep "overrides cannot be restored. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+        return
+    }
+    $safeOverrides = Get-UvSafePath $overrides
+    if ($safeOverrides -match '\s') {
+        substep "windows on arm: $overrides contains a space and has no 8.3 short name," "Yellow"
+        substep "which uv cannot read. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+        return
+    }
+    $env:UV_OVERRIDE = $safeOverrides
+    # UV_FIND_LINKS is comma-separated, so it is passed through untouched; PIP_FIND_LINKS
+    # is split on whitespace like UV_OVERRIDE. Same asymmetry as install.ps1.
+    $wheels = Join-Path $woaDir "wheels"
+    if (Test-Path -LiteralPath $wheels -PathType Container) {
+        $env:UV_FIND_LINKS = $wheels
+        $env:PIP_FIND_LINKS = Get-UvSafePath $wheels
+    }
+    substep "windows on arm: restored requirement overrides from $overrides"
+}
+
 # Written before anything that could be interrupted, and cleared when torch is
 # wanted so migrating out of no-torch leaves nothing stale behind.
 function Set-PersistedNoTorch {
@@ -5071,6 +5132,10 @@ $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_
     # environment as before. Empty on every other host, leaving the index unchanged.
     Get-PersistedWoaTorchIndex -VenvPath $VenvDir
 } else { "" }
+
+# The other half of what a fresh shell lost. Restored here, before the torch installs and
+# the dependency pass, because that is where install.ps1 has them set for its own run.
+Restore-WoaResolverEnvironment
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
