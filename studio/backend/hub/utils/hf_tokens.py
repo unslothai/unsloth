@@ -93,7 +93,10 @@ def cache_reads_authorized(
     ``is_anonymous`` authenticates the caller class, not the credential: any
     token-shaped string leaves the sentinel and would otherwise take the disk
     fast paths. Ambient ``None`` is the operator and may use the cache. An
-    explicit token is authorized only after it reaches the named repository.
+    explicit token is authorized only after ``auth_check`` confirms it can
+    read the named repository. ``repo_info`` is not enough: gated public
+    metadata still returns for an invalid token, which would serve the host
+    cache to a credential that cannot fetch the files.
 
     Offline: the Hub probe cannot run, so an explicit token is denied unless a
     recent online probe is still memoized (see ``_REPO_ACCESS_TTL_S``). That is
@@ -142,8 +145,10 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
 
 def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
     try:
-        from huggingface_hub import HfApi
-        HfApi(token = token).repo_info(repo_id, repo_type = repo_type, timeout = 10)
+        # Access-specific: /auth-check 401s a gated repo with a bad token.
+        # repo_info still returns public metadata in that case.
+        from huggingface_hub import auth_check
+        auth_check(repo_id, repo_type = repo_type, token = token)
         return True
     except Exception:
         return False

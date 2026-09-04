@@ -123,6 +123,75 @@ def test_offline_explicit_token_may_use_a_recent_online_probe(monkeypatch):
     assert probes["n"] == 1, "offline must reuse the memo, not re-probe"
 
 
+def _gated_hub_error(message = "gated"):
+    """GatedRepoError without hub's response-bearing constructor (0.x vs 1.x)."""
+    from huggingface_hub.errors import GatedRepoError
+
+    class _Gated(GatedRepoError):
+        def __init__(self, text):
+            Exception.__init__(self, text)
+
+    return _Gated(message)
+
+
+def test_the_access_probe_calls_auth_check_not_repo_info():
+    """repo_info succeeds on gated public metadata with an invalid token."""
+    import inspect
+    from hub.utils import hf_tokens
+
+    source = inspect.getsource(hf_tokens._probe_repo_access)
+    assert "auth_check(" in source
+    assert "repo_info(" not in source
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_type):
+    """auth_check 401s; serving the host cache would bypass the gate."""
+    reset_repo_access_cache()
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
+    seen = {}
+
+    def _auth_check(repo_id, *, repo_type = None, token = None, **_k):
+        seen["args"] = (repo_id, repo_type, token)
+        raise _gated_hub_error()
+
+    monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
+
+    assert (
+        cache_reads_authorized("hf_invalid", repo_id = "org/gated", repo_type = repo_type) is False
+    )
+    assert seen["args"] == ("org/gated", repo_type, "hf_invalid")
+
+
+def test_repo_info_success_does_not_authorize_a_gated_cache_read(monkeypatch):
+    """The previous probe: repo_info returns, auth_check raises, cache must stay closed."""
+    reset_repo_access_cache()
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
+
+    class _Api:
+        def __init__(self, token = None):
+            self.token = token
+
+        def repo_info(self, *_a, **_k):
+            return SimpleNamespace(id = "org/gated")
+
+    def _auth_check(*_a, **_k):
+        raise _gated_hub_error()
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
+
+    assert cache_reads_authorized("hf_invalid", repo_id = "org/gated") is False
+
+
+def test_a_public_repo_still_authorizes_cache_reads(monkeypatch):
+    reset_repo_access_cache()
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
+    monkeypatch.setattr("huggingface_hub.auth_check", lambda *_a, **_k: None)
+
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/public") is True
+
+
 def test_normalizing_a_token_does_not_launder_the_sentinel():
     # `(hf_token or "").strip() or None` turns "stay anonymous" into "use the backend's".
     assert normalize_token(False) is False
