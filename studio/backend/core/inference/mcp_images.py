@@ -7,6 +7,7 @@ import base64
 import binascii
 import io
 import json
+import re
 from typing import Any, Sequence
 
 from loggers import get_logger
@@ -26,6 +27,10 @@ DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conver
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
+# Candidates carried past the cap when choosing what to decode, because which
+# entries a decoder accepts is not known until it has tried. Mirrors
+# DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
+DECODE_FAILURE_ALLOWANCE = 4
 MAX_IMAGE_EDGE = 1024
 # A PNG stays small while its raster does not: 12 MB of encoded payload can hold
 # tens of gigapixels. Bounded off the header, before a pixel is allocated.
@@ -121,14 +126,67 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     per-result quota to the concatenation gives the first result the whole
     allowance and delivers none of the second, though the conversation cap has
     room for both.
+
+    Filled from the NEWEST result back when the batch cannot fit. Everything else
+    that bounds these pictures keeps the newest -- the conversation trim, and the
+    frontend's replay bound -- so filling from the front would show this turn
+    results 1 and 2 and the next turn results 2 and 3, off the same history.
     """
-    urls: list[str] = []
-    for images in results:
-        if len(urls) >= MAX_TOTAL_MODEL_IMAGES:
+    chosen: list[list[str]] = []
+    room = MAX_TOTAL_MODEL_IMAGES
+    for images in reversed(results):
+        if room <= 0:
             break
-        room = MAX_TOTAL_MODEL_IMAGES - len(urls)
-        urls.extend(_decoded_urls(images, min(MAX_MODEL_IMAGES, room)))
-    return urls
+        urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room))
+        room -= len(urls)
+        chosen.append(urls)
+    # Back into document order: the parts are positional and a batch's own results
+    # must still read in the order the model made the calls.
+    return [url for urls in reversed(chosen) for url in urls]
+
+
+def eligible_replay_images(messages: Sequence[dict]) -> dict:
+    """Which envelope entries can still be in the prompt once the cap has run.
+
+    The decoders are the expensive part -- a permitted raster is 40 megapixels and
+    a few hundred bytes of base64 can ask for one -- and until now every envelope in
+    a replayed history was decoded before the eight-image trim threw nearly all of
+    it away. A caller that posts its own history therefore chose how much Pillow
+    work one bounded request did. This picks the survivors first, from the message
+    list alone, so the count of decodes is a property of the cap rather than of the
+    history.
+
+    Keyed by position in *messages*; the value is how many leading entries of that
+    result may be decoded. Mirrors the frontend's boundMcpImageEnvelopes, spare
+    allowance included: this side cannot know which entries decode either, so a
+    result whose images all fail must not strand the valid ones behind it.
+    """
+    eligible: dict = {}
+    budget = MAX_TOTAL_MODEL_IMAGES
+    spare = DECODE_FAILURE_ALLOWANCE
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        name = message.get("name")
+        if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+            continue
+        _text, images = split_images(content)
+        if not images:
+            continue
+        room = min(budget, MAX_MODEL_IMAGES)
+        take = min(len(images), room + spare)
+        if take <= 0:
+            eligible[index] = 0
+            continue
+        eligible[index] = take
+        charged = min(take, room)
+        budget -= charged
+        spare -= take - charged
+    return eligible
 
 
 def content_parts(images: Sequence[dict]) -> list[dict]:
@@ -215,6 +273,41 @@ def placeholder_turn(
     }
 
 
+def _relabelled(kept: list, part_type: str) -> list:
+    """The turn's note rewritten for what actually survived a partial trim.
+
+    The label exists to tell the model which of the returned images it was really
+    shown, so a turn left holding two while still saying "first 4 of 8" defeats it.
+    """
+    remaining = sum(1 for part in kept if isinstance(part, dict) and part.get("type") == part_type)
+    out = []
+    for part in kept:
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "text"
+            and _is_image_turn_note(part.get("text"))
+        ):
+            lead = (
+                DETACHED_IMAGE_TURN_TEXT
+                if str(part.get("text", "")).startswith(DETACHED_IMAGE_TURN_TEXT)
+                else IMAGE_TURN_TEXT
+            )
+            total = _note_total(part.get("text"), remaining)
+            out.append({**part, "text": _turn_text(remaining, total, lead)})
+            continue
+        out.append(part)
+    return out
+
+
+def _note_total(text, remaining: int) -> int:
+    """The "of N" the note already carried, so a second trim does not re-baseline it
+    to whatever is left and lose how many the tool actually returned."""
+    match = re.search(r"\(first \d+ of (\d+)\)\s*$", str(text or ""))
+    if match:
+        return int(match.group(1))
+    return remaining
+
+
 def _is_image_turn_note(text) -> bool:
     """Either lead the placeholder turn can carry, so a turn whose last picture went
     is recognised as having nothing left to say on both paths."""
@@ -285,7 +378,7 @@ def _drop_oldest_image_parts(
             # which strict provider APIs and chat templates reject.
             drained.append(index)
         else:
-            conversation[index] = {**message, "content": kept}
+            conversation[index] = {**message, "content": _relabelled(kept, part_type)}
     for index in reversed(drained):
         del conversation[index]
 
@@ -323,7 +416,7 @@ def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> N
         ):
             drained.append(index)
         else:
-            conversation[index] = {**message, "content": kept}
+            conversation[index] = {**message, "content": _relabelled(kept, part_type)}
     for index in reversed(drained):
         del conversation[index]
 
@@ -333,7 +426,7 @@ def trim_image_turns(
     payloads: list,
     limit: int = MAX_TOTAL_MODEL_IMAGES,
     keep: "Sequence[int] | None" = None,
-) -> None:
+) -> tuple:
     """Keep the newest *limit* pictures: a loop that keeps calling an image tool
     otherwise re-sends every one it has seen. Markers and their own pixels go
     together, or the processor counts image tokens it was given none for.
@@ -348,17 +441,28 @@ def trim_image_turns(
     replayed pictures carry a second full allowance and put twice the cap in the
     prompt; the route reserves the attachment's slot by trimming replay to
     ``limit - 1`` before interleaving it, which is where that reservation belongs.
+
+    Returns *keep* rebased onto the payload list this call leaves behind.
     """
+    protected = sorted(index for index in (keep or ()) if 0 <= index < len(payloads))
     excess = len(payloads) - limit
     if excess <= 0:
-        return
-    protected = {index for index in (keep or ()) if 0 <= index < len(payloads)}
-    drop = [index for index in range(len(payloads)) if index not in protected][:excess]
+        return tuple(protected)
+    drop = [index for index in range(len(payloads)) if index not in set(protected)][:excess]
     if not drop:
-        return
+        return tuple(protected)
     _drop_image_parts_at(conversation, set(drop), "image")
     for index in reversed(drop):
         del payloads[index]
+    # Rebased, because deleting earlier entries moves everything after them. The
+    # caller holds these across iterations, and a stale index protects the wrong
+    # payload on the next trim -- which is the attachment being deleted by the very
+    # argument that names it.
+    dropped = set(drop)
+    return tuple(
+        index - sum(1 for gone in dropped if gone < index)
+        for index in protected
+    )
 
 
 def trim_image_url_turns(
@@ -376,6 +480,13 @@ def trim_image_url_turns(
     REPLAY re-sends; a caller's own attachments are not counted against it and are
     never deleted by it.
     """
+    if only is not None:
+        # Pruned BEFORE the count, not only after the trim. A rolling-context fitter
+        # evicts whole turns mid-loop without telling this list, so counting parts
+        # that already left the conversation over-trims the ones still in it -- eight
+        # evicted plus four fresh reads as twelve and takes all four fresh away.
+        present = {id(part) for part in _all_image_url_parts(conversation)}
+        only[:] = [part for part in only if id(part) in present]
     counted = len(only) if only is not None else count_image_parts(conversation, "image_url")
     excess = counted - limit
     if excess <= 0:
@@ -679,6 +790,10 @@ def promote_history_local(
 
 def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
+    # Resolved before a single decode runs: the trim at the bottom keeps the newest
+    # eight, and decoding a whole replayed history to throw nearly all of it away is
+    # work a caller's own message list gets to choose the size of.
+    eligible = eligible_replay_images(messages) if vision else {}
     # One entry per tool result, not flattened: two parallel calls each returning
     # four images would otherwise share a single result's quota and replay only the
     # first call's four.
@@ -715,7 +830,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
         promoted.extend(parts)
         return _with_parts(into, parts) if parts else into
 
-    for message in messages:
+    for position, message in enumerate(messages):
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
@@ -730,7 +845,11 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
                 )
                 continue
             if images:
-                pending.append(images)
+                # Only the entries the cap can still admit. The suffix comes off the
+                # text either way, above; this decides how many are decoded.
+                admitted = images[: eligible.get(position, len(images))]
+                if admitted:
+                    pending.append(admitted)
             out.append({**message, "content": text or "[image returned]"} if images else message)
             continue
         if pending and vision and message.get("role") == "user":
