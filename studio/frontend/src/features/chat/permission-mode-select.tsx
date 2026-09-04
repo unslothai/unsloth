@@ -46,6 +46,8 @@ const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = {
     "Apple deprecates sandbox-exec and does not document SBPL for third-party products.",
   detached_descendant_cleanup_unverified:
     "Cleanup of descendants that create a new session or double-fork is unverified.",
+  pytorch_posix_shm_namespace_shared:
+    "PyTorch tensor sharing uses macOS's host POSIX shared-memory namespace. Access is limited to PyTorch's randomized names, but the namespace is not private.",
 };
 
 /**

@@ -1009,6 +1009,7 @@ class MacOSSeatbeltBackend:
     limitations = (
         "deprecated_undocumented_sbpl",
         "detached_descendant_cleanup_unverified",
+        "pytorch_posix_shm_namespace_shared",
     )
 
     def __init__(self) -> None:
@@ -1273,6 +1274,9 @@ def _macos_seatbelt_profile(
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))',
+        "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
+        "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
+        '(ipc-posix-name-regex #"^/torch_[0-9]+_[0-9]+_[0-9]+$"))',
         "(allow system-socket (socket-domain AF_UNIX))",
         f"(allow network-bind (local unix-socket (subpath {temp_encoded})))",
         f"(allow network-outbound (remote unix-socket (subpath {temp_encoded})))",

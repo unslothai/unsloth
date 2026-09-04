@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+from multiprocessing import shared_memory
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,7 @@ def test_probe_accepts_only_the_system_owned_launcher_but_reports_preview(monkey
     assert capability.limitations == (
         "deprecated_undocumented_sbpl",
         "detached_descendant_cleanup_unverified",
+        "pytorch_posix_shm_namespace_shared",
     )
     assert "detached setsid/double-fork descendants remains unverified" in capability.reason
 
@@ -204,6 +206,7 @@ def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     assert "network-inbound" not in profile
     assert "(allow network*)" not in profile
     assert "(allow network-outbound)" not in profile
+    assert "^/torch_[0-9]+_[0-9]+_[0-9]+$" in profile
 
 
 def test_prepare_uses_a_private_environment_and_removes_it_on_cleanup(monkeypatch, tmp_path):
@@ -397,12 +400,13 @@ def test_live_ip_dns_and_host_unix_are_denied_but_private_unix_works(
     ipv4, ipv4_address = _listen(socket.AF_INET, ("127.0.0.1", 0))
     ipv6, ipv6_address = _listen(socket.AF_INET6, ("::1", 0))
     host_unix = socket.socket(socket.AF_UNIX)
+    host_shm = shared_memory.SharedMemory(create = True, size = 1)
     with tempfile.TemporaryDirectory(prefix = "us-host-", dir = "/tmp") as host_root:
         host_socket_path = os.path.join(host_root, "host.sock")
         host_unix.bind(host_socket_path)
         host_unix.listen(1)
         code = f"""
-import os, socket
+import ctypes, os, socket
 
 def denied(family, address):
     client = socket.socket(family)
@@ -418,6 +422,13 @@ def denied(family, address):
 denied(socket.AF_INET, {ipv4_address!r})
 denied(socket.AF_INET6, {ipv6_address!r})
 denied(socket.AF_UNIX, {host_socket_path!r})
+shm_open = ctypes.CDLL(None, use_errno = True).shm_open
+shm_open.argtypes = (ctypes.c_char_p, ctypes.c_int, ctypes.c_int)
+shm_open.restype = ctypes.c_int
+shm_fd = shm_open({("/" + host_shm.name.lstrip("/")).encode()!r}, os.O_RDONLY, 0o600)
+if shm_fd != -1:
+    os.close(shm_fd)
+    raise AssertionError('host POSIX shared memory was reachable')
 try:
     socket.getaddrinfo('example.com', 443)
 except OSError:
@@ -446,6 +457,8 @@ print('SEATBELT_NETWORK_OK')
             ipv4.close()
             ipv6.close()
             host_unix.close()
+            host_shm.close()
+            host_shm.unlink()
 
     assert "SEATBELT_NETWORK_OK" in completed.stdout
 

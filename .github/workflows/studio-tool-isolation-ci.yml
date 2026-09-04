@@ -150,6 +150,7 @@ jobs:
           assert capability.protection_state == "preview", capability
           assert "deprecated_undocumented_sbpl" in capability.limitations, capability
           assert "detached_descendant_cleanup_unverified" in capability.limitations, capability
+          assert "pytorch_posix_shm_namespace_shared" in capability.limitations, capability
           PY
       - name: Run Seatbelt enforcement and shared regression tests
         working-directory: studio/backend
