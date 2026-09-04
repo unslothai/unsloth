@@ -3041,8 +3041,17 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
         print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
-def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag: str):
-    model_file = create_ollama_modelfile(tokenizer = tokenizer, gguf_location = gguf_location)
+def push_to_ollama(tokenizer, base_model_name, gguf_location, username: str, model_name: str, tag: str):
+    model_file = create_ollama_modelfile(
+        tokenizer = tokenizer,
+        base_model_name = base_model_name,
+        model_location = gguf_location,
+    )
+    if model_file is None:
+        raise RuntimeError(
+            f"Unsloth: No Ollama template mapping found for model '{base_model_name}', "
+            f"so there is no Modelfile to push."
+        )
 
     with open(f"Modelfile_{model_name}", "w", encoding = "utf-8") as f:
         f.write(model_file)
