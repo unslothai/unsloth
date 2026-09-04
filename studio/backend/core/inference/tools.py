@@ -60,6 +60,7 @@ _REQUEST_RESULT_BUDGET: ContextVar = ContextVar(
 
 import uuid
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -11586,12 +11587,13 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
-def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
-    """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
+def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
+    """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
-    Returns ``(ok, reason_or_empty, resolved_ip)``. The caller should connect
-    to *resolved_ip* (with a ``Host`` header) to prevent DNS rebinding between
-    validation and the actual fetch.
+    Returns ``(ok, reason_or_empty, resolved_ips)`` in resolver order. The caller
+    should connect to those addresses (with a ``Host`` header) to prevent DNS
+    rebinding between validation and the actual fetch, trying the next one when a
+    connection fails the way ``socket.create_connection`` does.
     """
     import ipaddress
     import socket
@@ -11600,11 +11602,12 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
-        return False, f"Failed to resolve host: {e}", ""
+        return False, f"Failed to resolve host: {e}", []
 
     if not infos:
-        return False, f"Failed to resolve host: no addresses for {hostname!r}", ""
+        return False, f"Failed to resolve host: no addresses for {hostname!r}", []
 
+    resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
         # `not ip.is_global` is the source of truth (also rejects CGNAT and
@@ -11618,11 +11621,11 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
             or ip.is_reserved
             or ip.is_unspecified
         ):
-            return False, f"Blocked: refusing to fetch non-public address {ip}.", ""
+            return False, f"Blocked: refusing to fetch non-public address {ip}.", []
+        if sockaddr[0] not in resolved:
+            resolved.append(sockaddr[0])
 
-    # Return the first resolved address for pinning.
-    first_ip = infos[0][4][0]
-    return True, "", first_ip
+    return True, "", resolved
 
 
 # Binary application subtypes rejected by MIME; other application types are
@@ -11763,7 +11766,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     """
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
-        return False, budget_error, ""
+        return False, budget_error, []
     if deadline is None and cancel_event is None:
         return _validate_and_resolve_host(hostname, port)
 
@@ -11773,13 +11776,13 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
         try:
             result.put(_validate_and_resolve_host(hostname, port))
         except Exception as exc:  # defensive: never let the worker die silently
-            result.put((False, f"Failed to resolve host: {exc}", ""))
+            result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
     while True:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
-            return False, budget_error, ""
+            return False, budget_error, []
         try:
             return result.get(timeout = 0.05)
         except queue.Empty:
@@ -11879,6 +11882,32 @@ def _normalize_url_scheme(url: str) -> str:
     return "https://" + rest
 
 
+def _pinned_netloc(ip: str, port: int | None) -> str:
+    host = f"[{ip}]" if ":" in ip else ip
+    return f"{host}:{port}" if port else host
+
+
+def _open_first_reachable(opener, request_urls, headers, hop_timeout):
+    """Open the first of ``request_urls`` that connects, else raise the last error.
+
+    ``socket.create_connection`` walks every address a host resolves to; pinning one
+    of them against DNS rebinding dropped that fallback, so a host whose first record
+    is unroutable (a blackholed IPv6, a down A record) became unreachable.
+    ``hop_timeout`` is re-read per address, so the overall fetch budget still binds.
+    """
+    last_error = None
+    for request_url in request_urls:
+        try:
+            return opener.open(
+                urllib.request.Request(request_url, headers = headers), timeout = hop_timeout()
+            )
+        except urllib.error.HTTPError:
+            raise
+        except OSError as exc:
+            last_error = exc
+    raise last_error or OSError("no resolved address to connect to")
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -11917,7 +11946,7 @@ def _fetch_url_raw(
     # check_url_access already parsed this and read .port, so this cannot raise.
     parsed = urlparse(url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ip = _resolve_with_budget(
+    ok, reason, pinned_ips = _resolve_with_budget(
         canonical_host,
         port,
         deadline,
@@ -11957,12 +11986,13 @@ def _fetch_url_raw(
             if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS
                 # interception, and they resolve it, so nothing rebinds behind us.
-                request_url = urlunparse(cp._replace(netloc = validated_netloc))
+                request_urls = [urlunparse(cp._replace(netloc = validated_netloc))]
             else:
-                # Pin to the validated IP to prevent DNS rebinding.
-                ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-                ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-                request_url = urlunparse(cp._replace(netloc = ip_netloc))
+                # Pin to the validated IPs to prevent DNS rebinding.
+                request_urls = [
+                    urlunparse(cp._replace(netloc = _pinned_netloc(ip, cp.port)))
+                    for ip in pinned_ips
+                ]
 
             handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
             if not proxied:
@@ -11976,11 +12006,15 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
             try:
                 # Cap the socket timeout at the time left on the overall deadline
                 # so a single slow hop cannot outlast the whole fetch budget.
-                resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
+                resp = _open_first_reachable(
+                    opener,
+                    request_urls,
+                    headers,
+                    lambda: _fetch_hop_timeout(timeout, deadline),
+                )
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
@@ -11998,7 +12032,7 @@ def _fetch_url_raw(
                     return policy_reason, "", ""
                 rp = urlparse(current_url)
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ip = _resolve_with_budget(
+                ok2, reason2, pinned_ips = _resolve_with_budget(
                     redirect_host,
                     rp_port,
                     deadline,
