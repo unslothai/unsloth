@@ -116,7 +116,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # the suffix, while an escaped matching quote does not end the value early.
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
-_PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB])"
+# python string prefixes: bytes, raw and unicode, so r"..." is read as a quoted value rather than a plain "r"
+_PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB]?|[uU])"
 _SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
@@ -164,11 +165,21 @@ _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?P<sep>\\(?P<key_quote>[\"'])\s*[:=]\s*\\(?P<quote>[\"']))"
     r"(?P<rest>[^\r\n]*)"
 )
+# a quoted pair: a header tuple ('Authorization', '...') or an argv element followed by its value ('--api-key', '...')
 _QUOTED_HEADER_PAIR_RE = re.compile(
-    r"(?i)(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))"
-    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<value_bytes>b)?(?P<quote>[\"'])"
+    r"(?i)(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>--(?:" + _FLAG_SECRET_KEYS + r")|" + _SECRET_KEYS
+    + r"|(?:set-)?cookie)"
+    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?(?P<quote>[\"'])"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
+# an env dump as tuples, [('OPENAI_API_KEY', '...')]: any name, but only at the start of a tuple or list, or the value
+# and next key of a json object would read as a pair
+_QUOTED_ENV_PAIR_RE = re.compile(
+    r"(?:(?<=[(\[])|(?<=[(\[] ))(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?(?P<quote>[\"'])"
+    r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+)
+_PAIR_SECRET_KEY_RE = re.compile(r"(?i)(?:" + _SECRET_KEYS + r"|(?:set-)?cookie)")
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
@@ -502,7 +513,12 @@ def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
 
 def _redact_quoted_header_pair(match: re.Match[str]) -> str:
     value = match.group("val")
-    if match.group("key").lower().endswith("cookie"):
+    key = match.group("key")
+    if not key.startswith("--") and not _PAIR_SECRET_KEY_RE.fullmatch(key):
+        # an env dump as tuples: only a conventional uppercase or inventoried env name counts
+        if (key != key.upper() and key.upper() not in SECRET_ENV_NAMES) or not _is_shell_secret_env_name(key):
+            return match.group(0)
+    if key.lower().endswith("cookie"):
         if not _COOKIE_PAIR_RE.match(value.strip()):
             return match.group(0)
         masked = REDACTED
@@ -602,6 +618,7 @@ def _redact_credentials(text: str) -> str:
     text = _COOKIE_RE.sub(_redact_cookie, text)
     text = _ESCAPED_QUOTED_KV_RE.sub(_redact_escaped_quoted_kv, text)
     text = _QUOTED_HEADER_PAIR_RE.sub(_redact_quoted_header_pair, text)
+    text = _QUOTED_ENV_PAIR_RE.sub(_redact_quoted_header_pair, text)
     text = _TRIPLE_QUOTED_KV_RE.sub(
         lambda m: f"{m.group('key')}{m.group('sep')}{m.group('quote')}{REDACTED}{m.group('quote')}",
         text,

@@ -125,6 +125,12 @@ SECRETS = [
         "IQoJb3JpZ2luX2VjEJr",
     ),
     ('headers={"x-amz-security-token": "IQoJb3JpZ2luX2VjEJr"}', "IQoJb3JpZ2luX2VjEJr"),
+    # Python raw and unicode literals, an env dump as tuples, and a logged argv list.
+    ('password = r"opaqueCredential123456"', "opaqueCredential123456"),
+    ("password = u'opaqueCredential123456'", "opaqueCredential123456"),
+    ("env=[('OPENAI_API_KEY', 'opaqueCredential123456'), ('HOME', '/home/dan')]", "opaqueCredential123456"),
+    ("['llama-server', '--api-key', 'opaqueCredential123456', '--port', '8080']", "opaqueCredential123456"),
+    ('["provider-cli", "--token", "opaqueCredential123456"]', "opaqueCredential123456"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -165,6 +171,8 @@ KEEP = [
     # The shell's working directory, and variables that name a file rather than hold a secret.
     "PWD=/home/dan/Downloads/unsloth-work",
     "export PWD=/home/dan/Downloads/unsloth-work",
+    "env=[('HOME', '/home/dan'), ('PATH', '/usr/bin'), ('name', 'kept')]",
+    "['llama-server', '--port', '8080', '--token-id', '128009']",
     "secret_sauce_path=/data/recipes/default.yaml",
     "PRIVATE_KEY_PATH=/etc/ssl/private/server.key",
     "HF_TOKEN_PATH=/home/dan/.cache/huggingface/token",
