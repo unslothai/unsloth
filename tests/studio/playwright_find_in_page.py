@@ -756,7 +756,7 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         page.locator('[role="search"]').count() == 0,
     )
 
-    failure.get_by_role("button", name="Close").click()
+    failure.get_by_role("button", name = "Close").click()
     check(
         engine,
         mode,
