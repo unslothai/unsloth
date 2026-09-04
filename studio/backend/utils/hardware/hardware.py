@@ -2932,18 +2932,23 @@ def _cuda_integrated_map_cached(visibility: str) -> dict:
     """
     if IS_ROCM:
         return {}
+    # The child is told to emit utf-8 as well as being decoded as utf-8: -I ignores
+    # PYTHON* variables, so PYTHONIOENCODING is set on top of the copy the helper makes.
+    from utils.child_stdio import utf8_child_env
+
     kwargs = {}
     if sys.platform == "win32":
         # Never flash a console window out of a GUI backend.
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
-            [sys.executable, "-I", "-c", _CUDA_UMA_PROBE_SOURCE],
+            [sys.executable, "-X", "utf8", "-I", "-c", _CUDA_UMA_PROBE_SOURCE],
             capture_output = True,
             text = True,
             encoding = "utf-8",
             errors = "replace",
             timeout = 30,
+            env = utf8_child_env(),
             **kwargs,
         )
     except Exception as e:
