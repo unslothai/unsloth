@@ -212,7 +212,7 @@ function FindBar() {
       // Escape is handled on the window for the lifetime of the bar (see the effect above), which
       // covers the walk buttons and the field as well as everything outside it, so there is no
       // handler here to also reach the presses that start inside.
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[22.25rem] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[28.25rem]"
     >
       <input
         ref={inputRef}
@@ -239,7 +239,7 @@ function FindBar() {
           // Narrow by default so the whole bar clears a small window, wide once there is room.
           // `min-w-0` lets the field, rather than the bar, give way if it still does not fit.
           // `text-ui-15`, not a raw pixel size, which ignores the UI font size preference.
-          "w-40 min-w-0 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground sm:w-64",
+          "min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground",
           empty && "text-destructive",
         )}
       />

@@ -1662,6 +1662,16 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   assert.equal(/\babsolute\b/.test(surface[1]), false);
   // And capped, so a narrow window cannot push it off the left edge.
   assert.match(surface[1], /max-w-\[calc\(100vw-2rem\)\]/);
+
+  // The counter grows from `1/2` to `1234/5000+` in a long chat. The pill must keep its nominal
+  // responsive width and let the query field yield that already-reserved room instead of growing.
+  // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
+  assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
+  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(bar);
+  assert.ok(input);
+  assert.match(input[1], /\bflex-1\b/);
+  assert.equal(/\bw-(?:40|64)\b/.test(input[1]), false);
 });
 
 test("the reveal looks again while the scroll is still moving", async () => {
