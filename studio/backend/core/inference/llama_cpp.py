@@ -28613,6 +28613,15 @@ class LlamaCppBackend:
             # `continues` false means the pause landed before anything was produced, so
             # there is nothing to continue FROM and the attempt is re-issued whole;
             # continue_final_message refuses an empty assistant turn.
+            #
+            # Re-issued whole does not mean re-issued as a fresh turn. This attempt may
+            # itself be a resume, in which case `messages` already ends on the partial an
+            # earlier attempt showed and `continue_final_message` is what tells the server
+            # to extend it. Dropping the flag here sent that partial as a finished turn
+            # with a fresh generation prompt after it, and the model answered again from
+            # the top: measured as the whole essay appearing twice, the second copy
+            # starting right after the first 107 characters of the first.
+            _reissue_continues = continues or continue_final_message
             for _resumed_item in self.generate_chat_completion(
                 messages = resumed if continues else messages,
                 image_b64 = image_b64,
@@ -28631,7 +28640,7 @@ class LlamaCppBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                continue_final_message = continues,
+                continue_final_message = _reissue_continues,
                 seed = seed,
                 promote_reasoning_only = promote_reasoning_only,
                 perf_callback = perf_callback,

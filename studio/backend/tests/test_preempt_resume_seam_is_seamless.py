@@ -56,6 +56,11 @@ from test_llama_tool_loop_preempt_resume import (  # noqa: E402
 )
 
 
+def _empty_delta() -> str:
+    """A chunk with no text: what a pause lands on when it arrives before the first token."""
+    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}}]}) + "\n"
+
+
 def _reasoning(text: str) -> str:
     return (
         "data: "
@@ -132,6 +137,37 @@ class TestThePlainPathSeam:
         _assert_monotonic(snapshots)
         # And the replay still carries only what was new, never the prefix twice.
         assert recorder.payloads[2]["messages"][-1]["content"] == "one two"
+
+    def test_a_resume_paused_before_its_first_token_still_continues_the_partial(
+        self, monkeypatch
+    ):
+        """Measured: the essay appeared twice, the second copy starting right after the
+        first 107 characters. The resumed attempt was paused again before it produced
+        anything, and the re-issue sent the partial as a finished turn with a fresh
+        generation prompt after it, so the model answered from the top."""
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _PlainRecorder(
+            monkeypatch,
+            [
+                [_delta("Introduction: The"), _finish(), _done()],
+                [_empty_delta(), _delta("never reached"), _finish(), _done()],
+                [_delta(" Paradigm"), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_attempts = (0, 1),
+        )
+        events = _run_plain(recorder.backend, signal = signal, policy = policy)
+        third = recorder.payloads[2]
+        assert third["messages"][-1] == {"role": "assistant", "content": "Introduction: The"}
+        assert third.get("continue_final_message") is True, (
+            "the partial went back as a finished turn: the model will answer again from "
+            "the top and the client will see the answer twice"
+        )
+        assert third.get("add_generation_prompt") is False
+        snapshots = _plain_snapshots(events)
+        assert _as_a_route_would(snapshots) == "Introduction: The Paradigm"
+        _assert_monotonic(snapshots)
 
     def test_a_thought_interrupted_mid_way_stays_one_thought(self, monkeypatch):
         """Paused inside <think>, the resumed reasoning must not open a second block."""
