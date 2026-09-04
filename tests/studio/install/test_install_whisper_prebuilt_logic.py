@@ -820,9 +820,7 @@ def test_linux_arm64_gpu_slim_drops_manifest_libomp(tmp_path, monkeypatch):
     assert M.slim_pairing_for_artifact(artifact, _host("linux", "arm64"), "cuda") is not None
 
 
-def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(
-    tmp_path, monkeypatch
-):
+def test_linux_arm64_gpu_slim_keeps_libomp_when_ggml_really_imports_it(tmp_path, monkeypatch):
     """The arm64 exemption is evidence-based, not arch-based.
 
     The published linux-arm64 *Vulkan* bundle genuinely ships and imports libomp.so.5,
