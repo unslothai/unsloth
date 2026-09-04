@@ -25777,6 +25777,33 @@ def _embedding_payload(vector, encoding_format: str):
     return [float(x) for x in vector]
 
 
+def _names_studio_embedder(requested: str) -> bool:
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+
+    model = rag_config.effective_embedding_model()
+    names = {model, rag_config.effective_gguf_repo_for_embedding_model(model)}
+    try:
+        names.add(rag_embeddings.embedding_identity(model))
+    except Exception:  # noqa: BLE001 - the identity is a convenience alias, never a gate
+        pass
+    wanted = requested.strip().casefold()
+    return any(name and wanted == name.casefold() for name in names)
+
+
+async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    return body if _names_studio_embedder(requested) else None
+
+
 async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
     from core.inference.llama_keepwarm import (
         untrack_admitted_inference,
@@ -25940,6 +25967,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
+    studio_body = await _studio_embedder_request_body(request)
+    if studio_body is not None:
+        return await _studio_embeddings(request, studio_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded and not isinstance(body, dict):
         _status, _detail = await _no_model_loaded_error(

@@ -19,6 +19,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -46,6 +47,48 @@ _TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
 )
+
+
+_GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+
+def _skip_gguf_value(f, vtype: int) -> None:
+    if vtype == 8:
+        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+    elif vtype == 9:
+        elem_type, count = struct.unpack("<IQ", f.read(12))
+        if elem_type in _GGUF_SCALAR_WIDTHS:
+            f.seek(_GGUF_SCALAR_WIDTHS[elem_type] * count, 1)
+        else:
+            for _ in range(count):
+                _skip_gguf_value(f, elem_type)
+    else:
+        f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
+
+
+def _gguf_context_length(path: str) -> int | None:
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            f.read(4)
+            _, kv_count = struct.unpack("<QQ", f.read(16))
+            arch = None
+            lengths: dict[str, int] = {}
+            for _ in range(kv_count):
+                key = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                vtype = struct.unpack("<I", f.read(4))[0]
+                if key == "general.architecture" and vtype == 8:
+                    arch = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                elif key.endswith(".context_length") and vtype in (4, 10):
+                    lengths[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
+                else:
+                    _skip_gguf_value(f, vtype)
+                if arch is not None and f"{arch}.context_length" in lengths:
+                    return lengths[f"{arch}.context_length"] or None
+    except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
+        return None
+    return None
 
 
 def _resolve_entrypoint(binary: str) -> str:
@@ -109,6 +152,7 @@ class LlamaServerBackend:
         # dim() takes the same _serve_lock the request path does; reentrant because dim() -> encode() ->
         # _ensure_ready() re-enters on one thread.
         self._dim: int | None = None
+        self._max_tokens: int | None = None
         # One subprocess serves one GGUF, so readiness and the request must be indivisible: a swap between
         # them lands A's POST on B's server.
         self._serve_lock = threading.RLock()
@@ -539,6 +583,7 @@ class LlamaServerBackend:
         self._model_path = path
         self._model_repo = desired
         self._dim = None
+        self._max_tokens = None
         return self._model_path
 
     # A listing, not a transfer: a working hub answers well inside a second.
@@ -1038,7 +1083,18 @@ class LlamaServerBackend:
             return width
 
     def max_tokens(self, *, model_name = None) -> int | None:
-        return None
+        with self._operation(), self._serve_lock:
+            self._ensure_ready(model_name)
+            if self._max_tokens is None and self._model_path:
+                limit = _gguf_context_length(self._model_path)
+                if limit:
+                    data = self._post(
+                        "/tokenize",
+                        {"content": "", "add_special": True},
+                        model_name = model_name,
+                    )
+                    self._max_tokens = max(1, limit - len(data.get("tokens", [])))
+            return self._max_tokens
 
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path.

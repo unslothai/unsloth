@@ -479,3 +479,119 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
 
     asyncio.run(run())
     assert closed == [("entry-1", "cancelled")]
+
+
+def _identity_names(monkeypatch):
+    monkeypatch.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    monkeypatch.setattr(rag_embeddings, "embedding_identity", lambda model_name = None: IDENTITY)
+
+
+@pytest.mark.parametrize("requested", [MODEL, f"{MODEL}-GGUF", IDENTITY, MODEL.upper()])
+def test_naming_the_configured_embedder_skips_the_chat_slot_check(studio_embedder, requested):
+    from fastapi import HTTPException
+
+    async def reject(request, current_subject, **_kwargs):
+        raise HTTPException(status_code = 404, detail = "model_not_found")
+
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", reject)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    payload = _call({"input": "alpha", "model": requested})
+    assert payload["model"] == IDENTITY
+    assert payload["data"][0]["embedding"] == [1.0, 0.0]
+
+
+def test_other_model_names_still_run_auto_switch(studio_embedder):
+    seen = []
+
+    async def record(request, current_subject, **_kwargs):
+        seen.append(current_subject)
+        return await request.json()
+
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    _call({"input": "alpha", "model": "text-embedding-3-small"})
+    assert seen == ["tester"]
+
+
+def test_st_max_tokens_leaves_room_for_the_special_tokens(monkeypatch):
+    model = SimpleNamespace(
+        max_seq_length = 512,
+        tokenizer = SimpleNamespace(num_special_tokens_to_add = lambda: 2),
+    )
+    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name = None: model)
+    assert rag_embeddings._SentenceTransformersBackend().max_tokens() == 510
+
+
+def _gguf(tmp_path, entries):
+    import io
+    import struct
+
+    buf = io.BytesIO()
+    buf.write(b"GGUF" + struct.pack("<IQQ", 3, 0, len(entries)))
+    for key, vtype, value in entries:
+        raw = key.encode()
+        buf.write(struct.pack("<Q", len(raw)) + raw + struct.pack("<I", vtype))
+        if vtype == 8:
+            raw = value.encode()
+            buf.write(struct.pack("<Q", len(raw)) + raw)
+        elif vtype == 9:
+            elem_type, items = value
+            buf.write(struct.pack("<IQ", elem_type, len(items)))
+            for item in items:
+                raw = item.encode()
+                buf.write(struct.pack("<Q", len(raw)) + raw)
+        elif vtype == 4:
+            buf.write(struct.pack("<I", value))
+        elif vtype == 10:
+            buf.write(struct.pack("<Q", value))
+    path = tmp_path / "embedder.gguf"
+    path.write_bytes(buf.getvalue())
+    return str(path)
+
+
+def test_gguf_context_length_is_read_from_the_header(tmp_path):
+    from core.rag import embed_llama_server
+
+    path = _gguf(
+        tmp_path,
+        [
+            ("general.architecture", 8, "bert"),
+            ("tokenizer.ggml.tokens", 9, (8, ["[PAD]", "[CLS]", "hello"])),
+            ("llama.context_length", 4, 4096),
+            ("bert.context_length", 10, 512),
+        ],
+    )
+    assert embed_llama_server._gguf_context_length(path) == 512
+    assert embed_llama_server._gguf_context_length(str(tmp_path / "missing.gguf")) is None
+
+
+def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path, monkeypatch):
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
+    )
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    posts = []
+
+    def post(path, payload, model_name = None):
+        posts.append((path, payload))
+        return {"tokens": [101, 102]}
+
+    monkeypatch.setattr(backend, "_post", post)
+    assert backend.max_tokens() == 510
+    assert backend.max_tokens() == 510
+    assert posts == [("/tokenize", {"content": "", "add_special": True})]
+    backend._adopt_model_path(backend._model_path, "unsloth/other-GGUF")
+    assert backend._max_tokens is None
