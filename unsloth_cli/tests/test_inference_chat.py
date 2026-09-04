@@ -1459,12 +1459,14 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
+    # 0 is the "no context requested" sentinel: a server that also asked for nothing
+    # reuses the resident model instead of relaunching it at the CLI's own number.
     assert loads == [
         (
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 4096,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -1517,7 +1519,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 2048,
+                "max_seq_length": 0,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -1528,6 +1530,50 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     ]
     assert streams[0][0] == [{"role": "user", "content": "hello"}]
     assert closed == [True]
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_local_load_forwards_the_unrequested_context_sentinel(monkeypatch, command):
+    """No server: the sentinel reaches the loader, so each backend picks its own window.
+
+    GGUF and MLX read the trained window from the checkpoint; the transformers backend has
+    no window to read and falls back to 2048.
+    """
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    loads = []
+
+    class _FakeBackend:
+        def stream(self, *a, **k):
+            return iter(["answer"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "load_chat_backend",
+        lambda model, **kwargs: (loads.append(kwargs["max_seq_length"]), _FakeBackend())[1],
+    )
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(app, argv, input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert loads == [0]
+
+    loads.clear()
+    result = CliRunner().invoke(app, [*argv, "--max-seq-length", "8192"], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert loads == [8192]
 
 
 def test_chat_server_mode_compare_loads_base_locally(monkeypatch):

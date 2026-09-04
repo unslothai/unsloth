@@ -6,20 +6,11 @@ import {
   providerModelSupportsStudioTools,
 } from "./external-providers";
 
-/**
- * Per-provider sampling parameter capability matrix.
- *
- * Derived from each provider's published chat-completion docs (2026-05). The
- * panel hides params a provider does not accept so users cannot dial a value
- * that gets silently dropped or rejected. "Local" models (non-external) use a
- * null capability — every knob renders for them.
- */
+/** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
+ *  Params a provider rejects are hidden; local models use a null capability, so all render. */
 
 export interface ProviderCapabilities {
-  /**
-   * Temperature sampling. Reasoning-class models (OpenAI's gpt-5.x / o3 via
-   * /v1/responses) reject this with `Unsupported parameter`.
-   */
+  /** Temperature. Reasoning-class models (gpt-5.x / o3 via /v1/responses) reject it. */
   temperature: boolean;
   /** Nucleus (top_p) sampling. Same restriction as `temperature` on OpenAI. */
   topP: boolean;
@@ -35,9 +26,8 @@ export interface ProviderCapabilities {
 
 export type ExternalReasoningCapabilities = {
   supportsReasoning: boolean;
-  // Mirrors the store's ReasoningStyle. External providers only ever use the
-  // first two; "enable_thinking_effort" exists so a local model's caps can be
-  // assigned here without narrowing.
+  // Mirrors the store's ReasoningStyle. "enable_thinking_effort" exists so a local model's
+  // caps can be assigned here without narrowing.
   reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
@@ -52,10 +42,8 @@ export type ExternalReasoningCapabilities = {
   )[];
 };
 
-/**
- * Pick a stored reasoning effort level that exists in `effortLevels`, mapping
- * legacy "xhigh" to "max" when only the latter is exposed (Claude 4.6).
- */
+/** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
+ *  when only the latter is exposed (Claude 4.6). */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -77,14 +65,7 @@ export function clampReasoningEffortToLevels(
 /** Fallback cap for a model with no documented limit and no connection override. */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
-/**
- * Per-model max-output caps from each provider's docs:
- *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
- *   Anthropic: platform.claude.com/docs/en/about-claude/models
- *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
- *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
- * Local-model path is unaffected.
- */
+/** Per-model max-output caps from provider docs. The local-model path is unaffected. */
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   providerType: string;
   prefixes: readonly string[];
@@ -167,15 +148,9 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
-/**
- * The connection's effective Max Tokens ceiling for one model.
- *
- * A documented per-model cap bounds the connection override rather than replacing it:
- * one connection fronts many models on a router, so a limit set for a 256k-output model
- * must not raise the slider past what a smaller model accepts. An undocumented model
- * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS`. The provider's output
- * floor wins over both, so the slider is never handed a max below its min.
- */
+/** The connection's effective Max Tokens ceiling for one model. A documented per-model cap
+ *  bounds the override rather than replacing it (one connection fronts many router models).
+ *  Undocumented takes the override, then EXTERNAL_MAX_OUTPUT_TOKENS; the output floor wins. */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -190,11 +165,8 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-/**
- * The published per-model cap, or null when nothing documents this id. No table entry
- * targets a generic Custom connection, so those always read as undocumented. OpenRouter
- * `provider/model` ids have the prefix stripped before matching.
- */
+/** The published per-model cap, or null when nothing documents this id. Generic Custom
+ *  connections always read undocumented. OpenRouter `provider/model` prefixes are stripped. */
 function _documentedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -223,15 +195,9 @@ function _documentedMaxOutputTokens(
   return null;
 }
 
-/**
- * The lowered Max Tokens the settings panel should write back, or null to leave it be.
- *
- * The availability guards are load-bearing: the caller PERSISTS this and it only ever
- * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider is
- * momentarily unresolved (connections toggled off, cold hydration, a deleted connection).
- * No provider means the cap is unknown, not 32,768. Returning the cap itself is what
- * makes it converge in one pass.
- */
+/** The lowered Max Tokens to write back, or null to leave it. The guards are load-bearing:
+ *  the caller PERSISTS this and it only lowers, while maxTokensMax collapses to the 32,768
+ *  fallback when the provider is unresolved. No provider means unknown, not 32,768. */
 export function resolveExternalMaxTokensClamp(input: {
   settingsHydrated: boolean;
   hasActiveExternalProvider: boolean;
@@ -256,46 +222,18 @@ function _inferProviderFromOpenrouterId(
   return null;
 }
 
-/**
- * Whether the external provider offers a built-in web-search tool that the
- * model invokes server-side. When `true`, the chat composer's Search button
- * is available for that provider and the chat-adapter forwards
- * `enable_tools: true, enabled_tools: ["web_search"]` on the request — the
- * backend routes the call through the provider's tool schema:
- *   - OpenAI:     `tools: [{type: "web_search"}]` on /v1/responses
- *   - Anthropic:  `tools: [{type: "web_search_20250305", name: "web_search",
- *                           max_uses: 5}]` on /v1/messages
- *   - OpenRouter: `plugins: [{id: "web"}]` on /v1/chat/completions (the
- *                 router's universal web-search shape; works for every
- *                 underlying model including the `openrouter/free` router).
- *   - Kimi:       `tools: [{type: "builtin_function", function: {name:
- *                          "$web_search"}}]` with `thinking: {type:
- *                          "disabled"}`. Requires a client round-trip:
- *                 the first call returns the search args; the backend
- *                 echoes them back as a role=tool message; the second
- *                 call streams the answer. Handled in
- *                 _stream_kimi_web_search on the backend.
- *
- * Mistral is intentionally excluded: their `web_search` connector lives on
- * the Agents API (`/v1/agents` + `/v1/conversations`), not chat completions,
- * and returns `"WebSearchTool connector is not supported"` if injected into
- * /v1/chat/completions. Wiring it would require a dedicated Agents streaming
- * path. Gemini's grounded-search can be added with the same pattern when
- * matching backend translation lands.
- */
+/** Whether the provider offers a server-side web-search tool. Enables the Search button and
+ *  sends `enable_tools` + `enabled_tools: ["web_search"]` for the backend to translate.
+ *  Mistral is excluded: its connector is Agents-API only and errors on /v1/chat/completions. */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
   baseUrl?: string | null | undefined,
 ): boolean {
-  // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on every
-  // chat-capable model. Most image-tier ids reject text-tool wiring (the
-  // responseModalities path excludes text tools), but Google documents Search
-  // grounding on the Gemini 3 image family (gemini-3-pro-image-preview,
-  // gemini-3.1-flash-image-preview, nano-banana-pro), so allow it there and
-  // hide on older
-  // image ids. Custom Gemini OpenAI-compat proxies skip the backend's native
-  // translator, so native tool envelopes never reach them -- hide the pill.
+  // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on chat-capable models. Most
+  // image-tier ids reject text-tool wiring, but Google documents Search grounding on the Gemini 3
+  // image family, so allow it there and hide on older image ids. Custom Gemini OpenAI-compat
+  // proxies skip the native translator, so hide the pill.
   if (providerType === "gemini") {
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -316,26 +254,16 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
-/**
- * Whether the external provider exposes a server-side web_fetch tool
- * (single URL, text or PDF) emitting a document block. Anthropic-only
- * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
- * composer's standalone Fetch pill, independent of Search.
- */
+/** Whether the provider exposes a server-side web_fetch tool emitting a document block.
+ *  Anthropic-only today; gates the Fetch pill independently of Search. */
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,
 ): boolean {
   return providerType === "anthropic";
 }
 
-/**
- * Whether the active provider + model supports Anthropic fast-mode
- * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 5 / Opus 4.8 only
- * per https://platform.claude.com/docs/en/build-with-claude/fast-mode: 4.7
- * errors on `speed`, and 4.6 accepts it but runs at standard speed, so the
- * toggle there promises a speed-up that never arrives.
- * Backend silently drops on unsupported models as a second defence.
- */
+/** Whether provider + model support Anthropic fast-mode (`speed: "fast"`). Opus 5 / 4.8 only:
+ *  4.7 errors on `speed`, 4.6 accepts it but runs at standard speed. Backend re-checks. */
 const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
   "claude-opus-5",
   "claude-opus-4-8",
@@ -347,36 +275,15 @@ export function providerSupportsFastMode(
 ): boolean {
   if (providerType !== "anthropic") return false;
   if (!modelId) return false;
-  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70" or
-  // "claude-opus-4-7b" do not match.
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70" do not match.
   return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
     (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
   );
 }
 
-/**
- * Whether the selected external provider/model exposes a server-side
- * code-execution tool. Two providers ship one today:
- *
- *   - **Anthropic** (`code_execution_20250825`): Python + bash +
- *     str_replace-based file edits inside a 5 GB sandboxed container
- *     per request. Documented at
- *       https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
- *
- *   - **OpenAI cloud** (`shell` on /v1/responses): bash inside a
- *     reusable container; we auto-create one on the first turn of a
- *     chat thread and reference it on subsequent turns via the
- *     thread's stored `openaiCodeExecContainerId`. Documented at
- *       https://developers.openai.com/api/docs/guides/tools-shell
- *
- * Returns false for every other provider. The backend also gates the OpenAI
- * shell tool on `is_openai_cloud` so custom OpenAI-compat servers reporting
- * `provider_type="openai"` never receive it; in practice those catalogs don't
- * surface the `gpt-5.5` ids, so the frontend prefix match suffices.
- *
- * v1 wires the tools only; file uploads (Anthropic `container_upload` / OpenAI
- * `input_file`) are a deliberate follow-up.
- */
+/** Whether the provider/model exposes server-side code execution: Anthropic's
+ *  `code_execution_20250825` sandbox, or OpenAI cloud's `shell` on /v1/responses.
+ *  False elsewhere; the backend also gates the shell tool on is_openai_cloud. */
 const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
   "claude-opus-5",
   "claude-sonnet-5",
@@ -389,30 +296,23 @@ const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
   "claude-opus-4-5",
   "claude-sonnet-4-5",
   "claude-haiku-4-5",
-  // Deprecated upstream but the registry still exposes these ids; keep the
-  // pill working for users on those snapshots.
+  // Deprecated upstream but the registry still exposes these ids; keep the pill working for users on those snapshots.
   "claude-opus-4-1",
   "claude-opus-4",
   "claude-sonnet-4",
 ] as const;
 
-// OpenAI cloud shell-tool gating. The gpt-5.6 family (sol/terra/luna) lists the
-// hosted shell under its supported tools; gpt-5.5-pro shares the same
-// /v1/responses contract as gpt-5.5. `gpt-5.5-pro` is checked first so the
-// prefix match doesn't collide with e.g. a hypothetical `gpt-5.5-turbo`.
+// OpenAI cloud shell gating: the gpt-5.6 family lists the hosted shell and gpt-5.5-pro
+// shares the /v1/responses contract. Check `gpt-5.5-pro` first so the prefix match
+// cannot collide with a hypothetical `gpt-5.5-turbo`.
 const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
   "gpt-5.6",
   "gpt-5.5-pro",
   "gpt-5.5",
 ] as const;
 
-/**
- * Strict check that a provider config points at OpenAI managed cloud
- * (api.openai.com) or Azure OpenAI Foundry (*.openai.azure.com), not a custom
- * OpenAI-compat backend. The shell and image-generation tools exist only on
- * cloud backends; sending them elsewhere 400s. Mirrors the backend's
- * `_is_openai_family_cloud` host check.
- */
+/** Strict check for OpenAI managed cloud or Azure Foundry, not a custom OpenAI-compat
+ *  backend: shell and image-generation tools 400 elsewhere. Mirrors _is_openai_family_cloud. */
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
   try {
@@ -446,15 +346,10 @@ export function providerSupportsBuiltinCodeExecution(
     );
   }
   if (providerType === "gemini") {
-    // Gemini's `tools: [{codeExecution: {}}]` is supported on every
-    // chat-capable model. Image-tier ids (`-image`, `nano-banana`)
-    // reject text-tool wiring because the inline-image path is
-    // mutually exclusive with codeExecution. Custom Gemini
-    // OpenAI-compat proxies skip the native translator on the
-    // backend, so native codeExecution envelopes do not reach them.
-    // Wire-up lives in `_stream_gemini` on the backend; output comes
-    // back inline as executableCode/codeExecutionResult parts. See
-    // https://ai.google.dev/gemini-api/docs/code-execution.
+    // Gemini code execution works on chat-capable models, but image-tier ids reject text-tool
+    // wiring (mutually exclusive with the inline-image path), and custom OAI-compat proxies
+    // skip the native translator. Wire-up lives in `_stream_gemini`; output comes back inline
+    // as executableCode / codeExecutionResult parts.
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     if (isGeminiImageModel(normalized)) return false;
     return normalized.startsWith("gemini-");
@@ -462,17 +357,9 @@ export function providerSupportsBuiltinCodeExecution(
   return false;
 }
 
-/**
- * Whether the provider TYPE ships a code sandbox of its own, model aside.
- *
- * Mirrors the `hosted_tools` entries carrying `code_execution` in the backend's
- * PROVIDER_REGISTRY (core/inference/providers.py). Deliberately coarser than
- * `providerSupportsBuiltinCodeExecution`: the question it answers is whether
- * running the model's code on the USER's machine would be a relocation, and
- * that does not depend on which model is selected. openai_codex is absent for
- * the same reason the backend registry leaves it out -- its code tools are
- * Unsloth's own, run by the Codex loop, and always have been.
- */
+/** Whether the provider TYPE ships its own code sandbox, model aside. Mirrors backend
+ *  PROVIDER_REGISTRY `hosted_tools` code_execution. Coarser than the per-model check:
+ *  it asks whether running the code locally would be a relocation. */
 const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
 
 export function providerHostsCodeExecution(
@@ -481,15 +368,8 @@ export function providerHostsCodeExecution(
   return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
 }
 
-/**
- * Whether the selected provider/model exposes OpenAI's Responses-API
- * image_generation tool. On for OpenAI cloud (`api.openai.com`) with a
- * Responses-API family id (gpt-5.x). Mirrors the backend's `is_openai_cloud`
- * gate so the pill hides on custom OpenAI-compat backends reporting
- * `provider_type="openai"` that would 400 on a `{type:"image_generation"}` tool.
- * See backend/core/inference/external_provider.py (~line 2770) for dispatch and
- * backend/tests/test_openai_image_generation.py for round-trip coverage.
- */
+/** Whether provider/model exposes OpenAI's Responses-API image_generation tool. On for
+ *  OpenAI cloud Responses-family ids, mirroring the backend's is_openai_cloud gate. */
 const OPENAI_IMAGE_GENERATION_MODEL_PREFIXES = [
   "gpt-5.5-pro",
   "gpt-5.5",
@@ -516,35 +396,24 @@ export function providerSupportsBuiltinImageGeneration(
     );
   }
   if (providerType === "gemini") {
-    // Gemini Nano Banana image-output ids carry `-image` or the `nano-banana`
-    // alias. The backend flips responseModalities to ["TEXT", "IMAGE"] and maps
-    // inlineData parts into the same image_b64 tool_end envelope as the OpenAI
-    // path so the UI renders inline. Custom Gemini OpenAI-compat proxies skip
-    // the native translator, so hide the image pill there.
-    // See https://ai.google.dev/gemini-api/docs/image-generation.
+    // Gemini Nano Banana image ids carry `-image` or the `nano-banana` alias; the backend maps
+    // inlineData into the same image_b64 envelope. Custom OAI-compat proxies skip the
+    // native translator, so hide the pill there.
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     return normalized.includes("-image") || normalized.includes("nano-banana");
   }
   return false;
 }
 
-/**
- * Whether `modelId` is a Gemini image-output id (Nano Banana family).
- * Mirrors the backend's `is_image_picker_model` guard so the frontend
- * hides text-only tool pills (web_search, code_execution) for these.
- */
+/** Whether `modelId` is a Gemini image-output id. Mirrors the backend's is_image_picker_model
+ *  so text-only tool pills stay hidden. */
 function isGeminiImageModel(modelId: string): boolean {
   const m = modelId.toLowerCase();
   return m.includes("-image") || m.includes("nano-banana");
 }
 
-/**
- * Whether the saved Gemini connection points at a custom OpenAI-compat gateway
- * (any non-Google host). The backend `_is_openai_compatible` routes these
- * through `/chat/completions` instead of the native translator, so native Gemini
- * tool envelopes never reach them. Hide the matching Unsloth pills here so the
- * request, builder, and UI agree.
- */
+/** Whether the Gemini connection points at a custom OpenAI-compat gateway. The backend routes
+ *  those through /chat/completions, so native Gemini tool envelopes never reach them. */
 export function isGeminiCustomOpenAICompatBase(
   baseUrl: string | null | undefined,
 ): boolean {
@@ -557,13 +426,8 @@ export function isGeminiCustomOpenAICompatBase(
   }
 }
 
-/**
- * Whether the given Gemini image model supports `tools: [{googleSearch: {}}]`.
- * Google documents Search grounding on the Gemini 3 image family
- * (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
- * "Nano Banana Pro"); older image ids (gemini-2.5-flash-image) reject
- * it with "Search as tool is not enabled for this model".
- */
+/** Whether this Gemini image model supports googleSearch. Documented on the Gemini 3 image
+ *  family; older ids reject it with "Search as tool is not enabled for this model". */
 function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
   const m = modelId.toLowerCase();
   return (
@@ -574,15 +438,9 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
   );
 }
 
-/**
- * Per-provider minimum on the outbound max_tokens. Kimi requires
- * `max_tokens >= 16000` for thinking models so reasoning_content and the answer
- * both fit; lower truncates mid-stream. Others fall through to the generic 64.
- *
- * The chat-adapter resolves the floor on send and bumps maxTokens up to it if
- * the stored value is below; the settings slider min reflects the same floor so
- * the displayed value never drifts from what's sent.
- */
+/** Per-provider minimum outbound max_tokens. Kimi needs >= 16000 on thinking models so
+ *  reasoning_content and the answer both fit; others use the generic 64. Adapter and
+ *  slider min resolve the same floor. */
 const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = {
   kimi: 16000,
 };
@@ -613,10 +471,9 @@ const ALL_SUPPORTED: ProviderCapabilities = {
 };
 
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
-  // OpenAI's flagship models (gpt-5.x / o3 / gpt-4.5) are reasoning-class
-  // models served via /v1/responses, which rejects temperature, top_p, and
-  // presence/frequency penalty. See backend
-  // external_provider._stream_openai_responses for the proxy.
+  // OpenAI's flagship ids are reasoning-class on /v1/responses, which rejects temperature,
+  // top_p and presence/frequency penalty.
+  // The concrete ids are gpt-5.x, o3 and gpt-4.5. See external_provider._stream_openai_responses.
   openai_codex: {
     temperature: false,
     topP: false,
@@ -634,13 +491,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
-  // Anthropic's Messages API accepts top_k on 3.x and 4.5/4.6, but Claude
-  // 4.7 (Opus/Sonnet/Haiku) deprecated it and returns 400 if it is set.
-  // We surface top_k in the panel for all Anthropic providers and let the
-  // backend strip it per-model — see _stream_anthropic in
-  // studio/backend/core/inference/external_provider.py.
-  // Presence/frequency penalty is not part of the Messages API on any
-  // Claude generation.
+  // Anthropic accepts top_k on 3.x and 4.5/4.6, but 4.7 400s on it, so the panel surfaces it
+  // and the backend strips per-model. Presence/frequency penalty is not in the Messages API.
+  // Claude 4.7 is Opus, Sonnet and Haiku alike. Stripping lives in _stream_anthropic in
+  // core/inference/external_provider.py.
   anthropic: {
     temperature: true,
     topP: true,
@@ -650,12 +504,9 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     presencePenalty: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  // Gemini's generationConfig accepts temperature, topP, topK and
-  // presencePenalty (plus a frequencyPenalty we don't surface). minP and
-  // repetitionPenalty aren't part of the contract --
-  // see https://ai.google.dev/api/rest/v1beta/GenerationConfig. Backend shaping
-  // lives in _stream_gemini in
-  // studio/backend/core/inference/external_provider.py.
+  // Gemini's generationConfig accepts temperature, topP, topK, presencePenalty; minP and
+  // repetitionPenalty are not in the contract. Shaping lives in _stream_gemini.
+  // Gemini also accepts a frequencyPenalty this panel does not surface.
   gemini: {
     temperature: true,
     topP: true,
@@ -664,10 +515,8 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: true,
   },
-  // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and top_p to
-  // fixed defaults and 400s on any other value ("invalid temperature: only 1 is
-  // allowed for this model"). Hide both sliders. Backend also strips these via
-  // PROVIDER_REGISTRY['kimi']['body_omit'].
+  // Kimi k2.5/k2.6 lock temperature and top_p and 400 on any other value, so hide both
+  // sliders. The backend also strips them via PROVIDER_REGISTRY['kimi']['body_omit'].
   kimi: {
     temperature: false,
     topP: false,
@@ -687,12 +536,11 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
-  // OpenRouter silently drops params the target model does not support, so we
-  // surface every knob and let the gateway handle the per-model fan-out.
+  // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
+  // fan out per model.
   openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compat connections go through the OpenAI backend path, but
-  // vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
-  // be permissive.
+  // Local OpenAI-compat connections use the OpenAI path, but vLLM/Ollama/llama.cpp users
+  // want top_k/min_p/repetition, so be permissive.
   custom: ALL_SUPPORTED,
   vllm: ALL_SUPPORTED,
   ollama: ALL_SUPPORTED,
@@ -701,11 +549,8 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
-/**
- * Resolve the capability set for an external provider. Returns `null` for
- * a local model (i.e. when `providerType` is null/undefined), which callers
- * should treat as "every knob applies".
- */
+/** Resolve the capability set for an external provider. Null for a local model, which
+ *  callers treat as "every knob applies". */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
 ): ProviderCapabilities | null {
@@ -748,8 +593,7 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 
 const ANTHROPIC_REASONING_MODELS = [
   {
-    // Fable / Mythos 5 think in adaptive mode always: `thinking.type
-    // "disabled"` 400s, so there is no off switch to offer.
+    // Fable / Mythos 5 always think: `thinking.type "disabled"` 400s, so there is no off switch.
     prefixes: ["claude-fable-5", "claude-mythos-5"],
     supportsOff: false,
     levels: ["low", "medium", "high", "xhigh", "max"],
@@ -806,8 +650,7 @@ const OPENAI_REASONING_MODELS = [
     levels: ["medium", "high", "xhigh"],
   },
   {
-    // gpt-5.6 (sol/terra/luna) rejects "minimal"; the ladder is the same as
-    // gpt-5.5 / gpt-5.4.
+    // gpt-5.6 (sol/terra/luna) rejects "minimal"; the ladder is the same as gpt-5.5 / gpt-5.4.
     prefixes: ["gpt-5.6", "gpt-5.5", "gpt-5.4"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
@@ -904,11 +747,9 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
 }
 
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
-  // Kimi exposes a boolean thinking toggle, not an effort scale.
-  //   - kimi-k2.6:        on by default, toggleable via
-  //                       extra_body: {thinking: {type: enabled|disabled}}
-  //   - kimi-k2-thinking: always on, no off switch
-  //   - kimi-k2.5 (and others): no thinking
+  // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
+  // toggleable, k2-thinking always on, k2.5 and others none.
+  // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}.
   if (modelId === "kimi-k2-thinking") {
     return withEnableThinkingStyle({
       supportsReasoning: true,
@@ -924,18 +765,10 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   return withEnableThinkingStyle();
 }
 
-// Gemini's thinking ladder.
-//   - Gemini 3.x (Pro + Flash + Flash-Lite) and the gemini-pro-latest /
-//     gemini-flash-latest aliases use the string `thinkingConfig.thinkingLevel`
-//     (LOW/MEDIUM/HIGH/MINIMAL); Pro tier rejects MINIMAL.
-//   - Gemini 2.5 Flash + 2.5 Pro use the integer `thinkingConfig.thinkingBudget`
-//     (0=off on Flash, -1=dynamic, N>0=cap; Pro rejects 0).
-//   - 2.5 Flash-Lite: no native thinking surfaced; leave off.
-//   - Image-tier ids: image generation path -- no reasoning controls.
-// Match the 3.x minors by pattern rather than enumerating them: a new
-// `gemini-3.6-flash` otherwise falls through to the 2.5 branch and gets the
-// integer thinkingBudget ladder, which Gemini 3 rejects. Mirrors
-// `_GEMINI3_FAMILY` / `_GEMINI3_PRO` in the backend's external_provider.py.
+// Gemini's thinking ladder: 3.x uses the string thinkingLevel (Pro rejects MINIMAL);
+// 2.5 Flash/Pro use integer thinkingBudget (0=off on Flash, -1=dynamic, Pro rejects 0);
+// 2.5 Flash-Lite and image ids get none. 3.x minors match by pattern so a new
+// `gemini-3.6-flash` cannot fall into the 2.5 branch. Mirrors _GEMINI3_FAMILY/_GEMINI3_PRO.
 const GEMINI3_PRO_PATTERN = /^gemini-3(\.\d+)?-pro/;
 const GEMINI3_FLASH_PATTERN = /^gemini-3(\.\d+)?-flash/;
 const GEMINI3_PRO_PREFIXES = ["gemini-pro-latest"];
@@ -961,10 +794,9 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite: `thinkingBudget` 0 = off, positive range from 512
-  // (backend maps "minimal" to that floor in _stream_gemini). Check this branch
+  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
   // BEFORE the broader `gemini-2.5-flash` prefix.
-  // https://ai.google.dev/gemini-api/docs/thinking
+  // The backend maps "minimal" to that 512 floor in _stream_gemini.
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -980,9 +812,8 @@ function resolveGeminiReasoningCapabilities(
     });
   }
   if (GEMINI3_PRO_PATTERN.test(m) || GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3.x Pro: thinkingLevel low/medium/high; cannot fully disable, and
-    // "minimal" is rejected on Pro. Refs:
-    // https://ai.google.dev/gemini-api/docs/thinking and
+    // Gemini 3.x Pro: thinkingLevel low/medium/high; cannot fully disable, and "minimal" is rejected on Pro.
+    // Refs: https://ai.google.dev/gemini-api/docs/thinking and
     // https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro.
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -991,8 +822,7 @@ function resolveGeminiReasoningCapabilities(
     });
   }
   if (GEMINI3_FLASH_PATTERN.test(m) || GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal is the
-    // closest to "off" Google offers on Gemini 3.
+    // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal is the closest to "off" Google offers on Gemini 3.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
@@ -1005,9 +835,8 @@ function resolveGeminiReasoningCapabilities(
     });
   }
   if (GEMINI25_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 2.5 Pro: thinkingBudget cannot be 0 (API rejects "only works in
-    // thinking mode"); backend coerces to a small positive budget. Hide the off
-    // switch in the picker.
+    // Gemini 2.5 Pro rejects thinkingBudget 0, so the backend coerces to a small positive
+    // budget and the off switch is hidden.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
@@ -1057,7 +886,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
@@ -1071,10 +900,8 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-/**
- * Resolve external-model thinking capabilities. Provider-specific matching lives
- * in the per-provider resolvers; others default to no reasoning controls.
- */
+/** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
+ *  anything else defaults to no reasoning controls. */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -1093,8 +920,8 @@ export function getExternalReasoningCapabilities(
     return withEnableThinkingStyle();
   }
 
-  // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even
-  // if they arrive through aliased/custom provider routes.
+  // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even when they
+  // arrive through aliased or custom provider routes.
   if (isOpenRouterMandatoryReasoningModel(normalizedModel)) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
@@ -1116,9 +943,8 @@ export function getExternalReasoningCapabilities(
   const isMistralProvider = normalizedProvider === "mistral";
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
-    // OpenRouter's unified `reasoning` param is accepted on every request; the
-    // gateway no-ops for non-reasoning models. Mandatory-reasoning ids are
-    // handled by the early guard; everything else gets a toggleable control.
+    // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
+    // models, so past the mandatory guard everything gets a toggleable control.
     return {
       supportsReasoning: true,
       reasoningStyle: "enable_thinking",
@@ -1130,9 +956,8 @@ export function getExternalReasoningCapabilities(
   if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
   if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
   if (normalizedProvider === "gemini") {
-    // Custom Gemini OAI-compat gateways route through /chat/completions, which
-    // drops the native thinkingConfig payload. Hide the native thinking ladder
-    // so the UI doesn't advertise a control the backend can't honor.
+    // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
+    // thinkingConfig payload, so hide the ladder.
     if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
       return withEnableThinkingStyle();
     }

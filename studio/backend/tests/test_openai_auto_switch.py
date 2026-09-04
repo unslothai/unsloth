@@ -6703,6 +6703,54 @@ def test_forgetting_a_cached_repo_also_clears_its_snapshot_path_entry(override_s
     assert resp.overrides == {}
 
 
+def test_a_remove_reports_every_key_it_cleared(override_store):
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 2048)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == [
+        "unsloth/B-GGUF:Q4_K_M",
+        "unsloth/B-GGUF",
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+    ]
+    assert resp.overrides == {}
+
+
+def test_a_remove_reports_the_legacy_label_of_a_loose_gguf(override_store):
+    settings.set_model_override("/models/Qwen3-4B-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
+
+    resp = _put("/models/Qwen3-4B-Q4_K_M.gguf", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == [
+        "/models/Qwen3-4B-Q4_K_M.gguf",
+        "/models/Qwen3-4B-Q4_K_M.gguf:q4_k_m",
+    ]
+    assert resp.overrides == {}
+
+
+def test_a_remove_leaves_the_bare_row_for_a_remaining_quant_and_says_so(override_store):
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 2048)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 16384)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == ["unsloth/B-GGUF:Q4_K_M"]
+    assert set(resp.overrides) == {"unsloth/B-GGUF", "unsloth/B-GGUF:Q8_0"}
+
+
+def test_a_save_reports_no_removed_keys(override_store):
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    assert resp.removed_keys == []
+
+
+def test_a_fill_reports_no_removed_keys(override_store):
+    # A fill retires nothing, and the browser deletes whatever a response reports.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, fill_absent_fields = True)
+    assert resp.removed_keys == []
+
+
 def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     # Only the same repo and the same quant fold together: a ./models path is keyed by its path
     # alone, another quant has its own settings, and a bare entry backs every quant.

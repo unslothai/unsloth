@@ -1039,6 +1039,7 @@ class TestResponsesNonStreamingAdapter:
         message,
         payload = None,
         llama_backend = None,
+        finish_reason = None,
     ):
         import routes.inference as inf_mod
 
@@ -1050,7 +1051,7 @@ class TestResponsesNonStreamingAdapter:
             return JSONResponse(
                 content = {
                     "model": "test-model",
-                    "choices": [{"message": message}],
+                    "choices": [{"message": message, "finish_reason": finish_reason}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
@@ -1068,6 +1069,52 @@ class TestResponsesNonStreamingAdapter:
             return json.loads(response.body.decode())
 
         return asyncio.run(run())
+
+    def test_a_truncated_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": "half an ans",
+                "reasoning_content": "partial plan",
+                "tool_calls": [
+                    {
+                        "id": "call_partial",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q":"x"'},
+                    }
+                ],
+            },
+            finish_reason = "length",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "max_output_tokens"}
+        assert [item["status"] for item in body["output"]] == [
+            "incomplete",
+            "incomplete",
+            "incomplete",
+        ]
+
+    def test_a_natural_stop_is_still_completed(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "a whole answer"},
+            finish_reason = "stop",
+        )
+
+        assert body["status"] == "completed"
+        assert body["incomplete_details"] is None
+
+    def test_a_content_filtered_turn_is_reported_as_incomplete(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "filtered partial output"},
+            finish_reason = "content_filter",
+        )
+
+        assert body["status"] == "incomplete"
+        assert body["incomplete_details"] == {"reason": "content_filter"}
+        assert [item["status"] for item in body["output"]] == ["incomplete"]
 
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
@@ -3042,3 +3089,93 @@ def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
 
     row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
     assert row["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_truncated_responses_stream_ends_on_response_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "incomplete_reason"),
+    [("length", "max_output_tokens"), ("content_filter", "content_filter")],
+)
+def test_a_healed_truncated_tool_call_remains_incomplete(
+    monkeypatch, finish_reason, incomplete_reason
+):
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": finish_reason}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.completed") == []
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert incomplete["response"]["status"] == "incomplete"
+    assert incomplete["response"]["incomplete_details"] == {"reason": incomplete_reason}
+    assert [item["status"] for item in incomplete["response"]["output"]] == ["incomplete"]
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == finish_reason
+    item_done = TestResponsesStreamAdapter._payloads(lines, "response.output_item.done")[0]
+    assert item_done["item"]["status"] == "incomplete"
+
+
+def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    assert TestResponsesStreamAdapter._payloads(lines, "response.incomplete") == []
+    completed = TestResponsesStreamAdapter._payloads(lines, "response.completed")[0]
+    assert completed["response"]["status"] == "completed"
+    assert completed["response"]["incomplete_details"] is None
+    assert [item["status"] for item in completed["response"]["output"]] == ["completed"]
