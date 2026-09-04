@@ -269,8 +269,8 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
 
 
 def test_flash_attention_fallback_pins_a_dynamic_cache():
-    # Delegating is not enough on its own: a static cache still reaches FlashAttention via
-    # an explicit kwarg, the caller's generation_config, or the model default.
+    # Delegating is not enough on its own: a static cache still reaches FlashAttention via an
+    # explicit kwarg, the caller's generation_config, or the model default.
     namespace = {
         "torch": SimpleNamespace(
             Tensor = type("FakeTensor", (), {"shape": (1, 3)}),

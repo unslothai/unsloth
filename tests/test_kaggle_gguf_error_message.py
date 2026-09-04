@@ -88,9 +88,6 @@ def test_the_check_is_case_insensitive():
     assert _looks_like_disk(RuntimeError("NO SPACE LEFT ON DEVICE")) is True
 
 
-# ---- failures that are NOT about disk -------------------------------------
-
-
 @pytest.mark.usefixtures("plenty_of_free_space")
 def test_an_unconvertible_architecture_is_not_a_disk_problem():
     """The bert_classification case."""

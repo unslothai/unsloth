@@ -71,9 +71,6 @@ def _install_fake_modeling_utils(monkeypatch, safe_open_fn):
     return fake_mu
 
 
-# --- detection / gate ---
-
-
 def test_force_uma_on(uma, monkeypatch):
     monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
     uma.is_integrated_unified_memory_gpu.cache_clear()
@@ -105,9 +102,6 @@ def test_is_cuda_target(uma, device, expected):
 def test_is_cuda_target_torch_device(uma):
     assert uma._is_cuda_target(torch.device("cuda", 0)) is True
     assert uma._is_cuda_target(torch.device("cpu")) is False
-
-
-# --- patch gating ---
 
 
 def test_wrapper_passes_through_off_uma(uma, force_uma, monkeypatch):
@@ -162,9 +156,6 @@ def test_patch_installs_and_is_idempotent(uma, force_uma, monkeypatch):
     assert fake_mu.safe_open is wrapped
 
 
-# --- correctness ---
-
-
 def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors):
     path, tensors = tiny_safetensors
     force_uma(True)
@@ -207,8 +198,8 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     force_uma(True)
     fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
     uma.patch_unified_memory_safetensors_load()
-    # Clone OOMs (transient CPU doubling on a constrained UMA box): the wrapper
-    # must fall back to the direct move and still succeed.
+    # Clone OOMs (transient CPU doubling on a constrained UMA box): the wrapper must fall back to
+    # the direct move and still succeed.
     real_clone = torch.Tensor.clone
 
     def _oom_clone(self, *a, **k):

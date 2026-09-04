@@ -15,8 +15,8 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
-# The installer imports install_llama_prebuilt (same directory); make studio/
-# importable so that resolves under spec-based loading.
+# The installer imports install_llama_prebuilt (same directory); make studio/ importable so that resolves under
+# spec-based loading.
 _STUDIO_DIR = str(MODULE_PATH.parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -383,9 +383,9 @@ def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
 
 # ── Resolver JSON shape ──
 def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
-    # Even when the slim pairing emits diagnostics, --resolve-prebuilt must keep
-    # stdout to exactly the JSON line (setup.sh / whisper_cpp_update.py parse
-    # it); the slim_selection log noise belongs on stderr.
+    # Even when the slim pairing emits diagnostics, --resolve-prebuilt must keep stdout to exactly the JSON line
+    # (setup.sh / whisper_cpp_update.py parse it);
+    # the slim_selection log noise belongs on stderr.
     host = _cuda_host()
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
@@ -404,8 +404,7 @@ def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (bundle, {})
     )
-    # A prior install test may have left the module flag True; the resolver must
-    # force it back to stderr regardless.
+    # A prior install test may have left the module flag True; the resolver must force it back to stderr regardless.
     monkeypatch.setattr(M, "_LOG_TO_STDOUT", True, raising = False)
 
     rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
@@ -469,9 +468,8 @@ def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
 
 
 def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
-    # An unexpected failure inside the probe maps to prebuilt_available=False, not
-    # a traceback, so the caller falls back cleanly. It is reported as unresolved,
-    # since nothing was learned about whether a prebuilt exists.
+    # An unexpected failure inside the probe maps to prebuilt_available=False, not a traceback, so the caller falls back
+    # cleanly. It is reported as unresolved, since nothing was learned about whether a prebuilt exists.
     host = _host("linux", "x64")
     monkeypatch.setattr(M, "detect_host", lambda: host)
 
@@ -647,8 +645,8 @@ def test_slim_selected_when_all_pairing_checks_pass(tmp_path, monkeypatch):
     ],
 )
 def test_slim_pairing_failure_falls_back_to_pinned_cpu(tmp_path, monkeypatch, runtime, slim_extra):
-    # With the fat per-accelerator chain gone, a failed pairing degrades to the
-    # one legacy shape: the release's published fat CPU bundle.
+    # With the fat per-accelerator chain gone, a failed pairing degrades to the one legacy shape: the release's
+    # published fat CPU bundle.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: runtime(bin_dir))
     artifact, backend, used_fallback = M.select_artifact_with_fallback(
@@ -659,9 +657,8 @@ def test_slim_pairing_failure_falls_back_to_pinned_cpu(tmp_path, monkeypatch, ru
 
 
 def test_slim_missing_accel_module_rides_the_cpu_module(tmp_path, monkeypatch):
-    # Sonames present but no libggml-cuda.so in the llama bin dir: the cuda
-    # pairing fails, and the cpu retry still serves the same slim bundle via
-    # the llama cpu modules.
+    # Sonames present but no libggml-cuda.so in the llama bin dir: the cuda pairing fails, and the cpu retry still
+    # serves the same slim bundle via the llama cpu modules.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = None)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
@@ -674,8 +671,8 @@ def test_slim_missing_accel_module_rides_the_cpu_module(tmp_path, monkeypatch):
 
 
 def test_slim_selected_for_cpu_backend_on_linux(tmp_path, monkeypatch):
-    # Slim-only releases must serve cpu too: with the llama cpu modules present
-    # the cpu backend rides the same slim bundle as the GPUs.
+    # Slim-only releases must serve cpu too: with the llama cpu modules present the cpu backend rides the same slim
+    # bundle as the GPUs.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "cuda13-newer")
@@ -740,9 +737,8 @@ WIN_GPU_BUNDLES = [
     ("rocm", "ggml-hip.dll", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
     ("cuda", "ggml-cuda.dll", {"has_usable_nvidia": True}),
     ("vulkan", "ggml-vulkan.dll", {}),
-    # The cpu backend on a GPU bundle: the exemption keys on what the paired bin
-    # dir holds, not on the request, and that bundle's ggml-cpu.dll has no libomp
-    # to find either, so this must pair outright rather than via a cpu retry.
+    # The cpu backend on a GPU bundle: the exemption keys on what the paired bin dir holds, not on the request, and that
+    # bundle's ggml-cpu.dll has no libomp to find either, so this must pair outright rather than via a cpu retry.
     ("cpu", "ggml-hip.dll", {}),
 ]
 
@@ -751,8 +747,8 @@ WIN_GPU_BUNDLES = [
 def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
     tmp_path, monkeypatch, backend, module, host_kwargs
 ):
-    # The shared Windows manifest lists the OpenMP runtime only the cpu llama
-    # bundle ships; the GPU bundles omit it and never import it, so they pair.
+    # The shared Windows manifest lists the OpenMP runtime only the cpu llama bundle ships; the GPU bundles omit it
+    # and never import it, so they pair.
     # The empty bundle_profile is what the published rocm artifacts carry.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
@@ -769,12 +765,12 @@ def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
     assert chosen == backend and used_fallback is False
 
 
-# "" is the upstream-sourced install: install_llama_prebuilt builds those
-# AssetChoices without a bundle_profile, so a real cpu bundle reports no profile.
+# "" is the upstream-sourced install: install_llama_prebuilt builds those AssetChoices without a bundle_profile, so a
+# real cpu bundle reports no profile.
 @pytest.mark.parametrize("profile", ["windows-cpu-x64", ""])
 def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch, profile):
-    # A cpu bundle's ggml really does import libomp, so a runtime that lost the
-    # DLL must fail the pairing rather than install a whisper that cannot load.
+    # A cpu bundle's ggml really does import libomp, so a runtime that lost the DLL must fail the pairing rather
+    # than install a whisper that cannot load.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
@@ -789,8 +785,8 @@ def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch
 
 
 def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
-    # The exemption is Windows only: llama's clang-built linux slices bundle
-    # libomp beside a libggml-base that really imports it, so it stays mandatory.
+    # The exemption is Windows only: llama's clang-built linux slices bundle libomp beside a libggml-base that really
+    # imports it, so it stays mandatory.
     bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
@@ -835,9 +831,8 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
 
 
 def test_windows_rocm_slim_rejects_decoy_hip_dlls_alone(tmp_path, monkeypatch):
-    # Same loss, but with libomp present so the soname gate cannot do the
-    # rejecting: only naming the ggml module rejects this, which is what the
-    # older *hip*.dll glob could not do.
+    # Same loss, but with libomp present so the soname gate cannot do the rejecting: only naming the ggml module
+    # rejects this, which is what the older *hip*.dll glob could not do.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in (
@@ -933,8 +928,8 @@ def test_macos_auto_backends_route_to_slim(tmp_path, monkeypatch):
 
 
 def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
-    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the
-    # cpu fallback still rides the same slim bundle via the cpu module.
+    # A macos llama runtime without libggml-metal*.dylib cannot back metal; the cpu fallback still rides the same slim
+    # bundle via the cpu module.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
     bin_dir.mkdir(parents = True)
     for name in ("libggml.dylib", "libggml-base.dylib", "libggml-cpu.dylib"):
@@ -951,8 +946,8 @@ def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
 
 
 def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
-    # A slim-only release with no llama install is an operational failure, not
-    # the narrowly handled installed-version skew.
+    # A slim-only release with no llama install is an operational failure, not the narrowly handled installed-version
+    # skew.
     lines: list[str] = []
     monkeypatch.setattr(M, "log", lines.append)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
@@ -999,8 +994,8 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
 
 
 LLAMA_REPO = "unslothai/llama.cpp"
-# A publisher that is NOT the default, so a lookup that dropped installed_repo
-# and fell back to unslothai/llama.cpp builds a different URL and gets caught.
+# A publisher that is NOT the default, so a lookup that dropped installed_repo and fell back to unslothai/llama.cpp
+# builds a different URL and gets caught.
 FORK_REPO = "acme-fork/llama.cpp"
 
 
@@ -1020,15 +1015,15 @@ def _offline_published_tree_lookup(monkeypatch):
         raise OSError(f"offline test tried to fetch {url}")
 
     monkeypatch.setattr(M, "_download_host_json_once", unreachable)
-    # No marker to read, so installed_llama_tree_repo() stays None unless a
-    # test points it somewhere; the lookup then needs an explicit repo.
+    # No marker to read, so installed_llama_tree_repo() stays None unless a test points it somewhere; the lookup then
+    # needs an explicit repo.
     monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: Path("/nonexistent-llama"))
     yield
     M._PUBLISHED_GGML_TREE_CACHE.clear()
 
 
-# The autouse fixture above replaces _download_host_json_once with an offline guard, so a test
-# exercising the real wrapper has to hold a reference taken at import, before any fixture runs.
+# The autouse fixture above replaces _download_host_json_once with an offline guard, so a test exercising the real
+# wrapper has to hold a reference taken at import, before any fixture runs.
 _REAL_DOWNLOAD_HOST_JSON_ONCE = M._download_host_json_once
 
 
@@ -1046,8 +1041,8 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml: ABI-identical.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # A missing tree falls back to the suffix only when the release does
-        # not publish one either; the lookup is stubbed offline above.
+        # A missing tree falls back to the suffix only when the release does not publish one either; the lookup is
+        # stubbed offline above.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
@@ -1070,9 +1065,8 @@ def test_llama_runtime_pairs_prefers_ggml_tree(
 
 
 def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(monkeypatch):
-    # The case the fallback got wrong: one -mix- suffix, two ggml trees. An
-    # install predating ggml_tree has no local tree, so both come from the
-    # releases.
+    # The case the fallback got wrong: one -mix- suffix, two ggml trees. An install predating ggml_tree has no local
+    # tree, so both come from the releases.
     trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
     fetched = []
 
@@ -1085,9 +1079,9 @@ def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(m
         M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = FORK_REPO) is False
     )
     assert len(fetched) == 2
-    # The installed tag is read from the repo that published it. FORK_REPO is
-    # not the default publisher, so a lookup ignoring installed_repo would
-    # build a unslothai/llama.cpp URL here and this would catch it.
+    # The installed tag is read from the repo that published it.
+    # FORK_REPO is not the default publisher, so a lookup ignoring installed_repo would build a unslothai/llama.cpp URL
+    # here and this would catch it.
     assert any(f"/{FORK_REPO}/releases/download/{SUFFIX_SHARED_A}/" in url for url in fetched)
 
 
@@ -1244,9 +1238,9 @@ def test_installed_llama_ggml_tree_absent_is_none(tmp_path, prepare):
 
 
 def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
-    # The live failure: the llama installer advances to a newer build that keeps
-    # the same ggml commit, so the slim bundle's paired runtime is ABI-identical
-    # and must still select rather than degrade to CPU or report unavailable.
+    # The live failure: the llama installer advances to a newer build that keeps the same ggml commit, so the slim
+    # bundle's paired runtime is ABI-identical and must still select rather than degrade to CPU or report
+    # unavailable.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
@@ -1259,8 +1253,8 @@ def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch
 
 
 def test_slim_build_bump_same_ggml_is_not_a_compatibility_error(tmp_path, monkeypatch):
-    # A same-ggml build bump must not surface as a release incompatibility (the
-    # update path reports that as unavailable); only a real ggml skew does.
+    # A same-ggml build bump must not surface as a release incompatibility (the update path reports that as
+    # unavailable); only a real ggml skew does.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
@@ -1325,9 +1319,8 @@ def test_link_ggml_runtime_fails_closed_on_empty_runtime(tmp_path):
 
 
 def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
-    # llama's clang-built windows-arm64 ggml-base.dll imports
-    # libomp140.aarch64.dll (bundled, not a system DLL): the wiring must place
-    # it next to whisper-server.exe or the loader dies with DLL_NOT_FOUND.
+    # llama's clang-built windows-arm64 ggml-base.dll imports libomp140.aarch64.dll (bundled, not a system DLL): the
+    # wiring must place it next to whisper-server.exe or the loader dies with DLL_NOT_FOUND.
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "libomp140.aarch64.dll"):
@@ -1340,8 +1333,8 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
 
 
 def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
-    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, bundled
-    # and never on the host: without it whisper-server fails to load.
+    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, bundled and never on the host: without it
+    # whisper-server fails to load.
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
     for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so", "libomp.so.5"):
@@ -1360,8 +1353,7 @@ def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
 
 
 def test_link_ggml_runtime_linux_libomp_alone_is_not_a_pairing(tmp_path):
-    # Same fail-closed rule as the Windows case: OpenMP without ggml is not a
-    # usable llama runtime.
+    # Same fail-closed rule as the Windows case: OpenMP without ggml is not a usable llama runtime.
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
     (bin_dir / "libomp.so.5").write_bytes(b"x")
@@ -1380,8 +1372,8 @@ def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):
         "rocblas.dll",
         "hipblaslt.dll",
         "hsa-runtime64.dll",
-        # The llama Windows ROCm archive can carry transitive DLLs whose names
-        # do not contain hip/roc/amd. Its installer overlays every DLL.
+        # The llama Windows ROCm archive can carry transitive DLLs whose names do not contain hip/roc/amd.
+        # Its installer overlays every DLL.
         "runtime-support.dll",
     }
     for name in dlls:
@@ -1447,8 +1439,8 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
 
 
 def test_rocm_runtime_requires_the_rocblas_kernel_catalog(tmp_path):
-    # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF
-    # NEEDED (checked on the published b10342 linux-x64-rocm-gfx103X bundle).
+    # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF NEEDED (checked on the published b10342
+    # linux-x64-rocm-gfx103X bundle).
     llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     (llama_bin / "hipblaslt").mkdir()
     (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
@@ -1488,8 +1480,8 @@ def _gfx103x_llama_bin(tmp_path: Path) -> Path:
 
 
 def test_rocm_runtime_wires_rocblas_when_hipblaslt_ships_no_kernels(tmp_path):
-    # #8364: RX 6800 (gfx1030) on linux x64. The whisper update failed every
-    # startup on "missing its hipblaslt kernel catalog" while inference ran.
+    # #8364: RX 6800 (gfx1030) on linux x64. The whisper update failed every startup on "missing its hipblaslt kernel
+    # catalog" while inference ran.
     llama_bin = _gfx103x_llama_bin(tmp_path)
     whisper_bin = tmp_path / "whisper-bin"
 
@@ -1574,9 +1566,8 @@ def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
     reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
 )
 def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
-    # A marker-matching install with a non-executable server must reinstall:
-    # the sidecar refuses it via os.access(X_OK), so "already matches" would
-    # otherwise leave dictation permanently broken.
+    # A marker-matching install with a non-executable server must reinstall: the sidecar refuses it via os.access(X_OK),
+    # so "already matches" would otherwise leave dictation permanently broken.
     host = _host("linux", "x64")
     selection = object()
     monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
@@ -1592,8 +1583,8 @@ def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
 
 
 def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
-    # A slim install whose hardlinked ggml files vanished (llama dir deleted)
-    # must reinstall so update re-wires instead of reporting up to date.
+    # A slim install whose hardlinked ggml files vanished (llama dir deleted) must reinstall so update re-wires instead
+    # of reporting up to date.
     host = _host("linux", "x64")
     monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
     server = tmp_path / "build" / "bin" / "whisper-server"
@@ -1631,8 +1622,8 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
 def test_existing_rocm_install_accepts_the_catalogs_the_target_has(
     tmp_path, monkeypatch, runtime_dirs, current
 ):
-    # #8364: a gfx1030 install wires rocblas alone and is complete, so "already
-    # matches" must hold for it, while a marker with no rocblas still reinstalls.
+    # #8364: a gfx1030 install wires rocblas alone and is complete, so "already matches" must hold for it, while a
+    # marker with no rocblas still reinstalls.
     host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
     monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
     bin_dir = tmp_path / "build" / "bin"
@@ -1772,8 +1763,8 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
     assert marker["install_kind"] == "slim"
     assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
     assert marker["linked_from"] == str(llama_bin)
-    # The wired filenames land in the marker; the sidecar launch guard
-    # verifies exactly these names instead of hardcoded per-OS globs.
+    # The wired filenames land in the marker; the sidecar launch guard verifies exactly these names instead of hardcoded
+    # per-OS globs.
     assert marker["linked_libraries"] == [
         "libggml-base.so.0",
         "libggml-cpu-x64.so",
@@ -1833,8 +1824,8 @@ def test_slim_rocm_install_pairs_a_runtime_without_a_hipblaslt_catalog(tmp_path,
 
 
 def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
-    # The whole point of hardlinks: replace the llama dir contents after wiring
-    # and whisper's links must still hold the OLD inodes/content.
+    # The whole point of hardlinks: replace the llama dir contents after wiring and whisper's links must still hold
+    # the OLD inodes/content.
     host = _cuda_host()
     archive, sha256 = _build_slim_bundle(tmp_path, host)
 
@@ -1862,8 +1853,8 @@ def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):
     assert whisper_lib.stat().st_nlink == 1  # the llama side is gone; ours remains
 
 
-# The exact resolver key set shipped before slim existed; install_kind is the
-# one additive field and must stay the only difference.
+# The exact resolver key set shipped before slim existed;
+# install_kind is the one additive field and must stay the only difference.
 _LEGACY_RESOLVER_KEYS = {
     "prebuilt_available",
     "repo",
@@ -2055,8 +2046,8 @@ def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, c
 
 
 def test_resolver_reports_metal_slim_on_macos(tmp_path, monkeypatch, capsys):
-    # Same contract shape on macs: backend stays the accel (metal), the one
-    # additive field says the asset installs slim.
+    # Same contract shape on macs: backend stays the accel (metal), the one additive field says the asset installs
+    # slim.
     bin_dir = _fake_llama_bin_macos(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "macos-metal-arm64")
