@@ -747,6 +747,7 @@ def _run_flavor_invariant(
     index_family = None,
     index_url = None,
     win_arm64 = False,
+    win_arm64_interpreter = None,
     probe_cuda = None,
     probe_hip = None,
 ):
@@ -818,7 +819,13 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
         # The interpreter's arch, which the CUDA-preservation shortcut reads. A native
         # ARM64 venv is the only place both are true, and that is the host under test.
-        patch.object(stack_mod, "_is_win_arm64_interpreter", return_value = win_arm64),
+        # They separate on an ARM64 machine running an emulated x64 python, which is
+        # every install predating native support; `win_arm64_interpreter` drives that.
+        patch.object(
+            stack_mod,
+            "_is_win_arm64_interpreter",
+            return_value = win_arm64 if win_arm64_interpreter is None else win_arm64_interpreter,
+        ),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1363,6 +1370,23 @@ class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
         )
         assert ok is True
         mock_pip.assert_not_called()
+
+    def test_an_emulated_x64_interpreter_on_an_arm64_machine_still_repairs(self):
+        """The machine and the interpreter are separate axes, and the shortcut reads the
+        interpreter. Every Windows on ARM install predating native support runs an
+        emulated x64 python against ordinary win_amd64 wheels from
+        download.pytorch.org, so the repair must reach them exactly as it always did.
+        """
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.9.1+cu118",
+            repaired = "2.10.0+cu128",
+            expected_env = "cu128",
+            win_arm64 = True,
+            win_arm64_interpreter = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
 
 
 class TestWindowsOnArmKeepsTheNoTorchaudioException:
