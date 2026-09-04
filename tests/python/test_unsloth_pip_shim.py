@@ -1692,3 +1692,100 @@ def test_the_other_tools_destination_variable_buys_no_bypass(shim, monkeypatch, 
         f"{var} is ignored by {tool}, so the install went to the BAKED venv with no "
         f"filtering: {ran}"
     )
+
+
+# pip reads PIP_<OPTION> for EVERY option, so an install target can arrive with
+# nothing on the command line to show for it. Measured: `PIP_REQUIREMENT=r.txt pip
+# install --dry-run` reported "Would install idna-3.6" where the same command with no
+# variable reports "You must give at least one requirement to install", and
+# PIP_EDITABLE=<project> reported "Would install dummyproj26-1.2.3". Both are space
+# separated for multiple values. uv has no environment form for --requirements.
+
+
+def _full_argv_env(shim, monkeypatch, argv):
+    """(whole command line, child environment or None) for a run that execs."""
+    seen = {}
+
+    def _fake_execve(path, a, env):
+        seen["env"] = env
+        raise _Exec(path, a)
+
+    monkeypatch.setattr(shim.os, "execve", _fake_execve)
+    return _full_argv(shim, argv), seen.get("env")
+
+
+def test_a_requirements_file_hidden_in_the_environment_is_filtered(shim, monkeypatch, tmp_path):
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    hidden = tmp_path / "hidden.txt"
+    hidden.write_text("torch==9.9.9\nidna==3.6\n", encoding = "utf-8")
+    monkeypatch.setenv("PIP_REQUIREMENT", str(hidden))
+
+    ran, env = _full_argv_env(shim, monkeypatch, ["pip", "install", "packaging"])
+    assert ran is not None, "the shim ran nothing"
+    assert "torch==9.9.9" not in ran, f"the baked torch was forwarded: {ran}"
+    assert str(hidden) not in ran, f"the uninspected file was forwarded verbatim: {ran}"
+    assert any(
+        os.path.basename(a).startswith("unsloth-nb-req-") for a in ran
+    ), f"no filtered requirements file reached the real tool: {ran}"
+    assert env is not None and "PIP_REQUIREMENT" not in env, (
+        "the variable survived into the child, so the real pip reads the file again "
+        "unfiltered alongside our filtered copy"
+    )
+
+
+def test_an_editable_hidden_in_the_environment_is_classified(shim, monkeypatch, tmp_path):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    _local_project(tmp_path, "unsloth")
+    monkeypatch.setenv("PIP_EDITABLE", str(tmp_path / "unsloth"))
+
+    proj = str(tmp_path / "unsloth")
+    ran, env = _full_argv_env(shim, monkeypatch, ["pip", "install", "packaging"])
+    # NOT a substring test for "unsloth": the injected constraints file we add is
+    # itself named unsloth-nb-protected-*, so that would always match
+    assert ran is not None, "the shim ran nothing"
+    assert (
+        proj not in ran and "-e" not in ran
+    ), f"the baked unsloth was forwarded for replacement: {ran}"
+    assert env is not None and "PIP_EDITABLE" not in env
+
+
+def test_several_hidden_requirements_files_are_all_filtered(shim, monkeypatch, tmp_path):
+    """pip splits these on whitespace, so one variable can carry several files."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    one, two = tmp_path / "one.txt", tmp_path / "two.txt"
+    one.write_text("torch==9.9.9\n", encoding = "utf-8")
+    two.write_text("torch==8.8.8\nidna==3.6\n", encoding = "utf-8")
+    monkeypatch.setenv("PIP_REQUIREMENT", f"{one} {two}")
+
+    ran, _env = _full_argv_env(shim, monkeypatch, ["pip", "install", "packaging"])
+    assert ran is not None, "the shim ran nothing"
+    assert not any("9.9.9" in a or "8.8.8" in a for a in ran), f"a baked torch survived: {ran}"
+    assert (
+        sum(1 for a in ran if os.path.basename(a).startswith("unsloth-nb-req-")) == 2
+    ), f"both files should have been filtered: {ran}"
+
+
+def test_uv_is_not_given_a_requirements_file_pip_alone_reads(shim, monkeypatch, tmp_path):
+    """Guard: uv has no environment form for --requirements, so folding PIP_REQUIREMENT
+    into a uv command would install a file uv was never asked for."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    hidden = tmp_path / "hidden.txt"
+    hidden.write_text("idna==3.6\n", encoding = "utf-8")
+    monkeypatch.setenv("PIP_REQUIREMENT", str(hidden))
+
+    ran = _full_argv(shim, ["uv", "pip", "install", "snac"])
+    assert ran is not None, "the shim ran nothing"
+    assert (
+        "-r" not in ran and str(hidden) not in ran
+    ), f"a pip-only requirements file was handed to uv: {ran}"
+
+
+def test_nothing_is_added_when_no_hidden_target_is_set(shim, monkeypatch):
+    """Guard: the ordinary case must be byte-identical, and must not switch to execve."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    monkeypatch.delenv("PIP_REQUIREMENT", raising = False)
+    monkeypatch.delenv("PIP_EDITABLE", raising = False)
+    ran, env = _full_argv_env(shim, monkeypatch, ["pip", "install", "snac"])
+    assert ran is not None and "snac" in ran, ran
+    assert "-r" not in ran and "-e" not in ran, f"a phantom target was added: {ran}"
+    assert env is None, "the environment was rebuilt when nothing needed clearing"

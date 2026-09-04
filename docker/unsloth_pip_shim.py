@@ -874,6 +874,9 @@ _DEST_PYTHON_FLAGS = {"--python", "-p"}
 # PIP_TARGET, PIP_PREFIX, PIP_ROOT and PIP_PYTHON and ignores UV_PYTHON; uv honours
 # UV_PYTHON, ignores every PIP_ variable, and has no environment form for its
 # --target/--prefix at all.
+# pip options that carry INSTALL TARGETS rather than a destination, in their
+# environment spelling. Both are space separated when they name more than one.
+_PIP_TARGET_ENV = {"PIP_REQUIREMENT": "-r", "PIP_EDITABLE": "-e"}
 _DEST_DIR_ENV = {"pip": ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"), "uv": ()}
 _DEST_PYTHON_ENV = {"pip": ("PIP_PYTHON",), "uv": ("UV_PYTHON",)}
 
@@ -961,7 +964,24 @@ def main():
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
-    head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
+    # pip reads PIP_<OPTION> for every option, so a requirements file or an editable
+    # target can arrive with nothing on the command line to show for it. The scan below
+    # only walks argv, so `PIP_REQUIREMENT=/tmp/r.txt pip install packaging` filtered
+    # `packaging` and handed the real pip an uninspected file. The injected constraints
+    # do not save it: a same-version editable or direct reference resolves cleanly.
+    # Fold them in as ordinary flags so they go through the same filtering, and clear
+    # them from the child so the real tool cannot consume them a second time. uv has no
+    # environment form for --requirements, so this is pip-only.
+    env_tail = []
+    child_env = None
+    if tool == "pip":
+        for _var, _flag in _PIP_TARGET_ENV.items():
+            for _val in os.environ.get(_var, "").split():
+                env_tail += [_flag, _val]
+        if env_tail:
+            child_env = {k: v for k, v in os.environ.items() if k not in _PIP_TARGET_ENV}
+
+    head, tail = argv[: i + 1], env_tail + _expand_short_clusters(argv[i + 1 :])
     keep_args, dropped, recorded = [], [], None
     extras_only = []
     has_target = False
@@ -1156,6 +1176,8 @@ def main():
             keep_args[_eoo:_eoo] = ["--constraint", constraints]
     cmd = [REAL[tool]] + head + keep_args
     sys.stdout.flush()
+    if child_env is not None:
+        os.execve(REAL[tool], cmd, child_env)
     os.execv(REAL[tool], cmd)
 
 
