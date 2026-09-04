@@ -5707,6 +5707,16 @@ export function createOpenAIStreamAdapter(
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
+          const skillsSnapshot = getSkillsSnapshot();
+          if (
+            supportsStudioToolsForThisTurn &&
+            !skillsSnapshot.initialized
+          ) {
+            await listSkills().catch(() => undefined);
+          }
+          const hasEnabledSkills = getSkillsSnapshot().skills.some(
+            (skill) => skill.valid && !skill.shadowed && skill.enabled,
+          );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
             // Anthropic uses anthropicCodeExecContainerId.
@@ -5858,9 +5868,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                getSkillsSnapshot().skills.some(
-                  (skill) => skill.valid && !skill.shadowed && skill.enabled,
-                ) ||
+                hasEnabledSkills ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -5871,11 +5879,7 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(getSkillsSnapshot().skills.some(
-                        (skill) => skill.valid && !skill.shadowed && skill.enabled,
-                      )
-                        ? ["read_skill"]
-                        : []),
+                      ...(hasEnabledSkills ? ["read_skill"] : []),
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6099,7 +6103,15 @@ export function createOpenAIStreamAdapter(
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-            ...(supportsTools
+            ...(supportsTools &&
+              (toolsEnabled ||
+                codeToolsEnabled ||
+                renderHtmlToolEnabledForThisTurn ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled ||
+                hasEnabledSkills ||
+                deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -6108,7 +6120,7 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    "read_skill",
+                    ...(hasEnabledSkills ? ["read_skill"] : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file"]
                       : []),
@@ -6159,7 +6171,8 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              :  // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
+              : // Explicit false keeps UI-off tools disabled; --enable-tools still overrides it
+                // and sees no exhaustive enabled_tools list, so it can supply the default catalog.
                 { enable_tools: false }),
           };
         };

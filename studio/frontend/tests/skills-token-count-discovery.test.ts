@@ -27,3 +27,27 @@ test("token counting waits for the initial skills discovery", () => {
     /const hasEnabledSkills = getSkillsSnapshot\(\)\.skills\.some\(/,
   );
 });
+
+test("request building waits for skills and preserves the launcher tool catalog", () => {
+  const payloadBuilder = CHAT_ADAPTER_SOURCE.slice(
+    CHAT_ADAPTER_SOURCE.indexOf("const buildRequestPayload = async"),
+    CHAT_ADAPTER_SOURCE.indexOf(
+      "while (true)",
+      CHAT_ADAPTER_SOURCE.indexOf("const buildRequestPayload = async"),
+    ),
+  );
+  assert.match(
+    payloadBuilder,
+    /supportsStudioToolsForThisTurn &&\s*!skillsSnapshot\.initialized[\s\S]*await listSkills\(\)/,
+  );
+  assert.match(
+    payloadBuilder,
+    /supportsTools &&\s*\([\s\S]*hasEnabledSkills[\s\S]*\)\s*\? \{\s*enable_tools: true/,
+  );
+  assert.doesNotMatch(
+    payloadBuilder.slice(
+      payloadBuilder.indexOf("// Sent for every local chat"),
+    ),
+    /^\s*"read_skill",$/m,
+  );
+});
