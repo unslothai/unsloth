@@ -464,20 +464,18 @@ cu126onlytorch2100 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2100 = [
-    # Same torch pin as cu126onlytorch2100.
     "torch==2.10.0",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2100 = [
-    # Same torch pin as cu126onlytorch2100.
     "torch==2.10.0",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu126onlytorch2110 = [
-    # Pin trio to +cu126 so it resolves from the cu126 index (torch 2.11 defaults
-    # to a CUDA-13 wheel; xformers 0.0.35 does not pin torch).
+    # Pin the trio to +cuNNN: torch 2.11+ defaults to a CUDA-13 wheel and xformers 0.0.35
+    # does not pin torch. == not a range (+cu126 wins, PEP 440) and not === (force-replaces).
     "torch==2.11.0+cu126",
     "torchvision==0.26.0+cu126",
     "torchaudio==2.11.0+cu126",
@@ -485,7 +483,6 @@ cu126onlytorch2110 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2110 = [
-    # Same +cuNNN pin as cu126onlytorch2110, on the cu128 index.
     "torch==2.11.0+cu128",
     "torchvision==0.26.0+cu128",
     "torchaudio==2.11.0+cu128",
@@ -493,19 +490,14 @@ cu128onlytorch2110 = [
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2110 = [
-    # Same +cuNNN pin as cu126/cu128: a bare range lets +cu126 win (PEP 440) and
-    # === would force-replace cu130-index installs. _auto_install.py adds the index.
     "torch==2.11.0+cu130",
     "torchvision==0.26.0+cu130",
     "torchaudio==2.11.0+cu130",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
-# torch 2.12 ships on the cu126 and cu130 indexes only, so there is no cu128 leaf.
-# torchaudio has no 2.12 release; 2.11.0 carries no torch pin and pairs with 2.12.
+# torch 2.12 ships on cu126/cu130 only, so no cu128 leaf; torchaudio has no 2.12 release.
 cu126onlytorch2120 = [
-    # Same +cuNNN pin as cu126onlytorch2110: xformers 0.0.35 depends on torch without
-    # pinning it, so an unpinned trio walks up to the newest release on the index.
     "torch==2.12.0+cu126",
     "torchvision==0.27.0+cu126",
     "torchaudio==2.11.0+cu126",
@@ -513,7 +505,6 @@ cu126onlytorch2120 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2120 = [
-    # Same +cuNNN pin as cu126onlytorch2120, on the cu130 index.
     "torch==2.12.0+cu130",
     "torchvision==0.27.0+cu130",
     "torchaudio==2.11.0+cu130",
@@ -529,7 +520,6 @@ cu126onlytorch2121 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2121 = [
-    # Same +cuNNN pin as cu126onlytorch2121, on the cu130 index.
     "torch==2.12.1+cu130",
     "torchvision==0.27.1+cu130",
     "torchaudio==2.11.0+cu130",
