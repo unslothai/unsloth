@@ -15,13 +15,16 @@ API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
 KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
 KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
+# Ends the hook slice on the declaration below it, not a comment: prose can move alone.
+AFTER_HOOK = "function canUseLocalAgentDetection(base: string): boolean {"
+
 
 def test_examples_name_a_model_the_server_can_serve():
     # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
     assert "function useExampleModelName(keylessOnly: boolean): string" in src
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded entry, then any entry if switching is on.
     assert "catalog?.find((m) => m.loaded) ??" in hook
@@ -57,7 +60,7 @@ def test_catalog_refresh_follows_the_loaded_model():
     # name. Nor may it be gated on having no checkpoint: the store keeps one across an
     # idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "}, [checkpoint, ggufVariant]);" in hook
     assert "needsCatalog" not in hook
     # A finishing download moves no store state, so the fetch retries on a timer too,
@@ -73,7 +76,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # preferring it on the switch setting alone named a model /v1/models had proved
     # absent, and the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
     # resident, or downloaded with switching able to load this exact catalog entry.
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
@@ -83,7 +86,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 def test_idle_unload_does_not_guess_the_stashed_checkpoint():
     # the idle stash is process-wide, but the browser checkpoint is not.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "idleReload" not in hook
     assert "idleUnloadActive" not in hook
 
@@ -93,7 +96,7 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
     # a still-servable model and printed "No model". The catalog is deliberately
     # tri-state, and a failure must stay the unknown state.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "listOpenAIModels().catch(() => null)" in hook
     assert ".catch(() => null)," in hook
     assert "if (models !== null) setCatalog(models);" in hook
@@ -109,7 +112,7 @@ def test_the_pinned_quant_comes_from_the_catalog():
     # a file deleted while another quant remains, so pinning it 404d on a missing quant
     # with a runnable one listed.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
     assert "`${checkpoint}:${ggufVariant}`" not in hook
 
