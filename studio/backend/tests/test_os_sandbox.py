@@ -331,6 +331,8 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
     monkeypatch.setattr(
         os_sandbox,
@@ -686,21 +688,21 @@ def test_find_fast_path_rejects_bound_runtime_unix_socket(monkeypatch, tmp_path)
     reason = "pathname Unix sockets are required",
 )
 def test_python_fallback_rejects_bound_runtime_unix_socket(monkeypatch, tmp_path):
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
     workdir = tmp_path / "work"
     workdir.mkdir()
-    server = socket.socket(socket.AF_UNIX)
-    server.bind(str(runtime / "host.sock"))
-    run = Mock(side_effect = AssertionError("the untrusted find binary must not run"))
-    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
-    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: False)
-    monkeypatch.setattr(os_sandbox.subprocess, "run", run)
-    try:
-        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
-            os_sandbox._validate_runtime_paths((str(runtime),), str(workdir))
-    finally:
-        server.close()
+    with tempfile.TemporaryDirectory(prefix = "us-rt-", dir = "/tmp") as short_root:
+        runtime = Path(short_root)
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(runtime / "host.sock"))
+        run = Mock(side_effect = AssertionError("the untrusted find binary must not run"))
+        monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+        monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: False)
+        monkeypatch.setattr(os_sandbox.subprocess, "run", run)
+        try:
+            with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
+                os_sandbox._validate_runtime_paths((str(runtime),), str(workdir))
+        finally:
+            server.close()
     run.assert_not_called()
 
 

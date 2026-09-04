@@ -315,7 +315,7 @@ def _validate_workdir(workdir: str) -> str:
                     link_paths.setdefault(key, path)
                 continue
             raise SandboxUnavailableError(
-                f"the session workdir contains a socket, FIFO, or device node: {path}"
+                f"the session workdir contains {_REJECTED_RUNTIME_ENTRY_TYPES}: {path}"
             )
 
     external_links = [
