@@ -1915,6 +1915,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     // uv reads this as written and Unsloth treats a non-blank value as
     // authoritative, so an update would install from a different cache.
     "UV_CACHE_DIR",
+    // pip is the fallback whenever uv is missing or fails, from install_wheel and from
+    // the training worker, so the same reasoning applies to its cache.
+    "PIP_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
