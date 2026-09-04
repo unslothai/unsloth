@@ -265,8 +265,10 @@ def train(args, report: dict | None = None) -> dict:
     # `unsloth/Qwen3-4B-Base` is a BASE model and ships no chat template, so TRL's `maybe_apply_chat_template` raises on
     # the first training step: ValueError: Cannot use chat template functions because tokenizer.chat_template is not set
     # Measured on kernel unsloth-t4-ci-27b0dc2e, the first probe to get that far (the vLLM engine had built and the
-    # trainer was inside `_run_epoch`).
-    # The base model is the RIGHT choice and is not what to change: GRPO on an instruct model would measure the instruct
+    # trainer was inside `_run_epoch`). The notebook solves this with an SFT priming stage that installs a template
+    # before GRPO; this leg has no priming stage, so it sets a minimal ChatML template directly.
+    # The base model is the RIGHT choice and is not what to change: GRPO on an instruct model would measure the
+    # instruct tuning as much as the run, and these format-and-digit rewards are learnable inside three steps.
     if not getattr(tokenizer, "chat_template", None):
         tokenizer.chat_template = (
             "{% for message in messages %}"

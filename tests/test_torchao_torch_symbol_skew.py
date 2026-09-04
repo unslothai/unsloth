@@ -192,7 +192,8 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F.
+    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F. Drop them, or
+    # the "before" half cannot raise, this test skips itself, and the guard test after it fails.
     for n in _TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)

@@ -184,8 +184,8 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
 
 
 def test_the_mlx_branch_no_longer_borrows_the_zoo_version():
-    # unsloth#8171:
-    # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different package pinned with >=, so it was
+    # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different package pinned with >=, so it
+    # was neither the installed core nor the latest zoo.
     init_py = (_REPO_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
     assert "__version__ = unsloth_zoo.__version__" not in init_py
     assert "from ._version import __version__" in init_py

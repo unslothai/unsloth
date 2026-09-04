@@ -1194,7 +1194,8 @@ def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     entirely. Reading `None` as "on" deleted rows that still had valid
     full-sequence supervision, and could empty the split outright."""
     block = _padding_free_codegen_block()
-    # Bounded by the next anchor rather than by a byte count:
+    # Bounded by the next anchor rather than by a byte count: a comment added inside the block used to push the
+    # assertions out of a fixed window.
     i = block.index("_unsloth_completion_only")
     window = block[i : block.index("args._unsloth_completion_only_loss", i)]
     assert "is None" in window

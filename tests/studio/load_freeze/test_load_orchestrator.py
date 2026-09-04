@@ -232,7 +232,10 @@ class _GatedProbe:
         self.calls += 1
         self.thread_ident = threading.get_ident()
         self.entered.set()
-        # Deliberately the LONGEST wait in the file.
+        # Deliberately the LONGEST wait in the file. If the route is blocking the loop, the /health calls have to be
+        # the ones that give up first, because they are the ones that can say so; a gate that let go earlier would
+        # unblock the loop, let those calls succeed late, and turn a clear diagnosis into a confusing one. This is a
+        # last-resort release so the server can still shut down.
         if not self.released.wait(_DEADLOCK_GUARD_SEC * 3):
             raise AssertionError(
                 f"the gated probe was never released within {_DEADLOCK_GUARD_SEC * 3}s; "

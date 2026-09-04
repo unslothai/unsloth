@@ -1072,7 +1072,9 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
     colab-diff drift report is acknowledged in one command."""
     if args.all:
         snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
-        # Fetch everything before writing anything:
+        # Fetch everything before writing anything. Writing as we go would let a transient apt/os-info failure leave
+        # a mixed-generation directory -- and since pip is fetched first and is the only oracle --strict reads, the
+        # tripwire would go quiet on a refresh that actually failed.
         payloads: dict[str, bytes] = {}
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
             data = _fetch_oracle(COLAB_ORACLE_BASE_URL + upstream_name)

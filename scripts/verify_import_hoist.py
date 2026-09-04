@@ -149,7 +149,8 @@ class _Builder(ast.NodeVisitor):
         """
         if node is None:
             return
-        # Literal[...] holds values, not type names.
+        # Literal[...] holds values, not type names. Skipping its args is what keeps this from crediting an
+        # unrelated import, the one direction that loses a real finding.
         if isinstance(node, ast.Subscript) and _is_literal_ref(node.value):
             self._visit_annotation(node.value, scope, _depth, _lineno)
             return

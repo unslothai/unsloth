@@ -647,7 +647,8 @@ def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
     rc = M.main(["--install-dir", str(install_dir), "--node-version", "latest"])
     assert rc == M.EXIT_FALLBACK
-    # Guard the main() catch order:
+    # Guard the main() catch order: UnpinnedNodeRefused must be caught before the generic PrebuiltFallback,
+    # so assert the message, not just the exit code.
     out = capsys.readouterr().out
     assert "refusing to install Node" in out
     assert "prebuilt unavailable" not in out
@@ -669,9 +670,9 @@ def test_resolve_expected_sha256_rejects_malformed_pins():
 
 
 def test_install_prebuilt_optin_takes_remote_shasums_path(tmp_path: Path, monkeypatch):
-    # main() must surface the refusal as EXIT_FALLBACK (setup treats it as a failed install with guidance), not as a
-    # success masked by the keep-existing path.
-    install_dir = tmp_path / "node"
+    # With the opt-in set, an unpinned version drives the remote-SHASUMS path end to end: fetch SHASUMS256.txt,
+    # then the verified archive download (no refusal).
+    install_dir = tmp_path / "node"  # nothing on disk -> errors re-raise, not keep-existing
     asset = "node-v26.3.1-linux-x64.tar.gz"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)

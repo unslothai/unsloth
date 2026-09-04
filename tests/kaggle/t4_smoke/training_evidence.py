@@ -110,7 +110,8 @@ def adapter_update(before, after) -> dict:
             or after.get("error")
             or "the adapter was not fingerprinted",
         }
-    # Rechecked here, not only where the sums were taken:
+    # Rechecked here, not only where the sums were taken: an exact `!=` on a NaN
+    # is the most confident "it changed" this file can produce.
     unusable = [
         f"{side}.{key}={reading[key]}"
         for side, reading in (("before", before), ("after", after))

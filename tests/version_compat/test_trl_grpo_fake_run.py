@@ -80,6 +80,8 @@ def _patch_grpo_and_get_source() -> str:
         f"or dispatch key drifted on this TRL)"
     )
     # The transformed body (__init__ rewrites, injected per-token-logps) lives in the generated module's
+    # `_UnslothGRPOTrainer` base + module-level funcs, not the thin UnslothGRPOTrainer subclass -- read the
+    # whole generated module.
     mod = inspect.getmodule(patched)
     return inspect.getsource(mod) if mod is not None else inspect.getsource(patched)
 

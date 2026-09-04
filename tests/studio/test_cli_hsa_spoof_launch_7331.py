@@ -99,10 +99,7 @@ class TestOverrideParsing:
     @pytest.mark.parametrize(
         "value,expected",
         [
-            (
-                "11.0.0",
-                "gfx1100",
-            ),  # the circulated Strix workaround Strix Halo, naming its own arch the documented RX
+            ("11.0.0", "gfx1100"),  # the circulated Strix workaround
             ("11.5.1", "gfx1151"),  # Strix Halo, naming its own arch
             ("10.3.0", "gfx1030"),  # the documented RX 6800 override
             ("9.0.10", "gfx90a"),  # stepping 10 renders as 'a', not "gfx9010"

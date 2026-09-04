@@ -212,7 +212,8 @@ def render(report: dict) -> list[str]:
                 "configuration, so nothing was compared."
             )
         elif ref.get("note"):
-            # A refusal, not a deviation:
+            # A refusal, not a deviation: the deviations list is empty for
+            # these, so printing it alone would read like a clean result.
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")

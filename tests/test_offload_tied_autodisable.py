@@ -211,19 +211,20 @@ def test_dispatch_device_reads_the_accelerate_hook():
 
 
 def test_dispatched_model_disables_offload():
+    # accelerate re-sends the ids to its recorded device after the offload pre-hook has
+    # sent them to the CPU weight, so the lookup gets ids and weight on different devices.
     with _as_platform("posix"):
         assert resolve(_dispatched_model(), True) is False
 
 
 def test_hook_without_execution_device_keeps_offload():
+    # A hook that never moves anything cannot undo the offload.
     with _as_platform("posix"):
         assert resolve(_dispatched_model(None), True) is True
 
 
 def test_undispatched_model_keeps_offload():
-    # A hook that never moves anything cannot undo the offload.
     # The single-GPU path must not lose the VRAM saving.
-    # accelerate re-sends the ids to its recorded device after the offload pre-hook has sent them to the CPU weight, so
     with _as_platform("posix"):
         assert resolve(_untied_model(), True) is True
 

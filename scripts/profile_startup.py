@@ -160,7 +160,8 @@ def profile_launch(
     )
 
     def _drain() -> None:
-        # Runs alongside the health polling:
+        # Runs alongside the health polling: the first read timestamps the spawn phase, and an undrained pipe
+        # blocks the backend before it binds.
         for line in proc.stdout:
             if not first_byte:
                 first_byte.append(time.perf_counter() - t0)

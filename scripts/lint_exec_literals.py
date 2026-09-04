@@ -39,7 +39,8 @@ from pathlib import Path
 # reported 69 of them across the two repositories.
 SINKS = ("exec", "eval", "compile")
 
-# Notebooks are scanned too:
+# Notebooks are scanned too: in the notebooks repository they are the maintained source, and a cell runs the same
+# interpreter a module does.
 SUFFIXES = (".py", ".ipynb")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -17,11 +17,7 @@ from unsloth.utils import attention_dispatch as ad
         ((9, 0), None, False),  # Hopper: below sm_120, kept
         ((10, 0), None, False),  # Blackwell B200 (sm_100): below sm_120, kept
         ((12, 0), True, False),  # sm_120 where the kernel runs: keep xformers
-        (
-            (12, 0),
-            False,
-            True,
-        ),  # Ada: below sm_120, never probed, always kept Hopper: below sm_120, kept Blackwell
+        ((12, 0), False, True),  # sm_120 where the kernel can't run: fall back to SDPA
     ],
 )
 def test_capability_gate(capability, probe_result, expect_disabled):

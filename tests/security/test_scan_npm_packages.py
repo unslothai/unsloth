@@ -888,8 +888,8 @@ def test_v2_baseline_migrates_by_recomputing_hash(tmp_path):
 
 
 def test_outbound_cred_surface_host_config_binds_full_context():
-    # The outbound cred-surface host finding records the host WITH its URL path / fetch call, so changing the outbound
     # The host-config branch captures the whole line (path + headers), so changing the outbound headers/body on the
+    # same hostname line reopens the key instead of letting an approved finding suppress a newly credentialed request.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",

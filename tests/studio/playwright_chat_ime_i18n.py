@@ -123,6 +123,9 @@ with sync_playwright() as p:
     # A send answers "does this thread / message row exist yet" with a GET that 404s until the row lands (#8136 replaced
     # a full listing with that read), and the browser logs every 404 as a console.error with no URL in its text.
     # The URL alone does not identify them: a persistence PUT or PATCH to the very same path 404s on exactly these
+    # patterns, and silently exempting that would hide a real failure to save. So the exemption is resolved against
+    # the response ledger below: a console 404 is forgiven only if an actual GET 404 was observed at that URL, and
+    # each observed GET is spent by at most one console error.
     EXPECTED_404_URL_RES = (
         re.compile(r"/api/chat/threads/[^/?#]+$"),
         re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),

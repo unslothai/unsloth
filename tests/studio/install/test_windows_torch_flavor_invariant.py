@@ -96,6 +96,7 @@ class TestSetupPs1NoWipeEscape:
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
         # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`, so under
+        # Set-StrictMode the other -and order is a fatal read.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")

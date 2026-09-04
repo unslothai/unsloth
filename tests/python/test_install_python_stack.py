@@ -1711,7 +1711,8 @@ class TestDuplicateCoreMetadataRepair:
 
         written = (record / "METADATA").read_text()
         assert "Name: realpkg" in written
-        # The version comes from the directory name, where importlib's own fallback reads it when METADATA cannot be
+        # The version comes from the directory name, where importlib's own fallback reads it when METADATA cannot
+        # be parsed.
         assert "Version: 1.2.3" in written
 
     def test_a_record_without_a_manifest_fails_closed(self, tmp_path):

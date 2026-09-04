@@ -497,6 +497,9 @@ class VirusTotalClient:
                 analysis_id = payload["data"].get("id")
             if not isinstance(analysis_id, str) or not analysis_id:
                 # An accepted upload whose acknowledgement did not parse is a failed attempt, not a dead end:
+                # VirusTotal may well be analysing the file already. Raising straight out would report the asset
+                # unavailable after we had paid the disclosure cost of sending it, so spend the remaining attempt
+                # on a fresh signed URL instead.
                 last_error = RuntimeError("VirusTotal upload did not return an analysis id")
                 if attempt < attempts:
                     continue

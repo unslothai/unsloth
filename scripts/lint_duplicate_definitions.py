@@ -287,9 +287,12 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            # The class gets the MODULE's aliases plus any it binds itself
-            # "The scope of names defined in a class block is limited to the class block", and a class body resolves an
-            # unbound name in the GLOBAL namespace, so a nested class does not see `import typing as t` from the class
+            # The class gets the MODULE's aliases plus any it binds itself, never the enclosing class's. "The scope of
+            # names defined in a class block is limited to the class block", and a class body resolves an unbound name
+            # in the GLOBAL namespace, so a nested class does not see `import typing as t` from the class around it.
+            # Passing the outer set down exempted `@t.overload` in the inner class where `t` is whatever the MODULE
+            # bound it to, and two copies of one def scanned clean; widening the exemption is the one direction that
+            # hides merge damage.
             _scope_duplicates(
                 node.body,
                 f"{scope}{node.name}.",

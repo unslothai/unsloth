@@ -169,7 +169,8 @@ def run_pwsh(
     if attempts < 1:
         raise ValueError(f"attempts must be >= 1, got {attempts}")
 
-    # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it:
+    # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it: `env = None`
+    # still means "inherit", and a hermetic env dict still gets exactly the keys it listed plus this one.
     env = kwargs.get("env")
     env = dict(os.environ if env is None else env)
     env["XDG_CACHE_HOME"] = _pwsh_cache_dir()

@@ -229,6 +229,7 @@ def test_submission_carries_every_credential_and_a_bounded_wait(tmp_path):
     submit = next(line for line in commands if line.startswith("xcrun notarytool submit"))
     fields = submit.split()
     # Without --wait the submission returns before Apple has a verdict and the staple would race it;
+    # --timeout then bounds that wait.
     for flag in ("--apple-id", "--password", "--team-id", "--wait", "--timeout"):
         assert flag in fields, submit
     assert fields[fields.index("--timeout") + 1] != "--wait"

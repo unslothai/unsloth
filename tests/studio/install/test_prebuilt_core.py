@@ -214,7 +214,9 @@ def test_select_respects_os_arch(component):
 
 
 def test_fallback_policy_differs_per_descriptor(component):
-    # No asset for the requested backend:
+    # No asset for the requested backend: whisper degrades to the CPU asset of
+    # the same release, the llama-flavored descriptor reports no prebuilt
+    # (source-build fallback).
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
@@ -314,7 +316,6 @@ def test_macos_min_os_unknown_host_version_keeps_artifact(component):
 
 def test_macos_min_os_accepts_bare_version_format(component):
     # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
-    # Unknown host macOS version -> defer to runtime validation, don't reject.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label = "m"
     )
@@ -831,10 +832,7 @@ _GPU_ROWS = [
     [
         (None, [0, 1, 2]),  # no filter returns all
         ([], []),
-        (
-            ["0", "2"],
-            [0, 2],
-        ),  # filter by index UUID match is case insensitive same device requested twice is
+        (["0", "2"], [0, 2]),  # filter by index
         (["gpu-bbb"], [1]),  # UUID match is case insensitive
         (["0", "0"], [0]),  # same device requested twice is deduplicated
         (["99"], []),  # unknown token matches nothing
