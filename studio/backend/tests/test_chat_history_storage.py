@@ -533,8 +533,8 @@ def test_managed_workspace_delete_checks_live_managed_roots(
 
     assert Path(project["rootPath"]).is_dir()
     assert checked_columns == [
-        ("workspace_path", True, None),
-        ("root_path", True, project["id"]),
+        ("workspace_path", False, None),
+        ("root_path", False, project["id"]),
     ]
 
 
@@ -859,14 +859,130 @@ def test_workspace_overlap_finds_an_alias_to_a_managed_descendant(tmp_path, monk
     )
 
 
-def test_workspace_alias_scan_fails_closed_at_its_entry_limit(tmp_path, monkeypatch):
+def test_an_alias_scan_that_runs_out_of_budget_says_so(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     target = tmp_path / "target"
     (workspace / "child").mkdir(parents = True)
     target.mkdir()
-    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 0)
 
-    assert studio_db._directory_tree_contains_identity(str(workspace), str(target))
+    assert studio_db._directory_tree_contains_identity(str(workspace), str(target)) is False
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 0)
+    assert studio_db._directory_tree_contains_identity(str(workspace), str(target)) is None
+    assert not studio_db.project_workspace_overlaps_managed_root(
+        str(workspace), str(target), check_descendants = True
+    )
+
+
+def test_an_unfinished_alias_scan_does_not_reject_a_workspace(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    """A repository with a node_modules in it is over the budget, and it is the
+    kind of folder the feature exists for."""
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = tmp_path / "repository"
+    (external / "node_modules" / "left-pad").mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 1)
+
+    project = studio_db.upsert_chat_project(
+        _project("external-project"), external_workspace_path = str(external)
+    )
+
+    assert project["workspaceKind"] == "external"
+    assert Path(project["workspacePath"]) == external.resolve()
+    assert studio_db.ensure_chat_project_workspace(project["id"])["workspaceAvailable"] is True
+
+
+def test_an_unfinished_alias_scan_does_not_block_managed_workspaces(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = tmp_path / "repository"
+    (external / "node_modules" / "left-pad").mkdir(parents = True)
+    big = studio_db.upsert_chat_project(
+        _project("external-project"), external_workspace_path = str(external)
+    )
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 1)
+
+    managed = studio_db.upsert_chat_project(_project("managed-project"))
+    switched = studio_db.set_chat_project_workspace(big["id"], None)
+
+    assert Path(managed["workspacePath"]).is_dir()
+    assert switched["workspaceKind"] == "managed"
+    assert Path(switched["workspacePath"]).is_dir()
+
+
+def test_a_managed_delete_walks_only_its_own_folder(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = tmp_path / "repository"
+    (external / "node_modules" / "left-pad").mkdir(parents = True)
+    studio_db.upsert_chat_project(
+        _project("external-project"), external_workspace_path = str(external)
+    )
+    managed = studio_db.upsert_chat_project(_project("managed-project"))
+    (Path(managed["workspacePath"]) / "report.csv").write_text("a,b", encoding = "utf-8")
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 1)
+
+    studio_db.delete_chat_project(managed["id"], delete_files = True)
+
+    assert not Path(managed["rootPath"]).exists()
+    assert (external / "node_modules" / "left-pad").is_dir()
+
+
+def test_a_managed_delete_keeps_the_folder_when_its_own_walk_is_unfinished(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = tmp_path / "repository"
+    external.mkdir()
+    studio_db.upsert_chat_project(
+        _project("external-project"), external_workspace_path = str(external)
+    )
+    managed = studio_db.upsert_chat_project(_project("managed-project"))
+    marker = Path(managed["workspacePath"]) / "keep.txt"
+    marker.write_text("keep", encoding = "utf-8")
+    monkeypatch.setattr(studio_db, "_DELETE_SCAN_TIME_LIMIT_SECONDS", 0.0)
+
+    studio_db.delete_chat_project(managed["id"], delete_files = True)
+
+    assert marker.read_text(encoding = "utf-8") == "keep"
+
+
+def test_resolving_an_external_workspace_does_not_walk_it(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    external = tmp_path / "repository"
+    external.mkdir()
+    project = studio_db.upsert_chat_project(
+        _project("external-project"), external_workspace_path = str(external)
+    )
+    monkeypatch.setattr(
+        studio_db,
+        "_directory_tree_contains_identity",
+        lambda root, target: (_ for _ in ()).throw(AssertionError("walked tree")),
+    )
+
+    resolved = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert Path(resolved["workspacePath"]) == external.resolve()
+
+
+def test_reading_a_managed_workspace_does_not_rescan_live_projects(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    project = studio_db.upsert_chat_project(_project())
+    monkeypatch.setattr(
+        studio_db,
+        "_workspace_overlaps_live_project_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rescanned projects")),
+    )
+
+    resolved = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert Path(resolved["workspacePath"]).is_dir()
 
 
 def test_workspace_overlap_finds_a_missing_child_under_a_mount_alias(tmp_path, monkeypatch):

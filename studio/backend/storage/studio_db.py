@@ -8,6 +8,8 @@ connections) plus WAL mode and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
 import base64
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -111,6 +113,10 @@ _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
 _DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT = 100_000
 _DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS = 1.0
+# A delete walks the folder it is about to remove, so its budget is sized for a
+# managed workspace rather than for whatever the picker was pointed at.
+_DELETE_SCAN_ENTRY_LIMIT = 5_000_000
+_DELETE_SCAN_TIME_LIMIT_SECONDS = 30.0
 
 
 def _project_slug(name: str) -> str:
@@ -196,14 +202,18 @@ def _ensure_project_workspace(
     root_path: str,
     check_descendants: bool = False,
     exclude_project_id: str | None = None,
+    check_overlap: bool = True,
 ) -> str:
     root = Path(root_path).expanduser()
     try:
-        if _workspace_overlaps_live_project_path(
+        # Overlap is settled when a root is created or chosen. Checking it again on
+        # every read compares the project against every other one, and the project
+        # list does one read per row.
+        if check_overlap and _workspace_overlaps_live_project_path(
             str(root), "workspace_path", check_descendants = check_descendants
         ):
             raise PermissionError("managed workspace overlaps an external project folder")
-        if _workspace_overlaps_live_project_path(
+        if check_overlap and _workspace_overlaps_live_project_path(
             str(root),
             "root_path",
             check_descendants = check_descendants,
@@ -218,41 +228,101 @@ def _ensure_project_workspace(
     return str(root_resolved)
 
 
-def _directory_tree_contains_identity(root: str, target: str) -> bool:
-    try:
-        target_stat = os.stat(target)
-    except OSError:
+def _directory_tree_contains_identity(
+    root: str,
+    target: str,
+    entry_limit: int | None = None,
+    time_limit: float | None = None,
+) -> bool | None:
+    """Whether *target*'s identity turns up anywhere below *root*.
+
+    None when the walk could not finish: the entry or time budget ran out, or an
+    entry could not be read. What that means is the caller's call. A folder being
+    taken on is not about to be deleted, and refusing it because a walk ran out of
+    time refuses every real repository; a folder about to be removed is the other
+    way round.
+    """
+    return _directory_tree_contains_any_identity(root, (target,), entry_limit, time_limit)
+
+
+def _directory_tree_contains_any_identity(
+    root: str,
+    targets: Iterable[str],
+    entry_limit: int | None = None,
+    time_limit: float | None = None,
+) -> bool | None:
+    if entry_limit is None:
+        entry_limit = _DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT
+    if time_limit is None:
+        time_limit = _DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS
+    target_identities = set()
+    for target in targets:
+        try:
+            target_stat = os.stat(target)
+        except OSError:
+            return None
+        target_identities.add((target_stat.st_dev, target_stat.st_ino))
+    memo = _directory_walk_memo.get()
+    key = (root, entry_limit, time_limit)
+    if memo is None or key not in memo:
+        walked = _directory_tree_identities(root, entry_limit, time_limit)
+        if memo is not None:
+            memo[key] = walked
+    else:
+        walked = memo[key]
+    identities, finished = walked
+    if identities & target_identities:
         return True
-    target_identity = (target_stat.st_dev, target_stat.st_ino)
+    return False if finished else None
+
+
+def _directory_tree_identities(
+    root: str, entry_limit: int, time_limit: float
+) -> "tuple[set[tuple[int, int]], bool]":
+    """Every directory identity below *root*, and whether the walk finished."""
     pending = [root]
     visited = set()
     scanned_entries = 0
-    deadline = time.monotonic() + _DIRECTORY_IDENTITY_SCAN_TIME_LIMIT_SECONDS
+    deadline = time.monotonic() + time_limit
     while pending:
         if time.monotonic() >= deadline:
-            return True
+            return visited, False
         current = pending.pop()
         try:
             current_stat = os.stat(current, follow_symlinks = False)
             current_identity = (current_stat.st_dev, current_stat.st_ino)
-            if current_identity == target_identity:
-                return True
             if current_identity in visited:
                 continue
             visited.add(current_identity)
             with os.scandir(current) as entries:
                 for entry in entries:
                     scanned_entries += 1
-                    if (
-                        scanned_entries > _DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT
-                        or time.monotonic() >= deadline
-                    ):
-                        return True
+                    if scanned_entries > entry_limit or time.monotonic() >= deadline:
+                        return visited, False
                     if entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
         except OSError:
-            return True
-    return False
+            return visited, False
+    return visited, True
+
+
+_directory_walk_memo: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "directory_walk_memo", default = None
+)
+
+
+@contextlib.contextmanager
+def _one_walk_per_directory():
+    """Walk each tree once for the block, however many identities it is asked about.
+
+    Taking a folder on compares it with every live project and the sandbox root,
+    and each comparison walked the same picked tree again for one more identity.
+    """
+    token = _directory_walk_memo.set({})
+    try:
+        yield
+    finally:
+        _directory_walk_memo.reset(token)
 
 
 def _nearest_existing_directory(path: str) -> str | None:
@@ -308,6 +378,12 @@ def project_workspace_overlaps_managed_root(
     root_path: str,
     check_descendants: bool = False,
 ) -> bool:
+    """Whether one path is, holds, or sits inside the other, by name or by identity.
+
+    A descendant walk that does not finish is not an overlap: nothing here is
+    about to be deleted, and every folder with a ``node_modules`` in it would
+    otherwise be refused. ``delete_project_workspace`` does its own walk.
+    """
     try:
         workspace = os.path.realpath(os.path.expanduser(workspace_path))
         root = os.path.realpath(os.path.expanduser(root_path))
@@ -335,13 +411,13 @@ def project_workspace_overlaps_managed_root(
             if (
                 workspace_directory
                 and root_ancestor
-                and _directory_tree_contains_identity(workspace_directory, root_ancestor)
+                and _directory_tree_contains_identity(workspace_directory, root_ancestor) is True
             ):
                 return True
             if (
                 root_directory
                 and workspace_ancestor
-                and _directory_tree_contains_identity(root_directory, workspace_ancestor)
+                and _directory_tree_contains_identity(root_directory, workspace_ancestor) is True
             ):
                 return True
         return False
@@ -351,7 +427,9 @@ def project_workspace_overlaps_managed_root(
         return True
 
 
-def _workspace_overlaps_chat_sandbox_root(workspace_path: str) -> bool:
+def _workspace_overlaps_chat_sandbox_root(
+    workspace_path: str, check_descendants: bool = True
+) -> bool:
     """Whether this folder is, holds, or sits inside the standalone chat sandboxes.
 
     A chat's tool calls are fenced under its own session key and a project's under
@@ -360,16 +438,20 @@ def _workspace_overlaps_chat_sandbox_root(workspace_path: str) -> bool:
     sandboxes live under the studio home, but UNSLOTH_STUDIO_SANDBOX_HOME can put
     them somewhere the folder picker will happily offer.
 
-    Descendants too, matching the other overlap checks: a bind mount inside the
-    picked folder is an ordinary directory carrying the sandbox root's identity,
-    so nothing about its pathname says what it is.
+    Descendants too when the folder is being taken on, matching the other overlap
+    checks: a bind mount inside the picked folder is an ordinary directory carrying
+    the sandbox root's identity, so nothing about its pathname says what it is. Not
+    on a resolve, which happens on every tool call and listing and would walk the
+    user's whole folder each time.
     """
     try:
         from core.inference.tools import sandbox_root
         root = sandbox_root()
     except Exception:  # noqa: BLE001 - an unanswerable check must not block a pick
         return False
-    return project_workspace_overlaps_managed_root(workspace_path, root, check_descendants = True)
+    return project_workspace_overlaps_managed_root(
+        workspace_path, root, check_descendants = check_descendants
+    )
 
 
 def _workspace_overlaps_live_project_path(
@@ -421,7 +503,7 @@ def _ensure_external_project_workspace(
             raise PermissionError("unsafe workspace path")
         if is_denied_system_path(str(resolved)):
             raise PermissionError("unsafe workspace path")
-        if _workspace_overlaps_chat_sandbox_root(str(resolved)):
+        if _workspace_overlaps_chat_sandbox_root(str(resolved), check_descendants):
             raise PermissionError("workspace overlaps the chat sandbox folder")
         if expected_identity is not None and not same_directory_identity(
             expected_identity, _directory_identity(str(resolved))
@@ -630,14 +712,14 @@ def delete_project_workspace(project: dict) -> None:
     root_path = project.get("rootPath")
     if not root_path:
         return
+    project_id = str(project.get("id") or "") or None
     with _project_workspace_paths_lock:
-        if _workspace_overlaps_live_project_path(
-            str(root_path), "workspace_path", check_descendants = True
-        ) or _workspace_overlaps_live_project_path(
-            str(root_path),
-            "root_path",
-            check_descendants = True,
-            exclude_project_id = str(project.get("id") or "") or None,
+        if (
+            _workspace_overlaps_live_project_path(str(root_path), "workspace_path")
+            or _workspace_overlaps_live_project_path(
+                str(root_path), "root_path", exclude_project_id = project_id
+            )
+            or _managed_root_holds_live_folder(str(root_path), project_id)
         ):
             logger.warning(
                 "Skipping project workspace delete because a live external workspace overlaps %s",
@@ -645,6 +727,39 @@ def delete_project_workspace(project: dict) -> None:
             )
             return
         _delete_project_workspace(project)
+
+
+def _managed_root_holds_live_folder(root_path: str, exclude_project_id: str | None) -> bool:
+    """Whether the folder about to be removed holds an alias of a live project's folder.
+
+    Only this root is walked: it is the tree the delete descends, and a bind mount
+    inside it is someone's files on the far side. The live folders are not walked,
+    since an alias of this root inside one of them is still this root's content.
+    A walk that does not finish keeps the folder.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT id, root_path, workspace_path FROM chat_projects").fetchall()
+    finally:
+        conn.close()
+    targets = []
+    for row in rows:
+        if row["workspace_path"]:
+            targets.append(str(row["workspace_path"]))
+        if row["root_path"] and str(row["id"]) != exclude_project_id:
+            targets.append(str(row["root_path"]))
+    existing = [directory for directory in map(_nearest_existing_directory, targets) if directory]
+    if not existing:
+        return False
+    return (
+        _directory_tree_contains_any_identity(
+            root_path,
+            existing,
+            entry_limit = _DELETE_SCAN_ENTRY_LIMIT,
+            time_limit = _DELETE_SCAN_TIME_LIMIT_SECONDS,
+        )
+        is not False
+    )
 
 
 def _delete_project_workspace(project: dict) -> None:
@@ -3248,7 +3363,7 @@ def upsert_chat_project(
     external_workspace_path: Optional[str] = None,
     external_workspace_identity: tuple[str, str] | None = None,
 ) -> dict:
-    with _project_workspace_paths_lock:
+    with _project_workspace_paths_lock, _one_walk_per_directory():
         if external_workspace_path:
             from core.inference.tools import adopt_orphaned_workspace_when_idle
 
@@ -3317,10 +3432,12 @@ def _upsert_chat_project(
         workspace_identity = external_workspace_identity or _directory_identity(workspace_path)
     else:
         workspace_identity = None
+        creating = not os.path.isdir(root_path)
         root_path = _ensure_project_workspace(
             root_path,
-            check_descendants = not os.path.isdir(root_path),
+            check_descendants = creating,
             exclude_project_id = str(project["id"]) if existing else None,
+            check_overlap = creating,
         )
     conn = get_connection()
     try:
@@ -3421,7 +3538,7 @@ def set_chat_project_workspace(
     external_workspace_path: Optional[str],
     external_workspace_identity: tuple[str, str] | None = None,
 ) -> Optional[dict]:
-    with _project_workspace_paths_lock:
+    with _project_workspace_paths_lock, _one_walk_per_directory():
         if external_workspace_path:
             if get_chat_project(id) is None:
                 return None
@@ -3586,10 +3703,12 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
             conn.close()
         return get_chat_project(id)
     root_path = project.get("rootPath") or _default_project_root(project)
+    creating = not os.path.isdir(root_path)
     root_path = _ensure_project_workspace(
         root_path,
-        check_descendants = not os.path.isdir(root_path),
+        check_descendants = creating,
         exclude_project_id = id,
+        check_overlap = creating,
     )
     # a delete running in another threadpool worker can drop the row at any point before the
     # directory is created, so confirm the project outlived the create rather than trusting a

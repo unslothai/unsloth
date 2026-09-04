@@ -6789,6 +6789,34 @@ def test_external_adoption_fails_closed_when_orphan_scan_is_truncated(tmp_path, 
     assert len(list(Path(tools._orphan_records_dir()).iterdir())) == 2
 
 
+def test_an_unfinished_orphan_scan_is_not_an_adoption_match(tmp_path, monkeypatch):
+    """Records for other kept folders survive picking a folder too big to walk."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    picked = tmp_path / "picked"
+    first.mkdir()
+    second.mkdir()
+    (picked / "node_modules" / "left-pad").mkdir(parents = True)
+    tools.record_orphaned_project("first-project", str(first))
+    tools.record_orphaned_project("second-project", str(second))
+    monkeypatch.setattr(studio_db, "_DIRECTORY_IDENTITY_SCAN_ENTRY_LIMIT", 1)
+    updated = []
+
+    changed, _ = tools.adopt_orphaned_workspace_when_idle(
+        str(picked), lambda: updated.append(True)
+    )
+
+    assert changed is True
+    assert updated == [True]
+    assert len(list(Path(tools._orphan_records_dir()).iterdir())) == 2
+
+
 def test_missing_project_does_not_adopt_an_orphaned_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
