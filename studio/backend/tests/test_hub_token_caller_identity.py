@@ -20,6 +20,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import (
+    API_KEY_PREFIX,
+    KEYLESS_SCHEME,
+    allow_ambient_hf_token,
     authenticated_via_api_key,
     authenticated_with_sk_unsloth_key,
     get_current_subject,
@@ -937,7 +940,23 @@ def _hub_inventory_client(via_sk_key: bool) -> TestClient:
     app.include_router(inventory_routes.router, prefix = "/api/hub")
     app.dependency_overrides[get_current_subject] = lambda: "alice"
     app.dependency_overrides[authenticated_with_sk_unsloth_key] = lambda: via_sk_key
+    # get_request_hf_token still resolves allow_ambient_hf_token, which hits HTTPBearer.
+    app.dependency_overrides[allow_ambient_hf_token] = lambda: True
     return TestClient(app, raise_server_exceptions = False)
+
+
+def test_sk_unsloth_key_helper_excludes_keyless_and_session_callers():
+    """The inventory guard must not treat a keyless CLI caller as an API key."""
+    import asyncio
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    keyless = HTTPAuthorizationCredentials(scheme = KEYLESS_SCHEME, credentials = "")
+    key = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = API_KEY_PREFIX + "abc")
+    session = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = "eyJhbGciOiJ.session")
+
+    assert asyncio.run(authenticated_with_sk_unsloth_key(keyless)) is False
+    assert asyncio.run(authenticated_with_sk_unsloth_key(key)) is True
+    assert asyncio.run(authenticated_with_sk_unsloth_key(session)) is False
 
 
 @pytest.mark.parametrize("path", ["/api/hub/cached-models", "/api/hub/cached-gguf"])
