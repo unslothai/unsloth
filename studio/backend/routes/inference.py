@@ -29052,17 +29052,17 @@ async def anthropic_messages(
     )
     client_tools = not server_tools and len(openai_client_tools) > 0 and supports_tool_passthrough
 
-    # Same contract /v1/chat/completions rejects: the catalogue would otherwise be dropped
-    # and the caller would get prose where it asked for a tool_use block.
-    _has_client_tool_contract = (
-        openai_client_tools and openai_tool_choice != "none"
-    ) or _has_openai_tool_history(openai_messages)
-    if not server_tools and _has_client_tool_contract and not supports_tool_passthrough:
+    # A live catalogue would be dropped and the caller would get prose where it asked for a
+    # tool_use block. Narrower than the OpenAI gate, which also rejects replayed history:
+    # _sanitize_anthropic_openai_messages already folded that history for this same template,
+    # so a history-only turn has no catalogue to drop and still answers.
+    _has_client_tool_catalog = bool(openai_client_tools) and openai_tool_choice != "none"
+    if not server_tools and _has_client_tool_catalog and not supports_tool_passthrough:
         raise HTTPException(
             status_code = 400,
             detail = anthropic_error_body(
-                "Client-supplied tools or tool-call history require a GGUF chat template "
-                "with tool-call support; the current model/template does not advertise tools.",
+                "Client-supplied tools require a GGUF chat template with tool-call support; "
+                "the current model/template does not advertise tools.",
                 status = 400,
                 err_type = "invalid_request_error",
             ),
