@@ -2941,6 +2941,8 @@ def _cuda_integrated_map_cached(visibility: str) -> dict:
             [sys.executable, "-I", "-c", _CUDA_UMA_PROBE_SOURCE],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 30,
             **kwargs,
         )
