@@ -4,12 +4,9 @@
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
 
-/**
- * The file half of a chat delete, shown wherever one is confirmed.
- *
- * "Always delete files" makes the delete destructive beyond the chat itself, so
- * every confirmation has to say so and let the user turn it off for this one.
- */
+/** The file half of a chat delete, shown wherever one is confirmed. "Always delete files" makes the
+ *  delete destructive beyond the chat itself, so every confirmation has to say so and let the user
+ *  turn it off for this one. */
 export function DeleteChatFilesSwitch({
   id,
   checked,

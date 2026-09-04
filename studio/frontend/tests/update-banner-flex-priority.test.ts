@@ -93,14 +93,40 @@ for (const [name, source] of CARDS) {
   });
 }
 
-test("the desktop failure card does not shrink at all", () => {
-  // It has no notes panel, so there is nothing in it to give up: shrinking it
-  // only clips the diagnostics and the retry button.
-  assert.match(
-    TAURI,
-    /showFailure\s*\n?\s*\? "shrink-0"/,
-    "the failure card shares the notes-bearing card's floor, which is too low",
-  );
+test("a card with no notes panel does not shrink at all", () => {
+  // Only a rendered notes panel gives the card content it may shrink.
+  for (const [name, source] of CARDS) {
+    const stacked = classes(source, "pointer-events-auto flex ");
+    assert.match(stacked, /\bshrink-0\b/, `the ${name} card can be squeezed`);
+    assert.doesNotMatch(
+      source,
+      /["\s]min-h-\[calc\(/,
+      `the ${name} card floors unconditionally again, around a card that may paint none of it`,
+    );
+    assert.match(
+      source,
+      /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
+      `the ${name} card's floor is not gated on its notes panel`,
+    );
+    assert.match(
+      source,
+      /has-\[\[data-slot=update-release-notes\]\]:shrink\b/,
+      `the ${name} card cannot give up its notes' height once it has them`,
+    );
+  }
+  // Keep the selector and its target coupled.
+  assert.match(NOTES, /data-slot="update-release-notes"/);
+});
+
+test("a floored card paints all the height its slot reserves", () => {
+  // Short notes content must not leave an unpainted gap inside the floor.
+  for (const [name, source] of [...CARDS, ["llama.cpp", LLAMA] as const]) {
+    assert.match(
+      classes(source, "relative flex max-h-[calc(100dvh_-_2rem)] "),
+      /\bgrow\b/,
+      `the ${name} card can be shorter than the slot it sits in`,
+    );
+  }
 });
 
 test("the desktop failure card can scroll to its own diagnostics", () => {
@@ -131,7 +157,7 @@ test("the two update cards do not drift apart", () => {
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => !/^(max-\[\d+px\]:)?min-h-/.test(rule))
+      .filter((rule) => !/(^|:)min-h-/.test(rule))
       .join(" ");
   assert.equal(
     root(TAURI),
@@ -148,15 +174,35 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
-test("the llama.cpp card shares the desktop updater's responsive floor", () => {
-  const llamaRoot = classes(LLAMA, "pointer-events-auto flex ");
+test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
+  // A collapsed changelog leaves nothing for the floor to protect.
+  const slot = LLAMA.slice(
+    LLAMA.indexOf("pointer-events-auto flex "),
+    LLAMA.indexOf('data-testid="llama-update-banner"'),
+  );
+  // The constants match the desktop card, though their gates differ.
   for (const floor of [
     "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
-    "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+    "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
   ]) {
-    assert.ok(llamaRoot.includes(floor) && TAURI.includes(floor));
+    assert.ok(slot.includes(floor) && TAURI.includes(floor));
   }
-  assert.doesNotMatch(llamaRoot, /\bshrink-0\b/);
+  assert.match(slot, /max-\[383px\]:min-h-\[calc\(24px/);
+  assert.match(
+    slot,
+    /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
+    "the floor is back on every state of the card, including the collapsed one",
+  );
+  // The floor and panel share the same predicate.
+  assert.match(LLAMA, /\{changelogPanelOpen &&/);
+  assert.match(
+    slot,
+    /"shrink-0"/,
+    "with no notes to give up, the card must hold its height and let the rail scroll",
+  );
+  // Only the conditional branch may carry a floor.
+  assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
+  assert.doesNotMatch(slot, /\bmin-h-0\b/);
   assert.ok(LLAMA.includes("max-w-[448px]"));
 });
 

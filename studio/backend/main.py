@@ -2037,10 +2037,14 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
+            # A producer that reports free wins: on Apple unified memory free is
+            # not total - used, so recomputing it here would undo that answer.
             enriched_dev["vram_free_gb"] = (
-                round(total_vram - used_vram, 2)
+                reported_free_vram
+                if reported_free_vram is not None
+                else round(total_vram - used_vram, 2)
                 if total_vram and used_vram is not None
-                else reported_free_vram
+                else None
             )
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")

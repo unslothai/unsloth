@@ -285,17 +285,11 @@ function CollapsibleSection({
   first = false,
 }: {
   label: string;
-  /**
-   * When set, the label becomes an external link (e.g. the feature's GitHub PR)
-   * instead of part of the toggle. The chevron still toggles, so link and button
-   * are siblings rather than an <a> nested in a <button> (invalid HTML).
-   */
+  /** When set, the label becomes an external link instead of part of the toggle. The chevron
+   *  still toggles, so link and button are siblings rather than an <a> inside a <button>. */
   labelHref?: string;
-  /**
-   * Optional control rendered before the chevron (e.g. an edit icon). The
-   * label and chevron become sibling toggles so the action is not a button
-   * nested in a button.
-   */
+  /** Optional control rendered before the chevron. The label and chevron become sibling toggles
+   *  so the action is not a button nested in a button. */
   headerAction?: ReactNode;
   /** When set, clicking the label runs this instead of toggling collapse. */
   onLabelClick?: () => void;
@@ -396,29 +390,19 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
-  /**
-   * Sampling-param capabilities for the active external provider, or `null` for
-   * local models (every knob rendered). Drives per-param sampling visibility.
-   */
+  /** Sampling-param capabilities for the active external provider, or `null` for local models
+   *  (every knob rendered). Drives per-param sampling visibility. */
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
   onExternalProviderChange?: (provider: ExternalProviderConfig) => void;
-  /**
-   * Backend provider type for the active external model (e.g. "kimi",
-   * "anthropic", "openai"), or `null` for local models. Drives the per-provider
-   * Max Tokens floor in the slider.
-   */
+  /** Backend provider type for the active external model, or `null` for local models. Drives the
+   *  per-provider Max Tokens floor in the slider. */
   externalProviderType?: string | null;
 }
 
-/**
- * Copy for the amber "running without speculative decoding" notice. Mirrors
- * InferenceStatusResponse.spec_fallback_reason.
- *
- * Out of the JSX so the three independent dimensions (reason, drafter kind,
- * local vs remote) read as a table rather than a five-level nested ternary,
- * and so each string is directly testable.
- */
+/** Copy for the amber "running without speculative decoding" notice. Mirrors
+ *  InferenceStatusResponse.spec_fallback_reason. Out of the JSX so the three dimensions
+ *  read as a table rather than a five-level nested ternary, and so each string is testable. */
 function specFallbackMessage({
   reason,
   drafter,
@@ -434,22 +418,15 @@ function specFallbackMessage({
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
     case "mtp_partial_offload":
-      // Not the default copy: this build does support MTP, so telling the user to
-      // update llama.cpp would name the wrong cause and the wrong remedy. Says
-      // what the placement IS rather than that the model could not fit: a Manual
-      // layer count is a partial placement the user picked, on a card that may
-      // have room for all of it, and there the useful remedy is more layers.
-      //
-      // Describes the placement MTP WOULD need, not the one that ends up running.
-      // The partial verdict is priced with MTP's rollback reserve still in it, so
-      // on the fit path llama.cpp can put every layer on the GPU once MTP is off
-      // -- claiming "only part of this model is on the GPU" would then describe a
-      // placement the load does not have and recommend one it already has. This
-      // wording stays true both there and at a fixed partial layer count.
+      // Not the default copy: this build does support MTP, so telling the user to update llama.cpp
+      // would name the wrong cause. Says what the placement IS rather than that the model could
+      // not fit, since a Manual layer count is a placement the user picked and more layers is the
+      // useful remedy. Describes the placement MTP WOULD need, not the one that runs: the partial
+      // verdict is priced with MTP's rollback reserve still in it.
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
-      // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
-      // in the drafter's place where the build has it, so only the drafter is off.
+      // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod in the drafter's
+      // place where the build has it, so only the drafter is off.
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
@@ -495,9 +472,8 @@ export function ChatSettingsPanel({
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
   } = useChatSettingsWidth();
-  // Local models show every knob; providerCapabilities is only consulted when
-  // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
-  // getProviderCapabilities, so these flags never undercount support.
+  // Local models show every knob; providerCapabilities is only consulted when isExternalModel.
+  // Unknown providers fall back to the OpenAI-compat shape, so these flags never undercount.
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
   const showTopP = !isExternalModel || Boolean(providerCapabilities?.topP);
@@ -527,9 +503,9 @@ export function ChatSettingsPanel({
   const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
-  // Same call the request body makes, on the same summary, so the panel cannot offer a
-  // seed the body drops. An external selection carries an `external::` id that no local
-  // entry matches, so the summary answers that case without a separate guard.
+  // Same call the request body makes, on the same summary, so the panel cannot offer a seed the
+  // body drops. An external selection carries an `external::` id no local entry matches, so
+  // the summary answers that case without a separate guard.
   const showSeed = modelReadsSamplingSeed(activeModel);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
@@ -540,11 +516,10 @@ export function ChatSettingsPanel({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  // activeModelIsLocal is the backend's own classification and covers native
-  // picks. Two things must not decide this: activeNativePathToken, which
-  // status reconciliation keeps across a switch to a remote GGUF (no
-  // replacement token exists), and a bare .gguf suffix, since the backend
-  // reads a one-slash org/name.gguf as a repository id, not a file.
+  // activeModelIsLocal is the backend's own classification and covers native picks. Two things
+  // must not decide it: activeNativePathToken, which status reconciliation keeps across a
+  // switch to a remote GGUF, and a bare .gguf suffix, since the backend reads a one-slash
+  // org/name.gguf as a repository id, not a file.
   const isLocalGguf =
     isGguf && (activeModelIsLocal || isLocalModelPath(currentCheckpoint ?? ""));
   const maxContextLength = useChatRuntimeStore(
@@ -644,18 +619,16 @@ export function ChatSettingsPanel({
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
   const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
-  // Raw keystrokes while the Seed box is being typed into, null once committed.
-  // Clamping straight into params would rewrite the box mid-entry, so the commit
-  // waits for blur the way NumericValueInput's does.
+  // Raw keystrokes while the Seed box is being typed into, null once committed. Clamping
+  // straight into params would rewrite the box mid-entry, so the commit waits for blur.
   const [seedDraft, setSeedDraft] = useState<string | null>(null);
   // What blur would commit, available before it runs. Clicking Save blurs the box during
-  // mousedown, but React has not re-rendered by the time that button's onClick fires, so
-  // a handler reading `params` there still sees the seed from before the entry.
-  // NumericValueInput bridges the same gap with its imperative commit().
+  // mousedown, but React has not re-rendered by the time onClick fires, so a handler reading
+  // `params` still sees the seed from before the entry. NumericValueInput bridges the same gap.
   const committedSeed = useMemo<number | null>(() => {
     if (seedDraft === null) return params.seed ?? null;
-    // Measured after the padding: a zero-padded seed is short enough to keep, and
-    // truncating instead of clamping would rewrite it.
+    // Measured after the padding: a zero-padded seed is short enough to keep, and truncating
+    // instead of clamping would rewrite it.
     const digits = seedDraft.replace(/^0+(?=\d)/, "");
     if (digits === "") return null;
     return digits.length > 10
@@ -669,8 +642,8 @@ export function ChatSettingsPanel({
         : { ...params, seed: committedSeed },
     [committedSeed, params],
   );
-  // Removing a focused element fires no blur, so a draft the user walked away from
-  // would keep reporting through committedSeed with the field gone.
+  // Removing a focused element fires no blur, so a draft the user walked away from would keep
+  // reporting through committedSeed with the field gone.
   useEffect(() => {
     setSeedDraft(null);
   }, [currentCheckpoint, showSeed]);
@@ -679,16 +652,15 @@ export function ChatSettingsPanel({
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
   const promptObserverRef = useRef<ResizeObserver | null>(null);
   const measurePromptRef = useRef<() => void>(() => {});
-  // The section unmounts its textarea when collapsed, so observe through a
-  // callback ref: a stored observer would cling to the detached node and the
-  // remounted one would never be measured.
+  // The section unmounts its textarea when collapsed, so observe through a callback ref: a
+  // stored observer would cling to the detached node and the remounted one is never measured.
   const attachPromptBox = useCallback((node: HTMLTextAreaElement | null) => {
     systemPromptBoxRef.current = node;
     promptObserverRef.current?.disconnect();
     promptObserverRef.current = null;
     if (!node || typeof ResizeObserver === "undefined") return;
-    // Resizing rewraps the prompt, and a drag changes the width through a
-    // custom property without re-rendering, so watch the box itself.
+    // Resizing rewraps the prompt, and a drag changes the width through a custom property
+    // without re-rendering, so watch the box itself.
     const observer = new ResizeObserver(() => measurePromptRef.current());
     observer.observe(node);
     promptObserverRef.current = observer;
@@ -844,8 +816,8 @@ export function ChatSettingsPanel({
   const setSeed = set("seed");
 
   // Lower a live Max Tokens that no longer fits the connection's cap.
-  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
-  // read as the 32,768 fallback.
+  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be read as
+  // the 32,768 fallback.
   useEffect(() => {
     const clampedMaxTokens = resolveExternalMaxTokensClamp({
       settingsHydrated,
@@ -879,8 +851,8 @@ export function ChatSettingsPanel({
     presetParams: Parameters<typeof applyPresetParams>[1],
   ): InferenceParams {
     const nextParams = applyPresetParams(params, presetParams);
-    // Same reason the effect waits for a provider: without one `maxTokensMax` is the
-    // fallback, so applying a preset here would lower the value for good.
+    // Same reason the effect waits for a provider: without one `maxTokensMax` is the fallback, so
+    // applying a preset here would lower the value for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;
     return {
       ...nextParams,
@@ -1436,8 +1408,8 @@ export function ChatSettingsPanel({
               value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
-                // Overflowing prompt: click opens the popup editor instead.
-                // While focused, clicks still move the caret normally.
+                // Overflowing prompt: click opens the popup editor instead. While focused, clicks still move
+                // the caret normally.
                 if (
                   systemPromptOverflows &&
                   document.activeElement !== e.currentTarget
