@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from auth.authentication import (
     API_KEY_PREFIX,
     KEYLESS_SCHEME,
-    allow_ambient_hf_token,
     authenticated_via_api_key,
     authenticated_with_sk_unsloth_key,
     get_current_subject,
@@ -934,6 +933,7 @@ def test_every_offline_reachable_route_refuses_before_it_reads(monkeypatch):
 
 
 def _hub_inventory_client(via_sk_key: bool) -> TestClient:
+    from auth.authentication import allow_ambient_hf_token
     from hub.routes import inventory as inventory_routes
 
     app = FastAPI()
