@@ -470,9 +470,7 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         assign = text.index("$_effectiveTorchIndexUrl = $_cudaIndexUrl")
         publish = text.index("$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl")
         assert default < assign < publish, "default, then the install, then the publish"
-        assert text.count("$_effectiveTorchIndexUrl = ") == 2, (
-            "only the CUDA install may move it"
-        )
+        assert text.count("$_effectiveTorchIndexUrl = ") == 2, "only the CUDA install may move it"
 
     def test_the_nvidia_channel_publishes_no_flavor_tag(self):
         """
@@ -484,15 +482,19 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         if PWSH is None:
             pytest.skip("pwsh not available")
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Get-TorchIndexLeaf"),
-            _function_source(text, "Test-CudaFamilyLeaf"),
-            "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
-            "Write-Output \"$leaf|$(Test-CudaFamilyLeaf $leaf)\"",
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Get-TorchIndexLeaf"),
+                _function_source(text, "Test-CudaFamilyLeaf"),
+                "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
+                'Write-Output "$leaf|$(Test-CudaFamilyLeaf $leaf)"',
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         leaf, is_cuda = done.stdout.strip().splitlines()[-1].split("|")
@@ -512,12 +514,11 @@ class TestTheLlamaArm64CudaOptOut:
         """
         source = STACK_LLAMA.read_text(encoding = "utf-8")
         branches = [
-            line.strip() for line in source.splitlines()
+            line.strip()
+            for line in source.splitlines()
             if "host.has_usable_nvidia" in line and line.strip().startswith("if ")
         ]
-        arm64_branches = [
-            b for b in branches if "_upstream_arm64_cuda_allowed" in b
-        ]
+        arm64_branches = [b for b in branches if "_upstream_arm64_cuda_allowed" in b]
         assert len(branches) >= 2
         ungated = [b for b in branches if b not in arm64_branches]
         for branch in ungated:
@@ -531,6 +532,6 @@ class TestTheLlamaArm64CudaOptOut:
         body = source[start:end]
         marker = body.index("if host.is_windows and host.is_arm64:")
         arm64_block = body[marker : marker + 900]
-        assert "_upstream_arm64_cuda_allowed()" in arm64_block, (
-            "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
-        )
+        assert (
+            "_upstream_arm64_cuda_allowed()" in arm64_block
+        ), "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
