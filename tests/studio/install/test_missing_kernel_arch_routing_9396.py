@@ -1564,9 +1564,10 @@ def test_a_floor_leaf_still_repairs_a_sub_211_build_of_its_own_family():
 
 def test_a_generic_only_target_gets_its_tag_floor_on_a_fresh_install_too():
     """gfx950 has no AMD per-arch leaf, so the only way to give it kernels is a generic tag
-    that carries it (rocm7.0+). That floor was applied solely to a host already on ROCm wheels
-    that had to be demoted, so a fresh install or a CPU/CUDA torch walked past it and a stale
-    /opt/rocm put the card on rocm6.3. Which tag carries an arch is a fact about the arch."""
+    that carries it (rocm7.0+), so its architecture floor still chooses rocm7.2 on ROCm6.3.
+    Automatic generic installs for covered arches also honor the BNB floor: a fresh CPU/CUDA
+    install for gfx1100 on that host uses rocm6.4 instead of the stale rocm6.3 tag. Which tag
+    carries an arch is a fact about the arch."""
     for _probe in (_CPU_TORCH, None):
         calls = _run_install(
             gfx_devices = ("gfx950",),
@@ -1582,8 +1583,9 @@ def test_a_generic_only_target_gets_its_tag_floor_on_a_fresh_install_too():
         torch_probe = _CPU_TORCH,
         torch_owns_rocm = False,
     )
-    # An arch the generic wheel serves at every tag is untouched: no floor to apply.
-    assert f"{_GENERIC}6.3" in _run_install(
+    # An arch the generic wheel serves at every tag has no architecture floor, but automatic
+    # generic installs still honor the bitsandbytes compatibility floor.
+    assert f"{_GENERIC}6.4" in _run_install(
         gfx_devices = ("gfx1100",),
         rocm_version = (6, 3),
         torch_probe = _CPU_TORCH,
@@ -1705,10 +1707,9 @@ def test_a_generic_only_target_installs_when_the_rocm_version_is_unreadable():
 
 
 def test_a_generic_only_target_pinned_to_a_stale_tag_is_reinstalled():
-    """Forcing the pass is half a repair: a generic build names no family, so the family arm
-    declines, there is no per-arch index to move to, and torch.version.hip keeps the fallback
-    from running. A gfx950 pinned to rocm6.3 survived every update, and the preflight asked
-    for a pass the install refused."""
+    """An automatically selected generic +rocm6.3 build is below the bitsandbytes floor, so a
+    gfx1100 host on ROCm7.2 is repaired to the generic rocm7.2 family. Compatible generic
+    builds still remain untouched, including the generic-only gfx950 controls above."""
     for _ver in ((7, 2), None):
         assert f"{_GENERIC}7.2" in _run_install(
             gfx_devices = ("gfx950",),
@@ -1725,11 +1726,11 @@ def test_a_generic_only_target_pinned_to_a_stale_tag_is_reinstalled():
             torch_owns_rocm = False,
         )
         assert "torch" not in _kept, (_ver, _kept)
-    # So is an arch the generic wheel serves at every tag.
+    # An arch the generic wheel serves at every tag still repairs a stale generic ABI tag.
     _served = _run_install(
         gfx_devices = ("gfx1100",),
         rocm_version = (7, 2),
         torch_probe = _ROCM_GENERIC_TORCH_63,
         torch_owns_rocm = False,
     )
-    assert "torch" not in _served, _served
+    assert f"{_GENERIC}7.2" in _served, _served

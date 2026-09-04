@@ -238,6 +238,11 @@ _detect_rocm_version_tag() { [ -n "${_STUB_ROCM_TAG:-}" ] && printf '%s\\n' "$_S
 def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, str]":
     """Run install.sh's real get_torch_index_url with UNSLOTH_ROCM_GFX_ARCH=arch."""
     src = _INSTALL_SH.read_text(encoding = "utf-8")
+    # The automatic generic arm in get_torch_index_url calls this production helper. Keep
+    # the isolated shell harness sourced from install.sh rather than copying its policy here.
+    bnb_floor_constant = re.search(r"^_ROCM_BNB_GENERIC_FLOOR_TAG=.*$", src, re.MULTILINE)
+    bnb_floor_fn = _sh_function_body(src, "_rocm_bnb_compatible_generic_tag")
+    assert bnb_floor_constant and bnb_floor_fn
     script = (
         _sh_function_body(src, "_amd_arch_index_family_for_gfx")
         + "\n"
@@ -246,6 +251,10 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
         + _sh_function_body(src, "_amd_agreed_index_family")
         + "\n"
         + _sh_function_body(src, "_amd_sole_index_arch")
+        + "\n"
+        + bnb_floor_constant.group(0)
+        + "\n"
+        + bnb_floor_fn
         + "\n"
         + _sh_function_body(src, "get_torch_index_url")
         + "\n"
