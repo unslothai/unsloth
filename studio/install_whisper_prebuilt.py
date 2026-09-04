@@ -446,16 +446,52 @@ def llama_runtime_pairs(
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
 
-def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
-    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+def _ships_gpu_ggml_module(llama_bin_dir: Path, os_key: str) -> bool:
+    """Whether a paired llama runtime carries a GPU ggml backend module.
     Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
     the two apart: it is absent on both the published rocm artifacts and every
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
-        glob = per_os.get("windows")
+        glob = per_os.get(os_key)
         if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
             return True
     return False
+
+
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Windows spelling of _ships_gpu_ggml_module; kept for call-site clarity."""
+    return _ships_gpu_ggml_module(llama_bin_dir, "windows")
+
+
+def _ggml_core_imports_libomp(llama_bin_dir: Path) -> bool | None:
+    """Whether the ggml core libs on disk actually import LLVM's libomp.
+
+    True/False when at least one core lib could be inspected, None when nothing could
+    be (no readelf or objdump, or the files are not ELF). The distinction matters at the
+    call site: absence of evidence must not be read as evidence of absence.
+
+    This is the difference between trusting the arch and checking the artifact. The
+    linux-arm64 CUDA bundle links GNU libgomp.so.1 and never libomp.so.5, but the
+    linux-arm64 *Vulkan* bundle does import libomp.so.5 and ships it, so an arch-only
+    rule is right about that one only by accident, and would be wrong outright for any
+    future GPU bundle that imports libomp without shipping it.
+    """
+    saw_answer = False
+    for pattern in ("libggml-base.so*", "libggml.so*"):
+        for path in sorted(llama_bin_dir.glob(pattern)):
+            if not path.is_file():
+                continue
+            needed = _elf_needed(path)
+            if needed is None:
+                continue
+            saw_answer = True
+            for dep in needed:
+                lowered = dep.lower()
+                # libomp is LLVM's, and is bundled. libgomp is GNU's, and the host
+                # provides it. Only the former can be missing at load time.
+                if lowered.startswith("libomp") and ".so" in lowered:
+                    return True
+    return False if saw_answer else None
 
 
 def slim_pairing_for_artifact(
@@ -497,6 +533,41 @@ def slim_pairing_for_artifact(
             name
             for name in required_sonames
             if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
+        ]
+    if (
+        host.whisper_os == "linux"
+        and host.whisper_arch == "arm64"
+        and _ships_gpu_ggml_module(llama_bin_dir, "linux")
+        and _ggml_core_imports_libomp(llama_bin_dir) is not True
+    ):
+        # Same shape as the Windows case above. The linux-arm64 manifest entry lists
+        # libomp.so.5 because the arm64 cpu bundle's ggml links LLVM OpenMP; the arm64
+        # CUDA bundle neither ships nor imports it (its libggml-base needs GNU
+        # libgomp.so.1, which the host provides), so requiring the name rejected the one
+        # asset that would have worked. Confirmed against the published artifacts: the
+        # arm64 whisper-server and libwhisper themselves have no libomp in DT_NEEDED, so
+        # the requirement was transitive from the cpu bundle, not a real dependency.
+        #
+        # The ELF check is what makes this correct rather than lucky. The arm64 *Vulkan*
+        # bundle does ship and import libomp.so.5, so an arch-only rule would drop a
+        # requirement that bundle genuinely has; it happens to be harmless there because
+        # the file is present anyway, but it would not be for a future GPU bundle that
+        # imports libomp without shipping it. Whisper would install cleanly and then fail
+        # at first dictation with "libomp.so.5: cannot open shared object file", and
+        # staged smoke-testing is off, so nothing would catch it.
+        #
+        # `is not True` rather than `is False`: where readelf and objdump are both absent
+        # we cannot inspect anything, and the arch heuristic is still better than
+        # rejecting the only viable asset.
+        #
+        # arm64 only, deliberately: llama's clang-built linux-x64 slices bundle libomp
+        # beside a libggml-base that really imports it
+        # (test_linux_slim_still_requires_manifest_libomp pins that). The GPU-module gate
+        # likewise keeps the requirement for a genuine arm64 cpu bundle.
+        required_sonames = [
+            name
+            for name in required_sonames
+            if not (name.lower().startswith("libomp") and ".so" in name.lower())
         ]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
