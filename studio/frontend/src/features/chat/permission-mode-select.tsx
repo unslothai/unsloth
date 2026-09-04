@@ -50,10 +50,8 @@ const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = {
     "PyTorch tensor sharing uses macOS's host POSIX shared-memory namespace. Access is limited to PyTorch's randomized names, but the namespace is not private.",
 };
 
-/**
- * Permission levels for tool calls. Full access stays last because it disables
- * both approval prompts and the code sandbox.
- */
+/** Permission levels for tool calls. Full access stays last because it disables both approval
+ *  prompts and the code sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
@@ -171,8 +169,8 @@ export function PermissionModeMenuItems({
   );
 }
 
-/** Danger confirmation shown before Full access turns on. Self-contained so
- *  the dropdown works outside the chat page (e.g. the Settings dialog). */
+/** Danger confirmation shown before Full access turns on. Self-contained so the dropdown works
+ *  outside the chat page (e.g. the Settings dialog). */
 export function FullAccessConfirmDialog({
   open,
   onOpenChange,
@@ -446,8 +444,8 @@ export function PermissionModeDropdown({
             How should tool calls be approved?
           </DropdownMenuLabel>
           <PermissionModeMenuItems
-            // Defer past the menu-close focus restoration so the dialog's
-            // focus trap isn't broken by the dropdown grabbing focus back.
+            // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
+            // dropdown grabbing focus back.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
             }
@@ -469,13 +467,10 @@ export function PermissionModeDropdown({
   );
 }
 
-/**
- * Composer pill (mirrors the MCP pill) showing the current permission level
- * in the chat box; clicking opens the level dropdown. Danger-styled while
- * Full access is on. The Full access pick routes through the store-driven
- * BypassPermissionsConfirmDialog mounted at the chat-page root, so the
- * warning survives this menu unmounting.
- */
+/** Composer pill showing the current permission level in the chat box; clicking opens the level
+ *  dropdown. Danger-styled while Full access is on. The Full access pick routes through the
+ *  store-driven confirm dialog mounted at the chat-page root, so the warning survives this
+ *  menu unmounting. */
 export function PermissionModeComposerPill({
   side = "bottom",
 }: {

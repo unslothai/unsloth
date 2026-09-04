@@ -28815,6 +28815,7 @@ class LlamaCppBackend:
             tools,
             reasoning_kw,
             continue_flag = False,
+            protect = None,
         ):
             """Drop older turns from a continuation candidate that is one eviction short.
 
@@ -28828,6 +28829,8 @@ class LlamaCppBackend:
             preflight: that one archives, recalls and moves this thread's sticky boundary,
             and none of that should happen a second time in the middle of one turn.
             Returns the evicted candidate, or None when there was nothing to evict.
+
+            ``protect`` keeps the current turn intact while older history is evicted.
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
@@ -28855,7 +28858,7 @@ class LlamaCppBackend:
                         continue_final_message = continue_flag,
                     ),
                     estimate_message = estimate_message_tokens_without_unpriced_media,
-                    anchor_ids = _rolling_anchor_ids,
+                    anchor_ids = (_rolling_anchor_ids | protect) if protect else _rolling_anchor_ids,
                 )
             except Exception:
                 logger.debug("continuation eviction: fit failed", exc_info = True)
@@ -31716,6 +31719,27 @@ class LlamaCppBackend:
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
+        # Messages appended to the payload but absent from `conversation`.
+        _refit_tail: list = []
+        _refit_tail_merged = False
+
+        def _record_refit_tail(committed: list, appended: list, merged: bool) -> None:
+            """Track appended messages that a respawn refit must replay."""
+            nonlocal _refit_tail, _refit_tail_merged
+            _live = {id(_message) for _message in committed}
+            _new = [_message for _message in appended if id(_message) in _live]
+            if len(_new) != len(appended):
+                # An eviction split the tail, so fall back to `conversation` alone.
+                _refit_tail = []
+                _refit_tail_merged = False
+                return
+            if not merged:
+                _refit_tail = _refit_tail + _new
+            elif _refit_tail:
+                _refit_tail = _refit_tail[:-1] + _new
+            else:
+                _refit_tail = _new
+                _refit_tail_merged = True
 
         def _refit_final_after_respawn() -> None:
             nonlocal conversation
@@ -31774,9 +31798,41 @@ class LlamaCppBackend:
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
-                stream_payload["messages"] = neutralize_control_markup_in_messages(
-                    conversation, None, self.markup_profile
+                # Copy because neutralization may return `conversation` itself.
+                _refit_messages = list(
+                    neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
                 )
+                if _refit_tail:
+                    # A merged tail replaces the trailing assistant prefill.
+                    if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
+                        _refit_messages[-1:] = _refit_tail
+                    else:
+                        _refit_messages.extend(_refit_tail)
+                stream_payload["messages"] = _refit_messages
+                if _refit_tail:
+                    # Recheck the restored tail against the replacement window.
+                    _refit_continue = bool(stream_payload.get("continue_final_message"))
+                    if not _continuation_would_be_served(
+                        stream_payload["messages"], _refit_continue
+                    ):
+                        # Protect the current user turn and its recovery tail.
+                        _refit_protect = {id(_message) for _message in _refit_tail}
+                        for _message in reversed(
+                            _refit_messages[: len(_refit_messages) - len(_refit_tail)]
+                        ):
+                            _refit_protect.add(id(_message))
+                            if _message.get("role") == "user":
+                                break
+                        _refit_evicted = _evict_until_it_fits(
+                            stream_payload["messages"],
+                            None,
+                            stream_payload.get("chat_template_kwargs"),
+                            _refit_continue,
+                            _refit_protect,
+                        )
+                        if _refit_evicted is not None:
+                            # Nothing else is safe to evict.
+                            stream_payload["messages"] = _refit_evicted
                 if truncation:
                     if _records_boundary(truncation):
                         truncation.update(
@@ -32062,6 +32118,7 @@ class LlamaCppBackend:
                         # trailing assistant text, so handing it the cumulative value a
                         # second time yields "fragment1 + fragment1 + continuation1".
                         _candidate_messages = list(stream_payload["messages"])
+                        _merged_f = trailing_assistant_text(_candidate_messages) is not None
                         _append_assistant_turn(
                             _candidate_messages,
                             {
@@ -32078,6 +32135,7 @@ class LlamaCppBackend:
                         _candidate_messages = neutralize_control_markup_in_messages(
                             _candidate_messages, None, self.markup_profile
                         )
+                        _continuation_tail = _candidate_messages[-1:]
                         _next_cap = _remaining_output_budget()
                         _served = _next_cap != 0 and _continuation_would_be_served(
                             _candidate_messages, True
@@ -32099,8 +32157,10 @@ class LlamaCppBackend:
                                 _served = True
                         if _served:
                             stream_payload["messages"] = _candidate_messages
+                            _record_refit_tail(_candidate_messages, _continuation_tail, _merged_f)
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
+                            stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:
                                 stream_payload["max_tokens"] = _next_cap
                             # Folded in only now, else the reported usage counts the last
@@ -32169,6 +32229,10 @@ class LlamaCppBackend:
                             # See the answer continuation above: spending the payload and
                             # the usage before the decision double-counted both.
                             _candidate_r = list(stream_payload["messages"])
+                            _merged_r = (
+                                bool(stream_payload.get("continue_final_message"))
+                                and trailing_assistant_text(_candidate_r) is not None
+                            )
                             _append_assistant_turn(
                                 _candidate_r,
                                 {
@@ -32194,11 +32258,20 @@ class LlamaCppBackend:
                             # that would have fit or admits one llama-server then rejects.
                             _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
                             _next_cap_r = _remaining_output_budget()
+                            # Protect the current user turn and recovery tail.
+                            _recovery_tail = _candidate_r[-2:]
+                            _recovery_protect = {id(_message) for _message in _recovery_tail}
+                            for _message in reversed(_candidate_r[:-2]):
+                                _recovery_protect.add(id(_message))
+                                if _message.get("role") == "user":
+                                    break
                             _served_r = _next_cap_r != 0 and _continuation_would_be_served(
                                 _candidate_r, False, _off_kw
                             )
                             if _next_cap_r != 0 and not _served_r:
-                                _evicted_r = _evict_until_it_fits(_candidate_r, None, _off_kw)
+                                _evicted_r = _evict_until_it_fits(
+                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw
                                 ):
@@ -32206,9 +32279,11 @@ class LlamaCppBackend:
                                     _served_r = True
                             if _served_r:
                                 stream_payload["messages"] = _candidate_r
-                                # The retry ends on a USER turn, so the flag from any
-                                # earlier answer continuation no longer describes it.
+                                # Preserve both recovery messages across a respawn.
+                                _record_refit_tail(_candidate_r, _recovery_tail, _merged_r)
+                                # User-ended recovery invalidates continuation flags.
                                 stream_payload.pop("continue_final_message", None)
+                                stream_payload.pop("add_generation_prompt", None)
                                 if _next_cap_r is not None:
                                     stream_payload["max_tokens"] = _next_cap_r
                                 if _off_kw is not None:
