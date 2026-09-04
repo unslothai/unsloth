@@ -131,9 +131,32 @@ def _is_boilerplate_md(cell):
     return any(m in low for m in _BOILERPLATE_MD)
 
 
-# A `#` glued to the previous token is data, not a comment: the fragment in
-# `pip install "git+https://host/repo#subdirectory=pkg"` selects the package.
-_COMMENT_RE = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
+def _strip_comment(line):
+    """`line` with its trailing shell comment removed. POSIX starts a comment only on
+    a `#` that OPENS an unquoted token, so two kinds of `#` are data:
+
+      - one glued to the previous token, as in the `#subdirectory=pkg` fragment of
+        `pip install "git+https://host/repo#subdirectory=pkg"`, which selects the
+        package;
+      - one inside a string literal, which a compound install line carries whenever
+        it chains code after the install:
+        `!pip install foo && python -c 'print("a # b")' && pip install bar==2.0`.
+        Cutting at that `#` dropped the rest of the line, so an upstream bump of
+        `bar` hashed the same and the refresh kept the stale notebook. The quote rule
+        is the one `_is_install_line` already applies through `_unquoted`.
+
+    An unterminated quote keeps the whole line: a shell would not treat its tail as a
+    comment either, and keeping bytes can only ever say DIFF."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
 
 
 def _normalize_install(text):
@@ -152,7 +175,7 @@ def _normalize_install(text):
     lines = []
     for raw in text.split("\n"):
         if _is_install_line(raw, shell):
-            line = _COMMENT_RE.sub("", raw)
+            line = _strip_comment(raw)
         else:
             stripped = raw.strip()
             if not stripped or stripped.startswith("#"):

@@ -227,6 +227,40 @@ def test_a_string_literal_beside_a_real_install_is_still_compared(sig, tmp_path:
     ), "a `#` inside a string is data, not a comment"
 
 
+# the install LINE itself may carry a string literal once it chains code after the
+# install, and cutting at the quoted `#` dropped the rest of the line with it
+_COMPOUND = "!pip install foo && python -c 'print(\"a # b\")' && pip install bar==2.0\n"
+
+
+def test_a_quoted_hash_on_a_compound_install_line_is_data(sig, tmp_path: Path):
+    assert sig._is_install_line(_COMPOUND.strip(), False)
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", _COMPOUND), ("code", "print(1)\n")],
+        [("code", _COMPOUND.replace("# b", "# c")), ("code", "print(1)\n")],
+    ), "a `#` inside a quoted stretch of an install line is data, not a comment"
+
+
+def test_a_pin_after_a_quoted_hash_is_still_visible(sig, tmp_path: Path):
+    """The cost of cutting at the quoted `#`: every spec behind it vanished too."""
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", _COMPOUND), ("code", "print(1)\n")],
+        [("code", _COMPOUND.replace("bar==2.0", "bar==3.0")), ("code", "print(1)\n")],
+    ), "a changed pin behind a quoted `#` must still make the notebook refresh"
+
+
+def test_a_real_trailing_comment_on_an_install_line_is_still_cosmetic(sig, tmp_path: Path):
+    assert _same(
+        sig,
+        tmp_path,
+        [("code", _INSTALL.rstrip("\n") + "  # install the stack\n"), ("code", "print(1)\n")],
+        [("code", _INSTALL.rstrip("\n") + " # bring in the stack\n"), ("code", "print(1)\n")],
+    ), "an unquoted trailing comment must stay cosmetic"
+
+
 def test_whitespace_inside_a_string_is_data_too(sig, tmp_path: Path):
     assert not _same(
         sig,

@@ -511,28 +511,52 @@ def _filter_requirements_file(path, _depth = 0):
 
 
 def _protected_constraints_file():
-    """Temp constraints file pinning every INSTALLED protected package, else None.
-    Argument filtering does not constrain the RESOLVER: a kept package declaring
-    `torch==99.0` would replace the baked torch, and pinning makes that fail loudly."""
+    """Temp constraints file pinning every INSTALLED protected package, or None when
+    the environment has none to pin. Argument filtering does not constrain the
+    RESOLVER: a kept package declaring `torch==99.0` would replace the baked torch,
+    and pinning makes that fail loudly. `_extras_only_target` leans on the same pin --
+    it forwards `torch[opt]` with the version specifier stripped precisely because the
+    pin holds the baked version, so an unconstrained forward can REPLACE rather than
+    only ADD.
+
+    So a failure to build the file fails CLOSED, exactly as _filter_requirements_file
+    already does for the same mkstemp error: swallowing it returned None, which the
+    caller cannot tell apart from "nothing to protect", and the install then ran with
+    the whole protection silently off. Only a wholesale failure aborts; one dist whose
+    metadata cannot be read is skipped, since a half-removed `.dist-info` left by an
+    interrupted install is ordinary and must not block every later install."""
     try:
         from importlib.metadata import distributions
-
-        pins = {}
-        for dist in distributions():
+        dists = list(distributions())
+    except Exception as exc:
+        raise SystemExit(
+            f"[unsloth-nb] could not enumerate installed packages ({exc}); refusing to "
+            "install without the constraints that hold the baked stack in place."
+        )
+    pins = {}
+    for dist in dists:
+        try:
             raw = (dist.metadata["Name"] or "").strip()
-            name = _norm_name(raw)
-            if not name or name in pins:
-                continue
-            if name == "transformers" or name in _KEEP or name.startswith(_KEEP_PREFIX):
-                pins[name] = f"{raw}=={dist.version}"
-        if not pins:
-            return None
+            version = dist.version
+        except Exception:
+            continue
+        name = _norm_name(raw)
+        if not name or not version or name in pins:
+            continue
+        if name == "transformers" or name in _KEEP or name.startswith(_KEEP_PREFIX):
+            pins[name] = f"{raw}=={version}"
+    if not pins:
+        return None
+    try:
         fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-protected-", suffix = ".txt")
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write("\n".join(pins[name] for name in sorted(pins)) + "\n")
-        return tmp
-    except Exception:
-        return None
+    except OSError as exc:
+        raise SystemExit(
+            f"[unsloth-nb] could not write the protected constraints file ({exc}); "
+            "refusing to install without the pins that hold the baked stack in place."
+        )
+    return tmp
 
 
 def _selfcheck_value_flags():

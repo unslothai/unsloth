@@ -527,6 +527,52 @@ def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypa
     assert path == str(req) and recorded is None and dropped == []
 
 
+# the constraints file is the ONLY thing holding the baked stack when a forwarded
+# package pulls an incompatible transitive pin, and `_extras_only_target` forwards a
+# protected `name[extras]` because of it, so its write must fail CLOSED too instead of
+# reading like "nothing to protect"
+def test_protected_constraints_write_failure_refuses_install(shim, monkeypatch):
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+
+    def denied(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(shim.tempfile, "mkstemp", denied)
+    with pytest.raises(SystemExit, match = "refusing to install"):
+        _raw_execd(shim, "pip", ["snac"])
+
+
+def test_protected_metadata_enumeration_failure_refuses_install(shim, monkeypatch):
+    def denied():
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("importlib.metadata.distributions", denied)
+    with pytest.raises(SystemExit, match = "refusing to install"):
+        _raw_execd(shim, "pip", ["snac"])
+
+
+# an interrupted install leaves a `.dist-info` with no METADATA behind, and that one
+# unreadable dist must not take the pins for every other package down with it
+def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
+    class _BrokenDist:
+        @property
+        def metadata(self):
+            raise KeyError("Name")
+
+        @property
+        def version(self):
+            raise KeyError("Version")
+
+    monkeypatch.setattr(
+        "importlib.metadata.distributions",
+        lambda: [_BrokenDist(), _FakeDist("torch", "2.11.0"), _FakeDist("snac", "1.2.1")],
+    )
+    execd = _raw_execd(shim, "pip", ["snac"])
+    assert execd is not None and execd[-2] == "--constraint", execd
+    pins = Path(execd[-1]).read_text(encoding = "utf-8").split()
+    assert pins == ["torch==2.11.0"], pins
+
+
 # uv --exact is an exact SYNC: it removes packages outside the kept target's closure
 def test_uv_exact_flag_stripped(shim):
     execd, _ = _run(shim, "uv", ["--exact", "snac"])
