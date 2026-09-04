@@ -546,6 +546,24 @@ const OPEN_HANGUL_CLUSTER_PATTERN =
   /^[\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6]$/u;
 const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 
+/** Any Hangul at all, asked first so an ASCII query pays one test and stops. */
+const HANGUL_HINT_PATTERN = /[ᄀ-ᇿꥠ-꥿가-ퟻ]/u;
+
+/**
+ * True when a cluster needs the trailing-jamo boundary, which only the pattern path writes.
+ *
+ * Extended and Old Hangul jamo have no precomposed form, so NFC and NFD spell them the same way and
+ * the single-spelling query would take the literal scan, where an open syllable prefix-matches a
+ * closed one. Modern Hangul always has two spellings and reaches the pattern anyway.
+ */
+function needsHangulBoundary(needle: string): boolean {
+  if (!HANGUL_HINT_PATTERN.test(needle)) return false;
+  for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
+    if (OPEN_HANGUL_CLUSTER_PATTERN.test(cluster)) return true;
+  }
+  return false;
+}
+
 /** A closed syllable's L+V pair and everything after it. */
 const HANGUL_LVT_PATTERN =
   /^([\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6])([\u11a8-\u11ff\ud7cb-\ud7fb][\s\S]*)$/u;
@@ -617,7 +635,12 @@ function escapeForRegex(text: string): string {
  */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
-  if (variants.length === 1 && !/\s/.test(needle)) return null;
+  if (
+    variants.length === 1 &&
+    !/\s/.test(needle) &&
+    !needsHangulBoundary(needle)
+  )
+    return null;
   try {
     const pattern = new RegExp(canonicalSource(needle, dotted), "g");
     // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`

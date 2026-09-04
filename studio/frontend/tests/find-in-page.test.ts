@@ -964,6 +964,27 @@ test("an open Hangul syllable cannot match the prefix of a closed one", () => {
   }
 });
 
+test("the jamo boundary holds for Hangul that has only one spelling", () => {
+  // Extended and Old Hangul jamo have no precomposed form, so NFC and NFD spell them the same way.
+  // One spelling used to take the literal scan, which writes no boundary, and the open syllable
+  // painted the first two jamo of a visibly closed one. Modern Hangul always has two spellings and
+  // reached the pattern anyway, so this only ever showed up out here.
+  const open = "ꥠힰ";
+  const closed = "ꥠힰퟋ";
+  assert.equal(open.normalize("NFC"), open);
+  assert.equal(open.normalize("NFD"), open);
+
+  const inClosed = buildTextIndex(el("P", [text(closed)]));
+  assert.deepEqual(findMatches(inClosed, open), []);
+  assert.deepEqual(findMatches(inClosed, closed), [
+    { start: 0, end: closed.length },
+  ]);
+
+  const inOpen = buildTextIndex(el("P", [text(open)]));
+  assert.deepEqual(findMatches(inOpen, open), [{ start: 0, end: open.length }]);
+  assert.deepEqual(findMatches(inOpen, closed), []);
+});
+
 test("a half-composed Hangul syllable is found and covered whole", () => {
   // Hangul composes in two steps, L+V into a syllable and then the trailing jamo into it, and text
   // can stop after the first. NFC and NFD both write past that spelling, so a document holding one
@@ -2185,7 +2206,10 @@ test("history arriving above the reader still renumbers the list", () => {
   ]);
   assert.equal(renumbersMatches(before, replaced, 0), false);
   // A reader deeper in that surface does lose their place, since the rewrite is ahead of them.
-  assert.equal(renumbersMatches(before, replaced, before.text.length - 1), true);
+  assert.equal(
+    renumbersMatches(before, replaced, before.text.length - 1),
+    true,
+  );
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
