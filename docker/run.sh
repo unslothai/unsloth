@@ -78,9 +78,14 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
     # the host's video/render groups do not exist.
     if [[ -e "$DEV_ROOT/dev/kfd" && -d "$DEV_ROOT/dev/dri" ]]; then
         GPU_FLAG=(--device /dev/kfd --device /dev/dri)
+        # A missing group is not fatal: getent exits nonzero when the name is not in
+        # NSS, and under `set -o pipefail` that would take the whole assignment down
+        # with `set -e` before docker run is ever reached. Trailing `|| _gid=` puts the
+        # assignment in an OR-list, which suppresses that and leaves the gid empty.
+        # Minimal hosts really do ship without a render group.
         if command -v getent >/dev/null 2>&1; then
             for _grp in video render; do
-                _gid="$(getent group "$_grp" | cut -d: -f3)"
+                _gid="$(getent group "$_grp" | cut -d: -f3)" || _gid=""
                 [[ -n "$_gid" ]] && GPU_FLAG+=(--group-add "$_gid")
             done
         fi

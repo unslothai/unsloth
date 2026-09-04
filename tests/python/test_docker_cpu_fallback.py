@@ -32,7 +32,13 @@ def _stub(path, body):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _invoke_run_sh(tmp_path, *, nvidia, amd):
+def _invoke_run_sh(
+    tmp_path,
+    *,
+    nvidia,
+    amd,
+    groups = "both",
+):
     """Run docker/run.sh with a recording `docker` stub and a staged /dev tree.
 
     Returns the argv docker/run.sh would have handed to `docker run`.
@@ -57,6 +63,19 @@ def _invoke_run_sh(tmp_path, *, nvidia, amd):
         # covers the missing-binary shape too (same && chain, same outcome)
         _stub(str(bindir / "nvidia-smi"), "exit 1\n")
 
+    # getent is ALWAYS shadowed too, for the same reason as nvidia-smi: this host has
+    # both video and render, so relying on the real one made the missing-group cases
+    # unreachable and the AMD test green for the wrong reason.
+    known = {"both": ("44", "992"), "video_only": ("44", None), "none": (None, None)}
+    vid, ren = known[groups]
+    _stub(
+        str(bindir / "getent"),
+        'case "$2" in\n'
+        + (f'  video)  echo "video:x:{vid}:"; exit 0 ;;\n' if vid else "  video)  exit 2 ;;\n")
+        + (f'  render) echo "render:x:{ren}:"; exit 0 ;;\n' if ren else "  render) exit 2 ;;\n")
+        + "esac\nexit 2\n",
+    )
+
     dev_root = tmp_path / "root"
     (dev_root / "dev").mkdir(parents = True)
     if nvidia:
@@ -75,8 +94,10 @@ def _invoke_run_sh(tmp_path, *, nvidia, amd):
     for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU"):
         env.pop(leak, None)
 
+    # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
+    # not resolve either
     proc = subprocess.run(
-        ["bash", _RUN_SH, "true"],
+        [shutil.which("bash") or "/bin/bash", _RUN_SH, "true"],
         env = env,
         capture_output = True,
         text = True,
@@ -104,6 +125,28 @@ class TestRunShDegradesWithoutNvidia:
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
+
+    def test_the_group_lookup_is_guarded_on_getent_existing(self):
+        """A host with no getent at all (busybox, some slim images) must skip the
+        lookup rather than fail it."""
+        body = open(_RUN_SH).read()
+        idx = body.index("getent group")
+        assert "command -v getent" in body[:idx]
+
+    @pytest.mark.parametrize("groups", ["none", "video_only"])
+    def test_a_missing_group_record_does_not_abort_the_run(self, tmp_path, groups):
+        """getent exits nonzero for a name that is not in NSS. Under `set -o pipefail`
+        that propagates out of the command substitution and `set -e` kills run.sh
+        before docker run, so the AMD fallback could never start on a host without a
+        render group. Degrade to whatever gids exist instead."""
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True, groups = groups)
+        # the devices are the point; the gids are best-effort
+        assert "/dev/kfd" in argv and "/dev/dri" in argv
+        assert "--gpus" not in argv
+        gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
+        assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
+        expected = {"none": 0, "video_only": 1}[groups]
+        assert len(gids) == expected, f"expected {expected} gids, got {gids}"
 
     def test_an_nvidia_host_is_untouched(self, tmp_path):
         """The degrade path must not fire where --gpus actually works."""
