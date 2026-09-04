@@ -229,6 +229,7 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -273,9 +274,9 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
+  /** Slots the load was invoked with (else the --parallel default). */
   requested_parallel_slots?: number | null;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
+  /** Slots the load decodes at once: for llama-server, after any fit-time reduction. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -344,6 +345,7 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
@@ -377,9 +379,9 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
+  /** Slots the active load was invoked with (else the --parallel default). */
   requested_parallel_slots?: number | null;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
+  /** Slots the active load decodes at once: for llama-server, after any fit-time reduction. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;

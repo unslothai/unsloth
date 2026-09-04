@@ -2169,6 +2169,11 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeGgufVariant",
   "activeModelIsLocal",
   "loadedContextLength",
+  // All three, or none: the context-limit advice reads them together, so a background load
+  // leaving one behind describes the visible model with another model's window.
+  "loadedContextEnforced",
+  "loadedContextUnboundedWhenBatched",
+  "loadedParallelSlots",
   "maxContextLength",
   "nativeContextLength",
   "loadedIsGguf",
@@ -2993,6 +2998,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // A DSpark sidecar is ~11 GB, and Auto reaches it.
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
+    // Sized like the load: KV memory scales with the replies decoded at once.
+    n_parallel?: number | null;
   }): Promise<boolean> {
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
@@ -3194,6 +3201,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
+        // Not GGUF-only: an MLX load decodes several replies at once too, and one
+        // auto-loaded without its remembered width comes up at the server default.
+        n_parallel: config.nParallel ?? null,
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
         ...(candidate.kind === "gguf"
@@ -3202,7 +3212,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               gpu_memory_mode: effectiveGpuMemoryMode,
               // A remembered manual DiffusionGemma split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
-              n_parallel: config.nParallel ?? null,
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
@@ -3253,6 +3262,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
+      // Per-model and not GGUF-only: an auto-load omitting it reverts a remembered width.
+      n_parallel: config.nParallel ?? null,
       // GGUF-only; the split ratio is never remembered (it is bound to an exact GPU set), so
       // llama.cpp's free-VRAM default stays in charge.
       ...(candidate.kind === "gguf"
@@ -3261,8 +3272,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
-            // Per-model too, or the auto-load reverts a remembered override.
-            n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
             // Remembered like the rest of this block, or the auto-load reverts the override.
@@ -3342,13 +3351,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         display_name: loadResp.display_name ?? candidate.id,
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
+      // Slots this auto-load committed, for either backend. Diffusion ignores --parallel,
+      // so a count there would mint a phantom override.
+      const committedSlots =
+        (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
       if (candidate.kind === "gguf") {
         // The saved Context Length, not fitMaxSeqLength: the wire value is Auto-resolved on a
         // same-model reload, so pinning it turns Auto into a number the user never set.
         const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
-        // Diffusion ignores --parallel, so counting slots there would mint a phantom override.
-        const committedSlots =
-          (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
         // same rule for the batch sizes
         const committedNBatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nBatch ?? null);
@@ -3416,9 +3426,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
-          // GGUF-only and never sent here: a staged override would be saved for a model that cannot use it.
-          nParallel: null,
-          loadedNParallel: null,
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
+          // Batch sizes stay GGUF-only: an override here saves a flag the model cannot use.
           nBatch: null,
           loadedNBatch: null,
           nUbatch: null,

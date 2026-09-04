@@ -25,6 +25,8 @@ export type ContextUsageBarInput = {
   // MLX keeps generating past the window instead of stopping there, so it needs the
   // opposite advice from llama.cpp once a conversation outgrows the limit.
   isMlx?: boolean;
+  contextUnboundedWhenBatched?: boolean;
+  parallelSlots?: number | null;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
 };
@@ -50,13 +52,27 @@ function contextLimitAdvice(
   total: number,
   isMlx: boolean | undefined,
   enforced: boolean | null | undefined,
+  unboundedWhenBatched: boolean | undefined,
+  slots: number | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
   // A window the backend confirmed does not bound the cache is not a limit at all:
   // nothing rotates and nothing stops, so neither of the other two is true of it. An
   // unjudged MLX window says the same thing operationally: the probe could not build a
   // cache, so none was bounded and it grows exactly as a confirmed false one does.
-  if (enforced === false || (isMlx && enforced == null)) return "unenforced-limit";
+  //
+  // The load answers the first two for a reply decoded on its own. Replies decoded
+  // together are the third: mlx-vlm's batch generator takes no window control, so a
+  // load serving more than one at a time is unbounded whatever the probe found. Both
+  // backend fields describe the load and neither moves, so this is read here rather
+  // than answered across the process boundary, where no snapshot could stay true.
+  if (
+    enforced === false ||
+    (isMlx && enforced == null) ||
+    (unboundedWhenBatched && (slots ?? 1) > 1)
+  ) {
+    return "unenforced-limit";
+  }
   if (!isMlx) return "stops-at-limit";
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }
@@ -83,6 +99,8 @@ export function deriveContextUsageBar({
   completionTokens,
   isMlx,
   contextEnforced,
+  contextUnboundedWhenBatched,
+  parallelSlots,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -127,6 +145,13 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
-    advice: contextLimitAdvice(usedTokens, limit, isMlx, contextEnforced),
+    advice: contextLimitAdvice(
+      usedTokens,
+      limit,
+      isMlx,
+      contextEnforced,
+      contextUnboundedWhenBatched,
+      parallelSlots,
+    ),
   };
 }

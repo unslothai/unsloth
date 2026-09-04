@@ -911,8 +911,8 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       const pendingConfig =
         typeof selection !== "string" ? selection.config : undefined;
-      // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
-      // completed load writes the lease, so adopting would keep a stale token.
+      // nativePathToken is excluded: a leased file is named by a label two files can share,
+      // and only a completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
@@ -972,13 +972,13 @@ export function useChatModelRuntime() {
             // guarded on its absence.
             (loadPath ?? modelId).toLowerCase().endsWith(".gguf"),
           ) &&
-          // The id names the weights, not how the server was invoked: a remembered context length,
-          // drafter, placement or extra arg the resident load does not run is a real reload. Not
-          // `pendingConfig`: with no saved record the caller has already reset the store to defaults,
-          // and performLoad reads the store for every field the config does not carry.
+          // The id names the weights, not how the server was invoked. Not `pendingConfig`:
+          // with no saved record the caller has already reset the store to defaults, and
+          // performLoad reads the store for every field the config does not carry, so the
+          // live store is what /load would send on both doors.
           residentRuntimeMatchesConfig(status, comparedConfig, {
-            // What the applier fills an unset field with, so the comparison is against what /load would send
-            // rather than against silence.
+            // What the applier fills an unset field with, so this compares against what
+            // /load would send rather than against silence.
             speculativeType: readPersistedSpeculativeType(),
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
@@ -1783,10 +1783,9 @@ export function useChatModelRuntime() {
               mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // GGUF-only: slots mean nothing for a transformers load.
-              n_parallel: isGguf ? loadNParallel : null,
-              // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
-              // so neither a transformers load nor a diffusion GGUF carries them.
+              n_parallel: loadNParallel,
+              // Sent only once known, and [] is the explicit "launch with none": a
+              // transformers load and a diffusion GGUF never get these flags.
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
@@ -1896,11 +1895,9 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed: non-GGUF never sends them and diffusion ignores --parallel,
-            // so a click-time count would mint a phantom override.
             const committedSlots =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNParallel ?? null)
                 : null;
             // same rule for the batch sizes: gguf-only llama-server flags

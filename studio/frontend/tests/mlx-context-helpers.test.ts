@@ -5,6 +5,7 @@
 // coverage regexes the source, which passes with the body deleted; these call them.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -61,6 +62,8 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: true,
     loadedContextEnforced: null,
+    loadedContextUnboundedWhenBatched: false,
+    loadedParallelSlots: null,
   });
   // Transformers, which sizes nothing, still contributes no window.
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -70,6 +73,8 @@ test("an MLX response carries a window without a native one", () => {
     loadedIsGguf: false,
     loadedIsMlx: null,
     loadedContextEnforced: null,
+    loadedContextUnboundedWhenBatched: false,
+    loadedParallelSlots: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
 });
@@ -188,6 +193,17 @@ test("the usage bar names the three ways a window can end", () => {
   assert.equal(at(30000, { contextEnforced: undefined }), "unenforced-limit");
   // Only for MLX: nothing else installs a window whose bound could go unjudged.
   assert.equal(at(30000, { isMlx: false, contextEnforced: null }), "stops-at-limit");
+  // A vision load's batch generator takes no window control, so replies it decodes
+  // together escape a window the probe confirmed for a reply on its own. Which fact
+  // applies is the width, read here rather than server-side.
+  const batched = { contextUnboundedWhenBatched: true };
+  assert.equal(at(30000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
+  assert.equal(at(40000, { ...batched, parallelSlots: 4 }), "unenforced-limit");
+  // One slot decodes replies one at a time, so the probe still answers for it.
+  assert.equal(at(30000, { ...batched, parallelSlots: 1 }), "mlx-near-limit");
+  assert.equal(at(30000, { ...batched, parallelSlots: null }), "mlx-near-limit");
+  // A load that cannot batch is answered by the probe at any width.
+  assert.equal(at(30000, { parallelSlots: 4 }), "mlx-near-limit");
 });
 
 test("an outgoing self-sizing window does not become the next model's request", () => {
@@ -280,4 +296,62 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
       presetSource: "custom",
     }),
   );
+});
+
+test("a load response's two window facts and width reach the bar together", () => {
+  // Read from the response, not defaulted: a mapping that dropped either fact would
+  // leave the bar advising a bound the load does not promise.
+  const wide = loadedContextFields({
+    is_mlx: true,
+    context_length: 32768,
+    native_context_length: 32768,
+    context_length_enforced: true,
+    context_unbounded_when_batched: true,
+    parallel_slots: 4,
+  });
+  assert.equal(wide.loadedContextUnboundedWhenBatched, true);
+  assert.equal(wide.loadedParallelSlots, 4);
+
+  // And carried into the advice exactly as the page passes them.
+  assert.equal(
+    deriveContextUsageBar({
+      used: 30000,
+      total: 32768,
+      isMlx: true,
+      contextEnforced: wide.loadedContextEnforced,
+      contextUnboundedWhenBatched: wide.loadedContextUnboundedWhenBatched,
+      parallelSlots: wide.loadedParallelSlots,
+    })?.advice,
+    "unenforced-limit",
+  );
+
+  // llama.cpp decodes each slot against its own window however many it runs.
+  const gguf = loadedContextFields({
+    is_gguf: true,
+    context_length: 32768,
+    native_context_length: 32768,
+    context_unbounded_when_batched: true,
+    parallel_slots: 4,
+  });
+  assert.equal(gguf.loadedContextUnboundedWhenBatched, false);
+});
+
+test("a background load cannot leave the visible model reading another model's window", () => {
+  // Preserving some of the three across a background auto-load is worse than preserving
+  // none: the visible model would answer with another model's batching facts.
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const list = source.slice(
+    source.indexOf("const VISIBLE_MODEL_RUNTIME_KEYS = ["),
+    source.indexOf("] as const satisfies"),
+  );
+  for (const key of [
+    "loadedContextEnforced",
+    "loadedContextUnboundedWhenBatched",
+    "loadedParallelSlots",
+  ]) {
+    assert.match(list, new RegExp(`"${key}"`), `${key} is not preserved`);
+  }
 });

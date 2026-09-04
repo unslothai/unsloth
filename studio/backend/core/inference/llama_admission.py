@@ -3,10 +3,9 @@
 
 """Admission control for local llama-server generation requests.
 
-The helpers in this module deliberately know nothing about FastAPI, SSE, or the
-OpenAI-compatible route shape. They only coordinate how many upstream generation
-requests may be active for one llama-server backend and provide a cancellable
-FIFO queue for excess requests.
+llama.cpp is the only backend that reserves here: every call site derives its capacity and
+KV budget from a llama-server, and the MLX path does not reserve at all. Admitting MLX
+needs those inputs answered for a shared cache under a fixed batch width, not another queue.
 """
 
 from __future__ import annotations
@@ -302,9 +301,8 @@ class _Waiter:
     future: asyncio.Future
     cancelled: bool = False
     granted_lease: Optional["LlamaAdmissionLease"] = None
-    # read while the head of the line is considered
-    # KV tokens this caller will occupy once admitted. Read while the head of the line is considered, so a large request
-    # cannot be overtaken by small ones.
+    # KV tokens this caller will occupy once admitted. Read while the head of the
+    # line is considered, so a large request cannot be overtaken by small ones.
     tokens: int = 0
 
 
@@ -643,9 +641,9 @@ class LlamaAdmissionReservation:
 
 
 class LlamaAdmissionQueue:
-    """A fixed pool of generation slots for one llama-server, plus a FIFO wait line.
+    """A fixed pool of generation slots for one backend, plus a FIFO wait line.
 
-    The pool mirrors llama-server's own ``--parallel`` slots: ``capacity`` slot ids
+    The pool mirrors the backend's own parallel slots: ``capacity`` slot ids
     are each either free or held by exactly one caller. A caller that finds every
     slot busy waits in arrival order and is handed the next slot to free, so no
     caller is starved. This bounds only the callers that reserve: chat completions
@@ -793,8 +791,8 @@ class LlamaAdmissionQueue:
             if not self._waiters and self._reparking == 0:
                 slot = self._take_slot_locked(len(self._unpark_tickets), cost)
                 if slot is not None:
-                    # No snapshot here: callers read it through snapshot_now(), which re-reads the queue, so building
-                    # one per admitted request would be pure allocation on the hot path.
+                    # No snapshot here: callers read it through snapshot_now(), so
+                    # building one per admitted request is pure allocation.
                     return LlamaAdmissionReservation(
                         queue = self,
                         lease = LlamaAdmissionLease(self, slot, cost),
@@ -802,7 +800,7 @@ class LlamaAdmissionQueue:
             limit = config.queue_limit(self._capacity)
             if limit is not None and self._live_waiters_locked() >= limit:
                 raise LlamaAdmissionQueueFull(
-                    "llama-server generation queue is full",
+                    "Generation queue is full",
                     snapshot = self._snapshot_locked(),
                 )
             waiter = _Waiter(
@@ -1041,8 +1039,9 @@ class LlamaAdmissionQueue:
                 self._committed = max(0, self._committed - max(0, waiter.tokens))
 
     def _deliver_lease(self, waiter: _Waiter, lease: LlamaAdmissionLease) -> None:
-        # Runs on the waiter's own loop thread, which is also the only thread that cancels that reservation, so waiter
-        # state is safe to touch unlocked here. release() may be called from any thread, but only reaches this via
+        # Runs on the waiter's own loop thread, which is also the only thread that
+        # cancels that reservation, so waiter state is safe to touch unlocked here.
+        # release() may be called from any thread, but only reaches this via
         # call_soon_threadsafe. Cancelling off-loop would need this under _lock.
         if waiter.cancelled or waiter.future.done():
             waiter.granted_lease = None

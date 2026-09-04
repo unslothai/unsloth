@@ -7,15 +7,18 @@ A load/unload has to know which streaming chats it would interrupt. Everything
 under test is a dict + threading.Lock, so this passes on every platform.
 """
 
+import multiprocessing as _mp
 import os
 import sys
 import threading
+import uuid
 
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.worker import _SLOTS, PendingTeardowns, StopLedger
 from state import active_generations
 
 
@@ -274,15 +277,24 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
         tracker.__exit__(None, None, None)
 
 
-def _stub_load_route(monkeypatch, *, active_model_name):
-    """Point POST /load at an in-memory safetensors backend.
-
-    active_model_name == the requested path makes the request idempotent, so
-    _load_model_impl takes its already_loaded fast return.
-    """
+def _stub_load_route(
+    monkeypatch,
+    *,
+    active_model_name,
+    backend = None,
+):
     from types import SimpleNamespace
 
     import routes.inference as inf_mod
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    if backend is None:
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend._stop_ledger = None
+        backend._pending_teardowns = None
+        backend.active_model_name = active_model_name
+        backend.models = {}
 
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf_mod, "validate_extra_args", lambda args: [])
@@ -305,11 +317,7 @@ def _stub_load_route(monkeypatch, *, active_model_name):
         },
     )
     monkeypatch.setattr(inf_mod, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
-    monkeypatch.setattr(
-        inf_mod,
-        "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
-    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
@@ -339,6 +347,27 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
             )
         assert response.status == "already_loaded"
         assert not ev.is_set()
+
+
+def test_a_width_change_reaches_the_resident_model_without_replacing_it(monkeypatch):
+    _route_gate()
+    import asyncio
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+    applied = []
+    inf_mod.get_inference_backend().set_parallel_slots = applied.append
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.load_model(LoadRequest(model_path = "org/A", n_parallel = 2), object(), "tester")
+        )
+
+    assert response.status == "already_loaded"
+    assert applied == [2]
+    assert not ev.is_set(), "a width change ended a reply that was decoding"
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
@@ -2548,6 +2577,73 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
+# ── what the parent records about a stop, and what the worker reads ───
+
+
+def _ids(n):
+    return [str(uuid.uuid4()) for _ in range(n)]
+
+
+def _stopped(ledger):
+    """What the worker would read: the only way the record is read."""
+    return ledger.snapshot()[1]
+
+
+def test_a_request_reads_as_stopped_once_it_is():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, theirs = _ids(2)
+
+    assert _stopped(ledger) == set()
+    assert ledger.stop(mine)
+    assert _stopped(ledger) == {mine}, "a stop names one request and no other"
+    assert theirs not in _stopped(ledger)
+
+
+def test_the_oldest_stop_is_the_one_that_ages_out():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    recorded = _ids(_SLOTS + 1)
+    for request_id in recorded:
+        assert ledger.stop(request_id)
+
+    assert _stopped(ledger) == set(recorded[1:]), "the oldest made way for the newest"
+
+
+def test_stopping_the_same_request_twice_spends_one_slot():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    theirs, mine = _ids(2)
+    assert ledger.stop(theirs)
+    for _ in range(_SLOTS):
+        assert ledger.stop(mine)
+
+    assert _stopped(ledger) == {mine, theirs}, "the one stopped first is still stopped"
+
+
+def test_a_snapshot_answers_for_every_reply_at_once():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, absent = _ids(2)
+    theirs = "short"
+    ledger.stop(mine)
+    ledger.stop(theirs)
+
+    written, stopped = ledger.snapshot()
+    assert written == 2
+    assert stopped == {mine, theirs}, "the ids as recorded, with nothing padded onto them"
+    assert absent not in stopped
+
+
+class _Ledger:
+    def __init__(self, read_by_worker = False):
+        self.stopped: set = set()
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.add(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
 # ── queued chats must not cancel the running one ──────────────────────
 
 
@@ -2558,10 +2654,15 @@ def _orchestrator_for_ownership():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = _Ledger()
+    orch._pending_teardowns = None
     orch._gen_lock = threading.Lock()
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
+    orch._send_order_lock = threading.Lock()
+    orch._mailbox_lock = threading.Lock()
+    orch._request_cancel_events = {}
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
     return orch
@@ -2736,6 +2837,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = None
+    orch._pending_teardowns = None
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
