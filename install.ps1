@@ -5568,10 +5568,17 @@ exit 0
         if ($env:UV_OVERRIDE) {
             foreach ($ovFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
                 if (Test-Path -LiteralPath $ovFile -PathType Leaf) {
-                    $lines += @(Get-Content -LiteralPath $ovFile | Where-Object {
+                    $ovFull = (Convert-Path -LiteralPath $ovFile)
+                    # ReadAllLines, not Get-Content: on Windows PowerShell 5.1 Get-Content
+                    # decodes a BOM-less file with the ANSI code page, so a non-ASCII local
+                    # path in the caller's override (./donnees/pkg.whl with accents) came
+                    # back as mojibake and the UTF-8 write below preserved it, leaving uv
+                    # looking for a requirement that does not exist. .NET reads UTF-8 with
+                    # BOM detection on both engines, which matches what we write.
+                    $lines += @([System.IO.File]::ReadAllLines($ovFull) | Where-Object {
                         $_ -notmatch '^\s*torch(vision|audio)?([\s<>=!~;@[]|$)'
                     })
-                    $ovDirs += (Split-Path -Parent (Convert-Path -LiteralPath $ovFile))
+                    $ovDirs += (Split-Path -Parent $ovFull)
                 }
             }
         }
@@ -5587,9 +5594,32 @@ exit 0
             } catch { $f = $null }
         }
         if (-not $f) { $f = [System.IO.Path]::GetTempFileName() }
+        # Track it the moment it exists. WriteAllText below can throw, a full disk being
+        # the obvious way, and until the call site's assignment runs the outer cleanup
+        # has no path to remove, so a partial copy of the caller's override -- any
+        # authenticated URL in it included -- would be left on disk.
+        $script:TorchOverridesFile = $f
+        # This copy carries the caller's non-torch lines, which can hold credentials in a
+        # direct URL. New-Item takes the directory's inherited ACL, so a restrictive ACL
+        # on the source file is not carried over and a shared override directory would
+        # expose them. Twin of install.sh's umask 077 plus explicit chmod 600.
+        try {
+            $_acl = Get-Acl -LiteralPath $f
+            $_acl.SetAccessRuleProtection($true, $false)
+            $_me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+            $_acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $_me, "FullControl", "Allow")))
+            Set-Acl -LiteralPath $f -AclObject $_acl
+        } catch { }   # best effort, and a no-op off Windows
         # UTF-8 without a BOM, not -Encoding ascii, which would rewrite a non-ASCII path in the caller's override as "?".
         # WriteAllText adds no trailing newline: terminate the last line or two requirements join into one.
-        [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        try {
+            [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        } catch {
+            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            $script:TorchOverridesFile = $null
+            throw
+        }
         return $f
     }
 

@@ -96,6 +96,35 @@ try {
     $SkipTorch = $true
     Check "returns null under --no-torch" ($null -eq (New-UnslothTorchOverridesFile -PythonExe $fakePy))
     $SkipTorch = $false
+
+    # ── the merged copy is tracked and locked down ────────────────────────────────
+    # The caller's non-torch lines land in this copy, and one of them can be an
+    # authenticated direct URL. Three separate hazards, all of them Windows-only in
+    # effect, so the behavioural half of each is asserted where it can be and the
+    # structural half is asserted from the AST, which runs everywhere.
+
+    $env:UV_OVERRIDE = $ovPath
+    $script:TorchOverridesFile = $null
+    $merged = New-UnslothTorchOverridesFile -PythonExe $fakePy
+    $made += $merged
+    Check "the merged path is tracked for the outer cleanup" ($script:TorchOverridesFile -eq $merged)
+
+    $src = $fn[0].Extent.Text
+    $iTrack = $src.IndexOf('$script:TorchOverridesFile = $f')
+    $iWrite = $src.IndexOf('[System.IO.File]::WriteAllText(')
+    Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
+    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-Item -LiteralPath \$f')
+
+    # Get-Content decodes a BOM-less file with the ANSI code page on Windows PowerShell
+    # 5.1, which is where the mojibake came from. pwsh on Linux already defaults to
+    # UTF-8, so the round trip below cannot fail here even unfixed; the assertion that
+    # actually holds the fix in place is the one on the reader.
+    Check "the caller's override is read as UTF-8, not by the shell's default codepage" (
+        ($src -match '\[System\.IO\.File\]::ReadAllLines\(') -and ($src -notmatch 'Get-Content -LiteralPath \$ovFile')
+    )
+    Check "the inherited ACL is replaced rather than kept" (
+        ($src -match 'SetAccessRuleProtection\(\$true, \$false\)') -and ($src -match 'Set-Acl -LiteralPath \$f')
+    )
 }
 finally {
     if ($null -eq $savedOverride) { Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue }
