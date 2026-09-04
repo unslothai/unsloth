@@ -8628,7 +8628,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _apply_cuda_unified_memory_correction(
-        gpus: list[tuple[int, int, int]], bus_ids: dict[int, str] | None = None
+        gpus: list[tuple[int, int, int]], bus_ids: Optional[dict[int, str]] = None
     ) -> list[tuple[int, int, int]]:
         """Rewrite nvidia-smi's numbers for NVIDIA parts whose memory is the host's.
 
