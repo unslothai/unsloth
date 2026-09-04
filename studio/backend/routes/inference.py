@@ -4490,7 +4490,6 @@ def _invalidate_agent_skills_cache() -> None:
 
 def _enabled_agent_skills() -> list[dict]:
     from core.inference.skills import SkillError, enabled_skills
-
     global _AGENT_SKILLS_CACHE
     with _AGENT_SKILLS_CACHE_LOCK:
         cached_at, cached = _AGENT_SKILLS_CACHE
