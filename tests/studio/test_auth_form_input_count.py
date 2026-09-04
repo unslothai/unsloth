@@ -168,6 +168,69 @@ def test_login_jsx_declares_exactly_one_password_input():
     ), f"login JSX must declare exactly one password-typed input; found {pw_ids!r}"
 
 
+def _at_depth_zero(condition: str):
+    """Every character of ``condition`` that sits outside any bracket."""
+    depth = 0
+    for index, char in enumerate(condition):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0:
+            yield index, char
+
+
+def _leading_disjunct(condition: str) -> str:
+    """The first operand of ``condition`` read as a `||` chain.
+
+    Split at depth zero, so `!active || !(a || b)` yields `!active` and the inner
+    `||` is left where it belongs.
+    """
+    for index, char in _at_depth_zero(condition):
+        if char == "|" and condition[index : index + 2] == "||":
+            return condition[:index]
+    return condition
+
+
+def _is_conditional(condition: str) -> bool:
+    """Whether ``condition`` is a ternary rather than the test it looks like.
+
+    `?:` binds looser than `||`, so `!active || mounted ? false : true` reads as
+    `(!active || mounted) ? false : true` and skips the return while inactive.
+    `?.` and `??` are not that.
+    """
+    for index, char in _at_depth_zero(condition):
+        if char != "?":
+            continue
+        if condition[index + 1 : index + 2] in (".", "?") or condition[index - 1 : index] == "?":
+            continue
+        return True
+    return False
+
+
+def _inactive_returns_null(body: str) -> bool:
+    """Whether some `if` in ``body`` returns null on EVERY inactive render.
+
+    Read as a parse and not as text: the condition has to be a disjunction whose
+    first operand is `!active`, because that is what makes an inactive render
+    short-circuit to the return no matter what the rest of the guard says.
+    """
+    for match in re.finditer(r"\bif \(", body):
+        start = match.end()
+        depth, index = 1, start
+        while index < len(body) and depth:
+            depth += (body[index] == "(") - (body[index] == ")")
+            index += 1
+        condition, tail = body[start : index - 1], body[index:]
+        if not tail.lstrip().startswith("return null;"):
+            continue
+        if _is_conditional(condition):
+            continue
+        if _leading_disjunct(condition).strip() == "!active":
+            return True
+    return False
+
+
 def test_auth_flow_routes_do_not_mount_global_settings():
     root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
     mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
@@ -175,10 +238,9 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
     # The mount must render nothing whenever inactive, which is what keeps the auth routes
     # clear. The rest of the guard is lazy-mount bookkeeping that #10237 changed from one
-    # flag to two, so an exact spelling stopped matching. `|| ...` after `!active` is allowed,
-    # `&& ...` is not, because the return must happen on every inactive render.
+    # flag to two, so an exact spelling stopped matching.
     mount_body = mount[mount.index("export function SettingsDialogMount(") :]
-    assert re.search(r"if \(!active(\)|\s*\|\|[^\n]*\))\s*return null;", mount_body), (
+    assert _inactive_returns_null(mount_body), (
         "SettingsDialogMount no longer returns null while inactive, so the settings "
         "dialog can mount on the auth routes"
     )
