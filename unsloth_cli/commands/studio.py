@@ -1819,12 +1819,24 @@ def studio_default(
             "(Parallel Slots) override it per load."
         ),
     ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
+        help = (
+            "Cap concurrent inference API requests (admission slots) "
+            "independently of --parallel. Takes the minimum of this value "
+            "and the backend's slot count. Also reads "
+            "UNSLOTH_API_MAX_CONCURRENCY."
+        ),
+    ),
     cloudflare: Optional[bool] = typer.Option(
         None,
         "--cloudflare/--no-cloudflare",
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
+        "pass --cloudflare to enable it (--secure implies it), --no-cloudflare forces "
         "it off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
@@ -2159,6 +2171,9 @@ def studio_default(
             launch_host = _openable_host_for_bind(run_mod, host)
             typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
 
+        if api_max_concurrency is not None:
+            os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
+
         run_kwargs = dict(
             host = host,
             port = port,
@@ -2488,6 +2503,19 @@ def run(
             "loaded model; each slot gets ctx/N KV cache. Default "
             f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
             "run settings (Parallel Slots) can override it per load."
+        ),
+    ),
+    api_max_concurrency: Optional[int] = typer.Option(
+        None,
+        "--api-max-concurrency",
+        min = _PARALLEL_MIN,
+        max = _PARALLEL_MAX,
+        rich_help_panel = _RUN_PANEL_SERVER,
+        help = (
+            "Cap concurrent inference API requests (admission slots) "
+            "independently of --parallel. Takes the minimum of this value "
+            "and the backend's slot count. Also reads "
+            "UNSLOTH_API_MAX_CONCURRENCY."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -2871,6 +2899,9 @@ def run(
 
     set_tool_policy_default(True)
     set_tool_policy(enable_tools)
+
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
     run_kwargs = dict(
         host = host,
