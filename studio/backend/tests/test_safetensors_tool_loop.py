@@ -5619,9 +5619,7 @@ def test_the_protected_attachment_index_is_rebased_between_batches():
 
     replayed = [_png((0, 200 - index * 12, 0)) for index in range(7)]
     attachment = _png((255, 0, 0))
-    envelope = json.dumps(
-        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
-    )
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
     result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
 
     def _call(n):

@@ -1519,9 +1519,7 @@ def run_safetensors_tool_loop(
                 # Rebased on the way out: this trim deletes entries before the
                 # attachment, and reusing the original index on the next batch
                 # would protect the wrong payload and delete the attachment.
-                caller_images = trim_image_turns(
-                    conversation, images_sink, keep = caller_images
-                )
+                caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
