@@ -177,16 +177,16 @@ def test_the_retry_keeps_records_the_refresh_added(tmp_path: Path):
     assert second.returncode == 0, second.stdout + second.stderr
 
     state = _state(dest)
-    assert state.get("a.ipynb") == _sha256(dest / "a.ipynb"), (
-        "the refreshed copy is ours, not the user's; dropping its record freezes it"
-    )
-    assert state.get("remote_only.ipynb") == _sha256(dest / "remote_only.ipynb"), (
-        "a notebook that exists only upstream is never walked by the populate loop"
-    )
+    assert state.get("a.ipynb") == _sha256(
+        dest / "a.ipynb"
+    ), "the refreshed copy is ours, not the user's; dropping its record freezes it"
+    assert state.get("remote_only.ipynb") == _sha256(
+        dest / "remote_only.ipynb"
+    ), "a notebook that exists only upstream is never walked by the populate loop"
     assert state.get("sub/b.ipynb") == _sha256(dest / "sub" / "b.ipynb")
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A-v2-from-upstream", (
-        "the retry must not overwrite the newer copy with the baked template"
-    )
+    assert (dest / "a.ipynb").read_text(
+        encoding = "utf-8"
+    ) == "A-v2-from-upstream", "the retry must not overwrite the newer copy with the baked template"
     assert len(state) == 3, state
 
 

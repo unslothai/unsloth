@@ -130,12 +130,12 @@ def test_a_pristine_notebook_deleted_upstream_is_removed(tmp_path: Path):
     run = _refresh(tmp_path, remote, template, dest)
     assert run.returncode == 0, run.stdout + run.stderr
 
-    assert not (dest / "nb" / "doomed.ipynb").exists(), (
-        "the notebook upstream deleted is still on disk, so the view keeps listing it"
-    )
-    assert (dest / "nb" / "edited.ipynb").read_text(encoding = "utf-8") == "MY OWN WORK", (
-        "a file that no longer hashes to what we wrote is the user's, edited or not"
-    )
+    assert not (
+        dest / "nb" / "doomed.ipynb"
+    ).exists(), "the notebook upstream deleted is still on disk, so the view keeps listing it"
+    assert (dest / "nb" / "edited.ipynb").read_text(
+        encoding = "utf-8"
+    ) == "MY OWN WORK", "a file that no longer hashes to what we wrote is the user's, edited or not"
     assert (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8") == "keep-v2"
 
     state = _state(dest)
@@ -150,9 +150,7 @@ def test_the_removal_can_be_turned_off(tmp_path: Path):
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
 
-    run = _refresh(
-        tmp_path, remote, template, dest, UNSLOTH_KEEP_REMOVED_NOTEBOOKS = "1"
-    )
+    run = _refresh(tmp_path, remote, template, dest, UNSLOTH_KEEP_REMOVED_NOTEBOOKS = "1")
     assert run.returncode == 0, run.stdout + run.stderr
 
     assert (dest / "nb" / "doomed.ipynb").exists()
