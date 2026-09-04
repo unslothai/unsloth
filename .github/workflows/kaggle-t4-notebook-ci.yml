@@ -493,6 +493,15 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    # `statuses: write` is new, and it is what makes the dispatch honest. This
+    # job no longer waits for the kernel, so it can no longer BE the check that
+    # says the GPU tests passed; it posts that verdict as a commit status
+    # against the sha the result belongs to, which is not necessarily this run's
+    # sha -- the collection step below finishes kernels an earlier commit
+    # dispatched.
+    permissions:
+      contents: read
+      statuses: write
     # A ONE-ELEMENT matrix, whose only job is to carry the account the gate
     # chose into a context that `secrets[...]` can be indexed with.
     #
@@ -1057,9 +1066,92 @@ jobs:
       # JOB_TIMEOUT_MINUTES restates this job's timeout-minutes because a job
       # cannot read its own; the harness suite asserts the two agree, so moving
       # one without the other is a red test rather than a silent gap.
-      - name: Launch on Kaggle and collect
-        id: launch
+      # BEFORE dispatching, finish what an earlier run started.
+      #
+      # This is the cheap half of collection, and it is the half that makes
+      # fire-and-forget pay: this job is already on a runner, already holding
+      # this account's token, and the kernel a previous commit dispatched is
+      # sitting on the account finished and unread. Collecting it here costs
+      # seconds, publishes its verdict as a commit status against ITS OWN sha,
+      # and frees the Kaggle session slot this job is about to want.
+      #
+      # `kaggle-collect.yml` does the same thing on a schedule and is what
+      # covers a quiet repository. Neither is redundant: this one is immediate
+      # but only runs when someone pushes, that one always runs but only every
+      # ten minutes.
+      #
+      # It also answers the question that stops us paying twice: is a kernel
+      # for THIS commit already in flight? A re-run, or a second push landing
+      # while the first is still queued on Kaggle, would otherwise dispatch a
+      # second session for a result that is already coming.
+      - name: Collect finished Kaggle runs
+        id: collect
         if: steps.recheck.outputs.should_run == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --expect '${{ steps.build.outputs.payloads }}' \
+            --sha '${{ steps.ref.outputs.ref }}' \
+            --kind notebook \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Post the collected verdicts as commit statuses
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY' > statuses.txt
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          for s in data.get("statuses", []):
+              print("\t".join([s["sha"], s["state"], s["context"], s["description"], s["target_url"]]))
+          PY
+          # Read rather than interpolate: a description carries a payload's own
+          # failure text, which must never reach a shell as code.
+          #
+          # The slug carries 8 hex characters and the statuses API refuses an
+          # abbreviation with 422 "Sha must be a valid hex object ID", measured.
+          # So it is expanded first; otherwise every collected verdict 422s into
+          # a warning and the commit keeps a pending check forever.
+          while IFS=$'\t' read -r sha state context description target_url; do
+            [ -n "$sha" ] || continue
+            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
+            if [ -z "$full" ]; then
+              echo "::warning title=Could not resolve a collected commit::$sha is no longer a commit here, so its $context result cannot be posted."
+              continue
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
+              -f state="$state" -f context="$context" \
+              -f description="$description" -f target_url="$target_url" \
+              --silent || echo "::warning title=Could not post a commit status::$context for $full"
+          done < statuses.txt
+
+      - name: Note that this commit is already running on Kaggle
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight == 'true'
+        run: |
+          echo "::notice title=Already in flight::a Kaggle kernel for this commit is still running from an earlier run, so nothing was dispatched. Its result will arrive as the kaggle-t4-notebook commit status."
+
+      # PUSH AND EXIT. The kernel is left running and this job is done with it.
+      #
+      # The old shape waited here, and it cost 41.5 minutes of a GitHub runner
+      # per commit (measured, run 33479481067) to watch a third-party service
+      # work. Against a repository queue measured at 400-670 deep that is the
+      # single most expensive thing this workflow did.
+      #
+      # What this job can no longer say is whether the GPU tests passed. It
+      # succeeds by DISPATCHING. The verdict arrives later as the
+      # `kaggle-t4-notebook` commit status, posted by whichever collector gets
+      # there first, and THAT is the context branch protection must require.
+      # Requiring this job instead would be requiring proof that Kaggle
+      # accepted a push.
+      #
+      # --commit-sha is what makes that possible: the sha goes into the kernel's
+      # slug, which is the only record that outlives this runner.
+      - name: Dispatch to Kaggle
+        id: launch
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
           JOB_TIMEOUT_MINUTES: 260
@@ -1072,7 +1164,25 @@ jobs:
             --kernel-timeout-sec 3600 \
             --max-wait 5400 \
             --poll-every 60 \
+            --dispatch \
+            --kind notebook \
+            --commit-sha '${{ steps.ref.outputs.ref }}' \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
+
+      - name: Mark the dispatch pending on this commit
+        if: steps.launch.outcome == 'success' && steps.launch.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A PENDING status the moment the kernel is queued, so the commit
+          # shows the check exists and is waiting rather than showing nothing.
+          # Without it a required context that has never been posted blocks a
+          # pull request forever with no explanation on the page.
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
+            -f state=pending -f context=kaggle-t4-notebook \
+            -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --silent || echo "::warning title=Could not post the pending status::kaggle-t4-notebook"
 
       # The launcher collects executed notebooks and the kernel log and nothing
       # else, deliberately. The Studio payload therefore encodes its
@@ -1082,7 +1192,7 @@ jobs:
       # It is safe on a run that carried no Studio payload: the collector finds
       # no encoded evidence and writes nothing.
       - name: Unpack the Playwright evidence
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         continue-on-error: true
         run: |
           python .github/scripts/kaggle_studio_ci/collect_evidence.py \
@@ -1113,6 +1223,7 @@ jobs:
           name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
+            kaggle_collected/**
             studio_evidence/**
             kernel*.ipynb
           # 14 rather than the repo's usual 7: this job runs on a minority of
@@ -1134,7 +1245,7 @@ jobs:
       # recheck has no evidence, and "0 of 4 payloads" would read as a failure
       # rather than the skip it is.
       - name: Report
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
@@ -1149,7 +1260,7 @@ jobs:
       # Its exit code is the same contract as the T4 reporter's: red only for a
       # payload that ran and failed its assertions.
       - name: Report Studio
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence

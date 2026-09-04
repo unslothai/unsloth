@@ -1,0 +1,218 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Collect the Kaggle kernels the GPU workflows dispatched and left running.
+#
+# WHY THIS EXISTS AT ALL
+#
+# `kaggle-t4-notebook-ci.yml` and `kaggle-t4-studio-gpu-ci.yml` used to hold a
+# GitHub runner for the whole Kaggle session: 41.5 minutes and 18.7 minutes
+# respectively, measured on runs 33479481067 and 33486360729, almost all of it
+# a poll loop doing nothing while Kaggle worked. Against a repository queue
+# measured at 400-670 deep that is two runners taken out of circulation per
+# commit to wait for a third-party service.
+#
+# So those jobs now PUSH AND EXIT (`launch.py --dispatch`), and the result is
+# collected afterwards. That is only sound if collection actually happens, and
+# there are two independent routes to it. This workflow is the one that does
+# not depend on anybody pushing code:
+#
+#   1. the next GPU run on the same account collects before it dispatches --
+#      cheap, immediate, and exactly what the queue is already paying for;
+#   2. THIS workflow, on a schedule, which is what covers a quiet repository.
+#
+# Route 2 is not a belt-and-braces nicety. A dispatched kernel bills accelerator
+# quota until it hits its own ceiling, and this directory has already measured a
+# kernel ignoring Kaggle's own `-t` timeout for over two hours. Without a
+# scheduled reaper, a weekend with no commits is a weekend of billing nobody
+# is watching. The old design could not have this bug, because the job that
+# pushed the kernel also deleted it on every path out; dispatch mode removes
+# that safety and this workflow is what replaces it.
+#
+# WHAT IT PUBLISHES
+#
+# A commit status per collected kernel, `kaggle-t4-notebook` or
+# `kaggle-studio-gpu`, against the sha carried in the kernel's own slug. THAT
+# is the check that means "the GPU tests passed" -- the dispatching job cannot
+# mean it any more, since it succeeds by dispatching. Branch protection must
+# require these contexts and not the dispatching jobs, or the whole change
+# trades forty minutes of runner for a check that proves nothing.
+#
+# ACCOUNTS
+#
+# A static two-element matrix, one job per account, deliberately unlike the
+# gate's quota-weighted draw. The gate chooses where to SPEND a session; this
+# workflow spends none, and it has to look at both accounts every pass because
+# a kernel dispatched on either could be waiting. One token per job, never both
+# in one step, for the same reason the GPU workflows index the secrets context.
+name: Kaggle collect
+
+on:
+  schedule:
+    # Every 10 minutes, offset off the hour. A dispatched kernel takes 20-40
+    # minutes, so this is a few passes per kernel: frequent enough that a
+    # result reaches its commit status while the pull request is still open,
+    # infrequent enough that the reaper is not itself a queue item.
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: 'Delete a still-running kernel older than this many hours'
+        type: string
+        default: '3'
+      no_delete:
+        description: 'Collect and report without deleting (inspection only; a kernel left up keeps billing)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never two collectors on one account at once: both would enumerate the same
+# kernels, both would download the same evidence, and the loser of the race
+# would try to delete a kernel the winner already deleted and report the 404 as
+# a failure. Not cancel-in-progress -- a pass that is midway through
+# downloading evidence must finish, or the next pass starts from nothing.
+concurrency:
+  group: kaggle-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect
+    runs-on: ubuntu-latest
+    # Bounded well above collect.py's own BUDGET_SEC (900s) plus setup, so the
+    # script's internal budget is what stops a long pass rather than the job
+    # being killed mid-download.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      # The point of the whole workflow. Without this the collection runs and
+      # the verdict reaches nobody.
+      statuses: write
+    strategy:
+      # Independent accounts. One account being unreachable must not stop the
+      # other being collected, and a failure on either is still a failure.
+      fail-fast: false
+      matrix:
+        include:
+          - account_id: '1'
+            secret_name: KAGGLE_API_TOKEN
+          - account_id: '2'
+            secret_name: KAGGLE_API_TOKEN_2
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+
+      - name: Collect this account's kernels
+        id: collect
+        env:
+          # Exactly one account, indexed by name. Same rule as the GPU
+          # workflows: a ternary here would hand over the other account's token
+          # whenever this secret is empty, and the collector would then delete
+          # kernels belonging to an account it is not reporting for.
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --expect 1 \
+            --max-age-hours '${{ inputs.max_age_hours || '3' }}' \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            ${{ inputs.no_delete && '--no-delete' || '' }}
+
+      - name: Post the commit statuses
+        # `always()`, because a collector that downloaded three results and then
+        # ran out of budget still has three verdicts to publish, and the whole
+        # cost of this workflow has already been paid by the time this runs.
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY' > statuses.txt
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          for s in data.get("statuses", []):
+              print("\t".join([s["sha"], s["state"], s["context"], s["description"], s["target_url"]]))
+          PY
+          if [ ! -s statuses.txt ]; then
+            echo "no statuses to post this pass"
+            exit 0
+          fi
+          # Read line by line rather than interpolating: a description is
+          # composed from a Kaggle payload's own failure text, and that string
+          # must never reach a shell as code.
+          #
+          # THE SHA HAS TO BE EXPANDED FIRST. The slug carries only 8 hex
+          # characters -- a full 40-character sha plus the prefix does not fit
+          # inside Kaggle's slug limit -- and the statuses API REFUSES an
+          # abbreviation:
+          #
+          #     POST /statuses/2ecb19df
+          #     422 "Sha must be a valid hex object ID"
+          #
+          # Measured against a real repository, not inferred. Without the
+          # expansion every status this workflow exists to publish 422s, the
+          # `|| echo` below turns that into a warning nobody reads, and the
+          # collection runs forever while the commit keeps a pending check.
+          # That is the precise failure this whole design is built against, so
+          # a sha that cannot be resolved is REPORTED and skipped rather than
+          # posted and lost.
+          while IFS=$'\t' read -r sha state context description target_url; do
+            [ -n "$sha" ] || continue
+            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
+            if [ -z "$full" ]; then
+              echo "::warning title=Could not resolve a collected commit::$sha is not a commit in this repository any more, so the $context result for it cannot be posted. The kernel was still collected and deleted."
+              continue
+            fi
+            echo "posting $context=$state for $full"
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
+              -f state="$state" \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="$target_url" \
+              --silent || echo "::warning title=Could not post a commit status::$context for $full"
+          done < statuses.txt
+
+      - name: Summarise
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          print(f"### Kaggle collect: account {data.get('owner') or '?'}\n")
+          rows = data.get("kernels") or []
+          if not rows:
+              print("Nothing of ours was in flight on this account.\n")
+          else:
+              print("| kernel | commit | kind | state | verdict | deleted |")
+              print("| --- | --- | --- | --- | --- | --- |")
+              for k in rows:
+                  print("| `{}` | `{}` | {} | {} | **{}** | {} |".format(
+                      k["slug"].rsplit("/", 1)[-1], k.get("sha") or "-",
+                      k.get("kind") or "-", k.get("state") or "-",
+                      k.get("verdict") or "-", "yes" if k.get("deleted") else "no"))
+              print()
+              for k in rows:
+                  if k.get("reason"):
+                      print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
+          PY
+
+      - name: Upload the collected evidence
+        if: always() && hashFiles('kaggle_collected/**') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: kaggle-collected-${{ matrix.account_id }}-${{ github.run_id }}
+          path: kaggle_collected
+          if-no-files-found: ignore
+          retention-days: 7

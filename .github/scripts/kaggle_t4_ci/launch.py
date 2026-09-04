@@ -86,6 +86,83 @@ TERMINAL_BAD = {"ERROR", "CANCEL_REQUESTED", "CANCEL_ACKNOWLEDGED"}
 
 _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 
+# The slug is the ONLY record that survives the runner.
+#
+# When this launcher waits for its own kernel, the job holds every fact it
+# needs in memory: which commit it is testing, which workflow asked, where to
+# report. Dispatch mode throws all of that away by design -- the job exits
+# minutes after the push, and whatever collects the result later is a
+# DIFFERENT job on a different runner, possibly days later, with no artifact
+# and no database between them.
+#
+# Kaggle's own kernel listing is that database, and a kernel carries exactly
+# one field we control: its name. So the name has to say what the result is
+# about, which is why the slug stops being a bare random id.
+#
+#   unsloth-t4-ci-n1a2b3c4d-9f8e
+#                 ^^^^^^^^^^^^^^
+#                 |||||||||  uniqueness, so two runs on one commit do not
+#                 ||||||||   collide (a re-run, or notebook slot 1 and 2)
+#                 |kind      which workflow to report against
+#                  sha8      which commit the result belongs to
+#
+# `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
+# matching: that prefix is how the gate's session survey tells our kernels
+# from a human's, and a dispatched kernel that the gate cannot recognise is
+# one it will not count against Kaggle's 2-session cap.
+SLUG_PREFIX = "unsloth-t4-ci-"
+
+# One character each, because the whole slug must survive `_slugify` and stay
+# under Kaggle's length limit. Not an enum: this is a wire format written into
+# a kernel name that a collector days later has to read back.
+KIND_CODES = {"notebook": "n", "studio": "s"}
+CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
+
+# Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be
+# reaped -- kernels pushed before this change can outlive it -- but they carry
+# no commit, so nothing can be reported against them. The alternation keeps
+# both readable rather than making the collector guess from length.
+CI_SLUG_RE = re.compile(
+    r"^(?:(?P<owner>[^/]+)/)?"
+    + re.escape(SLUG_PREFIX)
+    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8})-(?P<uid>[0-9a-f]{4})"
+    r"|(?P<legacy>[0-9a-f]{8}))$"
+)
+
+
+def parse_slug(slug: str) -> dict | None:
+    """What a kernel name says about itself, or None if it is not ours.
+
+    Returning None for anything unrecognised is the whole safety property of
+    the collector: it enumerates an ACCOUNT, which also holds a human's
+    kernels and every probe anyone has ever pushed, and it deletes what it
+    collects. A collector that guessed would eventually delete someone's work.
+    """
+    match = CI_SLUG_RE.match(slug or "")
+    if match is None:
+        return None
+    return {
+        "owner": match.group("owner"),
+        "kind": CODE_KINDS.get(match.group("kind") or "", None),
+        "sha": match.group("sha"),
+        "legacy": match.group("legacy") is not None,
+    }
+
+
+def slug_name(kind: str = "", commit_sha: str = "") -> str:
+    """The name for a kernel about to be pushed.
+
+    Falls back to the legacy random form when the caller names no commit,
+    which is what a local probe or an older workflow does. A dispatched run
+    always names one, and the workflow guard asserts it.
+    """
+    code = KIND_CODES.get(kind, "")
+    sha = (commit_sha or "").strip().lower()[:8]
+    if code and len(sha) == 8 and all(c in "0123456789abcdef" for c in sha):
+        return f"{SLUG_PREFIX}{code}{sha}-{uuid.uuid4().hex[:4]}"
+    return f"{SLUG_PREFIX}{uuid.uuid4().hex[:8]}"
+
+
 PUSH_ATTEMPTS = 4
 PUSH_BACKOFF_SEC = 45
 
@@ -181,7 +258,11 @@ OUTPUT_PAGE_LIMIT = 20
 READ_CHUNK_BYTES = 1 << 16
 
 
-def worst_case_seconds(max_wait: int, kernels: int) -> int:
+def worst_case_seconds(
+    max_wait: int,
+    kernels: int,
+    dispatch: bool = False,
+) -> int:
     """Wall clock ONE invocation of this launcher can take, from its constants.
 
     Every phase that can keep a pushed kernel UP is in it, because a kernel
@@ -209,6 +290,16 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
         + sum(PUSH_BACKOFF_SEC * 2**i for i in range(PUSH_ATTEMPTS - 1))
         + (PUSH_ATTEMPTS - 1) * one_delete
     )
+    if dispatch:
+        # Dispatch mode stops after the pushes: it does not poll, does not
+        # download evidence, and does not delete. So the phases below are not
+        # merely skipped, they are unreachable, and including them would make
+        # the pre-push guard demand roughly two hours of job deadline for a job
+        # that exits in five minutes -- standing runs down for a window they do
+        # not need, which is the opposite of what dispatch mode is for.
+        #
+        # The retry _discard()s stay in: those DO run, inside push().
+        return kernels * per_push
     return (
         max(kernels * per_push, max_wait)
         + EVIDENCE_BUDGET_SEC
@@ -499,6 +590,8 @@ def push(
     kernel_timeout_sec: int,
     accelerator: str = "NvidiaTeslaT4",
     attempted: list[str] | None = None,
+    kind: str = "",
+    commit_sha: str = "",
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
@@ -527,7 +620,6 @@ def push(
     ``MemoryError``) would otherwise take the slug of a push Kaggle may have
     ACCEPTED with it, leaving a kernel nothing will delete. See main().
     """
-    base = _slugify("unsloth t4 ci")[:32]
     attempted = [] if attempted is None else attempted
 
     def _discard(slug: str) -> None:
@@ -545,22 +637,26 @@ def push(
         for attempt in range(PUSH_ATTEMPTS):
             if attempted:
                 _discard(attempted[-1])
-            slug_name = f"{base}-{uuid.uuid4().hex[:8]}"
+            name = slug_name(kind, commit_sha)
             # The slug derives from the TITLE, not the metadata id: a mismatch
             # files the kernel at an unexpected address and every later
             # status/output call 403s, so assert the round trip.
-            title = slug_name.replace("-", " ")
-            assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
-            attempted.append(f"{user}/{slug_name}")
+            #
+            # This matters more now than it did: the name carries the commit,
+            # so a slug that does not round-trip does not merely 403, it files
+            # the result under a name no collector can attribute.
+            title = name.replace("-", " ")
+            assert _slugify(title) == name, f"title {title!r} slugifies to {_slugify(title)!r}"
+            attempted.append(f"{user}/{name}")
 
             for stale in workdir.glob("*.ipynb"):
                 stale.unlink()
-            code_file = workdir / f"{slug_name}.ipynb"
+            code_file = workdir / f"{name}.ipynb"
             shutil.copy(notebook, code_file)
             (workdir / "kernel-metadata.json").write_text(
                 json.dumps(
                     {
-                        "id": f"{user}/{slug_name}",
+                        "id": f"{user}/{name}",
                         "title": title,
                         "code_file": code_file.name,
                         "language": "python",
@@ -1153,6 +1249,25 @@ def main() -> int:
         "--keep-kernel", action = "store_true", help = "do not delete the kernel after collecting"
     )
     ap.add_argument(
+        "--dispatch",
+        action = "store_true",
+        help = "push and EXIT, without waiting, collecting or deleting. The kernel "
+        "is collected later by collect.py, which finds it by its slug",
+    )
+    ap.add_argument(
+        "--commit-sha",
+        default = "",
+        help = "the commit under test. Written into the slug, which is the only "
+        "record a later collector has of what the result is about",
+    )
+    ap.add_argument(
+        "--kind",
+        default = "",
+        choices = ("", *KIND_CODES),
+        help = "which workflow is dispatching, so the collector knows which "
+        "commit status context to report the result under",
+    )
+    ap.add_argument(
         "--deadline-epoch",
         type = int,
         default = 0,
@@ -1160,6 +1275,27 @@ def main() -> int:
         "worst_case_seconds() still fits before it. 0 disables the check",
     )
     args = ap.parse_args()
+
+    # A dispatched kernel is DELIBERATELY left running, which is exactly what
+    # --keep-kernel already means, down to the registry bookkeeping: mark the
+    # slug kept so the next launcher's orphan sweep does not read this exited
+    # process as a killed one and delete the kernel it was told to leave.
+    #
+    # Setting the existing flag rather than teaching release() a second way to
+    # not delete: two independent conditions guarding one deletion is how one
+    # of them ends up wrong, and this one bills GPU quota when it is.
+    if args.dispatch:
+        args.keep_kernel = True
+        # Refused rather than defaulted. A dispatch whose slug carries no
+        # commit produces a kernel that runs, costs quota and reports to
+        # nobody, because the collector has nothing to post a status against.
+        # That is the silent-green failure this whole change is built around,
+        # so it is a usage error at the only moment it is still cheap.
+        if not args.commit_sha or not args.kind:
+            ap.error(
+                "--dispatch requires --commit-sha and --kind: without both, the "
+                "kernel runs and no collector can attribute its result"
+            )
 
     # Before the first network call, and globally: the Kaggle client has no
     # per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
@@ -1248,7 +1384,7 @@ def main() -> int:
         """
         if not args.deadline_epoch:
             return True
-        need = worst_case_seconds(args.max_wait, len(args.notebook))
+        need = worst_case_seconds(args.max_wait, len(args.notebook), dispatch = args.dispatch)
         left = int(args.deadline_epoch - time.time())
         if left >= need:
             _log(f"{left}s left of the job deadline, worst case {need}s ({after})")
@@ -1398,6 +1534,8 @@ def main() -> int:
                 args.user,
                 args.kernel_timeout_sec,
                 attempted = entry["attempted"],
+                kind = args.kind,
+                commit_sha = args.commit_sha,
             )
             entry["slug"] = pushed.get("slug")
             entry["push_error"] = (
@@ -1415,6 +1553,30 @@ def main() -> int:
         # Kept for the summary and for anything reading this file's previous
         # single-kernel shape.
         result["slug"] = live[0]["slug"]
+
+        # DISPATCH MODE ENDS HERE, and the verdict it reports is the honest one.
+        #
+        # `dispatched` is deliberately NOT `pass`. The kernel is queued; nothing
+        # has run, nothing has been asserted, and the only thing this job proved
+        # is that Kaggle accepted a push. Reporting `pass` here is precisely the
+        # green-that-means-nothing this file's docstring is about, and it would
+        # be worse than the old silent skip because it would look like a result.
+        #
+        # The real verdict arrives later, from collect.py, as a COMMIT STATUS on
+        # the sha inside the slug. That status, not this job, is what branch
+        # protection must require.
+        if args.dispatch:
+            result["verdict"] = "dispatched"
+            result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]
+            result["commit_sha"] = args.commit_sha
+            result["kind"] = args.kind
+            result["reason"] = (
+                f"{len(live)} kernel(s) pushed and left running: "
+                + ", ".join(k["slug"] for k in live)
+                + f". The result for {args.commit_sha[:8]} will be posted as a commit "
+                "status by the collector, not by this job"
+            )
+            return finish()
 
         # The deadline above is shared, not one per kernel: they run
         # concurrently, so consuming the ceiling per kernel would let a

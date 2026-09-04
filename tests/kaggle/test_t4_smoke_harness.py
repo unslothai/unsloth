@@ -3039,10 +3039,15 @@ def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     # --force skips the sampling draw only; the dice were rolled by the gate.
     assert "--force true" in recheck["run"]
     assert "--reserve-hours" in recheck["run"] and "--kernels" in recheck["run"]
-    # and it is the last thing before the push.
-    assert names[names.index("Recheck the Kaggle account") + 2] == "Launch on Kaggle and collect"
-    launch = steps[names.index("Launch on Kaggle and collect")]
-    assert launch["if"] == "steps.recheck.outputs.should_run == 'true'"
+    # and nothing that spends a session runs unless it approved.
+    #
+    # Asserted through the dispatch step's condition rather than through step
+    # ORDER: collection now sits between the recheck and the dispatch, and a
+    # positional rule would have to be rewritten every time a step is inserted
+    # -- which is how a guard ends up asserting the shape of the file instead of
+    # the property it was written for.
+    dispatch = steps[names.index("Dispatch to Kaggle")]
+    assert "steps.recheck.outputs.should_run == 'true'" in dispatch["if"]
 
 
 def test_the_exhausted_quota_failure_reaches_the_pull_request():
@@ -3196,8 +3201,8 @@ def test_an_unresolvable_zoo_commit_stands_the_run_down():
     # Nothing that spends a kernel runs after a stand-down.
     for name in ("Build the kernel notebooks", "Recheck the Kaggle account"):
         assert "steps.pins.outputs.stand_down != 'true'" in steps[names.index(name)]["if"]
-    launch_step = steps[names.index("Launch on Kaggle and collect")]
-    assert launch_step["if"] == "steps.recheck.outputs.should_run == 'true'"
+    launch_step = steps[names.index("Dispatch to Kaggle")]
+    assert "steps.recheck.outputs.should_run == 'true'" in launch_step["if"]
 
 
 def test_a_step_count_that_could_only_report_red_stands_the_run_down():
@@ -3405,7 +3410,14 @@ def test_an_evidence_upload_outage_cannot_colour_the_check_red():
     assert "::warning" in warn["run"]
     # The verdict still runs, and still on its own condition.
     report = steps[names.index("Report")]
-    assert report["if"] == "always() && steps.recheck.outputs.should_run == 'true'"
+    # always(), so the verdict is still reached when the upload failed -- that
+    # is the property this test is named for. The condition itself moved from
+    # "the recheck approved" to "there is evidence to read": a dispatching run
+    # approves and then produces no evidence of its own, and a reporter over an
+    # empty directory prints "0 of 5 payloads", which reads as a failure rather
+    # than as a result that has not arrived yet.
+    assert report["if"].startswith("always()")
+    assert "hashFiles('kaggle_evidence/**/*_output.ipynb')" in report["if"]
     assert "steps.evidence" not in report["if"]
 
 

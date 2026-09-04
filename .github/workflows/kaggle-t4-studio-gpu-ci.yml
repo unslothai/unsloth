@@ -339,6 +339,13 @@ jobs:
   studio-gpu:
     name: Unsloth GPU smoke
     needs: gate
+    # New, and load-bearing: this job dispatches rather than waits, so it can no
+    # longer BE the check that says the Studio smoke passed. It posts that
+    # verdict as a commit status instead -- for whichever commit the collected
+    # kernel belongs to, which is not necessarily this run's.
+    permissions:
+      contents: read
+      statuses: write
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     # One element, carrying the chosen account into a context `secrets[...]`
@@ -470,12 +477,74 @@ jobs:
       # The launcher is shared with the notebook leg and is used unchanged:
       # this payload prints the same T4_SMOKE_REPORT line, so the transport
       # needed no modification.
-      - name: Launch on Kaggle and collect
+      # Finish what an earlier run started, before starting anything new.
+      #
+      # Same two reasons as the notebook leg: this job already holds the right
+      # account's token, so collecting a finished kernel costs seconds and
+      # frees the session slot this job is about to want; and it answers
+      # whether a kernel for THIS commit is already in flight, which is what
+      # stops a re-run paying for a second session.
+      - name: Collect finished Kaggle runs
+        id: collect
+        if: steps.recheck.outputs.should_run == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --expect 1 \
+            --sha '${{ steps.ref.outputs.ref }}' \
+            --kind studio \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Post the collected verdicts as commit statuses
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY' > statuses.txt
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          for s in data.get("statuses", []):
+              print("\t".join([s["sha"], s["state"], s["context"], s["description"], s["target_url"]]))
+          PY
+          # Read rather than interpolate: a description carries a payload's own
+          # failure text, which must never reach a shell as code.
+          #
+          # The slug carries 8 hex characters and the statuses API refuses an
+          # abbreviation with 422 "Sha must be a valid hex object ID", measured.
+          # So it is expanded first; otherwise every collected verdict 422s into
+          # a warning and the commit keeps a pending check forever.
+          while IFS=$'\t' read -r sha state context description target_url; do
+            [ -n "$sha" ] || continue
+            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
+            if [ -z "$full" ]; then
+              echo "::warning title=Could not resolve a collected commit::$sha is no longer a commit here, so its $context result cannot be posted."
+              continue
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
+              -f state="$state" -f context="$context" \
+              -f description="$description" -f target_url="$target_url" \
+              --silent || echo "::warning title=Could not post a commit status::$context for $full"
+          done < statuses.txt
+
+      - name: Note that this commit is already running on Kaggle
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight == 'true'
+        run: |
+          echo "::notice title=Already in flight::a Kaggle kernel for this commit is still running from an earlier run, so nothing was dispatched. Its result will arrive as the kaggle-studio-gpu commit status."
+
+      # PUSH AND EXIT. Measured on run 33486360729, waiting here cost 18.7
+      # minutes of a GitHub runner to watch Kaggle work.
+      #
+      # This job can no longer say whether the Studio smoke passed -- it
+      # succeeds by dispatching. The verdict arrives as the `kaggle-studio-gpu`
+      # commit status, and that is the context branch protection must require.
+      - name: Dispatch to Kaggle
         id: launch
         # GATED ON THE RECHECK, or the recheck is decorative: a step that
         # measures the account and cannot stop the push is a log line, not a
         # control. This is the same shape the notebook leg uses.
-        if: steps.recheck.outputs.should_run == 'true'
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
         run: |
@@ -486,13 +555,30 @@ jobs:
             --expect 1 \
             --kernel-timeout-sec 4200 \
             --max-wait 5400 \
-            --poll-every 60
+            --poll-every 60 \
+            --dispatch \
+            --kind studio \
+            --commit-sha '${{ steps.ref.outputs.ref }}'
+
+      - name: Mark the dispatch pending on this commit
+        if: steps.launch.outcome == 'success' && steps.launch.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A pending status the moment the kernel is queued, so a required
+          # context that has not reported yet reads as waiting rather than as
+          # nothing at all.
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
+            -f state=pending -f context=kaggle-studio-gpu \
+            -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --silent || echo "::warning title=Could not post the pending status::kaggle-studio-gpu"
 
       # The launcher collects executed notebooks and the kernel log and
       # nothing else, deliberately. The payload therefore encodes its
       # screenshots and logs into its own cell output; this puts them back.
       - name: Unpack the Playwright evidence
-        if: always()
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/collect_evidence.py \
             --evidence kaggle_evidence \
@@ -508,6 +594,7 @@ jobs:
           name: kaggle-studio-gpu-evidence
           path: |
             kaggle_evidence/**
+            kaggle_collected/**
             studio_evidence/**
             kernel.ipynb
           # 14 rather than the repo's usual 7. This job runs on a minority of
@@ -517,7 +604,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Report
-        if: always()
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence
