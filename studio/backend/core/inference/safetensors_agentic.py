@@ -1516,7 +1516,12 @@ def run_safetensors_tool_loop(
                 append_placeholder_turn(
                     conversation, len(encoded), sum(len(r) for r in batch_mcp_images)
                 )
-                trim_image_turns(conversation, images_sink, keep = caller_images)
+                # Rebased on the way out: this trim deletes entries before the
+                # attachment, and reusing the original index on the next batch
+                # would protect the wrong payload and delete the attachment.
+                caller_images = trim_image_turns(
+                    conversation, images_sink, keep = caller_images
+                )
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}

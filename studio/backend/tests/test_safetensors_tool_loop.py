@@ -5598,3 +5598,70 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
         if part.get("type") == "image"
     )
     assert markers == len(sink)
+
+
+def test_the_protected_attachment_index_is_rebased_between_batches():
+    """The index names a position, and trimming earlier entries moves it. Reusing the
+    original across iterations protected the wrong payload and deleted the very
+    attachment the argument exists to keep."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 12, 0)) for index in range(7)]
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps(
+        [{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)]
+    )
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    turns = [_call(1), _call(2), _call(3), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    # Replay first, the caller's attachment last: index 7 on the way in.
+    sink = [*replayed, attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                mcp_images.placeholder_turn(7, 7),
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                },
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 4,
+            images_sink = sink,
+            caller_image_indexes = (7,),
+        )
+    )
+
+    assert attachment in sink, "the attachment was deleted by a stale protected index"
+    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel"

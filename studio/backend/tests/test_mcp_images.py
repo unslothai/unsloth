@@ -939,3 +939,154 @@ def test_the_gguf_route_hands_the_loop_what_promotion_created():
     route = inspect.getsource(inference.produce_openai_chat_completions)
     assert "_gguf_replayed_image_parts: list = []" in route
     assert "replayed_image_parts = tuple(_gguf_replayed_image_parts)" in route
+
+
+def test_a_replayed_history_is_not_decoded_past_what_the_cap_can_keep():
+    """A permitted raster is 40 megapixels and a few hundred bytes of base64 can ask
+    for one, so decoding every envelope in a caller-supplied history before the trim
+    let the request choose how much Pillow work it cost."""
+    decoded: list = []
+    real = _png()
+
+    def _counting_url(data):
+        decoded.append(data)
+        return "data:image/png;base64," + real
+
+    history: list = []
+    for index in range(60):
+        history.append(
+            {
+                "role": "tool",
+                "name": f"mcp__s__shot{index}",
+                "content": _envelope("[4]", *[_image() for _ in range(4)]),
+            }
+        )
+        history.append({"role": "assistant", "content": f"turn {index}"})
+        history.append({"role": "user", "content": "again"})
+
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = _counting_url
+    try:
+        out = promote_history(history, vision = True)
+    finally:
+        mcp_images._png_data_url = original
+
+    live = sum(
+        1
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    )
+    assert live == mcp_images.MAX_TOTAL_MODEL_IMAGES, live
+    assert len(decoded) <= (
+        mcp_images.MAX_TOTAL_MODEL_IMAGES + mcp_images.DECODE_FAILURE_ALLOWANCE
+    ), f"{len(decoded)} decodes for a history of 240 images"
+
+
+def test_the_eligible_pass_keeps_candidates_behind_an_undecodable_result():
+    """It cannot decode either, so a newest result of formats Pillow rejects must not
+    starve the valid pictures behind it."""
+    history = [
+        {"role": "tool", "name": "mcp__s__a", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {"role": "tool", "name": "mcp__s__b", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {"role": "tool", "name": "mcp__s__c", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+    ]
+
+    eligible = mcp_images.eligible_replay_images(history)
+
+    assert eligible[2] == 4 and eligible[1] == 4, eligible
+    assert eligible[0] == mcp_images.DECODE_FAILURE_ALLOWANCE, (
+        "the spare allowance keeps the oldest result as candidates"
+    )
+    assert sum(eligible.values()) <= (
+        mcp_images.MAX_TOTAL_MODEL_IMAGES + mcp_images.DECODE_FAILURE_ALLOWANCE
+    )
+
+
+def test_an_oversized_parallel_batch_keeps_its_newest_results():
+    """Everything else that bounds these keeps the newest, so filling the batch from
+    the front showed the model results 1-2 on this turn and 2-3 on the next."""
+    # Distinct sizes so each result's decoded URLs are distinguishable.
+    results = [
+        [{"data": _png(size = (4 + index, 4 + index)), "mimeType": "image/png"} for _ in range(4)]
+        for index in range(3)
+    ]
+    per_result = [set(mcp_images._decoded_urls(images, 4)) for images in results]
+
+    urls = mcp_images._decoded_urls_per_result(results)
+
+    assert len(urls) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    kept = set(urls)
+    assert per_result[2] <= kept, "the newest result must survive"
+    assert per_result[1] <= kept, "so must the one before it"
+    assert not (per_result[0] & kept), "the OLDEST result is the one that goes"
+    # Within the batch the surviving results still read in call order.
+    assert set(urls[:4]) == per_result[1] and set(urls[4:]) == per_result[2]
+
+
+def test_a_partially_trimmed_turn_stops_claiming_the_images_it_lost():
+    """The note exists to say which of the returned pictures the model was really
+    shown, so a turn left holding two while still reading "first 4 of 8" defeats it."""
+    conversation = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "image"},
+                {"type": "image"},
+                {"type": "image"},
+                {"type": "text", "text": mcp_images._turn_text(4, 8)},
+            ],
+        },
+        mcp_images.placeholder_turn(4, 4),
+        mcp_images.placeholder_turn(2, 2),
+    ]
+    payloads = [f"p{i}" for i in range(10)]
+
+    mcp_images.trim_image_turns(conversation, payloads)
+
+    partial = conversation[0]
+    remaining = sum(1 for part in partial["content"] if part.get("type") == "image")
+    note = next(part["text"] for part in partial["content"] if part.get("type") == "text")
+    assert remaining == 2, remaining
+    assert f"first {remaining} of 8" in note, note
+
+
+def test_the_owned_list_drops_evicted_parts_before_it_counts():
+    """A rolling-context fitter evicts whole turns mid-loop without telling this list.
+    Counting parts that already left over-trims the ones still in it."""
+    owned: list = []
+    conversation: list = []
+    mcp_images.append_image_turn(
+        conversation,
+        [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
+        per_result = True,
+        owned = owned,
+    )
+    mcp_images.append_image_turn(
+        conversation,
+        [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
+        per_result = True,
+        owned = owned,
+    )
+    assert len(owned) == 8
+
+    # What truncation does: the turns go, the ownership list is not told.
+    conversation.clear()
+
+    mcp_images.append_image_turn(
+        conversation,
+        [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
+        per_result = True,
+        owned = owned,
+    )
+
+    live = sum(
+        1
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    )
+    assert live == 4, f"the fresh result was over-trimmed to {live}"
