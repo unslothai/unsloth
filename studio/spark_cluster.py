@@ -74,7 +74,7 @@ def is_dgx_spark() -> bool:
             try:
                 # Both files are a few hundred bytes; cap anyway so a bad mount
                 # cannot make the gate expensive.
-                with open(path, "r", errors="replace") as handle:
+                with open(path, "r", errors = "replace") as handle:
                     if _SPARK_RE.search(handle.read(4096)):
                         result = True
                         break
@@ -102,7 +102,7 @@ def _int_or_none(text: str) -> Optional[int]:
 
 def _read(path: Path, limit: int = 256) -> str:
     try:
-        with open(path, "r", errors="replace") as handle:
+        with open(path, "r", errors = "replace") as handle:
             return handle.read(limit).strip()
     except OSError:
         return ""
@@ -135,10 +135,10 @@ def local_rails() -> List[Dict[str, Any]]:
     if not _IB_ROOT.is_dir():
         return rails
 
-    for dev in sorted(_IB_ROOT.iterdir(), key=lambda p: _rail_sort_key(p.name)):
+    for dev in sorted(_IB_ROOT.iterdir(), key = lambda p: _rail_sort_key(p.name)):
         port = dev / "ports" / "1"
-        state = _read(port / "state")            # e.g. "4: ACTIVE"
-        phys = _read(port / "phys_state")        # e.g. "5: LinkUp"
+        state = _read(port / "state")  # e.g. "4: ACTIVE"
+        phys = _read(port / "phys_state")  # e.g. "5: LinkUp"
         netdev = ""
         # ConnectX exposes the owning netdev under the device's own tree.
         gid_attr = dev / "ports" / "1" / "gid_attrs" / "ndevs" / "0"
@@ -163,9 +163,9 @@ def local_rails() -> List[Dict[str, Any]]:
             {
                 "ib_device": dev.name,
                 "netdev": netdev,
-                "carrier_up_count": _int_or_none(
-                    _read(_NET_ROOT / netdev / "carrier_up_count")
-                ) if netdev else None,
+                "carrier_up_count": _int_or_none(_read(_NET_ROOT / netdev / "carrier_up_count"))
+                if netdev
+                else None,
                 "ib_active": "ACTIVE" in state.upper(),
                 "link_up": "LINKUP" in phys.upper().replace(" ", ""),
                 "carrier": carrier == "1",
@@ -184,7 +184,9 @@ def _netdev_ipv4(netdev: str) -> List[str]:
     try:
         out = subprocess.run(
             [ip_bin, "-4", "-o", "addr", "show", "dev", netdev],
-            capture_output=True, text=True, timeout=5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return []
@@ -221,9 +223,11 @@ def _ipv4_sort_key(address: str) -> Tuple[int, int, int, int, int]:
     return (1, 0, 0, 0, 0)
 
 
-def peer_reachable(address: str,
-                   port: int = _PEER_PROBE_PORT,
-                   timeout: float = _PEER_PROBE_TIMEOUT) -> Optional[bool]:
+def peer_reachable(
+    address: str,
+    port: int = _PEER_PROBE_PORT,
+    timeout: float = _PEER_PROBE_TIMEOUT,
+) -> Optional[bool]:
     """Is this peer answering on the network? ``None`` when we could not tell.
 
     A refused connection still proves the host is up and routable, which is the
@@ -234,11 +238,11 @@ def peer_reachable(address: str,
     if not address:
         return None
     try:
-        conn = socket.create_connection((address, port), timeout=timeout)
+        conn = socket.create_connection((address, port), timeout = timeout)
     except (socket.timeout, TimeoutError):
         return False
     except ConnectionRefusedError:
-        return True          # host is up; sshd merely is not listening
+        return True  # host is up; sshd merely is not listening
     except OSError:
         return False
     except Exception:
@@ -250,8 +254,7 @@ def peer_reachable(address: str,
     return True
 
 
-def discover_peers(timeout: float = _MDNS_TIMEOUT,
-                   check_reachable: bool = False) -> Dict[str, Any]:
+def discover_peers(timeout: float = _MDNS_TIMEOUT, check_reachable: bool = False) -> Dict[str, Any]:
     """Look for other Sparks: a cabled RoCE rail, plus mDNS hostnames.
 
     Both halves are bounded and best-effort. The RoCE probe is authoritative
@@ -292,7 +295,7 @@ def discover_peers(timeout: float = _MDNS_TIMEOUT,
     }
     if timeout > 0:
         result["mdns_peers"] = _mdns_spark_peers(timeout)
-    peers = merge_peers(result["mdns_peers"], check_reachable=check_reachable)
+    peers = merge_peers(result["mdns_peers"], check_reachable = check_reachable)
     result["peers"] = peers
     result["n_peers"] = len(peers)
     # This node plus its peers. The planner counts nodes, not peers, and getting
@@ -320,14 +323,15 @@ def configured_peers() -> List[Dict[str, str]]:
             address = str(entry.get("address") or entry.get("ip") or "")
             hostname = str(entry.get("hostname") or address)
             if address or hostname:
-                out.append({"hostname": hostname,
-                            "address": address or hostname,
-                            "source": "config"})
+                out.append(
+                    {"hostname": hostname, "address": address or hostname, "source": "config"}
+                )
     return out
 
 
-def merge_peers(mdns: Optional[List[Dict[str, str]]] = None,
-                check_reachable: bool = False) -> List[Dict[str, Any]]:
+def merge_peers(
+    mdns: Optional[List[Dict[str, str]]] = None, check_reachable: bool = False
+) -> List[Dict[str, Any]]:
     """Every known peer, deduplicated, deterministically ordered, index-stamped.
 
     Ordering is by address (numerically, see ``_ipv4_sort_key``) then hostname, so
@@ -344,14 +348,15 @@ def merge_peers(mdns: Optional[List[Dict[str, str]]] = None,
             continue
         prev = merged.get(key)
         if prev is None:
-            merged[key] = {"hostname": hostname or address,
-                           "short": key,
-                           "address": address,
-                           "source": entry.get("source", "mdns")}
+            merged[key] = {
+                "hostname": hostname or address,
+                "short": key,
+                "address": address,
+                "source": entry.get("source", "mdns"),
+            }
         elif not prev["address"] or (":" in prev["address"] and ":" not in address):
             prev["address"] = address or prev["address"]
-    peers = sorted(merged.values(),
-                   key=lambda d: (_ipv4_sort_key(d["address"]), d["short"]))
+    peers = sorted(merged.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["short"]))
     for index, peer in enumerate(peers):
         # index 0 is the FIRST PEER, not this node; this node is always node 0 of
         # the cluster and peers occupy 1..N-1.
@@ -374,7 +379,9 @@ def _mdns_spark_peers(timeout: float) -> List[Dict[str, str]]:
     try:
         proc = subprocess.run(
             [browse, "-a", "-t", "-r", "-p", "-k"],
-            capture_output=True, text=True, timeout=timeout + 2,
+            capture_output = True,
+            text = True,
+            timeout = timeout + 2,
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -394,9 +401,7 @@ def _mdns_spark_peers(timeout: float) -> List[Dict[str, str]]:
         prev = seen.get(short)
         if prev is None or (":" in prev["address"] and ":" not in addr):
             seen[short] = {"hostname": host, "address": addr, "source": "mdns"}
-    return sorted(seen.values(),
-                  key=lambda d: (_ipv4_sort_key(d["address"]), d["hostname"]))
-
+    return sorted(seen.values(), key = lambda d: (_ipv4_sort_key(d["address"]), d["hostname"]))
 
 
 # ── QSFP hot-plug throttle ───────────────────────────────────────────────────
@@ -430,6 +435,7 @@ def link_carrier_events(rails: Optional[List[Dict[str, Any]]] = None) -> Dict[st
 
 # ── Persisted state (idempotency) ────────────────────────────────────────────
 
+
 def _studio_root() -> Path:
     for var in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
         value = os.environ.get(var)
@@ -454,10 +460,10 @@ def load_config() -> Dict[str, Any]:
 def save_config(config: Dict[str, Any]) -> None:
     path = config_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w") as handle:
-            json.dump(config, handle, indent=2, sort_keys=True)
+            json.dump(config, handle, indent = 2, sort_keys = True)
         os.replace(tmp, path)
         # Peer credentials never land here, but the file names hosts and subnets.
         os.chmod(path, 0o600)
@@ -563,26 +569,53 @@ def link_health(
     server = None
     try:
         server = subprocess.Popen(
-            ["ib_write_bw", "-d", ib_device, "-F", "-x", "3", "--report_gbits",
-             "-D", str(seconds), "-s", "1048576", "-q", "4", "-p", str(port)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                "ib_write_bw",
+                "-d",
+                ib_device,
+                "-F",
+                "-x",
+                "3",
+                "--report_gbits",
+                "-D",
+                str(seconds),
+                "-s",
+                "1048576",
+                "-q",
+                "4",
+                "-p",
+                str(port),
+            ],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         )
         # Give the server its listening socket before the client dials in.
         import time
+
         time.sleep(3)
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "ConnectTimeout=8", f"{os.environ.get('USER', 'nvidia')}@{peer_ip}",
-             f"ib_write_bw -d {ib_device} -F -x 3 --report_gbits -D {seconds} "
-             f"-s 1048576 -q 4 -p {port} {local_ip}"],
-            capture_output=True, text=True, timeout=seconds + 60,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=8",
+                f"{os.environ.get('USER', 'nvidia')}@{peer_ip}",
+                f"ib_write_bw -d {ib_device} -F -x 3 --report_gbits -D {seconds} "
+                f"-s 1048576 -q 4 -p {port} {local_ip}",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = seconds + 60,
         )
     except (OSError, subprocess.SubprocessError):
         return {}
     finally:
         if server is not None:
             try:
-                server.wait(timeout=seconds + 20)
+                server.wait(timeout = seconds + 20)
             except Exception:
                 server.kill()
 
@@ -624,7 +657,7 @@ def write_combining_broken() -> Optional[bool]:
     dmesg = shutil.which("dmesg")
     if dmesg:
         try:
-            proc = subprocess.run([dmesg], capture_output=True, text=True, timeout=10)
+            proc = subprocess.run([dmesg], capture_output = True, text = True, timeout = 10)
             # dmesg exits 0 even when the buffer read is denied, so test output.
             if proc.stdout.strip():
                 return _WC_MARKER in proc.stdout and "mlx5" in proc.stdout
@@ -633,7 +666,7 @@ def write_combining_broken() -> Optional[bool]:
     # Boot messages survive in the journal/kern.log even when dmesg is restricted.
     for log in ("/var/log/kern.log", "/var/log/dmesg"):
         try:
-            with open(log, "r", errors="replace") as handle:
+            with open(log, "r", errors = "replace") as handle:
                 text = handle.read()
         except OSError:
             continue
@@ -656,8 +689,10 @@ def pending_system_updates() -> List[str]:
     try:
         out = subprocess.run(
             [apt, "list", "--upgradable"],
-            capture_output=True, text=True, timeout=60,
-            env={**os.environ, "LC_ALL": "C"},
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            env = {**os.environ, "LC_ALL": "C"},
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return []
@@ -679,7 +714,7 @@ def _held_packages() -> set:
         return set()
     try:
         out = subprocess.run(
-            [apt_mark, "showhold"], capture_output=True, text=True, timeout=30
+            [apt_mark, "showhold"], capture_output = True, text = True, timeout = 30
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -699,7 +734,10 @@ def ota_status() -> Dict[str, Any]:
         return {}
     try:
         proc = subprocess.run(
-            [tool, "is-ota-available"], capture_output=True, text=True, timeout=120,
+            [tool, "is-ota-available"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         return json.loads(proc.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -792,8 +830,15 @@ def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
     if not is_dgx_spark():
         # Answer before the sysfs walk and the `ip` fork that rail discovery would do:
         # the answer cannot change, so paying for it would be pure waste off-box.
-        return {"ok": False, "problems": ["not a DGX Spark"], "rpc_server": None,
-                "local_ip": None, "peer_ip": None, "port": port, "rpc_arg": None}
+        return {
+            "ok": False,
+            "problems": ["not a DGX Spark"],
+            "rpc_server": None,
+            "local_ip": None,
+            "peer_ip": None,
+            "port": port,
+            "rpc_arg": None,
+        }
     binary = rpc_server_binary()
     peer = peer_ip_for()
     local = None
@@ -833,10 +878,12 @@ NODE_BASE_OCTET = 12
 MAX_PLANNABLE_NODES = 240
 
 
-def rail_plan_report(rails: Optional[List[Dict[str, Any]]] = None,
-                     node_index: int = 0,
-                     n_nodes: int = 2,
-                     switched: bool = False) -> Dict[str, Any]:
+def rail_plan_report(
+    rails: Optional[List[Dict[str, Any]]] = None,
+    node_index: int = 0,
+    n_nodes: int = 2,
+    switched: bool = False,
+) -> Dict[str, Any]:
     """The addressing plan, or an explicit refusal -- never a wrong plan.
 
     Two Sparks are cabled QSFP-to-QSFP: one point-to-point link, so a flat /24 per
@@ -883,13 +930,15 @@ def rail_plan_report(rails: Optional[List[Dict[str, Any]]] = None,
     plan: List[Dict[str, str]] = []
     if not problems:
         for slot, rail in enumerate(rails[: len(DEFAULT_SUBNETS)]):
-            plan.append({
-                "ib_device": rail["ib_device"],
-                "netdev": rail["netdev"],
-                "address": f"{DEFAULT_SUBNETS[slot]}.{NODE_BASE_OCTET + node_index}",
-                "prefix": "24",
-                "mtu": str(DEFAULT_MTU),
-            })
+            plan.append(
+                {
+                    "ib_device": rail["ib_device"],
+                    "netdev": rail["netdev"],
+                    "address": f"{DEFAULT_SUBNETS[slot]}.{NODE_BASE_OCTET + node_index}",
+                    "prefix": "24",
+                    "mtu": str(DEFAULT_MTU),
+                }
+            )
     return {
         "ok": not problems,
         "problems": problems,
@@ -901,10 +950,12 @@ def rail_plan_report(rails: Optional[List[Dict[str, Any]]] = None,
     }
 
 
-def rail_plan(rails: Optional[List[Dict[str, Any]]] = None,
-              node_index: int = 0,
-              n_nodes: int = 2,
-              switched: bool = False) -> List[Dict[str, str]]:
+def rail_plan(
+    rails: Optional[List[Dict[str, Any]]] = None,
+    node_index: int = 0,
+    n_nodes: int = 2,
+    switched: bool = False,
+) -> List[Dict[str, str]]:
     """Addressing plan for the cabled rails: one /24 per PCIe function.
 
     ``node_index`` 0 is this Spark, 1 the next, so the hosts land on .12, .13, ...
@@ -927,10 +978,12 @@ def netplan_yaml(plan: List[Dict[str, str]]) -> str:
     nothing, which is exactly the silent-wrong-answer this module exists to avoid.
     """
     if not plan:
-        return ("# No addressing plan was produced -- nothing to apply.\n"
-                "# Run `unsloth spark setup` and read the refusal it prints; writing this\n"
-                "# file with no `ethernets:` entries would configure nothing while looking\n"
-                "# like it had.\n")
+        return (
+            "# No addressing plan was produced -- nothing to apply.\n"
+            "# Run `unsloth spark setup` and read the refusal it prints; writing this\n"
+            "# file with no `ethernets:` entries would configure nothing while looking\n"
+            "# like it had.\n"
+        )
     lines = ["network:", "  version: 2", "  renderer: NetworkManager", "  ethernets:"]
     for entry in plan:
         lines += [
@@ -942,24 +995,28 @@ def netplan_yaml(plan: List[Dict[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _print_manual_steps(plan: List[Dict[str, str]],
-                        peer_plan: List[Dict[str, str]],
-                        *, extra_plans: Optional[List[List[Dict[str, str]]]] = None) -> None:
+def _print_manual_steps(
+    plan: List[Dict[str, str]],
+    peer_plan: List[Dict[str, str]],
+    *,
+    extra_plans: Optional[List[List[Dict[str, str]]]] = None,
+) -> None:
     """Print the netplan drop-in for this node and for each peer.
 
     ``extra_plans`` carries nodes 2..N-1 for a cluster larger than a pair; the
     two positional arguments keep the pair case calling exactly as it did.
     """
+
     def emit(where: str, entries: List[Dict[str, str]]) -> None:
         print(f"\n  Run these on {where}:")
         print("    sudo tee /etc/netplan/40-unsloth-cx7.yaml >/dev/null <<'EOF'")
-        print(netplan_yaml(entries), end="")
+        print(netplan_yaml(entries), end = "")
         print("    EOF")
         print("    sudo chmod 600 /etc/netplan/40-unsloth-cx7.yaml && sudo netplan apply")
 
     emit("THIS Spark", plan)
     others = [peer_plan] + list(extra_plans or [])
-    for index, entries in enumerate(others, start=1):
+    for index, entries in enumerate(others, start = 1):
         label = "the PEER Spark" if len(others) == 1 else f"Spark node {index}"
         emit(label, entries)
 
@@ -983,8 +1040,12 @@ POWER_CYCLE_ADVICE = """\
   is why only a real NCCL collective detects this."""
 
 
-def nccl_bandwidth(peer_ip: str, local_ip: str, mb: int = 1024,
-                   timeout: int = 90) -> Optional[float]:
+def nccl_bandwidth(
+    peer_ip: str,
+    local_ip: str,
+    mb: int = 1024,
+    timeout: int = 90,
+) -> Optional[float]:
     """Real NCCL all-reduce bus bandwidth in GB/s, or None if it cannot be measured.
 
     Shells out to torchrun on both nodes rather than importing torch here, so that merely
@@ -995,6 +1056,7 @@ def nccl_bandwidth(peer_ip: str, local_ip: str, mb: int = 1024,
     # A fixed port collides with a previous run that died at the rendezvous and left
     # the socket held, which then fails as an unexplained 'could not measure'.
     import random
+
     port = random.randint(29600, 29999)
     # Copy the probe to the peer and run BOTH sides by absolute path. Running it as
     # `-m studio.spark_nccl_probe` would require Unsloth to be installed at the same
@@ -1007,32 +1069,50 @@ def nccl_bandwidth(peer_ip: str, local_ip: str, mb: int = 1024,
     user = os.environ.get("USER", "nvidianew")
     ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
     try:
-        subprocess.run(["scp", *ssh_opts, local_probe, f"{user}@{peer_ip}:{remote_probe}"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
-                       check=True)
+        subprocess.run(
+            ["scp", *ssh_opts, local_probe, f"{user}@{peer_ip}:{remote_probe}"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+            check = True,
+        )
     except Exception:
         return None
 
     env = " ".join(f"{k}={v}" for k, v in nccl_env().items())
-    common = (f"{env} SPARK_PROBE_MB={mb} torchrun --nnodes=2 --nproc_per_node=1 "
-              f"--master_addr={local_ip} --master_port={port}")
+    common = (
+        f"{env} SPARK_PROBE_MB={mb} torchrun --nnodes=2 --nproc_per_node=1 "
+        f"--master_addr={local_ip} --master_port={port}"
+    )
     # A non-interactive ssh shell does not have the Unsloth venv on PATH, so `torchrun`
     # is simply missing on the peer -- the peer side never starts, and the local side sits
     # at the rendezvous until it times out. Source the venv when it is there.
     activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
-    peer_cmd = (f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
-                f"exec env {common} --node_rank=1 {remote_probe}' "
-                f"> /tmp/spark_nccl_probe.log 2>&1 < /dev/null &")
+    peer_cmd = (
+        f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
+        f"exec env {common} --node_rank=1 {remote_probe}' "
+        f"> /tmp/spark_nccl_probe.log 2>&1 < /dev/null &"
+    )
     try:
-        subprocess.run(["ssh", *ssh_opts, f"{user}@{peer_ip}", peer_cmd],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        subprocess.run(
+            ["ssh", *ssh_opts, f"{user}@{peer_ip}", peer_cmd],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 30,
+        )
     except Exception:
         return None
     import time
-    time.sleep(4)          # let the peer's rendezvous come up before we dial in
+
+    time.sleep(4)  # let the peer's rendezvous come up before we dial in
     try:
-        out = subprocess.run(f"env {common} --node_rank=0 {local_probe}",
-                             shell=True, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(
+            f"env {common} --node_rank=0 {local_probe}",
+            shell = True,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+        )
     except Exception:
         return None
     for line in (out.stdout or "").splitlines():
@@ -1047,22 +1127,38 @@ def nccl_bandwidth(peer_ip: str, local_ip: str, mb: int = 1024,
 def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
     """Turn a measured bandwidth into a verdict and, when needed, the fix."""
     if busbw is None:
-        return {"verdict": "unknown", "busbw": None,
-                "summary": "could not measure NCCL bandwidth (needs a peer and torchrun)",
-                "advice": ""}
+        return {
+            "verdict": "unknown",
+            "busbw": None,
+            "summary": "could not measure NCCL bandwidth (needs a peer and torchrun)",
+            "advice": "",
+        }
     if busbw < NCCL_DEGRADED_GBPS:
-        return {"verdict": "degraded", "busbw": busbw,
-                "summary": (f"NCCL all-reduce is {busbw:.1f} GB/s -- far below the "
-                            f"~21 GB/s this link should reach. TRAINING WILL BE SLOW."),
-                "advice": POWER_CYCLE_ADVICE}
+        return {
+            "verdict": "degraded",
+            "busbw": busbw,
+            "summary": (
+                f"NCCL all-reduce is {busbw:.1f} GB/s -- far below the "
+                f"~21 GB/s this link should reach. TRAINING WILL BE SLOW."
+            ),
+            "advice": POWER_CYCLE_ADVICE,
+        }
     if busbw < NCCL_HEALTHY_GBPS:
-        return {"verdict": "suspect", "busbw": busbw,
-                "summary": (f"NCCL all-reduce is {busbw:.1f} GB/s. Healthy is ~21 GB/s, so "
-                            f"this is workable but below par."),
-                "advice": POWER_CYCLE_ADVICE}
-    return {"verdict": "healthy", "busbw": busbw,
-            "summary": f"NCCL all-reduce is {busbw:.1f} GB/s -- healthy.",
-            "advice": ""}
+        return {
+            "verdict": "suspect",
+            "busbw": busbw,
+            "summary": (
+                f"NCCL all-reduce is {busbw:.1f} GB/s. Healthy is ~21 GB/s, so "
+                f"this is workable but below par."
+            ),
+            "advice": POWER_CYCLE_ADVICE,
+        }
+    return {
+        "verdict": "healthy",
+        "busbw": busbw,
+        "summary": f"NCCL all-reduce is {busbw:.1f} GB/s -- healthy.",
+        "advice": "",
+    }
 
 
 def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
@@ -1082,6 +1178,7 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     offender.
     """
     import sysconfig
+
     out: Dict[str, Any] = {"local": False, "peer": None, "include": ""}
     inc = sysconfig.get_paths().get("include", "")
     out["include"] = inc
@@ -1095,18 +1192,30 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         # base64 the probe: it has to survive ssh -> bash -lc -> python -c, and every
         # layer of nested quoting is a chance to mangle it (it did, twice).
         import base64
-        probe = ("import sysconfig, os\n"
-                 "p = os.path.join(sysconfig.get_paths()['include'], 'Python.h')\n"
-                 "print('yes' if os.path.isfile(p) else 'no')\n")
+
+        probe = (
+            "import sysconfig, os\n"
+            "p = os.path.join(sysconfig.get_paths()['include'], 'Python.h')\n"
+            "print('yes' if os.path.isfile(p) else 'no')\n"
+        )
         b64 = base64.b64encode(probe.encode()).decode()
         activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
-        remote = (f"[ -f {activate} ] && . {activate}; "
-                  f"echo {b64} | base64 -d | python3 -")
+        remote = f"[ -f {activate} ] && . {activate}; " f"echo {b64} | base64 -d | python3 -"
         try:
             r = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                 f"{user}@{peer_ip}", remote],
-                capture_output=True, text=True, timeout=25)
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"{user}@{peer_ip}",
+                    remote,
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 25,
+            )
             answer = [l for l in (r.stdout or "").strip().splitlines() if l in ("yes", "no")]
             out["peer"] = (answer[-1] == "yes") if answer else None
         except Exception:
@@ -1143,9 +1252,19 @@ def cache_symmetry(peer_ip: str) -> Dict[str, Optional[bool]]:
             continue
         try:
             r = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                 f"{user}@{peer_ip}", f"test -d {c} && echo yes || echo no"],
-                capture_output=True, text=True, timeout=20)
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"{user}@{peer_ip}",
+                    f"test -d {c} && echo yes || echo no",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 20,
+            )
             out[c] = (r.stdout or "").strip() == "yes"
         except Exception:
             out[c] = None
@@ -1174,43 +1293,61 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     Distinct from the power-delivery fault, which leaves CUDA perfectly healthy and instead
     caps NCCL bandwidth -- see `diagnose_link`. Same symptom class, opposite remedy.
     """
-    probe = ("import ctypes\n"
-             "try:\n"
-             "    r = ctypes.CDLL('libcuda.so.1').cuInit(0)\n"
-             "except Exception:\n"
-             "    r = -1\n"
-             "print(r)\n")
+    probe = (
+        "import ctypes\n"
+        "try:\n"
+        "    r = ctypes.CDLL('libcuda.so.1').cuInit(0)\n"
+        "except Exception:\n"
+        "    r = -1\n"
+        "print(r)\n"
+    )
     out: Dict[str, Any] = {"local": None, "peer": None}
 
     def _classify(cuinit: Optional[int], smi_ok: bool) -> str:
         if cuinit == 0:
             return "ok"
         if smi_ok and cuinit is not None:
-            return "dead-engine"          # enumerates but will not initialise
+            return "dead-engine"  # enumerates but will not initialise
         return "unknown"
 
     smi = shutil.which("nvidia-smi") is not None
     if smi:
         try:
-            r = subprocess.run([sys.executable, "-c", probe],
-                               capture_output=True, text=True, timeout=60)
+            r = subprocess.run(
+                [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 60
+            )
             code = int((r.stdout or "-1").strip().splitlines()[-1])
         except Exception:
             code = None
-        smi_ok = subprocess.run(["nvidia-smi", "-L"], capture_output=True,
-                                timeout=30).returncode == 0
+        smi_ok = (
+            subprocess.run(["nvidia-smi", "-L"], capture_output = True, timeout = 30).returncode == 0
+        )
         out["local"] = {"cuinit": code, "state": _classify(code, smi_ok)}
 
     if peer_ip and shutil.which("ssh"):
         import base64
+
         b64 = base64.b64encode(probe.encode()).decode()
         act = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
-        cmd = (f"[ -f {act} ] && . {act}; nvidia-smi -L >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; "
-               f"echo {b64} | base64 -d | python3 -")
+        cmd = (
+            f"[ -f {act} ] && . {act}; nvidia-smi -L >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; "
+            f"echo {b64} | base64 -d | python3 -"
+        )
         try:
-            r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                                f"{os.environ.get('USER', 'nvidianew')}@{peer_ip}", cmd],
-                               capture_output=True, text=True, timeout=90)
+            r = subprocess.run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"{os.environ.get('USER', 'nvidianew')}@{peer_ip}",
+                    cmd,
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 90,
+            )
             lines = [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
             smi_ok = "SMI_OK" in lines
             code = next((int(l) for l in reversed(lines) if l.lstrip("-").isdigit()), None)
@@ -1265,8 +1402,10 @@ def _cmd_doctor() -> int:
         if not info:
             continue
         if info["state"] == "dead-engine":
-            print(f"  GPU NOT USABLE on {where}: nvidia-smi works but cuInit returns "
-                  f"{info['cuinit']} (CUDA_ERROR_NO_DEVICE).")
+            print(
+                f"  GPU NOT USABLE on {where}: nvidia-smi works but cuInit returns "
+                f"{info['cuinit']} (CUDA_ERROR_NO_DEVICE)."
+            )
             print("    The GPU enumerates but its compute engine is not responding. Check")
             print("    `dmesg | grep NVRM` for 'Possible bad register read ... 0xbadf5600'.")
             print("    FIX: REBOOT that node. A module reload does not clear it, and a")
@@ -1340,8 +1479,10 @@ def _cmd_status(benchmark: bool = False) -> int:
             if not health:
                 print("  (could not measure; is ib_write_bw running on the peer?)")
             elif health["degraded"]:
-                print(f"  MEASURED {health['gbps']:.2f} Gb/s -- well below "
-                      f"~{health['expected_gbps']:.0f} Gb/s per rail.")
+                print(
+                    f"  MEASURED {health['gbps']:.2f} Gb/s -- well below "
+                    f"~{health['expected_gbps']:.0f} Gb/s per rail."
+                )
                 print(f"  {HOTPLUG_NOTE}")
             else:
                 print(f"  MEASURED {health['gbps']:.2f} Gb/s per rail -- healthy.")
@@ -1401,21 +1542,36 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     # The RC marker separates "nvidia-smi ran and listed nothing" (idle) from
     # "nvidia-smi did not run" (unknown). Without it both are an empty string, and
     # reading the second as idle is exactly the fail-open mistake.
-    remote = ("nvidia-smi --query-compute-apps=pid,used_gpu_memory "
-              "--format=csv,noheader,nounits; echo RC=$?")
+    remote = (
+        "nvidia-smi --query-compute-apps=pid,used_gpu_memory "
+        "--format=csv,noheader,nounits; echo RC=$?"
+    )
     try:
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "ConnectTimeout=8", f"{user}@{peer_ip}", remote],
-            capture_output=True, text=True, timeout=timeout)
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=8",
+                f"{user}@{peer_ip}",
+                remote,
+            ],
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+        )
     except Exception as exc:
         out["reason"] = f"could not reach the peer to check its GPU ({str(exc)[:80]})"
         return out
     lines = [l.strip() for l in (proc.stdout or "").splitlines() if l.strip()]
     rc = next((l[3:] for l in lines if l.startswith("RC=")), None)
     if rc is None or rc != "0":
-        out["reason"] = ("nvidia-smi did not run on the peer "
-                         f"(rc={rc!r}); treating the GPU as BUSY")
+        out["reason"] = (
+            f"nvidia-smi did not run on the peer (rc={rc!r}); treating the GPU as BUSY"
+        )
         return out
     for line in lines:
         if line.startswith("RC=") or line.lower().startswith("pid"):
@@ -1432,13 +1588,20 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
             out["processes"].append({"pid": int(parts[0]), "used_mib": mib})
     out["known"] = True
     out["busy"] = bool(out["processes"])
-    out["reason"] = (f"{len(out['processes'])} compute process(es) resident"
-                     if out["busy"] else "no compute processes on the peer GPU")
+    out["reason"] = (
+        f"{len(out['processes'])} compute process(es) resident"
+        if out["busy"]
+        else "no compute processes on the peer GPU"
+    )
     return out
 
 
-def provision_peer(peer_ip: str, dry_run: bool = False, delete: bool = False,
-                   force: bool = False) -> Dict[str, Any]:
+def provision_peer(
+    peer_ip: str,
+    dry_run: bool = False,
+    delete: bool = False,
+    force: bool = False,
+) -> Dict[str, Any]:
     """Copy the environment and warm caches to the peer over the fast link.
 
     Two failures this prevents, both of which cost hours in testing and neither of which
@@ -1454,8 +1617,15 @@ def provision_peer(peer_ip: str, dry_run: bool = False, delete: bool = False,
     rsync rather than reinstall: identical bytes, no dependency-resolution drift between the
     two nodes, and it runs at link speed rather than internet speed.
     """
-    results: Dict[str, Any] = {"copied": [], "skipped": [], "failed": [], "dry_run": dry_run,
-                               "refused": "", "peer_gpu": None, "delete": delete}
+    results: Dict[str, Any] = {
+        "copied": [],
+        "skipped": [],
+        "failed": [],
+        "dry_run": dry_run,
+        "refused": "",
+        "peer_gpu": None,
+        "delete": delete,
+    }
     if not shutil.which("rsync") or not shutil.which("ssh"):
         results["failed"].append(("rsync/ssh", "not installed"))
         return results
@@ -1464,12 +1634,15 @@ def provision_peer(peer_ip: str, dry_run: bool = False, delete: bool = False,
         gpu = peer_gpu_busy(peer_ip)
         results["peer_gpu"] = gpu
         if gpu["busy"] and not force:
-            held = ", ".join(f"pid {p['pid']} ({p['used_mib']} MiB)"
-                             for p in gpu["processes"]) or "state unknown"
+            held = (
+                ", ".join(f"pid {p['pid']} ({p['used_mib']} MiB)" for p in gpu["processes"])
+                or "state unknown"
+            )
             results["refused"] = (
                 f"peer {peer_ip} is BUSY or unverifiable ({gpu['reason']}: {held}). "
                 f"Refusing to overwrite a venv a running job may be executing out of. "
-                f"Wait for the job, or pass force=True if you are certain.")
+                f"Wait for the job, or pass force=True if you are certain."
+            )
             return results
     user = os.environ.get("USER", "nvidianew")
     for path, label in PROVISION_PATHS:
@@ -1480,15 +1653,20 @@ def provision_peer(peer_ip: str, dry_run: bool = False, delete: bool = False,
         # Trailing slashes matter: copy the CONTENTS into the same path on the peer.
         # --delete is OFF by default: a stale extra file on the peer costs disk, while a
         # deleted live one takes a running interpreter out from under a job mid-flight.
-        cmd = ["rsync", "-a", "-e",
-               "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
-               local + "/", f"{user}@{peer_ip}:{path}/"]
+        cmd = [
+            "rsync",
+            "-a",
+            "-e",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
+            local + "/",
+            f"{user}@{peer_ip}:{path}/",
+        ]
         if delete:
             cmd.insert(2, "--delete")
         if dry_run:
             cmd.insert(1, "--dry-run")
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            r = subprocess.run(cmd, capture_output = True, text = True, timeout = 3600)
             if r.returncode == 0:
                 results["copied"].append((label, path))
             else:
@@ -1498,8 +1676,11 @@ def provision_peer(peer_ip: str, dry_run: bool = False, delete: bool = False,
     return results
 
 
-def _cmd_provision(dry_run: bool = False, delete: bool = False,
-                   force: bool = False) -> int:
+def _cmd_provision(
+    dry_run: bool = False,
+    delete: bool = False,
+    force: bool = False,
+) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to provision.")
         return 0
@@ -1507,11 +1688,12 @@ def _cmd_provision(dry_run: bool = False, delete: bool = False,
     if not peer:
         print("No configured peer. Run `unsloth spark setup` first.")
         return 1
-    print(f"Provisioning peer {peer} over the ConnectX link"
-          f"{' (dry run)' if dry_run else ''}...")
+    print(
+        f"Provisioning peer {peer} over the ConnectX link" f"{' (dry run)' if dry_run else ''}..."
+    )
     print("  Copying rather than installing: HuggingFace measures ~20 KB/s from these")
     print("  boxes while this link does ~444 MB/s, and copying cannot drift.")
-    res = provision_peer(peer, dry_run=dry_run, delete=delete, force=force)
+    res = provision_peer(peer, dry_run = dry_run, delete = delete, force = force)
     if res["refused"]:
         print(f"  REFUSED: {res['refused']}")
         print("  (nothing was copied, nothing was deleted)")
@@ -1545,7 +1727,7 @@ def model_size_gib(target: str) -> Optional[float]:
     """
     path = osp.expanduser(target)
     if osp.isfile(path):
-        return osp.getsize(path) / 2 ** 30
+        return osp.getsize(path) / 2**30
     if osp.isdir(path):
         total = 0
         for root, _, files in os.walk(path):
@@ -1555,7 +1737,7 @@ def model_size_gib(target: str) -> Optional[float]:
                         total += osp.getsize(osp.join(root, f))
                     except OSError:
                         pass
-        return total / 2 ** 30 if total else None
+        return total / 2**30 if total else None
     # A repo id: look for it in the HF cache rather than hitting the network, which is
     # unusable from these machines anyway (~20 KB/s).
     cache = osp.expanduser("~/.cache/huggingface/hub")
@@ -1575,7 +1757,7 @@ def model_size_gib(target: str) -> Optional[float]:
                         total += osp.getsize(real)
                 except OSError:
                     pass
-        return total / 2 ** 30 if total else None
+        return total / 2**30 if total else None
     return None
 
 
@@ -1600,7 +1782,7 @@ PP_SPEEDUP_2 = {1: 1.08, 2: 1.11, 4: 1.09, 8: 1.07}
 TP_TPOT_MS_2 = (332.7, 162.4)
 PP_TPOT_MS_2 = (320.0, 320.0)
 LAYER_SPLIT_FITTING_SPEEDUP = 0.92
-REPLICA_AGGREGATE_PER_NODE = 1.0      # n replicas -> ~n x aggregate, 1.0x per request
+REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
 # Training, GPipe pipeline parallel with M=4 microbatches, 2 nodes:
 # 3024 tok/s against a 2032 tok/s single-node control.
 TRAIN_PP_SPEEDUP_2 = 1.49
@@ -1609,11 +1791,15 @@ INTENTS = ("latency", "throughput", "capacity")
 
 
 def _nearest_concurrency(table: Dict[int, float], concurrency: int) -> Tuple[int, float]:
-    key = min(table, key=lambda c: (abs(c - concurrency), c))
+    key = min(table, key = lambda c: (abs(c - concurrency), c))
     return key, table[key]
 
 
-def expected_gain(axis: str, n_nodes: int, concurrency: int = 1) -> Dict[str, Any]:
+def expected_gain(
+    axis: str,
+    n_nodes: int,
+    concurrency: int = 1,
+) -> Dict[str, Any]:
     """What to expect from an axis at N nodes -- measured where measured, honest elsewhere.
 
     Everything in the table above was measured at exactly TWO Sparks. Reporting a
@@ -1621,9 +1807,14 @@ def expected_gain(axis: str, n_nodes: int, concurrency: int = 1) -> Dict[str, An
     mistake this module refuses everywhere else, so ``measured`` is part of the
     answer and the note says plainly that three Sparks were never benchmarked here.
     """
-    out: Dict[str, Any] = {"axis": axis, "n_nodes": n_nodes,
-                           "concurrency": concurrency,
-                           "speedup": None, "measured": False, "note": ""}
+    out: Dict[str, Any] = {
+        "axis": axis,
+        "n_nodes": n_nodes,
+        "concurrency": concurrency,
+        "speedup": None,
+        "measured": False,
+        "note": "",
+    }
     if n_nodes <= 1 or axis in ("none", "single", None):
         out["speedup"] = 1.0
         out["measured"] = True
@@ -1632,42 +1823,71 @@ def expected_gain(axis: str, n_nodes: int, concurrency: int = 1) -> Dict[str, An
     if axis == "tensor-parallel":
         c, value = _nearest_concurrency(TP_SPEEDUP_2, concurrency)
         if n_nodes == 2:
-            out.update(speedup=value, measured=True,
-                       note=(f"measured {value:.2f}x at concurrency {c} on 2 Sparks; "
-                             f"median TPOT {TP_TPOT_MS_2[0]:.1f}ms -> {TP_TPOT_MS_2[1]:.1f}ms."))
+            out.update(
+                speedup = value,
+                measured = True,
+                note = (
+                    f"measured {value:.2f}x at concurrency {c} on 2 Sparks; "
+                    f"median TPOT {TP_TPOT_MS_2[0]:.1f}ms -> {TP_TPOT_MS_2[1]:.1f}ms."
+                ),
+            )
         else:
-            out.update(speedup=None, measured=False,
-                       note=(f"TP=2 measured {value:.2f}x; TP={n_nodes} across Sparks is "
-                             f"NOT measured here. Every token needs an all-reduce over the "
-                             f"RoCE link, and that cost grows with the node count while the "
-                             f"per-node work shrinks, so expect clearly sublinear scaling and "
-                             f"benchmark before believing a number."))
+            out.update(
+                speedup = None,
+                measured = False,
+                note = (
+                    f"TP=2 measured {value:.2f}x; TP={n_nodes} across Sparks is "
+                    f"NOT measured here. Every token needs an all-reduce over the "
+                    f"RoCE link, and that cost grows with the node count while the "
+                    f"per-node work shrinks, so expect clearly sublinear scaling and "
+                    f"benchmark before believing a number."
+                ),
+            )
         return out
     if axis in ("pipeline-parallel", "layer-split"):
         c, value = _nearest_concurrency(PP_SPEEDUP_2, concurrency)
-        out.update(speedup=value if n_nodes == 2 else None, measured=n_nodes == 2,
-                   note=(f"PP=2 measured {value:.2f}x end-to-end with median TPOT FLAT at "
-                         f"~{PP_TPOT_MS_2[0]:.0f}ms -- i.e. NO latency benefit. Pipelining "
-                         f"buys capacity: it is how a model too large for one Spark runs at "
-                         f"all, not how a request gets faster."))
+        out.update(
+            speedup = value if n_nodes == 2 else None,
+            measured = n_nodes == 2,
+            note = (
+                f"PP=2 measured {value:.2f}x end-to-end with median TPOT FLAT at "
+                f"~{PP_TPOT_MS_2[0]:.0f}ms -- i.e. NO latency benefit. Pipelining "
+                f"buys capacity: it is how a model too large for one Spark runs at "
+                f"all, not how a request gets faster."
+            ),
+        )
         return out
     if axis == "replicas":
-        out.update(speedup=1.0, measured=n_nodes == 2,
-                   aggregate=float(n_nodes) * REPLICA_AGGREGATE_PER_NODE,
-                   note=(f"~{n_nodes}x AGGREGATE throughput, 1.00x per request. Independent "
-                         f"copies never make one request faster; they let you serve more of "
-                         f"them at once."))
+        out.update(
+            speedup = 1.0,
+            measured = n_nodes == 2,
+            aggregate = float(n_nodes) * REPLICA_AGGREGATE_PER_NODE,
+            note = (
+                f"~{n_nodes}x AGGREGATE throughput, 1.00x per request. Independent "
+                f"copies never make one request faster; they let you serve more of "
+                f"them at once."
+            ),
+        )
         return out
     if axis == "layer-split-fitting":
-        out.update(speedup=LAYER_SPLIT_FITTING_SPEEDUP, measured=True,
-                   note=(f"measured {LAYER_SPLIT_FITTING_SPEEDUP:.2f}x -- SLOWER than a single "
-                         f"Spark. Splitting a model that fits is a loss, always."))
+        out.update(
+            speedup = LAYER_SPLIT_FITTING_SPEEDUP,
+            measured = True,
+            note = (
+                f"measured {LAYER_SPLIT_FITTING_SPEEDUP:.2f}x -- SLOWER than a single "
+                f"Spark. Splitting a model that fits is a loss, always."
+            ),
+        )
         return out
     if axis == "training-pipeline":
-        out.update(speedup=TRAIN_PP_SPEEDUP_2 if n_nodes == 2 else None,
-                   measured=n_nodes == 2,
-                   note=(f"GPipe with M=4 microbatches measured {TRAIN_PP_SPEEDUP_2:.2f}x on 2 "
-                         f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling."))
+        out.update(
+            speedup = TRAIN_PP_SPEEDUP_2 if n_nodes == 2 else None,
+            measured = n_nodes == 2,
+            note = (
+                f"GPipe with M=4 microbatches measured {TRAIN_PP_SPEEDUP_2:.2f}x on 2 "
+                f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling."
+            ),
+        )
         return out
     out["note"] = f"unknown axis {axis!r}; no measurement to report."
     return out
@@ -1683,7 +1903,11 @@ def _nodes_needed(size_gib: float, budget: float) -> int:
     return max(1, count)
 
 
-def _serve_commands(axis: str, n_nodes: int, model: str = "<model>") -> List[str]:
+def _serve_commands(
+    axis: str,
+    n_nodes: int,
+    model: str = "<model>",
+) -> List[str]:
     """The concrete command for an axis. Names a model so it can be pasted."""
     env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
     if axis == "tensor-parallel":
@@ -1695,8 +1919,9 @@ def _serve_commands(axis: str, n_nodes: int, model: str = "<model>") -> List[str
             f"--distributed-executor-backend ray",
         ]
     if axis == "replicas":
-        backends = ",".join(f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080"
-                            for i in range(n_nodes))
+        backends = ",".join(
+            f"{DEFAULT_SUBNETS[0]}.{NODE_BASE_OCTET + i}:8080" for i in range(n_nodes)
+        )
         return [
             env,
             f"unsloth spark serve --model {model} --engines 1     # run on EACH Spark",
@@ -1714,13 +1939,15 @@ def _serve_commands(axis: str, n_nodes: int, model: str = "<model>") -> List[str
     return []
 
 
-def plan_deployment(size_gib: Optional[float],
-                    two_sparks: Optional[bool] = None,
-                    *,
-                    n_nodes: Optional[int] = None,
-                    intent: str = "throughput",
-                    concurrency: int = 1,
-                    model: str = "<model>") -> Dict[str, Any]:
+def plan_deployment(
+    size_gib: Optional[float],
+    two_sparks: Optional[bool] = None,
+    *,
+    n_nodes: Optional[int] = None,
+    intent: str = "throughput",
+    concurrency: int = 1,
+    model: str = "<model>",
+) -> Dict[str, Any]:
     """Recommend a topology AND an axis from model size, node count and intent.
 
     Measured behaviour, not theory. Two facts drive everything:
@@ -1764,10 +1991,16 @@ def plan_deployment(size_gib: Optional[float],
     # Never guess. A wrong size produces confidently wrong deployment advice, and a
     # user cannot tell that apart from right advice until the run fails.
     if size_gib is None:
-        out.update(topology="unknown", axis=None, fits=None, commands=[], command="",
-                   expected=expected_gain("none", 1, concurrency),
-                   recommendation="",
-                   summary="could not determine model size; not guessing")
+        out.update(
+            topology = "unknown",
+            axis = None,
+            fits = None,
+            commands = [],
+            command = "",
+            expected = expected_gain("none", 1, concurrency),
+            recommendation = "",
+            summary = "could not determine model size; not guessing",
+        )
         return out
 
     fits_one = size_gib <= budget
@@ -1778,21 +2011,24 @@ def plan_deployment(size_gib: Optional[float],
     # ── One node ─────────────────────────────────────────────────────────────
     if nodes < 2:
         out.update(
-            topology="single",
-            fits=fits_one,
-            axis="single" if fits_one else "none",
-            summary=(f"{size_gib:.1f} GiB fits on this Spark ({budget:.0f} GiB budget)"
-                     if fits_one else
-                     f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
-                     f"budget) -- pair a second one, or use a smaller quant"),
-            expected=expected_gain("none", 1, concurrency),
-            commands=_serve_commands("single" if fits_one else "none", 1, model),
+            topology = "single",
+            fits = fits_one,
+            axis = "single" if fits_one else "none",
+            summary = (
+                f"{size_gib:.1f} GiB fits on this Spark ({budget:.0f} GiB budget)"
+                if fits_one
+                else f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
+                f"budget) -- pair a second one, or use a smaller quant"
+            ),
+            expected = expected_gain("none", 1, concurrency),
+            commands = _serve_commands("single" if fits_one else "none", 1, model),
         )
         out["recommendation"] = (
             f"Serve it on this Spark. With one node there is no axis to choose."
-            if fits_one else
-            f"This needs at least {min_nodes} Sparks at {budget:.0f} GiB each, or a "
-            f"smaller quant. One Spark cannot run it at any speed.")
+            if fits_one
+            else f"This needs at least {min_nodes} Sparks at {budget:.0f} GiB each, or a "
+            f"smaller quant. One Spark cannot run it at any speed."
+        )
         out["command"] = "\n".join(out["commands"])
         return out
 
@@ -1820,39 +2056,45 @@ def plan_deployment(size_gib: Optional[float],
         out["summary"] = (
             f"{size_gib:.1f} GiB against a {budget:.0f} GiB budget per node: TWO copies "
             f"fit side by side on a single Spark, so all {nodes} nodes have room to spare."
-            if copies < 3 else
-            f"{size_gib:.1f} GiB against a {budget:.0f} GiB budget per node: {copies} "
-            f"copies fit on each of your {nodes} Sparks.")
+            if copies < 3
+            else f"{size_gib:.1f} GiB against a {budget:.0f} GiB budget per node: {copies} "
+            f"copies fit on each of your {nodes} Sparks."
+        )
     elif topology == "single-or-replicas":
         out["summary"] = (
             f"{size_gib:.1f} GiB fits on ONE Spark ({budget:.0f} GiB budget), but a second "
             f"copy does not fit beside it on the same node. Each of your {nodes} Sparks "
-            f"can hold exactly one copy.")
+            f"can hold exactly one copy."
+        )
     elif topology == "layer-split":
         out["summary"] = (
             f"{size_gib:.1f} GiB exceeds one Spark's {budget:.0f} GiB, so it cannot run on "
             f"a single node. It fits across {min_nodes} of your {nodes} "
-            f"({nodes * budget:.0f} GiB total), which means it has to be sharded somehow.")
+            f"({nodes * budget:.0f} GiB total), which means it has to be sharded somehow."
+        )
     else:
         out["summary"] = (
             f"{size_gib:.1f} GiB exceeds all {nodes} Sparks together ({nodes * budget:.0f} "
-            f"GiB usable). At least {min_nodes} nodes would be needed, or a smaller quant.")
+            f"GiB usable). At least {min_nodes} nodes would be needed, or a smaller quant."
+        )
 
     # ── Then the axis, which is what the intent actually decides ─────────────
     if topology == "too-large":
-        out.update(axis="none", expected=expected_gain("none", 1, concurrency),
-                   commands=[])
+        out.update(axis = "none", expected = expected_gain("none", 1, concurrency), commands = [])
         out["recommendation"] = (
             f"No topology helps: {size_gib:.1f} GiB does not fit in {nodes} x "
-            f"{budget:.0f} GiB. Add nodes until you have {min_nodes}, or quantise smaller.")
+            f"{budget:.0f} GiB. Add nodes until you have {min_nodes}, or quantise smaller."
+        )
     elif not fits_one:
         # It must be sharded to run at all. TP is the axis that is both possible
         # and fast; PP/layer-split is the fallback when the engine cannot TP.
         shard_nodes = min(nodes, max(2, min_nodes))
-        out.update(axis="tensor-parallel",
-                   axis_nodes=shard_nodes,
-                   expected=expected_gain("tensor-parallel", shard_nodes, concurrency),
-                   commands=_serve_commands("tensor-parallel", shard_nodes, model))
+        out.update(
+            axis = "tensor-parallel",
+            axis_nodes = shard_nodes,
+            expected = expected_gain("tensor-parallel", shard_nodes, concurrency),
+            commands = _serve_commands("tensor-parallel", shard_nodes, model),
+        )
         out["fallback_axis"] = "pipeline-parallel"
         out["fallback_expected"] = expected_gain("pipeline-parallel", shard_nodes, concurrency)
         out["recommendation"] = (
@@ -1861,49 +2103,65 @@ def plan_deployment(size_gib: Optional[float],
             f"Spark and halved median TPOT (332.7ms -> 162.4ms), so it is both the way to "
             f"run this at all and the fastest way. Pipeline/layer split is the fallback "
             f"when your engine cannot TP across hosts (llama.cpp RPC): it measured 1.08x "
-            f"with FLAT TPOT -- capacity only.")
+            f"with FLAT TPOT -- capacity only."
+        )
     elif intent == "latency":
-        out.update(axis="tensor-parallel", axis_nodes=nodes,
-                   expected=expected_gain("tensor-parallel", nodes, concurrency),
-                   commands=_serve_commands("tensor-parallel", nodes, model))
+        out.update(
+            axis = "tensor-parallel",
+            axis_nodes = nodes,
+            expected = expected_gain("tensor-parallel", nodes, concurrency),
+            commands = _serve_commands("tensor-parallel", nodes, model),
+        )
         out["recommendation"] = (
             f"TENSOR parallel across {nodes} Sparks. It is the only axis that makes a "
             f"single request faster: TP=2 measured 2.09x with median TPOT 332.7ms -> "
             f"162.4ms. Do NOT use pipeline parallel for this -- its TPOT is flat at "
-            f"~320ms -- and do NOT layer-split a model that fits (0.92x).")
+            f"~320ms -- and do NOT layer-split a model that fits (0.92x)."
+        )
     elif intent == "throughput":
-        out.update(axis="replicas", axis_nodes=nodes,
-                   expected=expected_gain("replicas", nodes, concurrency),
-                   commands=_serve_commands("replicas", nodes, model))
+        out.update(
+            axis = "replicas",
+            axis_nodes = nodes,
+            expected = expected_gain("replicas", nodes, concurrency),
+            commands = _serve_commands("replicas", nodes, model),
+        )
         out["recommendation"] = (
             f"REPLICAS: one independent server per Spark, {nodes} in total, behind "
             f"`python -m studio.spark_lb`. That is ~{nodes}x aggregate throughput. It does "
             f"not make any single request faster -- if that is what you want, ask for "
-            f"intent=latency and use tensor parallel instead.")
+            f"intent=latency and use tensor parallel instead."
+        )
     else:  # capacity, and it already fits
-        out.update(axis="none", axis_nodes=1,
-                   expected=expected_gain("none", 1, concurrency),
-                   commands=_serve_commands("single", 1, model))
+        out.update(
+            axis = "none",
+            axis_nodes = 1,
+            expected = expected_gain("none", 1, concurrency),
+            commands = _serve_commands("single", 1, model),
+        )
         out["recommendation"] = (
             f"For capacity, MORE SPARKS WILL NOT HELP YOU HERE: {size_gib:.1f} GiB already "
             f"fits in one node's {budget:.0f} GiB. Serve it on a single Spark. The extra "
             f"nodes are worth using only for throughput (replicas, ~{nodes}x aggregate) or "
-            f"for latency (tensor parallel, 2.09x measured at 2 nodes).")
+            f"for latency (tensor parallel, 2.09x measured at 2 nodes)."
+        )
     out["command"] = "\n".join(out.get("commands") or [])
     return out
 
 
-def _cmd_plan(model: str, intent: str = "throughput",
-              nodes: Optional[int] = None, concurrency: int = 1) -> int:
+def _cmd_plan(
+    model: str,
+    intent: str = "throughput",
+    nodes: Optional[int] = None,
+    concurrency: int = 1,
+) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to plan.")
         return 0
     if nodes is None:
-        info = discover_peers(timeout=0.0)
+        info = discover_peers(timeout = 0.0)
         nodes = max(info.get("n_nodes", 1), 2 if peer_ip_for() else 1)
     size = model_size_gib(model)
-    plan = plan_deployment(size, n_nodes=nodes, intent=intent,
-                           concurrency=concurrency, model=model)
+    plan = plan_deployment(size, n_nodes = nodes, intent = intent, concurrency = concurrency, model = model)
     print(f"  model     : {model}")
     print(f"  size      : " + (f"{size:.1f} GiB" if size else "unknown (not cached locally)"))
     print(f"  Sparks    : {nodes}")
@@ -1936,19 +2194,21 @@ def _cmd_peers(check: bool = True) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; no peers to look for.")
         return 0
-    info = discover_peers(check_reachable=check)
+    info = discover_peers(check_reachable = check)
     print(f"  cable present : {info['cable_present']}")
     print(f"  nodes         : {info['n_nodes']} (this Spark + {info['n_peers']} peer(s))")
     if not info["peers"]:
         print("")
         print("  No peer Sparks discovered. mDNS only sees peers that advertise, so a")
-        print("  switched cluster may need them written down: add a \"peers\" list of")
-        print(f"  {{\"hostname\": ..., \"address\": ...}} to {config_path()}.")
+        print('  switched cluster may need them written down: add a "peers" list of')
+        print(f'  {{"hostname": ..., "address": ...}} to {config_path()}.')
         return 0
     for peer in info["peers"]:
         state = {True: "reachable", False: "UNREACHABLE", None: "not probed"}[peer["reachable"]]
-        print(f"    node {peer['index']}  {peer['short']:<16} {peer['address']:<18} "
-              f"{state}  ({peer['source']})")
+        print(
+            f"    node {peer['index']}  {peer['short']:<16} {peer['address']:<18} "
+            f"{state}  ({peer['source']})"
+        )
     # mDNS answers with whatever interface advertised, which is usually Wi-Fi, not the
     # 200 Gb/s rail. Say so rather than letting someone paste a 1 Gb/s address into a
     # distributed launch and wonder why NCCL is slow.
@@ -1982,16 +2242,20 @@ NVFP4_KERNELS = {
     "decode": {
         "backend": "marlin",
         "flag": "--linear-backend marlin --moe-backend marlin",
-        "why": ("fastest measured at M=1 (429 us). At decode batch sizes every format runs at "
-                "94-106% of achievable memory bandwidth, so 4-bit activations cannot help -- "
-                "and Marlin's 16-bit compute costs nothing it was not already paying in stalls."),
+        "why": (
+            "fastest measured at M=1 (429 us). At decode batch sizes every format runs at "
+            "94-106% of achievable memory bandwidth, so 4-bit activations cannot help -- "
+            "and Marlin's 16-bit compute costs nothing it was not already paying in stalls."
+        ),
     },
     "prefill": {
         "backend": "flashinfer_cutlass",
         "flag": "--linear-backend flashinfer_cutlass",
-        "why": ("309 TF/s against Marlin's 50 TF/s at M=4096 -- a 6.2x difference. Prefill is "
-                "compute-bound, which is the one regime where FP4's 3.3x arithmetic advantage "
-                "over BF16 is reachable."),
+        "why": (
+            "309 TF/s against Marlin's 50 TF/s at M=4096 -- a 6.2x difference. Prefill is "
+            "compute-bound, which is the one regime where FP4's 3.3x arithmetic advantage "
+            "over BF16 is reachable."
+        ),
     },
 }
 
@@ -2010,8 +2274,10 @@ def recommend_kernels(workload: str = "mixed") -> Dict[str, Any]:
     out.update(
         backend = "marlin for decode, flashinfer_cutlass for prefill",
         flag = "(choose per workload; see `unsloth spark kernels --workload prefill`)",
-        why = ("The crossover is at roughly 256 tokens per forward pass. Chat-style decode "
-               "wants Marlin; RAG, summarisation and long-prompt workloads want CUTLASS."),
+        why = (
+            "The crossover is at roughly 256 tokens per forward pass. Chat-style decode "
+            "wants Marlin; RAG, summarisation and long-prompt workloads want CUTLASS."
+        ),
     )
     return out
 
@@ -2039,10 +2305,17 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     return 0
 
 
-def training_memory_estimate(size_gib: float, world: int, batch: int, microbatches: int,
-                             seq: int, hidden: int = 8192, layers: int = 80,
-                             vocab: int = 128256,
-                             checkpointed: bool = True) -> Dict[str, Any]:
+def training_memory_estimate(
+    size_gib: float,
+    world: int,
+    batch: int,
+    microbatches: int,
+    seq: int,
+    hidden: int = 8192,
+    layers: int = 80,
+    vocab: int = 128256,
+    checkpointed: bool = True,
+) -> Dict[str, Any]:
     """Per-node memory for a layer-split training step, before it is attempted.
 
     This exists because the failure it prevents is severe and slow: a 70B arm loaded 66 GiB
@@ -2063,36 +2336,41 @@ def training_memory_estimate(size_gib: float, world: int, batch: int, microbatch
     own_layers = max(layers // world, 1)
     # Residual stream per layer per in-flight microbatch, bf16. Checkpointing keeps one
     # layer's internals live instead of all of them, but still stores every boundary.
-    per_layer = mb_rows * seq * hidden * 2 / 2 ** 30
+    per_layer = mb_rows * seq * hidden * 2 / 2**30
     live_microbatches = microbatches if not checkpointed else min(microbatches, 2)
     activations = per_layer * own_layers * live_microbatches
     if not checkpointed:
-        activations *= 4.0        # attention + MLP intermediates kept for the backward pass
+        activations *= 4.0  # attention + MLP intermediates kept for the backward pass
     # The LAST stage additionally holds logits, and for a large vocabulary that single tensor
     # can dominate everything else: cross-entropy is computed in fp32, so a 128k-vocab model
     # at 1024 tokens per microbatch is 0.5 GiB per microbatch in logits alone, plus the same
     # again for its gradient. Ignoring this is why a naive estimate says a configuration fits
     # when the final stage is the one that runs out.
-    logits_gib = (mb_rows * seq * vocab * 4 / 2 ** 30) * live_microbatches * 2
+    logits_gib = (mb_rows * seq * vocab * 4 / 2**30) * live_microbatches * 2
     activations_last_stage = activations + logits_gib
-    budget = SPARK_USABLE_GIB - 6.0            # driver, CUDA context, fragmentation
+    budget = SPARK_USABLE_GIB - 6.0  # driver, CUDA context, fragmentation
     # Size the answer on the WORST stage, which is the last one.
     worst_activations = max(activations, activations_last_stage)
     total_lora = weights + optimizer_lora + worst_activations
     total_full = weights + optimizer_full + worst_activations
     return {
-        "weights_gib": weights, "activations_gib": worst_activations,
+        "weights_gib": weights,
+        "activations_gib": worst_activations,
         "logits_gib": logits_gib,
-        "optimizer_lora_gib": optimizer_lora, "optimizer_full_gib": optimizer_full,
-        "total_lora_gib": total_lora, "total_full_gib": total_full,
+        "optimizer_lora_gib": optimizer_lora,
+        "optimizer_full_gib": optimizer_full,
+        "total_lora_gib": total_lora,
+        "total_full_gib": total_full,
         "budget_gib": budget,
-        "fits_lora": total_lora <= budget, "fits_full": total_full <= budget,
+        "fits_lora": total_lora <= budget,
+        "fits_full": total_full <= budget,
         "tokens_per_microbatch": mb_rows * seq,
     }
 
 
-def _cmd_estimate(model: str, batch: int, microbatches: int, seq: int,
-                  full_finetune: bool, checkpointed: bool) -> int:
+def _cmd_estimate(
+    model: str, batch: int, microbatches: int, seq: int, full_finetune: bool, checkpointed: bool
+) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to estimate.")
         return 0
@@ -2101,29 +2379,36 @@ def _cmd_estimate(model: str, batch: int, microbatches: int, seq: int,
         print(f"Cannot size {model} (not cached locally); refusing to guess.")
         return 1
     world = 2 if peer_ip_for() else 1
-    est = training_memory_estimate(size, world, batch, microbatches, seq,
-                                   checkpointed = checkpointed)
+    est = training_memory_estimate(size, world, batch, microbatches, seq, checkpointed = checkpointed)
     fits = est["fits_full"] if full_finetune else est["fits_lora"]
     total = est["total_full_gib"] if full_finetune else est["total_lora_gib"]
     mode = "full finetune" if full_finetune else "LoRA"
 
     print(f"  model      : {model}  ({size:.1f} GiB)")
     print(f"  stages     : {world}")
-    print(f"  per node   : weights {est['weights_gib']:.1f} + "
-          f"activations {est['activations_gib']:.1f} + optimizer "
-          f"{(est['optimizer_full_gib'] if full_finetune else est['optimizer_lora_gib']):.1f}"
-          f" = {total:.1f} GiB")
+    print(
+        f"  per node   : weights {est['weights_gib']:.1f} + "
+        f"activations {est['activations_gib']:.1f} + optimizer "
+        f"{(est['optimizer_full_gib'] if full_finetune else est['optimizer_lora_gib']):.1f}"
+        f" = {total:.1f} GiB"
+    )
     print(f"  budget     : {est['budget_gib']:.1f} GiB per node")
-    print(f"  microbatch : {est['tokens_per_microbatch']} tokens"
-          + ("" if est["tokens_per_microbatch"] >= 436 else
-             "  <-- BELOW the ~436-token crossover; the split cannot speed this up"))
+    print(
+        f"  microbatch : {est['tokens_per_microbatch']} tokens"
+        + (
+            ""
+            if est["tokens_per_microbatch"] >= 436
+            else "  <-- BELOW the ~436-token crossover; the split cannot speed this up"
+        )
+    )
     print("")
     if fits:
-        print(f"  OK: {mode} should fit, with "
-              f"{est['budget_gib'] - total:.1f} GiB headroom.")
+        print(f"  OK: {mode} should fit, with " f"{est['budget_gib'] - total:.1f} GiB headroom.")
         return 0
-    print(f"  WILL NOT FIT: {mode} needs {total:.1f} GiB against a "
-          f"{est['budget_gib']:.1f} GiB budget.")
+    print(
+        f"  WILL NOT FIT: {mode} needs {total:.1f} GiB against a "
+        f"{est['budget_gib']:.1f} GiB budget."
+    )
     print("  Reduce --batch or --seq, raise --microbatches, or add --grad-checkpoint.")
     if not checkpointed:
         print("  Gradient checkpointing alone would cut activations roughly 8x here.")
@@ -2147,7 +2432,7 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
     except (AttributeError, ValueError):
         watching = False
     if not watching:
-        return False          # nobody is there to answer; the answer is no
+        return False  # nobody is there to answer; the answer is no
     try:
         if sys.stdin.isatty():
             return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
@@ -2160,7 +2445,7 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
     # container, cron, CI -- that is a real "no terminal" and the answer stays no.
     try:
         with open("/dev/tty", "r") as tty:
-            print(f"{prompt} [y/N] ", end="", flush=True)
+            print(f"{prompt} [y/N] ", end = "", flush = True)
             return (tty.readline() or "").strip().lower() in ("y", "yes")
     except (OSError, EOFError, KeyboardInterrupt):
         # No prompt was printed if /dev/tty could not be opened, so there is no
@@ -2168,8 +2453,12 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
         return False
 
 
-def _cmd_setup(assume_yes: bool = False, n_nodes: int = 2,
-               switched: bool = False, dry_run: bool = False) -> int:
+def _cmd_setup(
+    assume_yes: bool = False,
+    n_nodes: int = 2,
+    switched: bool = False,
+    dry_run: bool = False,
+) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to do.")
         return 0
@@ -2181,7 +2470,7 @@ def _cmd_setup(assume_yes: bool = False, n_nodes: int = 2,
         return 1
 
     n_nodes = max(2, int(n_nodes))
-    report = rail_plan_report(rails, node_index=0, n_nodes=n_nodes, switched=switched)
+    report = rail_plan_report(rails, node_index = 0, n_nodes = n_nodes, switched = switched)
     if not report["ok"]:
         # Refuse rather than emit a netplan that looks right and routes nowhere.
         print(f"Cannot plan addressing for {n_nodes} Sparks:")
@@ -2189,17 +2478,22 @@ def _cmd_setup(assume_yes: bool = False, n_nodes: int = 2,
             print(f"  - {problem}")
         return 1
     plan = report["plan"]
-    peer_plan = rail_plan(rails, node_index=1, n_nodes=n_nodes, switched=switched)
-    extra_plans = [rail_plan(rails, node_index=i, n_nodes=n_nodes, switched=switched)
-                   for i in range(2, n_nodes)]
+    peer_plan = rail_plan(rails, node_index = 1, n_nodes = n_nodes, switched = switched)
+    extra_plans = [
+        rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched)
+        for i in range(2, n_nodes)
+    ]
     for note in report["notes"]:
         print(f"  NOTE: {note}")
-    print("Detected a cabled second Spark on:"
-          if n_nodes == 2 else f"Planning {n_nodes} Sparks on:")
+    print(
+        "Detected a cabled second Spark on:" if n_nodes == 2 else f"Planning {n_nodes} Sparks on:"
+    )
     for entry in plan:
-        print(f"  {entry['ib_device']:<14} {entry['netdev']:<16} -> {entry['address']}/24 mtu {entry['mtu']}")
+        print(
+            f"  {entry['ib_device']:<14} {entry['netdev']:<16} -> {entry['address']}/24 mtu {entry['mtu']}"
+        )
 
-    _print_manual_steps(plan, peer_plan, extra_plans=extra_plans)
+    _print_manual_steps(plan, peer_plan, extra_plans = extra_plans)
     print("\n  NOTE: " + HOTPLUG_NOTE)
 
     print("\n  Then verify with:")
@@ -2248,22 +2542,30 @@ def _cmd_setup(assume_yes: bool = False, n_nodes: int = 2,
     else:
         print("\n  Once the peer is reachable, run: unsloth spark provision")
 
-    save_config({
-        "enabled": True,
-        "planned": True,
-        "n_nodes": n_nodes,
-        "switched": switched,
-        "rails": plan,
-        "peer_rails": peer_plan,
-        "other_rails": extra_plans,
-        "nccl_env": nccl_env(rails),
-    })
+    save_config(
+        {
+            "enabled": True,
+            "planned": True,
+            "n_nodes": n_nodes,
+            "switched": switched,
+            "rails": plan,
+            "peer_rails": peer_plan,
+            "other_rails": extra_plans,
+            "nccl_env": nccl_env(rails),
+        }
+    )
     print(f"\nSaved plan to {config_path()}")
     return 0
 
 
-def _cmd_serve(model: str, port: int = 8080, rpc_port: int = RPC_DEFAULT_PORT,
-               ctx: int = 8192, engines: int = 2, slots: int = 16) -> int:
+def _cmd_serve(
+    model: str,
+    port: int = 8080,
+    rpc_port: int = RPC_DEFAULT_PORT,
+    ctx: int = 8192,
+    engines: int = 2,
+    slots: int = 16,
+) -> int:
     """Serve a GGUF across BOTH Sparks, using the layout that actually wins.
 
     Measured on this hardware, and the reason this prints what it prints:
@@ -2299,7 +2601,7 @@ def _cmd_serve(model: str, port: int = 8080, rpc_port: int = RPC_DEFAULT_PORT,
     # two (0.92x), so splitting is for capacity only, and the right answer flips at the
     # point where two copies stop fitting.
     size = model_size_gib(model)
-    advice = plan_deployment(size, two_sparks=True)
+    advice = plan_deployment(size, two_sparks = True)
     if advice["topology"] == "replicas":
         # Emit the layout that actually wins rather than advising and then printing a
         # worse one. Independent replicas never touch the wire during decode: each Spark
@@ -2326,8 +2628,10 @@ def _cmd_serve(model: str, port: int = 8080, rpc_port: int = RPC_DEFAULT_PORT,
         print(f"         --host 0.0.0.0 --port {peer_port}'")
         print("")
         print("  3. Round-robin front end:")
-        print(f"     python -m studio.spark_lb --port {port} "
-              f"127.0.0.1:{local_port} {peer_ip}:{peer_port}")
+        print(
+            f"     python -m studio.spark_lb --port {port} "
+            f"127.0.0.1:{local_port} {peer_ip}:{peer_port}"
+        )
         print("")
         print(f"  Clients talk to port {port}. Nothing crosses the wire during decode.")
         return 0
@@ -2348,8 +2652,10 @@ def _cmd_serve(model: str, port: int = 8080, rpc_port: int = RPC_DEFAULT_PORT,
     print("")
     print(f"  1. Start {engines} rpc-server(s) on the peer, one per engine:")
     for i in range(engines):
-        print(f"     ssh {peer_ip} '~/llamacpp-rpc/bin/ggml-rpc-server "
-              f"-H 0.0.0.0 -p {rpc_port + i} -c'")
+        print(
+            f"     ssh {peer_ip} '~/llamacpp-rpc/bin/ggml-rpc-server "
+            f"-H 0.0.0.0 -p {rpc_port + i} -c'"
+        )
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     for i in range(engines):
@@ -2394,6 +2700,7 @@ def _cmd_serve(model: str, port: int = 8080, rpc_port: int = RPC_DEFAULT_PORT,
 # For capacity, use llama.cpp RPC for inference (see rpc_cluster_plan) rather than
 # expecting training to shard.
 
+
 def _not_a_spark_plan(what: str) -> Dict[str, Any]:
     """The refusal every *_launch_plan returns off a Spark.
 
@@ -2402,9 +2709,15 @@ def _not_a_spark_plan(what: str) -> Dict[str, Any]:
     matters because these are importable functions -- `studio.spark_cluster` is called
     directly by the installer and by `unsloth run`, not only through `main()`.
     """
-    return {"ok": False, "problems": [f"not a DGX Spark, so there is no peer to {what}"],
-            "env": {}, "node0": None, "node1": None,
-            "peer_ip": None, "local_ip": None}
+    return {
+        "ok": False,
+        "problems": [f"not a DGX Spark, so there is no peer to {what}"],
+        "env": {},
+        "node0": None,
+        "node1": None,
+        "peer_ip": None,
+        "local_ip": None,
+    }
 
 
 def train_launch_plan(script: str, port: int = 29500) -> Dict[str, Any]:
@@ -2419,8 +2732,7 @@ def train_launch_plan(script: str, port: int = 29500) -> Dict[str, Any]:
             break
     if not peer or not local:
         return {"ok": False, "problems": ["no configured peer rail (run `unsloth spark setup`)"]}
-    base = (f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} "
-            f"--master_port={port}")
+    base = f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} " f"--master_port={port}"
     return {
         "ok": True,
         "problems": [],
@@ -2432,8 +2744,12 @@ def train_launch_plan(script: str, port: int = 29500) -> Dict[str, Any]:
     }
 
 
-def pipeline_launch_plan(model: str, port: int = 29500, *,
-                         extra: str = "") -> Dict[str, Any]:
+def pipeline_launch_plan(
+    model: str,
+    port: int = 29500,
+    *,
+    extra: str = "",
+) -> Dict[str, Any]:
     """torchrun commands for a layer-split (pipeline-parallel) run across the Sparks.
 
     Distinct from `train_launch_plan`, which is DDP: DDP replicates the model and buys
@@ -2451,8 +2767,7 @@ def pipeline_launch_plan(model: str, port: int = 29500, *,
             break
     if not peer or not local:
         return {"ok": False, "problems": ["no configured peer rail (run `unsloth spark setup`)"]}
-    base = (f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} "
-            f"--master_port={port}")
+    base = f"torchrun --nnodes=2 --nproc_per_node=1 --master_addr={local} " f"--master_port={port}"
     target = f"-m studio.spark_pipeline --model {model}"
     if extra:
         target = f"{target} {extra}"
@@ -2478,28 +2793,47 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     user = os.environ.get("USER", "nvidianew")
     activate = "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
-    remote = (f"cd {os.getcwd()} && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
-              f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null &")
+    remote = (
+        f"cd {os.getcwd()} && setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
+        f"{env}; exec {plan['node1']}' > {log_peer} 2>&1 < /dev/null &"
+    )
     try:
-        subprocess.run(["ssh", "-f", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                        f"{user}@{plan['peer_ip']}", remote], timeout=60, check=False)
+        subprocess.run(
+            [
+                "ssh",
+                "-f",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                f"{user}@{plan['peer_ip']}",
+                remote,
+            ],
+            timeout = 60,
+            check = False,
+        )
     except Exception as exc:
         print(f"  could not start the peer stage: {exc}")
         return 1
     print(f"  peer stage started; its log is {log_peer} on {plan['peer_ip']}")
     import time
-    time.sleep(6)                      # let the peer reach the rendezvous first
+
+    time.sleep(6)  # let the peer reach the rendezvous first
     child_env = dict(os.environ)
     child_env.update({k: str(v) for k, v in plan["env"].items()})
-    return subprocess.run(plan["node0"], shell=True, env=child_env).returncode
+    return subprocess.run(plan["node0"], shell = True, env = child_env).returncode
 
 
-def _cmd_pipeline(model: str, port: int = 29500, extra: str = "",
-                  run: bool = False) -> int:
+def _cmd_pipeline(
+    model: str,
+    port: int = 29500,
+    extra: str = "",
+    run: bool = False,
+) -> int:
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0
-    plan = pipeline_launch_plan(model, port, extra=extra)
+    plan = pipeline_launch_plan(model, port, extra = extra)
     if not plan["ok"]:
         for problem in plan["problems"]:
             print(f"  cannot launch: {problem}")
@@ -2511,8 +2845,10 @@ def _cmd_pipeline(model: str, port: int = 29500, extra: str = "",
     if size is not None:
         budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
         if size <= budget:
-            print(f"  NOTE: {model} is {size:.1f} GiB and fits on ONE Spark "
-                  f"({budget:.0f} GiB budget).")
+            print(
+                f"  NOTE: {model} is {size:.1f} GiB and fits on ONE Spark "
+                f"({budget:.0f} GiB budget)."
+            )
             print("        A layer split buys capacity, not speed. Consider DDP")
             print("        (`--script`) for throughput instead.")
             print("")
@@ -2563,58 +2899,110 @@ def _cmd_train(script: str, port: int = 29500) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(prog="unsloth spark", description=__doc__)
-    parser.add_argument("command", nargs="?", default="status",
-                        choices=("status", "setup", "env", "detect", "serve", "train",
-                                 "doctor", "provision", "plan", "kernels",
-                                 "estimate", "peers"))
-    parser.add_argument("--model", default="", help="GGUF path for `serve`")
-    parser.add_argument("--script", default="", help="training script for `train`")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--ctx", type=int, default=8192)
-    parser.add_argument("--yes", "-y", action="store_true")
-    parser.add_argument("--run", action="store_true",
-                        help="launch the layer-split run on both Sparks, not just print it")
-    parser.add_argument("--batch", type=int, default=8)
-    parser.add_argument("--microbatches", type=int, default=4)
-    parser.add_argument("--seq", type=int, default=512)
-    parser.add_argument("--full-finetune", action="store_true")
-    parser.add_argument("--grad-checkpoint", action="store_true")
-    parser.add_argument("--workload", default="mixed",
-                        choices=("decode", "prefill", "mixed"),
-                        help="which regime to optimise the kernel choice for")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="show exactly what would be written or copied, and do none "
-                             "of it (works for `setup` and `provision`)")
-    parser.add_argument("--rsync-delete", action="store_true",
-                        help="also delete files on the peer that are absent here. OFF by "
-                             "default: a stale extra file is far cheaper than deleting one "
-                             "a running job is executing.")
-    parser.add_argument("--force", action="store_true",
-                        help="provision even though the peer GPU looks busy (or could not "
-                             "be checked). You are asserting no job is running there.")
-    parser.add_argument("--engines", type=int, default=2,
-                        help="independent engines to run; >1 is what beats a single Spark")
-    parser.add_argument("--slots", type=int, default=16, help="server slots per engine")
-    parser.add_argument("--layer-split", default="",
-                        help="model to train split across the Sparks (capacity, not speed)")
-    parser.add_argument("--pipeline-args", default="",
-                        help="extra flags passed through to studio.spark_pipeline")
-    parser.add_argument("--master-port", type=int, default=29500)
-    parser.add_argument("--benchmark", action="store_true",
-                        help="measure the link with ib_write_bw (needs perftest on both nodes)")
-    parser.add_argument("--intent", default="throughput", choices=INTENTS,
-                        help="what you want from the cluster; it decides the axis, "
-                             "not just whether the model fits")
-    parser.add_argument("--nodes", type=int, default=None,
-                        help="how many Sparks to plan for (default: discovered)")
-    parser.add_argument("--concurrency", type=int, default=1,
-                        help="requests in flight, for the expected-speedup number")
-    parser.add_argument("--switched", action="store_true",
-                        help="all Sparks share a switched RoCE fabric; required to plan "
-                             "addressing for more than two")
-    parser.add_argument("--no-probe", action="store_true",
-                        help="do not TCP-probe peers in `peers`")
+    parser = argparse.ArgumentParser(prog = "unsloth spark", description = __doc__)
+    parser.add_argument(
+        "command",
+        nargs = "?",
+        default = "status",
+        choices = (
+            "status",
+            "setup",
+            "env",
+            "detect",
+            "serve",
+            "train",
+            "doctor",
+            "provision",
+            "plan",
+            "kernels",
+            "estimate",
+            "peers",
+        ),
+    )
+    parser.add_argument("--model", default = "", help = "GGUF path for `serve`")
+    parser.add_argument("--script", default = "", help = "training script for `train`")
+    parser.add_argument("--port", type = int, default = 8080)
+    parser.add_argument("--ctx", type = int, default = 8192)
+    parser.add_argument("--yes", "-y", action = "store_true")
+    parser.add_argument(
+        "--run",
+        action = "store_true",
+        help = "launch the layer-split run on both Sparks, not just print it",
+    )
+    parser.add_argument("--batch", type = int, default = 8)
+    parser.add_argument("--microbatches", type = int, default = 4)
+    parser.add_argument("--seq", type = int, default = 512)
+    parser.add_argument("--full-finetune", action = "store_true")
+    parser.add_argument("--grad-checkpoint", action = "store_true")
+    parser.add_argument(
+        "--workload",
+        default = "mixed",
+        choices = ("decode", "prefill", "mixed"),
+        help = "which regime to optimise the kernel choice for",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action = "store_true",
+        help = "show exactly what would be written or copied, and do none "
+        "of it (works for `setup` and `provision`)",
+    )
+    parser.add_argument(
+        "--rsync-delete",
+        action = "store_true",
+        help = "also delete files on the peer that are absent here. OFF by "
+        "default: a stale extra file is far cheaper than deleting one "
+        "a running job is executing.",
+    )
+    parser.add_argument(
+        "--force",
+        action = "store_true",
+        help = "provision even though the peer GPU looks busy (or could not "
+        "be checked). You are asserting no job is running there.",
+    )
+    parser.add_argument(
+        "--engines",
+        type = int,
+        default = 2,
+        help = "independent engines to run; >1 is what beats a single Spark",
+    )
+    parser.add_argument("--slots", type = int, default = 16, help = "server slots per engine")
+    parser.add_argument(
+        "--layer-split",
+        default = "",
+        help = "model to train split across the Sparks (capacity, not speed)",
+    )
+    parser.add_argument(
+        "--pipeline-args", default = "", help = "extra flags passed through to studio.spark_pipeline"
+    )
+    parser.add_argument("--master-port", type = int, default = 29500)
+    parser.add_argument(
+        "--benchmark",
+        action = "store_true",
+        help = "measure the link with ib_write_bw (needs perftest on both nodes)",
+    )
+    parser.add_argument(
+        "--intent",
+        default = "throughput",
+        choices = INTENTS,
+        help = "what you want from the cluster; it decides the axis, "
+        "not just whether the model fits",
+    )
+    parser.add_argument(
+        "--nodes", type = int, default = None, help = "how many Sparks to plan for (default: discovered)"
+    )
+    parser.add_argument(
+        "--concurrency",
+        type = int,
+        default = 1,
+        help = "requests in flight, for the expected-speedup number",
+    )
+    parser.add_argument(
+        "--switched",
+        action = "store_true",
+        help = "all Sparks share a switched RoCE fabric; required to plan "
+        "addressing for more than two",
+    )
+    parser.add_argument("--no-probe", action = "store_true", help = "do not TCP-probe peers in `peers`")
     args = parser.parse_args(argv)
 
     if args.command == "detect":
@@ -2627,42 +3015,53 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not args.model:
             print("estimate needs --model")
             return 2
-        return _cmd_estimate(args.model, args.batch, args.microbatches,
-                             args.seq, args.full_finetune, args.grad_checkpoint)
+        return _cmd_estimate(
+            args.model,
+            args.batch,
+            args.microbatches,
+            args.seq,
+            args.full_finetune,
+            args.grad_checkpoint,
+        )
     if args.command == "kernels":
         return _cmd_kernels(args.workload)
     if args.command == "plan":
         if not args.model:
             print("plan needs --model <path-or-repo-id>")
             return 2
-        return _cmd_plan(args.model, intent=args.intent, nodes=args.nodes,
-                         concurrency=args.concurrency)
+        return _cmd_plan(
+            args.model, intent = args.intent, nodes = args.nodes, concurrency = args.concurrency
+        )
     if args.command == "peers":
-        return _cmd_peers(check=not args.no_probe)
+        return _cmd_peers(check = not args.no_probe)
     if args.command == "provision":
-        return _cmd_provision(dry_run=args.dry_run, delete=args.rsync_delete,
-                              force=args.force)
+        return _cmd_provision(dry_run = args.dry_run, delete = args.rsync_delete, force = args.force)
     if args.command == "env":
         return _cmd_env()
     if args.command == "serve":
         if not args.model:
             print("serve needs --model <path-to.gguf>")
             return 2
-        return _cmd_serve(args.model, port=args.port, ctx=args.ctx,
-                          engines=args.engines, slots=args.slots)
+        return _cmd_serve(
+            args.model, port = args.port, ctx = args.ctx, engines = args.engines, slots = args.slots
+        )
     if args.command == "train":
         if args.layer_split:
-            return _cmd_pipeline(args.layer_split, port=args.master_port,
-                                 extra=args.pipeline_args, run=args.run)
+            return _cmd_pipeline(
+                args.layer_split, port = args.master_port, extra = args.pipeline_args, run = args.run
+            )
         if not args.script:
             print("train needs --script <train.py>, or --layer-split <model>")
             return 2
         return _cmd_train(args.script)
     if args.command == "setup":
-        return _cmd_setup(assume_yes=args.yes,
-                          n_nodes=args.nodes if args.nodes else 2,
-                          switched=args.switched, dry_run=args.dry_run)
-    return _cmd_status(benchmark=args.benchmark)
+        return _cmd_setup(
+            assume_yes = args.yes,
+            n_nodes = args.nodes if args.nodes else 2,
+            switched = args.switched,
+            dry_run = args.dry_run,
+        )
+    return _cmd_status(benchmark = args.benchmark)
 
 
 if __name__ == "__main__":

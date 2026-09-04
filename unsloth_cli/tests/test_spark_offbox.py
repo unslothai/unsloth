@@ -26,10 +26,23 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-HEAVY = {"torch", "transformers", "peft", "numpy", "safetensors", "huggingface_hub",
-         "vllm", "trl", "datasets"}
-MODULES = ["studio/spark_cluster.py", "studio/spark_pipeline.py",
-           "studio/spark_lb.py", "studio/spark_nccl_probe.py"]
+HEAVY = {
+    "torch",
+    "transformers",
+    "peft",
+    "numpy",
+    "safetensors",
+    "huggingface_hub",
+    "vllm",
+    "trl",
+    "datasets",
+}
+MODULES = [
+    "studio/spark_cluster.py",
+    "studio/spark_pipeline.py",
+    "studio/spark_lb.py",
+    "studio/spark_nccl_probe.py",
+]
 
 
 def _load(rel: str):
@@ -57,7 +70,7 @@ def test_no_heavy_imports_at_module_scope(rel: str) -> None:
 def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
     """`is_dgx_spark()` must answer False without touching the filesystem or network."""
     sc = _load("studio/spark_cluster.py")
-    monkeypatch.setattr(sc, "_read_first_line", lambda *a, **k: "Generic Laptop", raising=False)
+    monkeypatch.setattr(sc, "_read_first_line", lambda *a, **k: "Generic Laptop", raising = False)
     if hasattr(sc, "is_dgx_spark"):
         sc.is_dgx_spark.cache_clear() if hasattr(sc.is_dgx_spark, "cache_clear") else None
 
@@ -70,7 +83,7 @@ def test_planner_never_recommends_splitting_a_model_that_fits() -> None:
     """
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
-    small = sc.plan_deployment(budget / 4, two_sparks=True)
+    small = sc.plan_deployment(budget / 4, two_sparks = True)
     assert small["topology"] == "replicas", small
     assert "layer-split" not in small["summary"].lower() or "do not" in small["summary"].lower()
 
@@ -80,13 +93,13 @@ def test_planner_boundaries() -> None:
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     cases = [
-        (budget / 4, "replicas"),            # two copies fit easily
+        (budget / 4, "replicas"),  # two copies fit easily
         (budget * 0.6, "single-or-replicas"),  # one fits, two do not
-        (budget * 1.5, "layer-split"),       # exceeds one node, fits across two
-        (budget * 2.5, "too-large"),         # exceeds both
+        (budget * 1.5, "layer-split"),  # exceeds one node, fits across two
+        (budget * 2.5, "too-large"),  # exceeds both
     ]
     for size, expected in cases:
-        got = sc.plan_deployment(size, two_sparks=True)["topology"]
+        got = sc.plan_deployment(size, two_sparks = True)["topology"]
         assert got == expected, f"{size:.1f} GiB -> {got}, expected {expected}"
 
 
@@ -97,7 +110,7 @@ def test_planner_refuses_to_guess_unknown_size() -> None:
     than saying nothing.
     """
     sc = _load("studio/spark_cluster.py")
-    out = sc.plan_deployment(None, two_sparks=True)
+    out = sc.plan_deployment(None, two_sparks = True)
     assert out["topology"] == "unknown"
 
 
@@ -105,9 +118,9 @@ def test_single_spark_path_is_sane() -> None:
     """With one Spark the planner must talk about fitting, never about splitting."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
-    fits = sc.plan_deployment(budget / 2, two_sparks=False)
+    fits = sc.plan_deployment(budget / 2, two_sparks = False)
     assert fits["topology"] == "single" and fits["fits"] is True
-    too_big = sc.plan_deployment(budget * 2, two_sparks=False)
+    too_big = sc.plan_deployment(budget * 2, two_sparks = False)
     assert too_big["fits"] is False
     assert "second" in too_big["summary"] or "smaller quant" in too_big["summary"]
 
@@ -152,8 +165,7 @@ def test_interleaved_chunks_cover_every_layer_exactly_once() -> None:
     for n_layers in (24, 32, 64, 80):
         for world in (2,):
             for virtual in (1, 2, 4):
-                parts = [sp.interleaved_layers(n_layers, r, world, virtual)
-                         for r in range(world)]
+                parts = [sp.interleaved_layers(n_layers, r, world, virtual) for r in range(world)]
                 flat = sorted(i for p in parts for chunk in p for i in chunk)
                 assert flat == list(range(n_layers)), (n_layers, virtual, parts)
                 assert all(len(p) == virtual for p in parts), (n_layers, virtual, parts)
@@ -185,12 +197,12 @@ def test_n_nodes_agrees_with_the_legacy_two_sparks_kwarg() -> None:
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     for size in (budget / 4, budget * 0.6, budget * 1.5, budget * 2.5):
-        legacy = sc.plan_deployment(size, two_sparks=True)
-        modern = sc.plan_deployment(size, n_nodes=2)
+        legacy = sc.plan_deployment(size, two_sparks = True)
+        modern = sc.plan_deployment(size, n_nodes = 2)
         assert legacy["topology"] == modern["topology"], size
         assert legacy["summary"] == modern["summary"], size
-    one = sc.plan_deployment(budget / 2, two_sparks=False)
-    assert one["topology"] == sc.plan_deployment(budget / 2, n_nodes=1)["topology"]
+    one = sc.plan_deployment(budget / 2, two_sparks = False)
+    assert one["topology"] == sc.plan_deployment(budget / 2, n_nodes = 1)["topology"]
 
 
 def test_axis_follows_intent_not_just_fit() -> None:
@@ -198,10 +210,10 @@ def test_axis_follows_intent_not_just_fit() -> None:
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     fits = budget * 0.6
-    assert sc.plan_deployment(fits, n_nodes=2, intent="latency")["axis"] == "tensor-parallel"
-    assert sc.plan_deployment(fits, n_nodes=2, intent="throughput")["axis"] == "replicas"
+    assert sc.plan_deployment(fits, n_nodes = 2, intent = "latency")["axis"] == "tensor-parallel"
+    assert sc.plan_deployment(fits, n_nodes = 2, intent = "throughput")["axis"] == "replicas"
     # A model that does not fit must be sharded whatever the intent.
-    big = sc.plan_deployment(budget * 1.5, n_nodes=2, intent="throughput")
+    big = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput")
     assert big["axis"] == "tensor-parallel" and big["topology"] == "layer-split"
 
 
@@ -209,7 +221,7 @@ def test_capacity_intent_admits_a_second_spark_does_not_help() -> None:
     """The honest answer when the model already fits, said in those words."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
-    out = sc.plan_deployment(budget * 0.5, n_nodes=2, intent="capacity")
+    out = sc.plan_deployment(budget * 0.5, n_nodes = 2, intent = "capacity")
     assert out["axis"] == "none"
     assert "will not help" in out["recommendation"].lower()
 
@@ -229,7 +241,7 @@ def test_speedups_are_measured_only_at_two_nodes() -> None:
 def test_unknown_size_yields_no_axis_and_no_command_at_any_node_count() -> None:
     sc = _load("studio/spark_cluster.py")
     for nodes in (1, 2, 4, 9):
-        out = sc.plan_deployment(None, n_nodes=nodes)
+        out = sc.plan_deployment(None, n_nodes = nodes)
         assert out["topology"] == "unknown"
         assert out["axis"] is None and not out["command"] and not out["recommendation"]
 
@@ -237,16 +249,18 @@ def test_unknown_size_yields_no_axis_and_no_command_at_any_node_count() -> None:
 def test_rail_plan_refuses_three_nodes_without_a_switch() -> None:
     """Three Sparks cannot be cabled point-to-point; a flat /24 would be wrong."""
     sc = _load("studio/spark_cluster.py")
-    rails = [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0"},
-             {"ib_device": "roceP2p1s0f0", "netdev": "enP2p1s0f0np0"}]
-    report = sc.rail_plan_report(rails, node_index=0, n_nodes=3)
+    rails = [
+        {"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0"},
+        {"ib_device": "roceP2p1s0f0", "netdev": "enP2p1s0f0np0"},
+    ]
+    report = sc.rail_plan_report(rails, node_index = 0, n_nodes = 3)
     assert report["ok"] is False and report["plan"] == []
     assert any("switched" in p for p in report["problems"])
-    assert sc.rail_plan(rails, 0, n_nodes=3) == []
-    ok = sc.rail_plan_report(rails, node_index=2, n_nodes=3, switched=True)
+    assert sc.rail_plan(rails, 0, n_nodes = 3) == []
+    ok = sc.rail_plan_report(rails, node_index = 2, n_nodes = 3, switched = True)
     assert ok["ok"] is True
     assert [e["address"] for e in ok["plan"]] == ["192.168.200.14", "192.168.201.14"]
-    assert sc.rail_plan_report(rails, node_index=5, n_nodes=3, switched=True)["ok"] is False
+    assert sc.rail_plan_report(rails, node_index = 5, n_nodes = 3, switched = True)["ok"] is False
 
 
 def test_netplan_never_renders_a_config_that_does_nothing() -> None:
@@ -261,13 +275,14 @@ def test_netplan_never_renders_a_config_that_does_nothing() -> None:
 def test_peers_are_ordered_numerically_and_indexed_from_one() -> None:
     """Node index must mean the same host on every node, so ordering is by address."""
     sc = _load("studio/spark_cluster.py")
-    found = sc.merge_peers([
-        {"hostname": "spark-c.local", "address": "192.168.200.13"},
-        {"hostname": "spark-a.local", "address": "192.168.200.9"},
-        {"hostname": "spark-b.local", "address": "192.168.200.10"},
-    ])
-    assert [p["address"] for p in found] == [
-        "192.168.200.9", "192.168.200.10", "192.168.200.13"]
+    found = sc.merge_peers(
+        [
+            {"hostname": "spark-c.local", "address": "192.168.200.13"},
+            {"hostname": "spark-a.local", "address": "192.168.200.9"},
+            {"hostname": "spark-b.local", "address": "192.168.200.10"},
+        ]
+    )
+    assert [p["address"] for p in found] == ["192.168.200.9", "192.168.200.10", "192.168.200.13"]
     assert [p["index"] for p in found] == [1, 2, 3]
     assert all(p["reachable"] is None for p in found)
 
@@ -279,7 +294,7 @@ def test_discovery_is_completely_inert_off_a_spark() -> None:
     called = []
     sc._mdns_spark_peers = lambda *a, **k: called.append("mdns") or []
     sc.peer_reachable = lambda *a, **k: called.append("probe") or True
-    out = sc.discover_peers(check_reachable=True)
+    out = sc.discover_peers(check_reachable = True)
     assert out["is_spark"] is False
     assert out["peers"] == [] and out["n_nodes"] == 1 and out["cable_present"] is False
     assert called == []
@@ -295,33 +310,42 @@ def test_setup_writes_nothing_without_consent(monkeypatch, tmp_path, capsys) -> 
     """No TTY and no --yes means: print the plan, touch nothing, exit 0."""
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = True
-    monkeypatch.setattr(sc, "cabled_rails", lambda: [
-        {"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}])
+    monkeypatch.setattr(
+        sc,
+        "cabled_rails",
+        lambda: [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}],
+    )
     monkeypatch.setattr(sc, "peer_ip_for", lambda *a, **k: "192.168.200.13")
     monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
     called = []
-    monkeypatch.setattr(sc, "provision_peer",
-                        lambda *a, **k: called.append("rsync") or {})
+    monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: called.append("rsync") or {})
     monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write"))
     assert sc._cmd_setup() == 0
     assert called == []
     assert "Not applied" in capsys.readouterr().out
-    assert sc._cmd_setup(dry_run=True) == 0
+    assert sc._cmd_setup(dry_run = True) == 0
     assert called == []
 
 
 def test_setup_applies_only_with_an_explicit_yes(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = True
-    monkeypatch.setattr(sc, "cabled_rails", lambda: [
-        {"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}])
+    monkeypatch.setattr(
+        sc,
+        "cabled_rails",
+        lambda: [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}],
+    )
     monkeypatch.setattr(sc, "peer_ip_for", lambda *a, **k: "192.168.200.13")
     monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
     called = []
-    monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: called.append("rsync") or
-                        {"refused": "", "copied": [], "skipped": [], "failed": []})
+    monkeypatch.setattr(
+        sc,
+        "provision_peer",
+        lambda *a, **k: called.append("rsync")
+        or {"refused": "", "copied": [], "skipped": [], "failed": []},
+    )
     monkeypatch.setattr(sc, "save_config", lambda *a, **k: called.append("write"))
-    assert sc._cmd_setup(assume_yes=True) == 0
+    assert sc._cmd_setup(assume_yes = True) == 0
     assert called == ["rsync", "write"]
 
 
@@ -336,7 +360,8 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
 
     class _Result:
-        def __init__(self, out): self.stdout = out
+        def __init__(self, out):
+            self.stdout = out
 
     def fake(out):
         return lambda *a, **k: _Result(out)
@@ -359,8 +384,11 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     # A CUDA context alone is not a job.
     monkeypatch.setattr(sc.subprocess, "run", fake("1234, 12\nRC=0\n"))
     assert sc.peer_gpu_busy("h")["busy"] is False
+
     # An exception is not permission either.
-    def boom(*a, **k): raise OSError("ssh died")
+    def boom(*a, **k):
+        raise OSError("ssh died")
+
     monkeypatch.setattr(sc.subprocess, "run", boom)
     assert sc.peer_gpu_busy("h")["busy"] is True
 
@@ -368,17 +396,27 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
 def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: {
-        "busy": True, "known": True, "reason": "1 compute process(es) resident",
-        "processes": [{"pid": 7, "used_mib": 9000}]})
+    monkeypatch.setattr(
+        sc,
+        "peer_gpu_busy",
+        lambda *a, **k: {
+            "busy": True,
+            "known": True,
+            "reason": "1 compute process(es) resident",
+            "processes": [{"pid": 7, "used_mib": 9000}],
+        },
+    )
     ran = []
     monkeypatch.setattr(sc.subprocess, "run", lambda cmd, **k: ran.append(cmd))
     res = sc.provision_peer("192.168.200.13")
     assert res["refused"] and res["copied"] == [] and ran == []
 
     # Idle peer: it copies, and `--delete` is absent unless asked for.
-    monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: {
-        "busy": False, "known": True, "reason": "idle", "processes": []})
+    monkeypatch.setattr(
+        sc,
+        "peer_gpu_busy",
+        lambda *a, **k: {"busy": False, "known": True, "reason": "idle", "processes": []},
+    )
     monkeypatch.setattr(sc.osp, "isdir", lambda p: True)
 
     class _Ok:
@@ -393,13 +431,12 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     sc.provision_peer("192.168.200.13")
     assert ran and all("--delete" not in cmd for cmd in ran)
     ran.clear()
-    sc.provision_peer("192.168.200.13", delete=True)
+    sc.provision_peer("192.168.200.13", delete = True)
     assert all("--delete" in cmd for cmd in ran)
     # A dry run must not even probe the peer, let alone write to it.
     ran.clear()
-    monkeypatch.setattr(sc, "peer_gpu_busy",
-                        lambda *a, **k: pytest.fail("dry run probed the peer"))
-    sc.provision_peer("192.168.200.13", dry_run=True)
+    monkeypatch.setattr(sc, "peer_gpu_busy", lambda *a, **k: pytest.fail("dry run probed the peer"))
+    sc.provision_peer("192.168.200.13", dry_run = True)
     assert all("--dry-run" in cmd for cmd in ran)
 
 
@@ -414,12 +451,19 @@ def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
 
     class _Stream:
-        def __init__(self, tty): self._tty = tty
-        def isatty(self): return self._tty
-        def write(self, text): return len(text)
-        def flush(self): pass
+        def __init__(self, tty):
+            self._tty = tty
 
-    assert sc._consented(True, "?") is True          # explicit yes always wins
+        def isatty(self):
+            return self._tty
+
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            pass
+
+    assert sc._consented(True, "?") is True  # explicit yes always wins
 
     monkeypatch.setattr(sc.sys, "stdout", _Stream(False))
     monkeypatch.setattr(sc.sys, "stdin", _Stream(False))
@@ -427,7 +471,10 @@ def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
 
     # stdout is a terminal, stdin is the piped script, /dev/tty unopenable -> no.
     monkeypatch.setattr(sc.sys, "stdout", _Stream(True))
-    def no_tty(*a, **k): raise OSError("no /dev/tty")
+
+    def no_tty(*a, **k):
+        raise OSError("no /dev/tty")
+
     monkeypatch.setattr("builtins.open", no_tty)
     assert sc._consented(False, "?") is False
 
@@ -442,12 +489,19 @@ def test_summary_and_recommendation_never_contradict() -> None:
     """
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
-    axis_words = ("layer-split", "layer split", "tensor parallel", "replicas",
-                  "pipeline", "spark_lb", "--engines")
+    axis_words = (
+        "layer-split",
+        "layer split",
+        "tensor parallel",
+        "replicas",
+        "pipeline",
+        "spark_lb",
+        "--engines",
+    )
     for size in (budget / 4, budget * 0.6, budget * 1.5, budget * 2.5):
         for nodes in (2, 3):
             for intent in sc.INTENTS:
-                out = sc.plan_deployment(size, n_nodes=nodes, intent=intent)
+                out = sc.plan_deployment(size, n_nodes = nodes, intent = intent)
                 summary = out["summary"].lower()
                 assert not [w for w in axis_words if w in summary], (size, nodes, summary)
 
@@ -463,15 +517,25 @@ def test_every_entry_point_guards_on_is_dgx_spark() -> None:
     sc._IS_SPARK_CACHE = False
     sc.cabled_rails = lambda *a, **k: pytest.fail("touched rails off a Spark")
     sc.local_rails = lambda *a, **k: pytest.fail("touched rails off a Spark")
-    for argv in (["status"], ["status", "--benchmark"], ["setup"], ["env"], ["peers"],
-                 ["plan", "--model", "m"], ["provision"], ["kernels"], ["doctor"],
-                 ["serve", "--model", "m.gguf"], ["train", "--script", "t.py"],
-                 ["train", "--layer-split", "M"], ["estimate", "--model", "m"]):
+    for argv in (
+        ["status"],
+        ["status", "--benchmark"],
+        ["setup"],
+        ["env"],
+        ["peers"],
+        ["plan", "--model", "m"],
+        ["provision"],
+        ["kernels"],
+        ["doctor"],
+        ["serve", "--model", "m.gguf"],
+        ["train", "--script", "t.py"],
+        ["train", "--layer-split", "M"],
+        ["estimate", "--model", "m"],
+    ):
         assert sc.main(argv) == 0, argv
     # `detect` is the installer's machine-readable gate and answers 1 by design.
     assert sc.main(["detect"]) == 1
-    for plan in (sc.train_launch_plan("t.py"), sc.pipeline_launch_plan("M"),
-                 sc.rpc_cluster_plan()):
+    for plan in (sc.train_launch_plan("t.py"), sc.pipeline_launch_plan("M"), sc.rpc_cluster_plan()):
         assert plan["ok"] is False and plan["problems"]
 
 
@@ -481,14 +545,23 @@ def test_every_entry_point_guards_on_is_dgx_spark() -> None:
 # layers loads without error and simply trains worse.
 # ---------------------------------------------------------------------------
 
-def _mk_stage(root, rank: int, layers, shared=("lm_head",)) -> None:
+
+def _mk_stage(
+    root,
+    rank: int,
+    layers,
+    shared = ("lm_head",),
+) -> None:
     import json as _json
     import torch
     from safetensors.torch import save_file
+
     d = root / f"stage{rank}"
-    d.mkdir(parents=True, exist_ok=True)
-    t = {f"base_model.model.model.layers.{i}.self_attn.q_proj.lora_A.weight": torch.ones(2, 2)
-         for i in layers}
+    d.mkdir(parents = True, exist_ok = True)
+    t = {
+        f"base_model.model.model.layers.{i}.self_attn.q_proj.lora_A.weight": torch.ones(2, 2)
+        for i in layers
+    }
     for name in shared:
         t[f"base_model.model.{name}.weight"] = torch.zeros(2, 2)
     save_file(t, str(d / "adapter_model.safetensors"))
@@ -503,7 +576,8 @@ def test_merge_layer_key_parsing() -> None:
 
 
 def test_merge_unions_disjoint_stages(tmp_path) -> None:
-    pytest.importorskip("torch"); pytest.importorskip("safetensors")
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
     _mk_stage(tmp_path, 0, range(0, 12))
     _mk_stage(tmp_path, 1, range(12, 24))
@@ -518,7 +592,8 @@ def test_merge_unions_disjoint_stages(tmp_path) -> None:
 
 def test_merge_refuses_overlapping_layers(tmp_path) -> None:
     """Two stages claiming one layer means the split was not what we think it was."""
-    pytest.importorskip("torch"); pytest.importorskip("safetensors")
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
     _mk_stage(tmp_path, 0, range(0, 13))
     _mk_stage(tmp_path, 1, range(12, 24))
@@ -529,7 +604,8 @@ def test_merge_refuses_overlapping_layers(tmp_path) -> None:
 
 def test_merge_refuses_missing_layers(tmp_path) -> None:
     """A gap would produce an adapter that is untrained in the middle."""
-    pytest.importorskip("torch"); pytest.importorskip("safetensors")
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
     _mk_stage(tmp_path, 0, range(0, 10))
     _mk_stage(tmp_path, 1, range(14, 24))
@@ -540,7 +616,8 @@ def test_merge_refuses_missing_layers(tmp_path) -> None:
 
 def test_merge_refuses_noncontiguous_stage_dirs(tmp_path) -> None:
     """stage0 + stage2 means stage1's layers were never saved."""
-    pytest.importorskip("torch"); pytest.importorskip("safetensors")
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
     _mk_stage(tmp_path, 0, range(0, 12))
     _mk_stage(tmp_path, 2, range(12, 24))

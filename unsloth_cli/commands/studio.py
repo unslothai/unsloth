@@ -2311,6 +2311,7 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
         return
     try:
         from studio import spark_cluster
+
         if not spark_cluster.is_dgx_spark():
             return
         # Size first, and only then the peer: sizing is a filesystem read, while
@@ -2327,10 +2328,12 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
             found = 2
         nodes = max(2, int(found))
         advice = spark_cluster.plan_deployment(
-            size, n_nodes = nodes, intent = intent, model = model,
+            size,
+            n_nodes = nodes,
+            intent = intent,
+            model = model,
         )
-        if advice["topology"] not in ("replicas", "single-or-replicas",
-                                      "layer-split", "too-large"):
+        if advice["topology"] not in ("replicas", "single-or-replicas", "layer-split", "too-large"):
             return
         tag = f"[{nodes} Sparks]"
         # `single-or-replicas` is new to this gate: it is the case where the model fits
@@ -2340,8 +2343,11 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
             typer.secho(f"  {tag} {advice['summary']}", fg = "cyan", err = True)
         if advice.get("recommendation"):
             typer.secho(f"  {tag} {advice['recommendation']}", fg = "cyan", err = True)
-        typer.secho(f"  {tag} Details: unsloth spark plan --model {model} "
-                    f"--intent {intent}", fg = "cyan", err = True)
+        typer.secho(
+            f"  {tag} Details: unsloth spark plan --model {model} " f"--intent {intent}",
+            fg = "cyan",
+            err = True,
+        )
     except Exception:
         return
 

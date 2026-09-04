@@ -227,19 +227,23 @@ def requested_device_map(device_map):
 # Everything here is behind a gate that costs a non-Spark host two string compares
 # and no I/O, and the whole notice is skipped unless the user actually asked for a
 # multi-device map on a single-GPU box.
-_MULTI_DEVICE_MAPS = frozenset({"balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced"})
+_MULTI_DEVICE_MAPS = frozenset(
+    {"balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced"}
+)
 _SPARK_NOTICE_SHOWN = [False]
 
 
 def _is_dgx_spark():
     """True only on a DGX Spark. Two comparisons before any file is touched."""
     import platform
+
     if platform.system() != "Linux" or platform.machine() not in ("aarch64", "arm64"):
         return False
     import re as _re
+
     for path in ("/etc/dgx-release", "/sys/class/dmi/id/product_name"):
         try:
-            with open(path, "r", errors="replace") as handle:
+            with open(path, "r", errors = "replace") as handle:
                 if _re.search(r"dgx[_ -]*spark", handle.read(4096), _re.IGNORECASE):
                     return True
         except OSError:
@@ -250,6 +254,7 @@ def _is_dgx_spark():
 def _spark_peer_cabled():
     """A cabled ConnectX rail: IB port ACTIVE and its netdev carrying. sysfs only."""
     import glob
+
     for port in glob.glob("/sys/class/infiniband/*/ports/1"):
         try:
             with open(port + "/state") as handle:
@@ -284,7 +289,7 @@ def notify_device_map_cannot_span_sparks(device_map):
         return
     _SPARK_NOTICE_SHOWN[0] = True
     print(
-        "Unsloth: `device_map=\"%s\"` cannot span two DGX Sparks. They are separate hosts\n"
+        'Unsloth: `device_map="%s"` cannot span two DGX Sparks. They are separate hosts\n'
         "         with one GB10 each, so this process sees 1 GPU and the whole model stays\n"
         "         on cuda:0. To use both Sparks:\n"
         "           training  : torchrun --nnodes=2 --nproc_per_node=1 ... (DDP, or FSDP to\n"

@@ -68,9 +68,9 @@ from typing import List, Optional, Sequence
 # this wrong is silent -- the split would "work" and train the wrong parameters -- so it
 # raises instead of guessing.
 _LAYER_PATHS = (
-    ("model", "layers"),            # Llama, Qwen, Mistral, Gemma...
+    ("model", "layers"),  # Llama, Qwen, Mistral, Gemma...
     ("model", "decoder", "layers"),  # OPT-style
-    ("transformer", "h"),            # GPT-2/NeoX-style
+    ("transformer", "h"),  # GPT-2/NeoX-style
     ("gpt_neox", "layers"),
 )
 
@@ -97,8 +97,12 @@ def find_layers(model):
     )
 
 
-def interleaved_layers(n_layers: int, rank: int, world: int,
-                       virtual: int = 2) -> List[List[int]]:
+def interleaved_layers(
+    n_layers: int,
+    rank: int,
+    world: int,
+    virtual: int = 2,
+) -> List[List[int]]:
     """Layer chunks for INTERLEAVED pipeline parallelism (Megatron's schedule).
 
     A plain 2-stage pipeline cannot beat `world * M/(M+1)` -- the fill/drain bubble costs one
@@ -121,7 +125,8 @@ def interleaved_layers(n_layers: int, rank: int, world: int,
     if total_chunks > n_layers:
         raise RuntimeError(
             f"{world} stages x {virtual} virtual = {total_chunks} chunks but the model has "
-            f"only {n_layers} layers; lower --virtual-stages")
+            f"only {n_layers} layers; lower --virtual-stages"
+        )
     base, extra = divmod(n_layers, total_chunks)
     bounds, start = [], 0
     for c in range(total_chunks):
@@ -180,7 +185,11 @@ def _ranges(ids: Sequence[int]) -> str:
 # layers on the wrong node and train the wrong parameters.
 
 
-def stage_to_rank_map(world: int, num_stages: int, style: str = "loop") -> dict:
+def stage_to_rank_map(
+    world: int,
+    num_stages: int,
+    style: str = "loop",
+) -> dict:
     if world < 1 or num_stages < 1:
         raise RuntimeError(f"bad pipeline shape: world={world} num_stages={num_stages}")
     if style == "loop":
@@ -189,12 +198,13 @@ def stage_to_rank_map(world: int, num_stages: int, style: str = "loop") -> dict:
         if num_stages % world:
             raise RuntimeError(
                 f"a V-layout needs num_stages ({num_stages}) divisible by the number of "
-                f"ranks ({world})")
+                f"ranks ({world})"
+            )
         mapping, r = {}, 0
         for i in range(num_stages):
             mapping[i] = r
             if (i + 1) % world == 0:
-                continue          # at the fold, stay put -- that is what makes the V
+                continue  # at the fold, stay put -- that is what makes the V
             r += 1 if (i // world) % 2 == 0 else -1
         return mapping
     raise RuntimeError(f"unknown pipeline layout {style!r}")
@@ -204,18 +214,19 @@ def stage_to_rank_map(world: int, num_stages: int, style: str = "loop") -> dict:
 #                         stages per rank or None = take it from --virtual-stages,
 #                         layout)
 TORCH_PP_SCHEDULES = {
-    "gpipe":       ("GPipe",                 1,    "loop"),
-    "1f1b":        ("1F1B",                  1,    "loop"),
-    "loopedbfs":   ("LoopedBFS",             None, "loop"),
-    "interleaved": ("Interleaved1F1B",       None, "loop"),
-    "zerobubble":  ("InterleavedZeroBubble", None, "loop"),
-    "zbv":         ("ZBVZeroBubble",         2,    "v"),
-    "dualpipev":   ("DualPipeV",             2,    "v"),
+    "gpipe": ("GPipe", 1, "loop"),
+    "1f1b": ("1F1B", 1, "loop"),
+    "loopedbfs": ("LoopedBFS", None, "loop"),
+    "interleaved": ("Interleaved1F1B", None, "loop"),
+    "zerobubble": ("InterleavedZeroBubble", None, "loop"),
+    "zbv": ("ZBVZeroBubble", 2, "v"),
+    "dualpipev": ("DualPipeV", 2, "v"),
 }
 
 
-def torch_pp_plan(schedule: str, world: int, microbatches: int, virtual_stages: int,
-                  n_layers: int) -> dict:
+def torch_pp_plan(
+    schedule: str, world: int, microbatches: int, virtual_stages: int, n_layers: int
+) -> dict:
     """Resolve `--schedule` into a concrete stage/layer/rank assignment.
 
     Pure: no torch, no process group, no model. Everything that can be refused is refused
@@ -226,7 +237,8 @@ def torch_pp_plan(schedule: str, world: int, microbatches: int, virtual_stages: 
         raise RuntimeError(
             f"--schedule {schedule!r} has no torch.distributed.pipelining equivalent; "
             f"available: {sorted(TORCH_PP_SCHEDULES)}. Use --pp-backend legacy for the "
-            f"hand-written schedules.")
+            f"hand-written schedules."
+        )
     class_name, fixed_v, style = TORCH_PP_SCHEDULES[schedule]
     v = fixed_v if fixed_v is not None else virtual_stages
     if fixed_v is not None and virtual_stages != fixed_v and virtual_stages != 2:
@@ -234,13 +246,15 @@ def torch_pp_plan(schedule: str, world: int, microbatches: int, virtual_stages: 
         # value this schedule cannot honour.
         raise RuntimeError(
             f"--schedule {schedule} requires exactly {fixed_v} stage(s) per rank; "
-            f"--virtual-stages {virtual_stages} cannot be satisfied.")
+            f"--virtual-stages {virtual_stages} cannot be satisfied."
+        )
     num_stages = world * v
     if n_layers < num_stages:
         raise RuntimeError(
             f"--schedule {schedule} wants {num_stages} stages ({v} per rank x {world} "
             f"ranks) but the model has only {n_layers} decoder layers; lower "
-            f"--virtual-stages or pick a single-stage schedule.")
+            f"--virtual-stages or pick a single-stage schedule."
+        )
     if style == "v" and v != 2:
         raise RuntimeError(f"the V layout requires exactly 2 stages per rank, got {v}")
     if schedule == "dualpipev" and microbatches < num_stages:
@@ -248,7 +262,8 @@ def torch_pp_plan(schedule: str, world: int, microbatches: int, virtual_stages: 
         # second rather than after the model loads.
         raise RuntimeError(
             f"--schedule dualpipev requires --microbatches >= num_stages "
-            f"({microbatches} < {num_stages}).")
+            f"({microbatches} < {num_stages})."
+        )
     if microbatches < 1:
         raise RuntimeError(f"--microbatches must be >= 1 (got {microbatches})")
 
@@ -284,11 +299,21 @@ def plan_for_rank(plan: dict, rank: int) -> dict:
 # Model construction
 # ---------------------------------------------------------------------------
 
-def build_stage_model(model_name: str, rank: int, world: int, device, *,
-                      shard_load: bool, dtype, log=print, keep_all_layers: bool = False,
-                      keep_layers: Optional[Sequence[int]] = None,
-                      keep_embed: Optional[bool] = None,
-                      keep_head: Optional[bool] = None):
+
+def build_stage_model(
+    model_name: str,
+    rank: int,
+    world: int,
+    device,
+    *,
+    shard_load: bool,
+    dtype,
+    log = print,
+    keep_all_layers: bool = False,
+    keep_layers: Optional[Sequence[int]] = None,
+    keep_embed: Optional[bool] = None,
+    keep_head: Optional[bool] = None,
+):
     """Build only this stage's slice of the model, on `device`.
 
     With `shard_load` the skeleton is created on the meta device (which allocates nothing),
@@ -343,8 +368,10 @@ def build_stage_model(model_name: str, rank: int, world: int, device, *,
         if hasattr(model, "lm_head"):
             model.lm_head = torch.nn.Identity()
 
-    log(f"{n} decoder layers; this stage owns {_ranges(mine)}"
-        f"{' +embed' if want_embed else ''}{' +head' if want_head else ''}")
+    log(
+        f"{n} decoder layers; this stage owns {_ranges(mine)}"
+        f"{' +embed' if want_embed else ''}{' +head' if want_head else ''}"
+    )
 
     if shard_load:
         _materialise(model, model_name, cfg, device, dtype, log)
@@ -358,8 +385,7 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     from huggingface_hub import snapshot_download
     from safetensors import safe_open
 
-    wanted = ({k for k, _ in model.named_parameters()}
-              | {k for k, _ in model.named_buffers()})
+    wanted = {k for k, _ in model.named_parameters()} | {k for k, _ in model.named_buffers()}
     snap = snapshot_download(model_name, allow_patterns = ["*.safetensors", "*.json"])
 
     loaded, seen = {}, 0
@@ -390,8 +416,9 @@ def _materialise(model, model_name, cfg, device, dtype, log):
             if any(b.is_meta for _, b in mod.named_buffers(recurse = False)):
                 mod.to_empty(device = device, recurse = False)
 
-    still = ([k for k, v in model.named_parameters() if v.is_meta]
-             + [k for k, v in model.named_buffers() if v.is_meta])
+    still = [k for k, v in model.named_parameters() if v.is_meta] + [
+        k for k, v in model.named_buffers() if v.is_meta
+    ]
     log(f"shard-load: materialised {seen} tensors; {len(still)} still on meta")
     if still:
         raise RuntimeError(f"unmaterialised tensors remain: {still[:4]}")
@@ -406,11 +433,22 @@ def _materialise(model, model_name, cfg, device, dtype, log):
 # `--pp-backend legacy --schedule gpipe` reproduces the previously measured behaviour
 # without reverting anything.
 
+
 class _Stage:
     """One pipeline stage's forward/backward, independent of the schedule driving it."""
 
-    def __init__(self, model, cfg, rank, world, device, dtype, microbatches,
-                 chunks = None, n_chunks = None):
+    def __init__(
+        self,
+        model,
+        cfg,
+        rank,
+        world,
+        device,
+        dtype,
+        microbatches,
+        chunks = None,
+        n_chunks = None,
+    ):
         self.model, self.cfg = model, cfg
         self.rank, self.world = rank, world
         self.device, self.dtype = device, dtype
@@ -424,7 +462,7 @@ class _Stage:
         self.is_first = rank == 0
         self.is_last = rank == world - 1
         base = getattr(model, "base_model", None)
-        self.base = base.model if base is not None else model    # unwrap PEFT
+        self.base = base.model if base is not None else model  # unwrap PEFT
         self.inner = getattr(self.base, "model", self.base)
         self.hidden = self.base.config.hidden_size
 
@@ -432,6 +470,7 @@ class _Stage:
         """Run one interleaved chunk. Only the FIRST chunk embeds and only the LAST
         produces logits and a loss; everything between is pure residual-stream work."""
         import torch
+
         layers = self.chunk_layers[chunk]
         h = self.inner.embed_tokens(ids) if chunk == 0 else hidden
         pos = self.inner.rotary_emb(h, posid)
@@ -441,15 +480,20 @@ class _Stage:
         if chunk != self.n_chunks - 1:
             return h, None
         import torch.nn.functional as F
+
         logits = self.base.lm_head(self.inner.norm(h))
-        loss = F.cross_entropy(
-            logits[:, :-1].reshape(-1, logits.size(-1)).float(),
-            ids[:, 1:].reshape(-1),
-        ) / self.microbatches
+        loss = (
+            F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)).float(),
+                ids[:, 1:].reshape(-1),
+            )
+            / self.microbatches
+        )
         return h, loss
 
     def forward(self, ids, hidden, posid):
         import torch
+
         h = self.inner.embed_tokens(ids) if self.is_first else hidden
         pos = self.inner.rotary_emb(h, posid)
         for layer in self.inner.layers:
@@ -460,11 +504,15 @@ class _Stage:
         if not self.is_last:
             return h, None
         import torch.nn.functional as F
+
         logits = self.base.lm_head(self.inner.norm(h))
-        loss = F.cross_entropy(
-            logits[:, :-1].reshape(-1, logits.size(-1)).float(),
-            ids[:, 1:].reshape(-1),
-        ) / self.microbatches
+        loss = (
+            F.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)).float(),
+                ids[:, 1:].reshape(-1),
+            )
+            / self.microbatches
+        )
         return h, loss
 
 
@@ -633,7 +681,8 @@ def _check_schedule(name, stage, batches):
         raise RuntimeError(
             f"schedule {name!r} needs at least two pipeline stages (WORLD_SIZE >= 2); got "
             f"world={world}. A one-stage pipeline would send to itself; run the model "
-            f"single-node instead.")
+            f"single-node instead."
+        )
     if M < 1:
         raise RuntimeError(f"schedule {name!r} needs at least one microbatch; got {M}.")
     if stage.rank < 0 or stage.rank >= world:
@@ -659,11 +708,12 @@ def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
     hidden_bufs, hreq = {}, {}
     if not stage.is_first:
         for m in range(len(batches)):
-            hidden_bufs[m] = torch.empty(mb_rows, posid.shape[1], stage.hidden,
-                                         dtype = stage.dtype, device = stage.device)
+            hidden_bufs[m] = torch.empty(
+                mb_rows, posid.shape[1], stage.hidden, dtype = stage.dtype, device = stage.device
+            )
             hreq[m] = dist.irecv(hidden_bufs[m], src = stage.rank - 1)
 
-    for m, ids in enumerate(batches):                       # forwards
+    for m, ids in enumerate(batches):  # forwards
         hidden = None
         if not stage.is_first:
             hreq[m].wait()
@@ -683,7 +733,7 @@ def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
             gbufs[m] = torch.empty_like(acts[m][0])
             gr[m] = dist.irecv(gbufs[m], src = stage.rank + 1)
 
-    for m in range(len(batches)):                            # backwards
+    for m in range(len(batches)):  # backwards
         h, hidden = acts[m]
         if stage.is_last:
             held[m].backward()
@@ -749,7 +799,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
         raise RuntimeError(ONEF1B_REFUSAL)
     M = len(batches)
     world, rank = stage.world, stage.rank
-    warm = min(world - 1 - rank, M)      # forwards in flight before this stage's first B
+    warm = min(world - 1 - rank, M)  # forwards in flight before this stage's first B
     rem = M - warm
     up = rank - 1 if not stage.is_first else None
     dn = rank + 1 if not stage.is_last else None
@@ -762,8 +812,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
     # side into two groups deadlocks even though the per-direction op order still matches.
     # That is the constraint the first two attempts at this file missed.
     def new_hidden():
-        return torch.empty(mb_rows, seq_len, stage.hidden,
-                           dtype = stage.dtype, device = stage.device)
+        return torch.empty(mb_rows, seq_len, stage.hidden, dtype = stage.dtype, device = stage.device)
 
     def recv_forward():
         if up is None:
@@ -788,8 +837,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
             return None
         g = torch.empty_like(t)
         _trace(stage, "p2p send_forward_recv_backward enter")
-        _p2p_group(dist, [dist.P2POp(dist.isend, t, dn),
-                          dist.P2POp(dist.irecv, g, dn)])
+        _p2p_group(dist, [dist.P2POp(dist.isend, t, dn), dist.P2POp(dist.irecv, g, dn)])
         _trace(stage, "p2p send_forward_recv_backward done")
         return g
 
@@ -799,8 +847,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
             return None
         buf = new_hidden()
         _trace(stage, "p2p send_backward_recv_forward enter")
-        _p2p_group(dist, [dist.P2POp(dist.isend, t, up),
-                          dist.P2POp(dist.irecv, buf, up)])
+        _p2p_group(dist, [dist.P2POp(dist.isend, t, up), dist.P2POp(dist.irecv, buf, up)])
         _trace(stage, "p2p send_backward_recv_forward done")
         buf.requires_grad_(True)
         return buf
@@ -822,7 +869,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
         return g
 
     # ---- schedule ---------------------------------------------------------------------
-    acts = []                            # FIFO of (h, hidden, loss) awaiting backward
+    acts = []  # FIFO of (h, hidden, loss) awaiting backward
     total = torch.zeros((), device = stage.device)
 
     def do_backward(gout):
@@ -841,12 +888,13 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
             raise RuntimeError(
                 "1f1b: the received activation got no gradient from backward. Its graph "
                 "does not reach this stage's input, so the upstream stage would train on "
-                "nothing. This is the interleaved bug in blocking form.")
+                "nothing. This is the interleaved bug in blocking form."
+            )
         grad = hidden.grad.contiguous() if hidden is not None else None
         return contribution, grad
 
     _trace(stage, f"START warm={warm} rem={rem} M={M}")
-    for i in range(warm):                                    # warmup: forwards only
+    for i in range(warm):  # warmup: forwards only
         _trace(stage, f"warmup F({i})")
         hidden = recv_forward()
         h, loss = stage.forward(batches[i], hidden, posid)
@@ -854,7 +902,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
         acts.append((h, hidden, loss))
 
     hidden = recv_forward() if rem > 0 else None
-    for i in range(rem):                                     # steady state: 1F then 1B
+    for i in range(rem):  # steady state: 1F then 1B
         m = warm + i
         _trace(stage, f"steady F({m}) [i={i}/{rem}]")
         h, loss = stage.forward(batches[m], hidden, posid)
@@ -868,7 +916,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
         else:
             hidden = send_backward_recv_forward(grad)
 
-    for c in range(warm):                                    # cooldown: backwards only
+    for c in range(warm):  # cooldown: backwards only
         _trace(stage, f"cooldown B [{c}/{warm}]")
         gout = _phase("wait", lambda: recv_backward(acts[0][0]), torch)
         contribution, grad = do_backward(gout)
@@ -916,13 +964,13 @@ def _backward_one(stage, acts, held, grads, greq, m, inflight, dist, torch):
     contribution = 0.0
     if stage.is_last:
         _phase("bwd", lambda: held[m].backward(), torch)
-        contribution = held[m].detach()          # device-side; no per-microbatch sync
+        contribution = held[m].detach()  # device-side; no per-microbatch sync
     else:
         _phase("wait", lambda: greq[m].wait(), torch)
         _phase("bwd", lambda: h.backward(grads[m]), torch)
         grads[m] = None
     if not stage.is_first:
-        grad = hidden.grad.contiguous()          # keep the reference; see run_1f1b
+        grad = hidden.grad.contiguous()  # keep the reference; see run_1f1b
         inflight.append((grad, dist.isend(grad, dst = stage.rank - 1)))
     # The activation is dead once its backward has run. Dropping it here rather than at end
     # of step is what bounds 1F1B's memory to the pipeline depth instead of the microbatch
@@ -1026,25 +1074,27 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
     if rem or v < 1:
         raise RuntimeError(
             f"interleaved: n_chunks={n_chunks} is not a positive multiple of world={world}; "
-            f"chunk c must live on rank c % world for the round-robin to close.")
+            f"chunk c must live on rank c % world for the round-robin to close."
+        )
     expected = [stage.rank + k * world for k in range(v)]
     if chunks != expected:
         raise RuntimeError(
             f"interleaved: rank {stage.rank} was given chunks {chunks} but chunk c lives on "
             f"rank c % world, so it must own exactly {expected}. Mismatched chunk maps "
-            f"train the wrong layers silently.")
+            f"train the wrong layers silently."
+        )
     missing = [c for c in chunks if not stage.chunk_layers.get(c)]
     if missing:
         raise RuntimeError(f"interleaved: no layers assigned to chunk(s) {missing}")
 
     def prev_rank(c):
         return (c - 1) % world
+
     def next_rank(c):
         return (c + 1) % world
 
     def new_buf():
-        return torch.empty(mb_rows, seq, stage.hidden,
-                           dtype = stage.dtype, device = stage.device)
+        return torch.empty(mb_rows, seq, stage.hidden, dtype = stage.dtype, device = stage.device)
 
     # A single, statically-derived, globally-agreed op order -- the property that makes
     # GPipe the only schedule that ever worked. Forward visits (microbatch, chunk)
@@ -1105,9 +1155,10 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
                     f"interleaved: chunk {c} produced no gradient for its input "
                     f"(microbatch {m}). The chunk's forward did not consume the received "
                     f"activation, so the upstream stage would train on nothing -- "
-                    f"refusing rather than sending a wrong gradient.")
+                    f"refusing rather than sending a wrong gradient."
+                )
             queue_send(inp.grad.contiguous(), prev_rank(c))
-        fwd[(m, c)] = (None, None, None)     # release the graph as soon as it is spent
+        fwd[(m, c)] = (None, None, None)  # release the graph as soon as it is spent
     exchange([])
     return losses
 
@@ -1143,8 +1194,9 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
     hbuf, hreq = {}, {}
     if not stage.is_first:
         for m in range(M):
-            hbuf[m] = torch.empty(mb_rows, seq, stage.hidden,
-                                  dtype = stage.dtype, device = stage.device)
+            hbuf[m] = torch.empty(
+                mb_rows, seq, stage.hidden, dtype = stage.dtype, device = stage.device
+            )
             hreq[m] = dist.irecv(hbuf[m], src = stage.rank - 1)
     gbuf, greq = {}, {}
     inflight = []
@@ -1152,16 +1204,16 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
     total = torch.zeros((), device = stage.device)
     params = [q for q in stage.model.parameters() if q.requires_grad]
 
-    deferred_w = []          # (output_tensor, grad_output) pairs awaiting their W pass
+    deferred_w = []  # (output_tensor, grad_output) pairs awaiting their W pass
 
     def run_w(budget = 1):
         """Spend idle time on deferred weight gradients. This is the whole trick."""
         done = 0
         while deferred_w and done < budget:
             out, gout = deferred_w.pop(0)
-            grads = torch.autograd.grad(outputs = out, inputs = params,
-                                        grad_outputs = gout, retain_graph = False,
-                                        allow_unused = True)
+            grads = torch.autograd.grad(
+                outputs = out, inputs = params, grad_outputs = gout, retain_graph = False, allow_unused = True
+            )
             for q, g in zip(params, grads):
                 if g is None:
                     continue
@@ -1201,8 +1253,9 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
             total = total + held[m].detach()
             out_for_w, grad_for_w = held[m], gout
             if not stage.is_first:
-                gin = torch.autograd.grad(outputs = held[m], inputs = hidden,
-                                          grad_outputs = gout, retain_graph = True)[0]
+                gin = torch.autograd.grad(
+                    outputs = held[m], inputs = hidden, grad_outputs = gout, retain_graph = True
+                )[0]
         else:
             # Wait for the downstream gradient; spend the wait on deferred W work rather
             # than blocking idle -- this is where the bubble goes.
@@ -1212,14 +1265,15 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
             gout = gbuf[m]
             out_for_w, grad_for_w = h, gout
             if not stage.is_first:
-                gin = torch.autograd.grad(outputs = h, inputs = hidden,
-                                          grad_outputs = gout, retain_graph = True)[0]
+                gin = torch.autograd.grad(
+                    outputs = h, inputs = hidden, grad_outputs = gout, retain_graph = True
+                )[0]
         if not stage.is_first:
             gsend = gin.contiguous()
             inflight.append((gsend, dist.isend(gsend, dst = stage.rank - 1)))
         deferred_w.append((out_for_w, grad_for_w))
 
-    run_w(budget = len(deferred_w))          # drain any W still outstanding
+    run_w(budget = len(deferred_w))  # drain any W still outstanding
     for _, r in inflight:
         r.wait()
     return total
@@ -1337,7 +1391,8 @@ def config_num_layers(cfg) -> int:
         return config_num_layers(text)
     raise RuntimeError(
         "could not read the decoder depth off this config; the pipeline plan needs it "
-        "before the model is built.")
+        "before the model is built."
+    )
 
 
 def unwrap_stack(model):
@@ -1406,7 +1461,8 @@ def stage_module_cls():
                     # use_reentrant=False is required: the reentrant implementation drops
                     # the grad_fn that the stage's activation-gradient handoff needs.
                     h = torch.utils.checkpoint.checkpoint(
-                        self._call_layer, layer, h, pos, use_reentrant = False)
+                        self._call_layer, layer, h, pos, use_reentrant = False
+                    )
                 else:
                     h = self._call_layer(layer, h, pos)
             if self.is_last:
@@ -1438,8 +1494,16 @@ def pp_loss_fn(logits, target):
 PP_SCALE_GRADS = True
 
 
-def build_torch_schedule(model, plan, my, *, microbatches, device, grad_checkpoint,
-                         log = print):
+def build_torch_schedule(
+    model,
+    plan,
+    my,
+    *,
+    microbatches,
+    device,
+    grad_checkpoint,
+    log = print,
+):
     """Assemble upstream `PipelineStage`s and the requested schedule for this rank.
 
     Every upstream API touched here is feature-detected with `hasattr`/`inspect`, never a
@@ -1475,31 +1539,37 @@ def build_torch_schedule(model, plan, my, *, microbatches, device, grad_checkpoi
             raise RuntimeError(
                 f"stage->rank layout disagrees with torch.distributed.pipelining: "
                 f"ours={plan['stage_to_rank']} theirs={dict(theirs)}. Refusing to run "
-                f"rather than place layers on the wrong node.")
+                f"rather than place layers on the wrong node."
+            )
 
     get_cls = getattr(_schedules, "get_schedule_class", None)
     if get_cls is not None:
         sched_cls = get_cls(plan["class_name"])
-    else:                                       # older/newer layout: fall back to the name
+    else:  # older/newer layout: fall back to the name
         sched_cls = getattr(_schedules, "Schedule" + plan["class_name"], None)
         if sched_cls is None:
             raise RuntimeError(
                 f"this torch has no schedule {plan['class_name']!r} and no "
-                f"get_schedule_class(); use --pp-backend legacy")
+                f"get_schedule_class(); use --pp-backend legacy"
+            )
 
     top, owner = unwrap_stack(model)
     cls = stage_module_cls()
     stage_kwargs = {}
     stage_params = inspect.signature(PipelineStage.__init__).parameters
     if "group" in stage_params:
-        stage_kwargs["group"] = None            # default process group
+        stage_kwargs["group"] = None  # default process group
 
     stages, mods = [], []
     for idx in my["stages"]:
-        mod = cls(top, owner, plan["stage_layers"][idx],
-                  is_first = (idx == 0),
-                  is_last = (idx == plan["num_stages"] - 1),
-                  grad_checkpoint = grad_checkpoint).to(device)
+        mod = cls(
+            top,
+            owner,
+            plan["stage_layers"][idx],
+            is_first = (idx == 0),
+            is_last = (idx == plan["num_stages"] - 1),
+            grad_checkpoint = grad_checkpoint,
+        ).to(device)
         mods.append(mod)
         # input_args=None: let the stage infer the boundary shape at runtime by propagating
         # stage 0's real output. Hand-specifying it is how a seq-length or batch change
@@ -1525,16 +1595,25 @@ def build_torch_schedule(model, plan, my, *, microbatches, device, grad_checkpoi
         # nobody reads. Only newer torch can decline it.
         step_kw["return_outputs"] = False
 
-    log(f"torch.distributed.pipelining: {sched_cls.__name__} "
+    log(
+        f"torch.distributed.pipelining: {sched_cls.__name__} "
         f"{plan['num_stages']} stages ({plan['stages_per_rank']}/rank, "
-        f"{plan['style']}-layout), M={microbatches}, scale_grads={PP_SCALE_GRADS}")
-    log(f"  this rank runs stage(s) {my['stages']} = layers {_ranges(my['layers'])}; "
-        f"loss lands on rank {plan['loss_rank']}")
+        f"{plan['style']}-layout), M={microbatches}, scale_grads={PP_SCALE_GRADS}"
+    )
+    log(
+        f"  this rank runs stage(s) {my['stages']} = layers {_ranges(my['layers'])}; "
+        f"loss lands on rank {plan['loss_rank']}"
+    )
     if plan["style"] == "v":
-        colocated = sum(1 for s in range(plan["num_stages"] - 1)
-                        if plan["stage_to_rank"][s] == plan["stage_to_rank"][s + 1])
-        log(f"  V layout: {colocated} of {plan['num_stages'] - 1} stage boundaries are "
-            f"co-located and skip send/recv entirely")
+        colocated = sum(
+            1
+            for s in range(plan["num_stages"] - 1)
+            if plan["stage_to_rank"][s] == plan["stage_to_rank"][s + 1]
+        )
+        log(
+            f"  V layout: {colocated} of {plan['num_stages'] - 1} stage boundaries are "
+            f"co-located and skip send/recv entirely"
+        )
     return schedule, mods, step_kw
 
 
@@ -1575,9 +1654,12 @@ INTERLEAVED_REFUSAL = (
 )
 
 
-SCHEDULES = {"gpipe": run_gpipe, "1f1b": run_1f1b,
-             "interleaved": run_interleaved,
-             "zerobubble": run_zerobubble}
+SCHEDULES = {
+    "gpipe": run_gpipe,
+    "1f1b": run_1f1b,
+    "interleaved": run_interleaved,
+    "zerobubble": run_zerobubble,
+}
 
 # `--schedule` accepts the union: the four legacy names (which both backends understand)
 # plus the layouts only upstream can drive. Asking for one of the latter under
@@ -1590,9 +1672,11 @@ PP_BACKENDS = ("torch", "legacy")
 # Entry point (run under torchrun)
 # ---------------------------------------------------------------------------
 
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog = "spark_pipeline",
-                                description = "Layer-split finetuning across DGX Sparks.")
+    p = argparse.ArgumentParser(
+        prog = "spark_pipeline", description = "Layer-split finetuning across DGX Sparks."
+    )
     p.add_argument("--model", required = True)
     p.add_argument("--steps", type = int, default = 20)
     p.add_argument("--batch", type = int, default = 8, help = "global batch per step")
@@ -1600,31 +1684,48 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seq", type = int, default = 512)
     p.add_argument("--lr", type = float, default = 1e-4)
     p.add_argument("--schedule", choices = SCHEDULE_CHOICES, default = "gpipe")
-    p.add_argument("--pp-backend", choices = PP_BACKENDS, default = "torch",
-                   help = "'torch' drives torch.distributed.pipelining (default): it fixes "
-                          "the interleaved deadlock and the missing gradients, because its "
-                          "send/recv order is derived by a simulation both ranks run and "
-                          "its backward is explicit rather than one loss.backward() "
-                          "spanning the rank cut. 'legacy' runs the hand-written schedules "
-                          "in this file, so a regression is one flag away from isolation.")
-    p.add_argument("--virtual-stages", type = int, default = 2,
-                   help = "pipeline stages per device for the interleaved/looped "
-                          "schedules. Shrinks the fill/drain bubble as 1/(v*M+1) instead "
-                          "of 1/(M+1), at the cost of 2v-1 wire crossings per microbatch "
-                          "(cheap on this link). Forced to 2 for the V layouts (zbv, "
-                          "dualpipev), which require exactly two stages per rank.")
-    p.add_argument("--full-finetune", action = "store_true",
-                   help = "train every parameter instead of LoRA adapters")
+    p.add_argument(
+        "--pp-backend",
+        choices = PP_BACKENDS,
+        default = "torch",
+        help = "'torch' drives torch.distributed.pipelining (default): it fixes "
+        "the interleaved deadlock and the missing gradients, because its "
+        "send/recv order is derived by a simulation both ranks run and "
+        "its backward is explicit rather than one loss.backward() "
+        "spanning the rank cut. 'legacy' runs the hand-written schedules "
+        "in this file, so a regression is one flag away from isolation.",
+    )
+    p.add_argument(
+        "--virtual-stages",
+        type = int,
+        default = 2,
+        help = "pipeline stages per device for the interleaved/looped "
+        "schedules. Shrinks the fill/drain bubble as 1/(v*M+1) instead "
+        "of 1/(M+1), at the cost of 2v-1 wire crossings per microbatch "
+        "(cheap on this link). Forced to 2 for the V layouts (zbv, "
+        "dualpipev), which require exactly two stages per rank.",
+    )
+    p.add_argument(
+        "--full-finetune",
+        action = "store_true",
+        help = "train every parameter instead of LoRA adapters",
+    )
     p.add_argument("--lora-r", type = int, default = 16)
-    p.add_argument("--grad-checkpoint", action = "store_true",
-                   help = "recompute activations in the backward pass. Trades ~30% step "
-                          "time for a large activation-memory saving, which is what lets "
-                          "microbatches be big enough to stay compute-bound")
-    p.add_argument("--shard-load", action = "store_true",
-                   help = "load only this stage's tensors; required for models larger "
-                          "than one Spark")
-    p.add_argument("--data", default = None,
-                   help = "jsonl with {q, a} rows; random token ids if omitted")
+    p.add_argument(
+        "--grad-checkpoint",
+        action = "store_true",
+        help = "recompute activations in the backward pass. Trades ~30% step "
+        "time for a large activation-memory saving, which is what lets "
+        "microbatches be big enough to stay compute-bound",
+    )
+    p.add_argument(
+        "--shard-load",
+        action = "store_true",
+        help = "load only this stage's tensors; required for models larger than one Spark",
+    )
+    p.add_argument(
+        "--data", default = None, help = "jsonl with {q, a} rows; random token ids if omitted"
+    )
     p.add_argument("--save", default = None, help = "directory to save this stage into")
     return p
 
@@ -1642,7 +1743,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if world < 2:
         raise SystemExit(
             f"spark_pipeline needs WORLD_SIZE >= 2 (got {world}); a one-stage pipeline is "
-            f"just a single-node run. Use `unsloth train` instead.")
+            f"just a single-node run. Use `unsloth train` instead."
+        )
     if args.microbatches < 1:
         raise SystemExit(f"--microbatches must be >= 1 (got {args.microbatches})")
     if args.virtual_stages < 1:
@@ -1661,7 +1763,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise SystemExit(
                 f"--schedule {args.schedule} has no hand-written implementation here; it "
                 f"exists only on --pp-backend torch. Legacy schedules: "
-                f"{sorted(SCHEDULES)}")
+                f"{sorted(SCHEDULES)}"
+            )
         if args.schedule == "interleaved" and not _ALLOW_REFUSED:
             raise SystemExit(INTERLEAVED_REFUSAL)
         if args.schedule == "1f1b" and not _ALLOW_REFUSED:
@@ -1670,15 +1773,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # print, not log(): `log` is defined ~20 lines below, after the process group is
             # up, so calling it here raised UnboundLocalError and killed the very diagnostic
             # run this warning exists to announce.
-            print(f"[spark-pp] SPARK_PP_DIAGNOSE=1: running the REFUSED legacy schedule "
-                  f"{args.schedule!r}. This deadlocks on hardware; it is enabled only for "
-                  f"diagnosis. Pair it with SPARK_PP_TRACE=1 to see where it stops.",
-                  flush = True)
+            print(
+                f"[spark-pp] SPARK_PP_DIAGNOSE=1: running the REFUSED legacy schedule "
+                f"{args.schedule!r}. This deadlocks on hardware; it is enabled only for "
+                f"diagnosis. Pair it with SPARK_PP_TRACE=1 to see where it stops.",
+                flush = True,
+            )
     elif not _dist_pipelining_available():
         raise SystemExit(
             "--pp-backend torch needs torch.distributed.pipelining, which this torch does "
             "not provide (or torch.distributed is unavailable, as on a default macOS "
-            "build). Re-run with --pp-backend legacy --schedule gpipe.")
+            "build). Re-run with --pp-backend legacy --schedule gpipe."
+        )
     # CPU mode exists so the pipeline protocol can be exercised without two GPUs. NCCL
     # cannot do point-to-point between two processes on the SAME device, so a one-box
     # functional test is impossible on CUDA -- and a scheduling bug that serialises the
@@ -1701,6 +1807,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log(f"host={os.uname().nodename} schedule={args.schedule} backend={args.pp_backend}")
 
     from transformers import AutoTokenizer
+
     tok = AutoTokenizer.from_pretrained(args.model)
 
     plan = my_plan = None
@@ -1710,10 +1817,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # without a collective -- which is the same property upstream relies on for its
         # send/recv order, and the reason nothing here has to be negotiated on the wire.
         from transformers import AutoConfig
+
         n_layers = config_num_layers(AutoConfig.from_pretrained(args.model))
         try:
-            plan = torch_pp_plan(args.schedule, world, args.microbatches,
-                                 args.virtual_stages, n_layers)
+            plan = torch_pp_plan(
+                args.schedule, world, args.microbatches, args.virtual_stages, n_layers
+            )
         except RuntimeError as exc:
             raise SystemExit(str(exc))
         my_plan = plan_for_rank(plan, rank)
@@ -1723,22 +1832,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # legacy interleaved path has no such set, so it keeps the whole stack -- a smaller
     # memory saving, which is the honest trade there.
     model, cfg, _ = build_stage_model(
-        args.model, rank, world, device,
-        shard_load = args.shard_load, dtype = dtype, log = log,
+        args.model,
+        rank,
+        world,
+        device,
+        shard_load = args.shard_load,
+        dtype = dtype,
+        log = log,
         keep_all_layers = (not use_torch_pp and args.schedule == "interleaved"),
         keep_layers = my_plan["layers"] if my_plan else None,
         keep_embed = my_plan["keep_embed"] if my_plan else None,
-        keep_head = my_plan["keep_head"] if my_plan else None)
+        keep_head = my_plan["keep_head"] if my_plan else None,
+    )
     stage_model_ref = [model]
 
     if not args.full_finetune:
         from peft import LoraConfig, get_peft_model
-        model = get_peft_model(model, LoraConfig(
-            r = args.lora_r, lora_alpha = args.lora_r, lora_dropout = 0.0, bias = "none",
-            task_type = "CAUSAL_LM",
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                              "gate_proj", "up_proj", "down_proj"],
-        ))
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r = args.lora_r,
+                lora_alpha = args.lora_r,
+                lora_dropout = 0.0,
+                bias = "none",
+                task_type = "CAUSAL_LM",
+                target_modules = [
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
+            ),
+        )
     if args.grad_checkpoint and use_torch_pp:
         # The torch backend calls the decoder layers directly out of `_PPStageModule`, so
         # transformers' own `gradient_checkpointing_enable()` -- which is consulted inside
@@ -1765,7 +1893,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             inner_model.gradient_checkpointing_kwargs = {"use_reentrant": False}
         log("gradient checkpointing enabled (use_reentrant=False)")
 
-    model.to(device)         # shard-load already placed the base; this catches new adapters
+    model.to(device)  # shard-load already placed the base; this catches new adapters
     if not use_cpu:
         torch.cuda.empty_cache()
 
@@ -1773,9 +1901,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # `torch.cuda.memory_allocated()` raises without a CUDA device, and this module has to
     # stay runnable on the CPU/gloo path (that is how the schedules are unit-tested).
     resident = f"{torch.cuda.memory_allocated()/2**30:.2f} GiB" if not use_cpu else "cpu"
-    log(f"{sum(p.numel() for p in model.parameters())/1e9:.2f} B params resident "
+    log(
+        f"{sum(p.numel() for p in model.parameters())/1e9:.2f} B params resident "
         f"({resident}), "
-        f"{sum(p.numel() for p in trainable)/1e6:.1f} M trainable")
+        f"{sum(p.numel() for p in trainable)/1e6:.1f} M trainable"
+    )
 
     if args.batch % args.microbatches:
         raise SystemExit("--batch must be divisible by --microbatches")
@@ -1793,29 +1923,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ROOFLINE_CROSSOVER_TOKENS = 436
     mb_tokens = mb_rows * args.seq
     if mb_tokens < ROOFLINE_CROSSOVER_TOKENS:
-        log(f"WARNING: each microbatch is {mb_tokens} tokens, below the ~"
+        log(
+            f"WARNING: each microbatch is {mb_tokens} tokens, below the ~"
             f"{ROOFLINE_CROSSOVER_TOKENS}-token compute/bandwidth crossover on this "
-            f"hardware.")
-        log(f"         At this size the step is memory-bound and the layer split cannot "
-            f"speed it up.")
-        log(f"         Raise --batch, raise --seq, or lower --microbatches "
-            f"(currently {args.microbatches}).")
+            f"hardware."
+        )
+        log(
+            f"         At this size the step is memory-bound and the layer split cannot "
+            f"speed it up."
+        )
+        log(
+            f"         Raise --batch, raise --seq, or lower --microbatches "
+            f"(currently {args.microbatches})."
+        )
 
     # A pipeline that is shallower than it is deep never fills: stage `world-1` cannot
     # start until `world-1` microbatches have been issued, so the last (world-1) of every
     # step's stage-slots are bubble. Correct, just wasteful -- say so rather than silently
     # reporting a bad number.
     if args.microbatches < world:
-        log(f"WARNING: --microbatches ({args.microbatches}) is below the pipeline depth "
+        log(
+            f"WARNING: --microbatches ({args.microbatches}) is below the pipeline depth "
             f"({world}); the pipeline never fills and at best "
             f"{args.microbatches/(args.microbatches + world - 1):.0%} of the devices are "
-            f"busy. Use at least {world} microbatches, ideally {4*world}.")
+            f"busy. Use at least {world} microbatches, ideally {4*world}."
+        )
 
     pp_schedule = pp_step_kw = None
     if use_torch_pp:
         pp_schedule, _pp_mods, pp_step_kw = build_torch_schedule(
-            model, plan, my_plan, microbatches = args.microbatches, device = device,
-            grad_checkpoint = args.grad_checkpoint, log = log)
+            model,
+            plan,
+            my_plan,
+            microbatches = args.microbatches,
+            device = device,
+            grad_checkpoint = args.grad_checkpoint,
+            log = log,
+        )
         stage = None
         is_loss_rank = rank == plan["loss_rank"]
     elif args.schedule == "interleaved":
@@ -1826,13 +1970,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # Global chunk index for each of this rank's chunks: chunk c lives on rank c % world,
         # so this rank owns rank, rank+world, rank+2*world, ...
         my_chunk_ids = [rank + k * world for k in range(v)]
-        stage = _Stage(model, cfg, rank, world, device, dtype, args.microbatches,
-                       chunks = my_chunk_ids, n_chunks = world * v)
+        stage = _Stage(
+            model,
+            cfg,
+            rank,
+            world,
+            device,
+            dtype,
+            args.microbatches,
+            chunks = my_chunk_ids,
+            n_chunks = world * v,
+        )
         stage.chunk_layers = dict(zip(my_chunk_ids, my_chunks_layers))
-        log(f"interleaved: v={v}, {world * v} chunks, this rank owns "
-            f"{[(c, (l[0], l[-1])) for c, l in stage.chunk_layers.items()]}")
-        log(f"bubble ~1/({v}*M+1); ideal speedup at M={args.microbatches} is "
-            f"{world * (1 - 1/(v * args.microbatches + 1)):.2f}x")
+        log(
+            f"interleaved: v={v}, {world * v} chunks, this rank owns "
+            f"{[(c, (l[0], l[-1])) for c, l in stage.chunk_layers.items()]}"
+        )
+        log(
+            f"bubble ~1/({v}*M+1); ideal speedup at M={args.microbatches} is "
+            f"{world * (1 - 1/(v * args.microbatches + 1)):.2f}x"
+        )
     else:
         stage = _Stage(model, cfg, rank, world, device, dtype, args.microbatches)
     if not use_torch_pp:
@@ -1843,11 +2000,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     need = args.batch * args.steps
     if args.data:
         rows = [json.loads(l) for l in open(args.data)]
-        texts = [tok.apply_chat_template(
-            [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
-            tokenize = False) for r in rows]
-        enc = tok(texts, return_tensors = "pt", padding = "max_length",
-                  truncation = True, max_length = args.seq).input_ids
+        texts = [
+            tok.apply_chat_template(
+                [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
+                tokenize = False,
+            )
+            for r in rows
+        ]
+        enc = tok(
+            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
+        ).input_ids
         ids_all = enc.repeat((need + len(enc) - 1) // len(enc), 1)[:need].to(device)
     else:
         ids_all = torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
@@ -1864,7 +2026,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # `split_args_kwargs_into_chunks` cut it into microbatches, rather than slicing
             # it ourselves: the chunking has to agree with the chunking of `target`, and
             # letting one implementation own both is how they stay agreed.
-            whole = ids_all[step * args.batch:(step + 1) * args.batch]
+            whole = ids_all[step * args.batch : (step + 1) * args.batch]
             losses = [] if is_loss_rank else None
             # Only the rank holding stage 0 may supply positional inputs -- upstream
             # asserts "Can't supply input args for shape inference on non-first stage",
@@ -1879,8 +2041,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # curves directly comparable at a fixed seed.
             loss = (sum(losses) / len(losses)) if losses else None
         else:
-            batches = [ids_all[step * args.batch + m * mb_rows:][:mb_rows]
-                       for m in range(args.microbatches)]
+            batches = [
+                ids_all[step * args.batch + m * mb_rows :][:mb_rows]
+                for m in range(args.microbatches)
+            ]
             if step == 0:
                 warmup_p2p(stage, dist, torch)
             loss = schedule(stage, batches, posid, mb_rows, dist, torch)
@@ -1900,13 +2064,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # the last rank. Keying the report off `stage.is_last` printed nothing at all for
         # DualPipeV, which reads exactly like a hang.
         toks = args.batch * args.seq * args.steps
-        log(f"DONE {args.steps} steps in {elapsed:.1f}s | "
-            f"{elapsed/args.steps:.2f}s/step | {toks/elapsed:.0f} tok/s")
+        log(
+            f"DONE {args.steps} steps in {elapsed:.1f}s | "
+            f"{elapsed/args.steps:.2f}s/step | {toks/elapsed:.0f} tok/s"
+        )
     if not use_cpu:
         log(f"peak_mem={torch.cuda.max_memory_allocated()/2**30:.2f} GiB")
     if _TIME_PHASES:
-        log(f"phases: wait {PHASE['wait']:.1f}s | backward {PHASE['bwd']:.1f}s "
-            f"| forward {PHASE['fwd']:.1f}s")
+        log(
+            f"phases: wait {PHASE['wait']:.1f}s | backward {PHASE['bwd']:.1f}s "
+            f"| forward {PHASE['fwd']:.1f}s"
+        )
 
     if args.save:
         # Each stage holds a different slice, so each writes its own directory. Merging

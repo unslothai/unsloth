@@ -53,8 +53,15 @@ doctor_app = typer.Typer(
 
 # Environment that is SUPPOSED to differ between the two hosts, so comparing it would
 # produce noise that trains people to ignore real findings.
-PARITY_SKIP = ("host", "hostname_resolves_to", "VLLM_HOST_IP", "MASTER_ADDR",
-               "RANK", "NODE_RANK", "LOCAL_RANK")
+PARITY_SKIP = (
+    "host",
+    "hostname_resolves_to",
+    "VLLM_HOST_IP",
+    "MASTER_ADDR",
+    "RANK",
+    "NODE_RANK",
+    "LOCAL_RANK",
+)
 
 
 def parity_probe_source(deep: bool = False) -> str:
@@ -167,9 +174,9 @@ def _probe_wrapper(source: str) -> str:
     people stop reading a check.
     """
     import base64
+
     blob = base64.b64encode(source.encode()).decode()
-    return (f"[ -f {_ACTIVATE} ] && . {_ACTIVATE}; "
-            f"echo {blob} | base64 -d | python3 -")
+    return f"[ -f {_ACTIVATE} ] && . {_ACTIVATE}; " f"echo {blob} | base64 -d | python3 -"
 
 
 def _extract(stdout: str, stderr: str):
@@ -177,7 +184,7 @@ def _extract(stdout: str, stderr: str):
     for line in reversed((stdout or "").splitlines()):
         if line.startswith("UNSLOTH_PARITY "):
             try:
-                return json.loads(line[len("UNSLOTH_PARITY "):]), None
+                return json.loads(line[len("UNSLOTH_PARITY ") :]), None
             except ValueError as exc:
                 return None, f"unparseable probe output ({exc})"
     return None, ((stderr or "").strip().splitlines() or ["no output"])[-1][:200]
@@ -187,22 +194,32 @@ def _run_probe_local(source: str, timeout: int = 120):
     import shutil
     import subprocess
     import sys
+
     shell = shutil.which("bash") or shutil.which("sh")
     try:
         if shell:
-            proc = subprocess.run([shell, "-c", _probe_wrapper(source)],
-                                  capture_output = True, text = True, timeout = timeout)
+            proc = subprocess.run(
+                [shell, "-c", _probe_wrapper(source)],
+                capture_output = True,
+                text = True,
+                timeout = timeout,
+            )
         else:
             # Windows, or an image without a POSIX shell. Not a DGX Spark, so this is
             # only ever reached by a test; run it directly rather than failing.
-            proc = subprocess.run([sys.executable, "-c", source],
-                                  capture_output = True, text = True, timeout = timeout)
+            proc = subprocess.run(
+                [sys.executable, "-c", source], capture_output = True, text = True, timeout = timeout
+            )
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
     return _extract(proc.stdout, proc.stderr)
 
 
-def _run_probe_peer(peer_ip: str, source: str, timeout: int = 180):
+def _run_probe_peer(
+    peer_ip: str,
+    source: str,
+    timeout: int = 180,
+):
     """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would.
 
     Not `ssh -t`, not `bash -lc`: a login shell reads /etc/profile.d, which is exactly
@@ -215,15 +232,28 @@ def _run_probe_peer(peer_ip: str, source: str, timeout: int = 180):
     import os
     import shutil
     import subprocess
+
     if not shutil.which("ssh"):
         return None, "no ssh on this machine"
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
     remote = _probe_wrapper(source)
     try:
         proc = subprocess.run(
-            ["ssh", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "ConnectTimeout=8", f"{user}@{peer_ip}", remote],
-            capture_output = True, text = True, timeout = timeout,
+            [
+                "ssh",
+                "-n",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=8",
+                f"{user}@{peer_ip}",
+                remote,
+            ],
+            capture_output = True,
+            text = True,
+            timeout = timeout,
         )
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -233,9 +263,11 @@ def _run_probe_peer(peer_ip: str, source: str, timeout: int = 180):
 def compare_parity(local: dict, peer: dict) -> list:
     """Keys whose values differ, as (key, local, peer). Order is stable."""
     keys = sorted(set(local) | set(peer))
-    return [(k, local.get(k), peer.get(k))
-            for k in keys
-            if k not in PARITY_SKIP and local.get(k) != peer.get(k)]
+    return [
+        (k, local.get(k), peer.get(k))
+        for k in keys
+        if k not in PARITY_SKIP and local.get(k) != peer.get(k)
+    ]
 
 
 def _fmt(value) -> str:
@@ -265,16 +297,22 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
     typer.echo("")
     typer.echo("Cross-node capability parity")
     typer.echo("----------------------------")
-    typer.echo(f"  probing this Spark and {peer_ip} over non-interactive ssh"
-               + (" (deep: imports torch/vllm)" if deep else "") + " ...")
+    typer.echo(
+        f"  probing this Spark and {peer_ip} over non-interactive ssh"
+        + (" (deep: imports torch/vllm)" if deep else "")
+        + " ..."
+    )
 
     local, local_err = _run_probe_local(source)
     peer, peer_err = _run_probe_peer(peer_ip, source)
 
     if local is None or peer is None:
         typer.echo("")
-        typer.echo("  UNKNOWN -- the parity probe could not run on "
-                   + ("this Spark" if local is None else "the peer") + ".")
+        typer.echo(
+            "  UNKNOWN -- the parity probe could not run on "
+            + ("this Spark" if local is None else "the peer")
+            + "."
+        )
         typer.echo(f"    reason: {local_err if local is None else peer_err}")
         typer.echo("    Treat this as divergent until it can be checked. A capability")
         typer.echo("    check that fails open is worse than no check: it reports a healthy")
@@ -291,11 +329,14 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
     diffs = capability_diffs
     if not diffs:
         typer.echo("")
-        typer.echo(f"  OK -- every capability gate matches between "
-                   f"{local.get('host', 'this Spark')} and {peer.get('host', peer_ip)}.")
+        typer.echo(
+            f"  OK -- every capability gate matches between "
+            f"{local.get('host', 'this Spark')} and {peer.get('host', peer_ip)}."
+        )
         if not deep:
-            typer.echo("    (Gates that only a real import can evaluate were not checked."
-                       " Add --deep")
+            typer.echo(
+                "    (Gates that only a real import can evaluate were not checked. Add --deep"
+            )
             typer.echo("     for those; it initialises CUDA on both nodes.)")
         return 0
 
@@ -359,14 +400,19 @@ def _workload_guidance() -> None:
 def doctor(
     ctx: typer.Context,
     parity_only: bool = typer.Option(
-        False, "--parity-only",
-        help = "Only compare the two nodes' capability gates. No GPU work, no NCCL run."),
+        False,
+        "--parity-only",
+        help = "Only compare the two nodes' capability gates. No GPU work, no NCCL run.",
+    ),
     deep: bool = typer.Option(
-        False, "--deep",
+        False,
+        "--deep",
         help = "Also import torch/vllm on both nodes to compare their runtime gates. "
-               "This initialises CUDA on both."),
+        "This initialises CUDA on both.",
+    ),
     skip_parity: bool = typer.Option(
-        False, "--skip-parity", help = "Do not run the cross-node parity check."),
+        False, "--skip-parity", help = "Do not run the cross-node parity check."
+    ),
 ) -> None:
     """Check the setup and report anything that would slow training down, or hang it.
 
@@ -385,6 +431,7 @@ def doctor(
     if ctx.invoked_subcommand is not None:
         return
     from studio import spark_cluster
+
     if not spark_cluster.is_dgx_spark():
         typer.echo("No machine-specific checks apply here (not a DGX Spark).")
         raise typer.Exit(0)

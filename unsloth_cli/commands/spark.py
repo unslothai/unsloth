@@ -45,15 +45,15 @@ spark_app = typer.Typer(
 # the kernel result, which is a single-node fact and not a cluster topology, and the
 # prefill/TTFT split, which is what someone deciding whether to BUY a second Spark
 # actually needs to know.
-PREFILL_KERNEL_SPEEDUP = 6.2   # CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096
+PREFILL_KERNEL_SPEEDUP = 6.2  # CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096
 
 # Llama-3.3-70B fp8, two Sparks (tensor parallel) versus one. Printed where the
 # question is "is a second Spark worth it", because the answer is very unevenly
 # distributed across workloads and the average of these two numbers helps nobody.
-PREFILL_TOKS = (166, 643)      # tok/s, 3.87x
-TTFT_MS = (3085, 797)          # median TTFT, 3.87x
+PREFILL_TOKS = (166, 643)  # tok/s, 3.87x
+TTFT_MS = (3085, 797)  # median TTFT, 3.87x
 TPOT_ONE_SPARK_MS = 332.7
-TPOT_TP2_MS = 162.4            # decode, 2.09x
+TPOT_TP2_MS = 162.4  # decode, 2.09x
 
 # A "128 GB" Spark is 128 GiB of which about 6.3 GiB is firmware-reserved. Users read
 # 128 on the box, size a model against it, and get an OOM they cannot explain, so the
@@ -78,11 +78,12 @@ CUTLASS_PIN = "4.6.2"
 # compiler ICE; 4.7.1 exists but is unverified on GB10.
 KERNEL_INSTALL = (
     'pip install flashinfer-python "nvidia-cutlass-dsl==4.6.2" && '
-    'pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/'
+    "pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/"
 )
 
 
 # ── Small output helpers (plain ASCII, no colour, no unicode width) ──────────
+
 
 def _say(line: str = "") -> None:
     typer.echo(line)
@@ -103,6 +104,7 @@ def _field(name: str, value: str) -> None:
 # reads it through getattr and signature inspection, so this file works against both
 # the current and the generalised API, and never imports a symbol that may not exist.
 
+
 def _cluster():
     from studio import spark_cluster
     return spark_cluster
@@ -112,7 +114,7 @@ def _cluster_or_none():
     """The module, or None with a message printed. Never raises."""
     try:
         return _cluster()
-    except Exception as exc:                     # pragma: no cover - import guard
+    except Exception as exc:  # pragma: no cover - import guard
         _say(f"Could not load the DGX Spark support module: {exc}")
         return None
 
@@ -146,16 +148,27 @@ def _max_nodes(sc) -> int:
     it otherwise. Read from the module rather than hardcoded here, so a change there
     cannot leave this file quietly lying.
     """
-    for name in ("MAX_PLANNABLE_NODES", "MAX_CLUSTER_NODES", "MAX_NODES",
-                 "SUPPORTED_NODES", "CLUSTER_NODES"):
+    for name in (
+        "MAX_PLANNABLE_NODES",
+        "MAX_CLUSTER_NODES",
+        "MAX_NODES",
+        "SUPPORTED_NODES",
+        "CLUSTER_NODES",
+    ):
         value = getattr(sc, name, None)
         if isinstance(value, int) and value >= 2:
             return value
     return 2
 
 
-def _plan_deployment(sc, size_gib, nodes: int, intent: str = "throughput",
-                     concurrency: int = 1, model: str = "<model>"):
+def _plan_deployment(
+    sc,
+    size_gib,
+    nodes: int,
+    intent: str = "throughput",
+    concurrency: int = 1,
+    model: str = "<model>",
+):
     """Call plan_deployment against whichever signature the module currently has.
 
     The N-node signature takes intent and concurrency; the older one took a bare
@@ -168,7 +181,7 @@ def _plan_deployment(sc, size_gib, nodes: int, intent: str = "throughput",
     try:
         import inspect
         params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):              # pragma: no cover - builtins only
+    except (TypeError, ValueError):  # pragma: no cover - builtins only
         params = {}
     try:
         if "n_nodes" in params:
@@ -203,6 +216,7 @@ def _require_spark(sc, what: str) -> None:
 
 
 # ── Kernel readiness: the 6.2x that needs no second machine ──────────────────
+
 
 def _kernel_state() -> dict:
     """Is the prefill kernel installed in THIS interpreter?
@@ -268,10 +282,14 @@ def _kernel_banner(state: dict | None = None) -> bool:
         _say("  flashinfer is installed but flashinfer-jit-cache is NOT.")
         _say("  The kernels still work; they are compiled on FIRST USE instead:")
         _say("    ~430 s of cold start, and on a Spark the compile itself OOMs")
-        _say("    (cicc at 7-9 GiB across 20 cores -> `ninja: exit 137`) unless MAX_JOBS is capped.")
+        _say(
+            "    (cicc at 7-9 GiB across 20 cores -> `ninja: exit 137`) unless MAX_JOBS is capped."
+        )
         _say("")
         _say("  A prebuilt aarch64 CUDA 13 wheel exists (it is NOT on PyPI):")
-        _say("    pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/")
+        _say(
+            "    pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/"
+        )
         _say("  Do NOT install flashinfer-cubin -- ~6.8 GB of cubins this GPU cannot load.")
     else:
         _say(f"  nvidia-cutlass-dsl is {state['cutlass']}, not the required {CUTLASS_PIN}.")
@@ -286,7 +304,12 @@ def _kernel_banner(state: dict | None = None) -> bool:
 
 # ── Situation detection ──────────────────────────────────────────────────────
 
-def _peer_reachable(host: str, port: int = 22, timeout: float = 3.0) -> bool | None:
+
+def _peer_reachable(
+    host: str,
+    port: int = 22,
+    timeout: float = 3.0,
+) -> bool | None:
     """Can we open a TCP connection to the peer? None when we cannot tell.
 
     A bounded connect, never a ping and never an ssh: this must not hang, must not
@@ -300,7 +323,7 @@ def _peer_reachable(host: str, port: int = 22, timeout: float = 3.0) -> bool | N
             return True
     except OSError:
         return False
-    except Exception:                            # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         return None
 
 
@@ -314,15 +337,27 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     import os
     import shutil
     import subprocess
-    if not shutil.which("ssh"):                  # Windows, or a stripped image
+
+    if not shutil.which("ssh"):  # Windows, or a stripped image
         return None
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
     remote = "test -d $HOME/.unsloth/studio/unsloth_studio && echo YES || echo NO"
     try:
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "ConnectTimeout=6", f"{user}@{host}", remote],
-            capture_output = True, text = True, timeout = timeout,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=6",
+                f"{user}@{host}",
+                remote,
+            ],
+            capture_output = True,
+            text = True,
+            timeout = timeout,
         )
     except Exception:
         return None
@@ -336,11 +371,23 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     return None
 
 
-def _situation(sc, discover_timeout: float = 3.0, probe: bool = True) -> dict:
+def _situation(
+    sc,
+    discover_timeout: float = 3.0,
+    probe: bool = True,
+) -> dict:
     """Everything `up` needs to decide, gathered once and cheaply."""
-    info = {"state": "not_spark", "cable": False, "peer_ip": None, "local_ip": None,
-            "rails": [], "peers": [], "nodes": 1, "seen": 1,
-            "max_nodes": _max_nodes(sc)}
+    info = {
+        "state": "not_spark",
+        "cable": False,
+        "peer_ip": None,
+        "local_ip": None,
+        "rails": [],
+        "peers": [],
+        "nodes": 1,
+        "seen": 1,
+        "max_nodes": _max_nodes(sc),
+    }
     if not _on_spark(sc):
         return info
     try:
@@ -369,6 +416,7 @@ def _situation(sc, discover_timeout: float = 3.0, probe: bool = True) -> dict:
     discovered = {}
     try:
         import inspect
+
         params = inspect.signature(sc.discover_peers).parameters
         kwargs = {"timeout": discover_timeout}
         if "check_reachable" in params and probe:
@@ -376,8 +424,7 @@ def _situation(sc, discover_timeout: float = 3.0, probe: bool = True) -> dict:
         discovered = sc.discover_peers(**kwargs) or {}
     except Exception:
         discovered = {}
-    info["peers"] = list(discovered.get("peers")
-                         or discovered.get("mdns_peers") or [])
+    info["peers"] = list(discovered.get("peers") or discovered.get("mdns_peers") or [])
     # How many Sparks are visible at all, versus how many are actually paired into a
     # cluster. These are different numbers and conflating them is how someone ends up
     # planning for three nodes that share no fabric.
@@ -389,38 +436,53 @@ def _situation(sc, discover_timeout: float = 3.0, probe: bool = True) -> dict:
 
 def _report_inventory(sc, sit: dict) -> None:
     _field("machine", "NVIDIA DGX Spark")
-    _field("memory", f"{_usable_gib(sc):.2f} GiB usable per Spark "
-                     f"(the '{MARKETED_GIB:.0f} GB' figure is {MARKETED_GIB:.0f} GiB "
-                     f"with ~{MARKETED_GIB - _usable_gib(sc):.1f} GiB firmware-reserved)")
+    _field(
+        "memory",
+        f"{_usable_gib(sc):.2f} GiB usable per Spark "
+        f"(the '{MARKETED_GIB:.0f} GB' figure is {MARKETED_GIB:.0f} GiB "
+        f"with ~{MARKETED_GIB - _usable_gib(sc):.1f} GiB firmware-reserved)",
+    )
     if sit["rails"]:
         for rail in sit["rails"]:
             ips = ", ".join(rail.get("ipv4") or []) or "no IPv4 yet"
-            _field("rail", f"{rail.get('ib_device','?')} / {rail.get('netdev','?')} "
-                           f"mtu={rail.get('mtu','?')}  {ips}")
+            _field(
+                "rail",
+                f"{rail.get('ib_device','?')} / {rail.get('netdev','?')} "
+                f"mtu={rail.get('mtu','?')}  {ips}",
+            )
     else:
         _field("rail", "no QSFP cable detected")
     for peer in sit["peers"]:
         name = peer.get("short") or peer.get("hostname") or "?"
         addr = peer.get("address", "?")
-        reach = {True: "reachable", False: "UNREACHABLE",
-                 None: "not probed"}.get(peer.get("reachable"), "not probed")
+        reach = {True: "reachable", False: "UNREACHABLE", None: "not probed"}.get(
+            peer.get("reachable"), "not probed"
+        )
         _field("peer seen", f"{name} at {addr} -- {reach}")
     if sit.get("peer_ip"):
         # Deliberately separate from the discovered address. mDNS answers over whatever
         # interface advertised, which is usually Wi-Fi; using that address for NCCL or
         # rsync would quietly bypass the 200GbE link the pairing exists to provide.
         _field("fast link", f"{sit['peer_ip']} -- use THIS for NCCL, ray and rsync")
-    _field("cluster", f"{sit['nodes']} Sparks paired into one cluster"
-                      if sit["nodes"] > 1 else "1 Spark, not paired with another")
+    _field(
+        "cluster",
+        f"{sit['nodes']} Sparks paired into one cluster"
+        if sit["nodes"] > 1
+        else "1 Spark, not paired with another",
+    )
     if sit["seen"] > sit["nodes"]:
         _say("")
-        _say(f"  NOTE: {sit['seen']} Sparks are visible but only {sit['nodes']} "
-             f"{'is' if sit['nodes'] == 1 else 'are'} paired.")
+        _say(
+            f"  NOTE: {sit['seen']} Sparks are visible but only {sit['nodes']} "
+            f"{'is' if sit['nodes'] == 1 else 'are'} paired."
+        )
         if sit["seen"] > 2:
             _say("  Three or more Sparks cannot be cabled QSFP-to-QSFP the way two are.")
             _say("  If they all sit on a switched RoCE fabric, pair them explicitly:")
-            _say(f"    unsloth spark setup --nodes {min(sit['seen'], sit['max_nodes'])} "
-                 f"--switched")
+            _say(
+                f"    unsloth spark setup --nodes {min(sit['seen'], sit['max_nodes'])} "
+                f"--switched"
+            )
             _say("  If they are daisy-chained instead, each cable needs its own subnet and")
             _say("  Unsloth will not guess your cabling -- a wrong netplan is worse than")
             _say("  none, so it refuses rather than emitting one.")
@@ -429,6 +491,7 @@ def _report_inventory(sc, sit: dict) -> None:
 
 
 # ── The guided entry point ───────────────────────────────────────────────────
+
 
 def _next_steps(sit: dict) -> None:
     _say("")
@@ -443,10 +506,10 @@ def _next_steps(sit: dict) -> None:
 
 @spark_app.command("up")
 def up(
-    yes: bool = typer.Option(False, "--yes", "-y",
-                             help = "Do not ask; perform the fixes this finds."),
-    check: bool = typer.Option(False, "--check",
-                               help = "Report only. Change nothing, ever."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help = "Do not ask; perform the fixes this finds."
+    ),
+    check: bool = typer.Option(False, "--check", help = "Report only. Change nothing, ever."),
 ) -> None:
     """Get this machine to a working state, whatever state it is in now.
 
@@ -530,9 +593,14 @@ def up(
         # Never silently: setup mutates the peer, so it needs a yes that was actually
         # given. --yes is that yes; a prompt is that yes; a pipe is not.
         import sys
-        agreed = yes or (sys.stdin.isatty() and typer.confirm(
-            "\n  Pair the two Sparks now (this WILL overwrite the peer's environment)?",
-            default = False))
+
+        agreed = yes or (
+            sys.stdin.isatty()
+            and typer.confirm(
+                "\n  Pair the two Sparks now (this WILL overwrite the peer's environment)?",
+                default = False,
+            )
+        )
         if not agreed:
             _say("")
             _say("  Nothing changed. Run the command above when the peer is idle.")
@@ -594,8 +662,11 @@ def up(
             _say("NEXT: unsloth spark provision")
             raise typer.Exit(1)
         import sys
-        go = yes or (sys.stdin.isatty() and typer.confirm(
-            "\n  Copy this Spark's environment to the peer now?", default = True))
+
+        go = yes or (
+            sys.stdin.isatty()
+            and typer.confirm("\n  Copy this Spark's environment to the peer now?", default = True)
+        )
         if not go:
             _say("")
             _say("NEXT: unsloth spark provision")
@@ -618,12 +689,16 @@ def up(
     _say("  What the second Spark buys, measured on Llama-3.3-70B fp8:")
     _say("")
     _say("    tensor parallel (TP=2)   2.09x / 2.13x / 2.10x / 1.97x at concurrency 1/2/4/8")
-    _say(f"                             median TPOT {TPOT_ONE_SPARK_MS:.1f} ms -> "
-         f"{TPOT_TP2_MS:.1f} ms")
+    _say(
+        f"                             median TPOT {TPOT_ONE_SPARK_MS:.1f} ms -> "
+        f"{TPOT_TP2_MS:.1f} ms"
+    )
     _say("    pipeline parallel (PP=2) 1.08x / 1.11x / 1.09x / 1.07x, TPOT FLAT")
     _say("                             i.e. capacity, NOT latency -- do not use it for speed")
-    _say(f"    prefill / TTFT (TP=2)    3.87x  ({PREFILL_TOKS[0]} -> {PREFILL_TOKS[1]} tok/s, "
-         f"TTFT {TTFT_MS[0]} -> {TTFT_MS[1]} ms)")
+    _say(
+        f"    prefill / TTFT (TP=2)    3.87x  ({PREFILL_TOKS[0]} -> {PREFILL_TOKS[1]} tok/s, "
+        f"TTFT {TTFT_MS[0]} -> {TTFT_MS[1]} ms)"
+    )
     _say("                             so RAG and long-prompt work gain far more than chat")
     _say("    two replicas             ~2x aggregate throughput, per-request latency unchanged")
     _say("    layer-split a model")
@@ -643,6 +718,7 @@ def up(
 
 # ── Existing subcommands, unchanged in behaviour ─────────────────────────────
 
+
 @spark_app.callback(invoke_without_command = True)
 def _default(ctx: typer.Context) -> None:
     """Run the guided setup when no subcommand is given."""
@@ -653,8 +729,10 @@ def _default(ctx: typer.Context) -> None:
 @spark_app.command("status")
 def status(
     benchmark: bool = typer.Option(
-        False, "--benchmark",
-        help = "Measure the rail with ib_write_bw. Needs perftest on both nodes."),
+        False,
+        "--benchmark",
+        help = "Measure the rail with ib_write_bw. Needs perftest on both nodes.",
+    ),
 ) -> None:
     """Show the ConnectX rails, any peer Spark, and link health.
 
@@ -676,11 +754,10 @@ def status(
 @spark_app.command("setup")
 def setup(
     yes: bool = typer.Option(False, "--yes", "-y", help = "Do not prompt."),
-    nodes: int = typer.Option(None, "--nodes", "-n",
-                              help = "How many Sparks to address. Default 2."),
+    nodes: int = typer.Option(None, "--nodes", "-n", help = "How many Sparks to address. Default 2."),
     switched: bool = typer.Option(
-        False, "--switched",
-        help = "All Sparks share a switched RoCE fabric. Required above two."),
+        False, "--switched", help = "All Sparks share a switched RoCE fabric. Required above two."
+    ),
 ) -> None:
     """Plan and configure the link between the Sparks.
 
@@ -708,8 +785,9 @@ def setup(
 
 @spark_app.command("peers")
 def peers(
-    probe: bool = typer.Option(True, "--probe/--no-probe",
-                               help = "TCP-probe each peer for reachability."),
+    probe: bool = typer.Option(
+        True, "--probe/--no-probe", help = "TCP-probe each peer for reachability."
+    ),
 ) -> None:
     """List every Spark this node can see, in the order the planner ranks them.
 
@@ -742,8 +820,10 @@ def peers(
         if not found:
             _say("  No peer Sparks discovered.")
         for peer in found:
-            _say(f"    node {peer.get('index', '?')}  "
-                 f"{peer.get('short', '?'):<16} {peer.get('address', '?')}")
+            _say(
+                f"    node {peer.get('index', '?')}  "
+                f"{peer.get('short', '?'):<16} {peer.get('address', '?')}"
+            )
     raise typer.Exit(rc)
 
 
@@ -762,9 +842,12 @@ def serve(
     model: str = typer.Option(..., "--model", "-m", help = "Path to a .gguf."),
     port: int = typer.Option(8080, "--port", "-p"),
     ctx: int = typer.Option(8192, "--ctx"),
-    engines: int = typer.Option(2, "--engines",
-                                help = "Independent engines. 2 measured 1.35x one Spark; "
-                                       "1 measured 0.92x, i.e. slower than one Spark."),
+    engines: int = typer.Option(
+        2,
+        "--engines",
+        help = "Independent engines. 2 measured 1.35x one Spark; "
+        "1 measured 0.92x, i.e. slower than one Spark.",
+    ),
     slots: int = typer.Option(16, "--slots", help = "Server slots per engine."),
 ) -> None:
     """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.
@@ -779,46 +862,74 @@ def serve(
     if sc is None:
         raise typer.Exit(1)
     _require_spark(sc, "there is no second Spark here to serve across.")
-    raise typer.Exit(sc.main(
-        ["serve", "--model", model, "--port", str(port), "--ctx", str(ctx),
-         "--engines", str(engines), "--slots", str(slots)]))
+    raise typer.Exit(
+        sc.main(
+            [
+                "serve",
+                "--model",
+                model,
+                "--port",
+                str(port),
+                "--ctx",
+                str(ctx),
+                "--engines",
+                str(engines),
+                "--slots",
+                str(slots),
+            ]
+        )
+    )
 
 
 @spark_app.command("train")
 def train(
-    script: str = typer.Option("", "--script", "-s",
-                               help = "Your training script, replicated per node (DDP)."),
-    layer_split: str = typer.Option("", "--layer-split", "-L",
-                                    help = "Model to split across the Sparks instead."),
-    shard_load: bool = typer.Option(False, "--shard-load",
-                                    help = "Load only each node's own layers. Required "
-                                           "for a model larger than one Spark."),
-    microbatches: int = typer.Option(32, "--microbatches",
-                                     help = "Higher fills the pipeline better. Measured on "
-                                            "two Sparks vs one: M=4 1.13x, M=8 1.56x, "
-                                            "M=16 1.70x, M=32 1.96x. The ceiling is 2M/(M+1), "
-                                            "so M=32 already reaches 99% of it and going "
-                                            "beyond gains almost nothing."),
-    pp_backend: str = typer.Option("torch", "--pp-backend",
-                                   help = "torch (default) uses torch.distributed.pipelining. "
-                                          "legacy uses our hand-written schedules, kept only "
-                                          "as a control arm -- it is slower and its 1f1b and "
-                                          "interleaved deadlock."),
-    schedule: str = typer.Option("1f1b", "--schedule",
-                                 help = "On --pp-backend torch, measured on two Sparks vs one: "
-                                        "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
-                                        "interleaved 1.93x, gpipe 1.86x, zerobubble 1.72x. "
-                                        "1f1b is the default over dualpipev because the 0.7% "
-                                        "gap is within noise while 1f1b's peak memory is lower "
-                                        "(7.34 vs 9.58 GiB). Avoid gpipe: it peaked at 99.92 "
-                                        "GiB for the same work, against a 121.69 GiB node."),
+    script: str = typer.Option(
+        "", "--script", "-s", help = "Your training script, replicated per node (DDP)."
+    ),
+    layer_split: str = typer.Option(
+        "", "--layer-split", "-L", help = "Model to split across the Sparks instead."
+    ),
+    shard_load: bool = typer.Option(
+        False,
+        "--shard-load",
+        help = "Load only each node's own layers. Required for a model larger than one Spark.",
+    ),
+    microbatches: int = typer.Option(
+        32,
+        "--microbatches",
+        help = "Higher fills the pipeline better. Measured on "
+        "two Sparks vs one: M=4 1.13x, M=8 1.56x, "
+        "M=16 1.70x, M=32 1.96x. The ceiling is 2M/(M+1), "
+        "so M=32 already reaches 99% of it and going "
+        "beyond gains almost nothing.",
+    ),
+    pp_backend: str = typer.Option(
+        "torch",
+        "--pp-backend",
+        help = "torch (default) uses torch.distributed.pipelining. "
+        "legacy uses our hand-written schedules, kept only "
+        "as a control arm -- it is slower and its 1f1b and "
+        "interleaved deadlock.",
+    ),
+    schedule: str = typer.Option(
+        "1f1b",
+        "--schedule",
+        help = "On --pp-backend torch, measured on two Sparks vs one: "
+        "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
+        "interleaved 1.93x, gpipe 1.86x, zerobubble 1.72x. "
+        "1f1b is the default over dualpipev because the 0.7% "
+        "gap is within noise while 1f1b's peak memory is lower "
+        "(7.34 vs 9.58 GiB). Avoid gpipe: it peaked at 99.92 "
+        "GiB for the same work, against a 121.69 GiB node.",
+    ),
     steps: int = typer.Option(20, "--steps"),
     batch: int = typer.Option(8, "--batch", help = "Global batch per step."),
     seq: int = typer.Option(512, "--seq"),
     full_finetune: bool = typer.Option(False, "--full-finetune"),
     master_port: int = typer.Option(29500, "--master-port"),
-    run: bool = typer.Option(False, "--run",
-                             help = "Launch it on both Sparks instead of printing commands."),
+    run: bool = typer.Option(
+        False, "--run", help = "Launch it on both Sparks instead of printing commands."
+    ),
 ) -> None:
     """Print the two-node commands for DDP (--script) or layer-split (--layer-split).
 
@@ -830,21 +941,36 @@ def train(
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
-    _require_spark(sc, "these are two-Spark launch commands and do not apply here. "
-                       "Train as usual with `unsloth train`.")
+    _require_spark(
+        sc,
+        "these are two-Spark launch commands and do not apply here. "
+        "Train as usual with `unsloth train`.",
+    )
     if not script and not layer_split:
         typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
-        extra = [f"--microbatches {microbatches}", f"--schedule {schedule}",
-                 f"--pp-backend {pp_backend}",
-                 f"--steps {steps}", f"--batch {batch}", f"--seq {seq}"]
+        extra = [
+            f"--microbatches {microbatches}",
+            f"--schedule {schedule}",
+            f"--pp-backend {pp_backend}",
+            f"--steps {steps}",
+            f"--batch {batch}",
+            f"--seq {seq}",
+        ]
         if shard_load:
             extra.append("--shard-load")
         if full_finetune:
             extra.append("--full-finetune")
-        argv = ["train", "--layer-split", layer_split,
-                "--master-port", str(master_port), "--pipeline-args", " ".join(extra)]
+        argv = [
+            "train",
+            "--layer-split",
+            layer_split,
+            "--master-port",
+            str(master_port),
+            "--pipeline-args",
+            " ".join(extra),
+        ]
         if run:
             argv.append("--run")
         raise typer.Exit(sc.main(argv))
@@ -854,13 +980,14 @@ def train(
 @spark_app.command("doctor")
 def doctor(
     parity_only: bool = typer.Option(
-        False, "--parity-only",
-        help = "Only compare the two nodes' capability gates. No GPU work."),
+        False, "--parity-only", help = "Only compare the two nodes' capability gates. No GPU work."
+    ),
     deep: bool = typer.Option(
-        False, "--deep",
-        help = "Also import torch/vllm on both nodes. This initialises CUDA on both."),
+        False, "--deep", help = "Also import torch/vllm on both nodes. This initialises CUDA on both."
+    ),
     skip_parity: bool = typer.Option(
-        False, "--skip-parity", help = "Do not run the cross-node parity check."),
+        False, "--skip-parity", help = "Do not run the cross-node parity check."
+    ),
 ) -> None:
     """Measure the link and diagnose the two DGX Spark hardware faults.
 
@@ -879,6 +1006,7 @@ def doctor(
     reports a gloo transport error that names nothing related to the cause.
     """
     from unsloth_cli.commands.doctor import _workload_guidance, check_parity
+
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -904,8 +1032,9 @@ def doctor(
 
 @spark_app.command("provision")
 def provision(
-    dry_run: bool = typer.Option(False, "--dry-run",
-                                 help = "Show what would be copied, without copying."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help = "Show what would be copied, without copying."
+    ),
 ) -> None:
     """Copy this Spark's environment and warm caches to the peer over the fast link.
 
@@ -945,18 +1074,25 @@ def _expected_line(exp: dict | None) -> list:
     if speedup is None:
         lines.append("  expected  : NOT MEASURED at this node count")
     else:
-        lines.append(f"  expected  : {speedup:.2f}x "
-                     + ("(measured)" if exp.get("measured") else "(NOT measured here)"))
+        lines.append(
+            f"  expected  : {speedup:.2f}x "
+            + ("(measured)" if exp.get("measured") else "(NOT measured here)")
+        )
     # Only when the note does not already say it -- the same fact twice reads as a bug.
     if exp.get("aggregate") and "aggregate" not in (exp.get("note") or "").lower():
-        lines.append(f"              ~{exp['aggregate']:.0f}x aggregate throughput, "
-                     f"1.00x per request")
+        lines.append(
+            f"              ~{exp['aggregate']:.0f}x aggregate throughput, " f"1.00x per request"
+        )
     if exp.get("note"):
         lines.append(f"              {exp['note']}")
     return lines
 
 
-def _print_wrapped(text: str, indent: str = "  ", width: int = 78) -> None:
+def _print_wrapped(
+    text: str,
+    indent: str = "  ",
+    width: int = 78,
+) -> None:
     """Wrap to a fixed width. Plain ASCII, no colour, no terminal queries."""
     import textwrap
     for line in textwrap.wrap(text, width = width - len(indent)) or [""]:
@@ -965,14 +1101,18 @@ def _print_wrapped(text: str, indent: str = "  ", width: int = 78) -> None:
 
 @spark_app.command("plan")
 def plan(
-    model: str = typer.Option(..., "--model", "-m",
-                              help = "Path, directory, or HF repo id (must be cached)."),
-    intent: str = typer.Option("auto", "--intent", "--for", "-f",
-                               help = "latency | throughput | capacity | auto."),
-    nodes: int = typer.Option(None, "--nodes", "-n",
-                              help = "How many Sparks to plan for. Default: discovered."),
-    concurrency: int = typer.Option(1, "--concurrency", "-c",
-                                    help = "Requests in flight, for the expected number."),
+    model: str = typer.Option(
+        ..., "--model", "-m", help = "Path, directory, or HF repo id (must be cached)."
+    ),
+    intent: str = typer.Option(
+        "auto", "--intent", "--for", "-f", help = "latency | throughput | capacity | auto."
+    ),
+    nodes: int = typer.Option(
+        None, "--nodes", "-n", help = "How many Sparks to plan for. Default: discovered."
+    ),
+    concurrency: int = typer.Option(
+        1, "--concurrency", "-c", help = "Requests in flight, for the expected number."
+    ),
 ) -> None:
     """Say exactly how to deploy a model here, and what it will buy you.
 
@@ -1017,8 +1157,9 @@ def plan(
     if resolved == "auto":
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
-    result = _plan_deployment(sc, size, nodes, intent = resolved,
-                              concurrency = concurrency, model = model)
+    result = _plan_deployment(
+        sc, size, nodes, intent = resolved, concurrency = concurrency, model = model
+    )
     if result is None:
         _say("Could not produce a plan (the planner is unavailable in this build).")
         raise typer.Exit(1)
@@ -1026,12 +1167,17 @@ def plan(
     _heading("Deployment plan")
     _field("model", model)
     _field("size", f"{size:.1f} GiB" if size else "unknown (not cached locally)")
-    _field("per-Spark", f"{budget:.0f} GiB usable for a served model "
-                        f"({_usable_gib(sc):.2f} GiB total; the '{MARKETED_GIB:.0f} GB' "
-                        f"on the box is GiB, ~6.3 of which is firmware-reserved)")
-    _field("Sparks", str(nodes)
-           + ("" if nodes == sit["nodes"]
-              else f"  (asked for; {sit['nodes']} actually paired here)"))
+    _field(
+        "per-Spark",
+        f"{budget:.0f} GiB usable for a served model "
+        f"({_usable_gib(sc):.2f} GiB total; the '{MARKETED_GIB:.0f} GB' "
+        f"on the box is GiB, ~6.3 of which is firmware-reserved)",
+    )
+    _field(
+        "Sparks",
+        str(nodes)
+        + ("" if nodes == sit["nodes"] else f"  (asked for; {sit['nodes']} actually paired here)"),
+    )
     _field("optimising", resolved + (" (auto)" if choice == "auto" else ""))
     if concurrency != 1:
         _field("concurrency", str(concurrency))
@@ -1044,11 +1190,13 @@ def plan(
         _print_wrapped(
             "The model's size could not be determined, so there is nothing to "
             "recommend. Guessing would hand you a confidently wrong layout, which is "
-            "worse than saying nothing.")
+            "worse than saying nothing."
+        )
         _say("")
         _print_wrapped(
             "Point --model at a local .gguf, a local directory, or a repo id that is "
-            "already in ~/.cache/huggingface/hub.")
+            "already in ~/.cache/huggingface/hub."
+        )
         raise typer.Exit(1)
 
     _heading("Recommendation")
@@ -1079,13 +1227,14 @@ def plan(
             "so a smaller model keeps less of the 2.09x, and a small enough one can be "
             "SLOWER across two Sparks than on one. Nobody measured this size here. "
             "Benchmark it against a single Spark before you commit, and if it does not "
-            "win, serve it on one node.")
-    if result.get("axis") in ("layer-split", "pipeline-parallel") \
-            and result.get("fits_one_node"):
+            "win, serve it on one node."
+        )
+    if result.get("axis") in ("layer-split", "pipeline-parallel") and result.get("fits_one_node"):
         _say("")
         _print_wrapped(
             "DO NOT DO THIS: splitting a model that already fits measures 0.92x -- "
-            "slower than the single Spark you already have.")
+            "slower than the single Spark you already have."
+        )
 
     commands = result.get("commands") or []
     if commands:
@@ -1110,7 +1259,8 @@ def plan(
             f"{'is' if sit['nodes'] == 1 else 'are'} paired on this machine right now, "
             f"so the commands above will not run as written until the rest are paired "
             f"(`unsloth spark peers` to see what is visible). Above two Sparks that "
-            f"needs a switched RoCE fabric and an explicit `--switched`.")
+            f"needs a switched RoCE fabric and an explicit `--switched`."
+        )
 
     _kernel_banner(_kernel_state())
     raise typer.Exit(0)
@@ -1118,8 +1268,7 @@ def plan(
 
 @spark_app.command("kernels")
 def kernels(
-    workload: str = typer.Option("mixed", "--workload",
-                                 help = "decode | prefill | mixed"),
+    workload: str = typer.Option("mixed", "--workload", help = "decode | prefill | mixed"),
 ) -> None:
     """Recommend the NVFP4 kernel for a workload on GB10.
 
@@ -1139,8 +1288,10 @@ def kernels(
             _say(f"    {KERNEL_INSTALL}")
         else:
             _say("")
-            _say(f"  Installed here: flashinfer-python {state['flashinfer']}"
-                 + (f", nvidia-cutlass-dsl {state['cutlass']}" if state["cutlass"] else ""))
+            _say(
+                f"  Installed here: flashinfer-python {state['flashinfer']}"
+                + (f", nvidia-cutlass-dsl {state['cutlass']}" if state["cutlass"] else "")
+            )
     raise typer.Exit(rc)
 
 
@@ -1202,8 +1353,17 @@ def estimate(
     holds the logits, and for a 128k vocabulary that single fp32 tensor plus its gradient
     can outweigh every other activation combined.
     """
-    argv = ["estimate", "--model", model, "--batch", str(batch),
-            "--microbatches", str(microbatches), "--seq", str(seq)]
+    argv = [
+        "estimate",
+        "--model",
+        model,
+        "--batch",
+        str(batch),
+        "--microbatches",
+        str(microbatches),
+        "--seq",
+        str(seq),
+    ]
     if full_finetune:
         argv.append("--full-finetune")
     if grad_checkpoint:

@@ -36,7 +36,7 @@ def main() -> int:
     iters = int(os.environ.get("SPARK_PROBE_ITERS", "6"))
     buf = torch.empty(mb * 1024 * 1024 // 4, dtype = torch.float32, device = "cuda")
 
-    for _ in range(2):                      # build the communicator, touch every channel
+    for _ in range(2):  # build the communicator, touch every channel
         dist.all_reduce(buf)
     torch.cuda.synchronize()
     dist.barrier()
@@ -49,7 +49,7 @@ def main() -> int:
     per_iter = (time.perf_counter() - t0) / iters
 
     if rank == 0:
-        gib = buf.numel() * 4 / 2 ** 30
+        gib = buf.numel() * 4 / 2**30
         # Standard nccl-tests bus-bandwidth convention, so the number is directly
         # comparable to published all_reduce figures.
         busbw = gib * 2 * (world - 1) / world / per_iter

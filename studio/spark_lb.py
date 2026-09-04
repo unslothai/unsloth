@@ -57,11 +57,11 @@ def _handler(backends: List[Tuple[str, int]], rr):
             client_w.close()
             return
         await asyncio.gather(_pump(client_r, up_w), _pump(up_r, client_w))
+
     return handle
 
 
-async def serve(listen_host: str, listen_port: int,
-                backends: List[Tuple[str, int]]) -> None:
+async def serve(listen_host: str, listen_port: int, backends: List[Tuple[str, int]]) -> None:
     rr = itertools.count()
     server = await asyncio.start_server(_handler(backends, rr), listen_host, listen_port)
     where = ", ".join(f"{h}:{p}" for h, p in backends)
@@ -79,12 +79,12 @@ def main(argv = None) -> int:
     p = argparse.ArgumentParser(prog = "spark_lb", description = __doc__)
     p.add_argument("--port", type = int, default = 8080, help = "port to listen on")
     p.add_argument("--host", default = "0.0.0.0")
-    p.add_argument("backends", nargs = "+",
-                   help = "engine endpoints, e.g. 127.0.0.1:8096 127.0.0.1:8097")
+    p.add_argument(
+        "backends", nargs = "+", help = "engine endpoints, e.g. 127.0.0.1:8096 127.0.0.1:8097"
+    )
     args = p.parse_args(argv)
     try:
-        asyncio.run(serve(args.host, args.port,
-                          [parse_backend(b) for b in args.backends]))
+        asyncio.run(serve(args.host, args.port, [parse_backend(b) for b in args.backends]))
     except KeyboardInterrupt:
         pass
     return 0

@@ -45,13 +45,15 @@ def stage_dirs(root: str) -> List[str]:
     if not found:
         raise RuntimeError(
             f"no stage*/ directories in {root}. A layer-split run writes stage0/, stage1/, ...; "
-            f"point this at the --save directory, not at one stage inside it.")
+            f"point this at the --save directory, not at one stage inside it."
+        )
     found.sort()
     ranks = [r for r, _ in found]
     if ranks != list(range(len(ranks))):
         raise RuntimeError(
             f"stage directories are not contiguous from 0: found {ranks}. A missing stage means "
-            f"missing layers, and merging would silently produce a partly-untrained adapter.")
+            f"missing layers, and merging would silently produce a partly-untrained adapter."
+        )
     return [p for _, p in found]
 
 
@@ -62,7 +64,7 @@ def layer_of(key: str) -> Optional[int]:
 
 def inspect_stage(path: str) -> Dict[str, Any]:
     """Read one stage's tensors and report which layers it actually carries."""
-    from safetensors import safe_open        # local: keep module import cheap
+    from safetensors import safe_open  # local: keep module import cheap
 
     blob = osp.join(path, ADAPTER_BIN)
     if not osp.isfile(blob):
@@ -90,14 +92,17 @@ def plan_merge(root: str) -> Dict[str, Any]:
             if n in seen:
                 problems.append(
                     f"layer {n} appears in BOTH {osp.basename(seen[n])} and "
-                    f"{osp.basename(st['path'])} -- stages must own disjoint layers")
+                    f"{osp.basename(st['path'])} -- stages must own disjoint layers"
+                )
             seen[n] = st["path"]
 
     # Gaps: contiguous coverage from 0 is what stage_layers() guarantees.
     covered = sorted(seen)
     if covered and covered != list(range(covered[0], covered[-1] + 1)):
         missing = sorted(set(range(covered[0], covered[-1] + 1)) - set(covered))
-        problems.append(f"layers {missing} are in no stage -- the merged model would be untrained there")
+        problems.append(
+            f"layers {missing} are in no stage -- the merged model would be untrained there"
+        )
     if covered and covered[0] != 0:
         problems.append(f"layers 0..{covered[0]-1} are in no stage")
 
@@ -112,7 +117,9 @@ def plan_merge(root: str) -> Dict[str, Any]:
 
     return {
         "root": root,
-        "stages": [{"path": s["path"], "layers": s["layers"], "n_keys": s["n_keys"]} for s in stages],
+        "stages": [
+            {"path": s["path"], "layers": s["layers"], "n_keys": s["n_keys"]} for s in stages
+        ],
         "n_stages": len(stages),
         "layers_covered": covered,
         "ambiguous_keys": ambiguous,
@@ -121,7 +128,12 @@ def plan_merge(root: str) -> Dict[str, Any]:
     }
 
 
-def merge(root: str, out: str, *, force: bool = False) -> Dict[str, Any]:
+def merge(
+    root: str,
+    out: str,
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
     """Write one adapter combining every stage. Refuses unless `plan_merge` is clean."""
     from safetensors import safe_open
     from safetensors.torch import save_file
@@ -129,9 +141,11 @@ def merge(root: str, out: str, *, force: bool = False) -> Dict[str, Any]:
     plan = plan_merge(root)
     if not plan["ok"] and not force:
         raise RuntimeError(
-            "refusing to merge:\n  " + "\n  ".join(plan["problems"]) +
-            "\nA merged adapter with wrong or missing layers loads without error and quietly "
-            "produces a worse model. Pass force=True only if you understand the consequence.")
+            "refusing to merge:\n  "
+            + "\n  ".join(plan["problems"])
+            + "\nA merged adapter with wrong or missing layers loads without error and quietly "
+            "produces a worse model. Pass force=True only if you understand the consequence."
+        )
 
     tensors: Dict[str, Any] = {}
     provenance: Dict[str, str] = {}
@@ -170,18 +184,27 @@ def merge(root: str, out: str, *, force: bool = False) -> Dict[str, Any]:
     }
 
 
-def _cmd_merge(root: str, out: Optional[str] = None, dry_run: bool = False) -> int:
+def _cmd_merge(
+    root: str,
+    out: Optional[str] = None,
+    dry_run: bool = False,
+) -> int:
     plan = plan_merge(root)
     print(f"  stages   {plan['n_stages']}")
     for st in plan["stages"]:
         ls = st["layers"]
         span = f"{ls[0]}..{ls[-1]}" if ls else "(none)"
         print(f"    {osp.basename(st['path']):10s} layers {span:12s} {st['n_keys']} tensors")
-    print(f"  layers   {len(plan['layers_covered'])} covered, contiguous from 0"
-          if plan["ok"] else "  layers   INCOMPLETE")
+    print(
+        f"  layers   {len(plan['layers_covered'])} covered, contiguous from 0"
+        if plan["ok"]
+        else "  layers   INCOMPLETE"
+    )
     if plan["ambiguous_keys"]:
-        print(f"  note     {len(plan['ambiguous_keys'])} non-layer tensors exist in several "
-              f"stages (e.g. embeddings); keeping stage0's copy")
+        print(
+            f"  note     {len(plan['ambiguous_keys'])} non-layer tensors exist in several "
+            f"stages (e.g. embeddings); keeping stage0's copy"
+        )
     for p in plan["problems"]:
         print(f"  PROBLEM  {p}")
     if not plan["ok"]:
@@ -197,6 +220,7 @@ def _cmd_merge(root: str, out: Optional[str] = None, dry_run: bool = False) -> i
 
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
+
     ap = argparse.ArgumentParser("spark_merge", description = __doc__.split("\n")[0])
     ap.add_argument("root", help = "the --save directory containing stage0/, stage1/, ...")
     ap.add_argument("--out", default = None, help = "where to write the merged adapter")
