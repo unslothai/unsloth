@@ -92,6 +92,28 @@ jobs:
           python -m pip install -r studio/backend/requirements/studio.txt
           python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
           python -m pip install 'torch>=2.4,<2.11' 'transformers>=4.51,<5.5'
+      - name: Diagnose Darwin pre-exec safeguards
+        if: matrix.label == 'macOS'
+        run: |
+          python - <<'PY'
+          import os, resource, subprocess, sys
+          def bounded(resource_id, requested):
+              soft, hard = resource.getrlimit(resource_id)
+              finite = [requested, *(value for value in (soft, hard) if value != resource.RLIM_INFINITY)]
+              target = min(finite)
+              return lambda: resource.setrlimit(resource_id, (target, target))
+          checks = [
+              ("setsid", lambda: os.setsid()),
+              ("nproc", bounded(resource.RLIMIT_NPROC, 10000)),
+              ("fsize", bounded(resource.RLIMIT_FSIZE, 100 * 1024**2)),
+              ("data", bounded(resource.RLIMIT_DATA, 8 * 1024**3)),
+              ("cpu", bounded(resource.RLIMIT_CPU, 600)),
+              ("nofile", bounded(resource.RLIMIT_NOFILE, int(os.sysconf("SC_OPEN_MAX")))),
+          ]
+          for name, check in checks:
+              print(f"DARWIN_PREEXEC_CHECK={name}", flush=True)
+              subprocess.run([sys.executable, "-c", "pass"], preexec_fn=check, check=True)
+          PY
       - name: Verify unsupported native backend and explicit Limited execution
         working-directory: studio/backend
         run: >-
