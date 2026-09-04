@@ -28,7 +28,11 @@ import unsloth.tokenizer_utils as tu
 
 
 class _Tok:
-    def __init__(self, add_bos_token = False, bos_token_id = 2):
+    def __init__(
+        self,
+        add_bos_token = False,
+        bos_token_id = 2,
+    ):
         self.add_bos_token = add_bos_token
         self.bos_token_id = bos_token_id
 
