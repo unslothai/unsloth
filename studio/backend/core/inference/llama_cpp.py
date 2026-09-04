@@ -26,6 +26,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import queue
 import threading
 import time
 import uuid
@@ -476,6 +477,52 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
+
+
+# What a started-but-not-yet-read call reports before it has finished.
+_TOOL_PRIME_PENDING = object()
+
+
+def _drive_tool_stream(stream, out_queue) -> None:
+    """Read one tool's event generator to the end, on a thread of its own.
+
+    ``stream_tool_execution`` runs the tool on a worker thread but only STARTS that worker
+    inside its generator body, and then blocks on the queue until the tool produces output
+    or a heartbeat falls due ten seconds later. So neither building the generator nor
+    calling ``next()`` once is enough to overlap two calls: the first ``next()`` on call A
+    does not return until A has something to say, by which time B has still not begun.
+
+    Driving each call's generator from its own thread is what actually puts the tools in
+    flight together. The events are queued rather than yielded because the SSE stream has
+    one order and it has to stay the order the model asked for.
+    """
+    try:
+        while True:
+            try:
+                out_queue.put(("event", next(stream)))
+            except StopIteration as stop:
+                out_queue.put(("result", stop.value))
+                return
+    except BaseException as exc:  # noqa: BLE001 - replayed at the call's turn
+        out_queue.put(("error", exc))
+
+
+def _start_tool_call(decision, stream, budget_cell, starved_cell):
+    """Put one call's tool in flight and return the entry its turn will be read from.
+
+    The driver is a daemon, like the worker underneath it: a tool that ignores the cancel
+    event is left to finish on its own rather than holding the response open, which is the
+    contract ``stream_tool_execution`` already documents.
+    """
+    out_queue: "queue.Queue" = queue.Queue()
+    driver = threading.Thread(
+        target = _drive_tool_stream,
+        args = (stream, out_queue),
+        daemon = True,
+        name = f"tool-drive-{getattr(decision, 'tool_name', '') or 'unknown'}",
+    )
+    driver.start()
+    return (decision, stream, out_queue, _TOOL_PRIME_PENDING, None, budget_cell, starved_cell)
 class _CombinedCancelEvent:
     __slots__ = ("_events",)
 
@@ -28806,6 +28853,12 @@ class LlamaCppBackend:
             is_high_risk_tool_call,
         )
 
+        # One switch for both loops. Imported here rather than at module scope for the same
+        # reason the names above are: this module is large and imported early.
+        from core.inference.studio_tool_loop import (
+            parallel_tool_calls_enabled as _parallel_tool_calls_enabled,
+        )
+
         # "full" and bypass_permissions are the same switch, whichever arrives
         # first wins. "off" keeps the sandbox but never prompts. Unset defaults to
         # "auto"; unknown falls back to the stricter "ask". An explicit
@@ -30909,6 +30962,235 @@ class LlamaCppBackend:
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
+                # Everything after a tool returns, kept in one place because both the
+                # sequential and the overlapped path have to do it identically and in the
+                # order the model asked for. The controller's ledger, the repeat guard, the
+                # forced-choice flag and the conversation are all order sensitive; only the
+                # WAITING above was ever worth overlapping.
+                def _settle_tool_call(decision, result, _last_result_budget, _starved_call):
+                    nonlocal _kb_search_count, _last_reprompt_text, _turn_executed_real_tool
+                    nonlocal _forced_choice_resolved, _forced_tool_call_pending, assistant_msg
+                    # What the result actually cost against what it was allowed. The pair
+                    # is the only way to tell a budget that was never delivered from one
+                    # that was delivered and ignored, and a 400 one second after a tool
+                    # returns cannot distinguish them on its own.
+                    logger.info(
+                        "tool result: name=%s budget_tokens=%s chars=%d",
+                        decision.tool_name,
+                        _last_result_budget[0],
+                        len(result) if isinstance(result, str) else -1,
+                    )
+                    # The window priced this result at nothing before the call ran, so the
+                    # model is told now rather than after three calls prove it.
+                    _result_was_starved = False
+                    # The budget says what the window ALLOWED, not what the tool returned.
+                    # A short result fits a few tokens completely -- "Created a.py", "OK",
+                    # the acknowledgement a mutation gives -- and telling the model that
+                    # nothing usable came back invites it to discard a successful write or
+                    # do it a second time. So the nudge waits for evidence the result was
+                    # actually cut: the truncation notice, or nothing at all.
+                    if (
+                        _starved_call[0]
+                        and isinstance(result, str)
+                        and (not result.strip() or _is_window_notice(result))
+                    ):
+                        _starved_call[0] = False
+                        _result_was_starved = True
+                        logger.info(
+                            "%s ran with a result budget below %d; telling the model the "
+                            "window cannot carry the result",
+                            decision.tool_name,
+                            _MIN_USEFUL_RESULT_TOKENS,
+                        )
+                        result = _starved_result_message(decision.tool_name, result)
+                    else:
+                        # Cleared either way: it describes THIS call's budget, and leaving
+                        # it set would hand the notice to the next call instead.
+                        _starved_call[0] = False
+
+                    # ── No-progress guard: the same answer, over and over ──
+                    # Keyed on the RESULT, not the arguments. In the turn this came from,
+                    # the arguments differed every time (different line ranges of one file)
+                    # while the answer was the same 109-char truncation notice, so an
+                    # argument-keyed guard would have watched all 18 calls go by. OpenClaw
+                    # keys on the result for the same reason and never fires while results
+                    # are still changing, which is what makes this safe for polling.
+                    if isinstance(result, str):
+                        # The arguments are part of the key UNLESS the result is one the
+                        # window itself produced. A tool that answers every distinct
+                        # mutation with `OK` is making progress, and the nudge below --
+                        # which says different arguments will not change the answer -- can
+                        # talk it out of the operations it has left. A starved result is
+                        # the opposite: it is the notice, not the tool's answer, so the
+                        # arguments are exactly what must NOT be part of the key. That was
+                        # the observed turn, where 18 calls read different line ranges of
+                        # one file and got the same 109-char truncation notice each time.
+                        _result_key = (
+                            decision.tool_name,
+                            hashlib.sha1(result.encode("utf-8", "replace")).hexdigest(),
+                            None
+                            if _result_was_starved or _is_window_notice(result)
+                            else hashlib.sha1(
+                                json.dumps(decision.arguments, sort_keys = True, default = str).encode(
+                                    "utf-8", "replace"
+                                )
+                            ).hexdigest(),
+                        )
+                        if _result_key == _last_tool_result_key[0]:
+                            _identical_result_runs[0] += 1
+                        else:
+                            _last_tool_result_key[0] = _result_key
+                            _identical_result_runs[0] = 1
+                        if _identical_result_runs[0] >= _MAX_IDENTICAL_TOOL_RESULTS:
+                            logger.info(
+                                "%s returned the same result %d times; saying so instead of "
+                                "letting the turn spend itself repeating it",
+                                decision.tool_name,
+                                _identical_result_runs[0],
+                            )
+                            # Told, not silently stopped. The model can still finish the
+                            # task another way, and hard-stopping a turn that is otherwise
+                            # healthy would trade one dead end for a worse one.
+                            result = _repeated_result_message(
+                                decision.tool_name, _identical_result_runs[0], result
+                            )
+                            _identical_result_runs[0] = 0
+                            _last_tool_result_key[0] = None
+                    completion = tool_controller.record_result(decision, result)
+                    resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                    # A real execution opens the post-tool phase; carrying the pre-tool
+                    # stall text over would read the same sentence as a repeat and
+                    # swallow the one post-tool nudge.
+                    _last_reprompt_text = ""
+                    # A tool ran this turn, so it counts against the caller's budget.
+                    _turn_executed_real_tool = True
+                    _forced_choice_resolved = True
+                    yield completion.tool_end_event()
+                    conversation.append(completion.tool_message())
+                    if _compact_after_execution and decision.tool_call_id:
+                        # The promise the gate made when it let this run. Applied here
+                        # rather than on the next pass because the next pass may not
+                        # come: this turn's own generation is the request that would
+                        # otherwise be rejected.
+                        _before_len = len(json.dumps(conversation, default = str))
+                        conversation[:] = compact_executed_call_arguments(
+                            conversation, decision.tool_call_id
+                        )
+                        logger.info(
+                            "Compacted %s arguments after running it: %d -> %d chars",
+                            decision.tool_name,
+                            _before_len,
+                            len(json.dumps(conversation, default = str)),
+                        )
+                        # The compaction rebuilds the messages rather than mutating them,
+                        # so the local handle now points at a dict that is no longer in
+                        # `conversation`. One assistant turn can carry several calls, and
+                        # the next one in the batch appends its tool_call to this handle
+                        # while its RESULT goes to `conversation`: the model would receive
+                        # a tool result answering a call it cannot see. Rebind to the live
+                        # message carrying this call.
+                        # Backwards: generated ids restart at `call_0` every turn, so a
+                        # forward scan binds to the OLDEST turn carrying the id and the
+                        # rest of this batch is appended to history instead of to the live
+                        # exchange. The call being compacted is always the current one.
+                        for _msg in reversed(conversation):
+                            if _msg.get("role") != "assistant":
+                                continue
+                            if any(
+                                (_tc or {}).get("id") == decision.tool_call_id
+                                for _tc in (_msg.get("tool_calls") or [])
+                            ):
+                                assistant_msg = _msg
+                                break
+
+                    if _forced_tool_call_pending:
+                        _forced_tool_call_pending = False
+
+                # Whether this round's calls may run at the same time. Decided BEFORE any of
+                # them is prepared, because it has to hold for the whole round: starting call
+                # two while call one is running and then discovering call three needs an
+                # approval dialog would put a modal in front of work already in flight.
+                #
+                # Approval keeps the strict order for the same reason it does on the provider
+                # loop. Under `permission_mode == "auto"` only high-risk calls prompt, so a
+                # round of ordinary reads still overlaps.
+                _approval_gate = (
+                    bool(confirm_tool_calls)
+                    and not bypass_permissions
+                    and permission_mode != "off"
+                )
+                if _approval_gate and permission_mode == "auto":
+
+                    def _risk_args(raw):
+                        """`is_high_risk_tool_call` reads the arguments as a mapping.
+
+                        On the wire they are a JSON string, and the risk checks index into
+                        them (`arguments.get("code")`), so handing the raw string over
+                        raises. Anything that will not parse is treated as risky, which
+                        costs this round its overlap and nothing else.
+                        """
+                        if isinstance(raw, Mapping):
+                            return dict(raw)
+                        if isinstance(raw, str):
+                            try:
+                                parsed = json.loads(raw)
+                            except Exception:
+                                return None
+                            return parsed if isinstance(parsed, dict) else None
+                        return None
+
+                    def _round_call_is_risky(_tc):
+                        _fn = (_tc or {}).get("function") or {}
+                        _args = _risk_args(_fn.get("arguments"))
+                        if _args is None:
+                            return True
+                        try:
+                            return bool(is_high_risk_tool_call(_fn.get("name", ""), _args))
+                        except Exception:
+                            return True
+
+                    _approval_gate = any(
+                        _round_call_is_risky(_tc) for _tc in (tool_calls or [])
+                    )
+                # A round may only overlap when its calls cannot depend on each other's
+                # RESULTS. `prepare_call` has exactly two such dependencies, and both are
+                # written by `record_result`:
+                #
+                #   * `key in self._successful_keys` -> the same call twice in one turn is
+                #     a no-op the second time.
+                #   * `tool_name in self._completed_one_shot_tools` -> render_html and its
+                #     kind run once per turn.
+                #
+                # Running the round together would decide both before any result existed,
+                # so a round containing either shape stays sequential and keeps the exact
+                # behaviour it has today. Three DIFFERENT searches, which is the case worth
+                # overlapping, contain neither.
+                #
+                # Keyed on the arguments as they arrived rather than as healed. Two calls
+                # whose malformed arguments heal to the same canonical key would both run
+                # here where the second used to be suppressed: a repeated result and some
+                # wasted work, not a wrong answer, and the alternative is serialising every
+                # round that calls one tool twice.
+                _one_shot = frozenset(getattr(tool_controller, "_one_shot_tools", ()) or ())
+                _round_keys: list = []
+                _round_one_shot: list = []
+                for _tc in tool_calls or []:
+                    _fn = (_tc or {}).get("function") or {}
+                    _nm = _fn.get("name", "")
+                    _round_keys.append((_nm, json.dumps(_fn.get("arguments"), default = str)))
+                    if _nm in _one_shot:
+                        _round_one_shot.append(_nm)
+                _parallel_round = (
+                    _parallel_tool_calls_enabled()
+                    and len(tool_calls or []) > 1
+                    and not _approval_gate
+                    and len(set(_round_keys)) == len(_round_keys)
+                    and len(set(_round_one_shot)) == len(_round_one_shot)
+                )
+                # Started, not yet read back. Empty in a sequential round, so that path is
+                # exactly what it was.
+                _pending_calls: list = []
+
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -31304,6 +31586,13 @@ class LlamaCppBackend:
                         and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
+                        if _parallel_round:
+                            # No tool to start, but its place in the round is still its own:
+                            # settled here it would report before the calls above it.
+                            _pending_calls.append(
+                                (decision, None, None, result, None, ["<not passed>"], [False])
+                            )
+                            continue
                     else:
                         # Execute in a worker thread so live stdout chunks and heartbeats
                         # stream while the tool blocks (the SSE route turns heartbeats into
@@ -31312,8 +31601,19 @@ class LlamaCppBackend:
                         # the budget that was actually handed over, from a scope that
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
+                        # Per call, not per turn. The turn-level `_starved_call` was written
+                        # from inside the tool's worker thread, so with a round's calls in
+                        # flight together whichever finished last decided what every one of
+                        # them reported. Bound into the closure below by default argument so
+                        # each call keeps its own.
+                        _starved_call: list = [False]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        def _invoke_tool(
+                            _output_callback,
+                            _decision = decision,
+                            _budget_cell = _last_result_budget,
+                            _starved_cell = _starved_call,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -31488,7 +31788,17 @@ class LlamaCppBackend:
                                         # starve a read the request had space for.
                                         _iteration_max_tokens,
                                         _spent + _pending_args,
-                                    ) // (len(_pending) + 1)
+                                    ) // (
+                                        # Sequentially, call k divides by the calls still to
+                                        # run, because the ones before it have already spent
+                                        # what they spent and `_spent` says so. Run together
+                                        # they all price against the same `_spent`, so each
+                                        # dividing by its own remainder would hand out
+                                        # B/N + B/(N-1) + ... , more than the batch has. The
+                                        # whole batch is the right divisor there.
+                                        len(tool_calls or []) if _parallel_round
+                                        else (len(_pending) + 1)
+                                    )
                                     # A budget at or near zero means the call cannot deliver
                                     # anything: the result is cut to a notice saying it was
                                     # cut, which reads to the model as a fresh failure rather
@@ -31554,11 +31864,11 @@ class LlamaCppBackend:
                                                 )
                                                 _result_budget = max(_result_budget, _rescued)
                                     kwargs["result_budget_tokens"] = _result_budget
-                                    _last_result_budget[0] = kwargs["result_budget_tokens"]
+                                    _budget_cell[0] = kwargs["result_budget_tokens"]
                                     # Known before the tool runs, so there is no reason to
                                     # spend calls rediscovering it: the repeat guard below
                                     # would reach the same conclusion three calls later.
-                                    _starved_call[0] = _result_budget < _MIN_USEFUL_RESULT_TOKENS
+                                    _starved_cell[0] = _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):
                                         # The admission check estimates a result's size by
@@ -31601,13 +31911,27 @@ class LlamaCppBackend:
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the
                         # tool's failure; the other two loops hand it back.
-                        try:
-                            result = yield from stream_tool_execution(
-                                _invoke_tool,
-                                tool_name = decision.tool_name,
-                                tool_call_id = decision.tool_call_id,
-                                cancel_event = cancel_event,
+                        _tool_stream = stream_tool_execution(
+                            _invoke_tool,
+                            tool_name = decision.tool_name,
+                            tool_call_id = decision.tool_call_id,
+                            cancel_event = cancel_event,
+                        )
+                        if _parallel_round:
+                            # Started here, read back below in the order the model asked
+                            # for. This is what makes the round overlap: the tools run
+                            # while the loop moves on to the next call.
+                            _pending_calls.append(
+                                _start_tool_call(
+                                    decision,
+                                    _tool_stream,
+                                    _last_result_budget,
+                                    _starved_call,
+                                )
                             )
+                            continue
+                        try:
+                            result = yield from _tool_stream
                         except _LlamaStreamCancelled:
                             # Subclasses Exception, so the arm below would eat
                             # the cancel signal. CancelledError needs no arm:
@@ -31624,141 +31948,53 @@ class LlamaCppBackend:
                             result = f"Error: tool raised an exception: {_tool_exc}"
                         if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
-                    # What the result actually cost against what it was allowed. The pair
-                    # is the only way to tell a budget that was never delivered from one
-                    # that was delivered and ignored, and a 400 one second after a tool
-                    # returns cannot distinguish them on its own.
-                    logger.info(
-                        "tool result: name=%s budget_tokens=%s chars=%d",
-                        decision.tool_name,
-                        _last_result_budget[0],
-                        len(result) if isinstance(result, str) else -1,
+                    yield from _settle_tool_call(
+                        decision, result, _last_result_budget, _starved_call
                     )
-                    # The window priced this result at nothing before the call ran, so the
-                    # model is told now rather than after three calls prove it.
-                    _result_was_starved = False
-                    # The budget says what the window ALLOWED, not what the tool returned.
-                    # A short result fits a few tokens completely -- "Created a.py", "OK",
-                    # the acknowledgement a mutation gives -- and telling the model that
-                    # nothing usable came back invites it to discard a successful write or
-                    # do it a second time. So the nudge waits for evidence the result was
-                    # actually cut: the truncation notice, or nothing at all.
-                    if (
-                        _starved_call[0]
-                        and isinstance(result, str)
-                        and (not result.strip() or _is_window_notice(result))
-                    ):
-                        _starved_call[0] = False
-                        _result_was_starved = True
-                        logger.info(
-                            "%s ran with a result budget below %d; telling the model the "
-                            "window cannot carry the result",
-                            decision.tool_name,
-                            _MIN_USEFUL_RESULT_TOKENS,
-                        )
-                        result = _starved_result_message(decision.tool_name, result)
+
+                # The round's overlapped calls, read back in the order the model asked for.
+                # Empty unless `_parallel_round`, so the sequential path never reaches here.
+                for (
+                    _p_decision,
+                    _p_stream,
+                    _p_queue,
+                    _p_result,
+                    _p_error,
+                    _p_budget,
+                    _p_starved,
+                ) in _pending_calls:
+                    if _p_queue is None:
+                        # Nothing was started for it: the RAG cap answered before the tool
+                        # would have run. It is here only to keep its place in the round.
+                        result = _p_result
                     else:
-                        # Cleared either way: it describes THIS call's budget, and leaving
-                        # it set would hand the notice to the next call instead.
-                        _starved_call[0] = False
-
-                    # ── No-progress guard: the same answer, over and over ──
-                    # Keyed on the RESULT, not the arguments. In the turn this came from,
-                    # the arguments differed every time (different line ranges of one file)
-                    # while the answer was the same 109-char truncation notice, so an
-                    # argument-keyed guard would have watched all 18 calls go by. OpenClaw
-                    # keys on the result for the same reason and never fires while results
-                    # are still changing, which is what makes this safe for polling.
-                    if isinstance(result, str):
-                        # The arguments are part of the key UNLESS the result is one the
-                        # window itself produced. A tool that answers every distinct
-                        # mutation with `OK` is making progress, and the nudge below --
-                        # which says different arguments will not change the answer -- can
-                        # talk it out of the operations it has left. A starved result is
-                        # the opposite: it is the notice, not the tool's answer, so the
-                        # arguments are exactly what must NOT be part of the key. That was
-                        # the observed turn, where 18 calls read different line ranges of
-                        # one file and got the same 109-char truncation notice each time.
-                        _result_key = (
-                            decision.tool_name,
-                            hashlib.sha1(result.encode("utf-8", "replace")).hexdigest(),
-                            None
-                            if _result_was_starved or _is_window_notice(result)
-                            else hashlib.sha1(
-                                json.dumps(decision.arguments, sort_keys = True, default = str).encode(
-                                    "utf-8", "replace"
-                                )
-                            ).hexdigest(),
-                        )
-                        if _result_key == _last_tool_result_key[0]:
-                            _identical_result_runs[0] += 1
-                        else:
-                            _last_tool_result_key[0] = _result_key
-                            _identical_result_runs[0] = 1
-                        if _identical_result_runs[0] >= _MAX_IDENTICAL_TOOL_RESULTS:
-                            logger.info(
-                                "%s returned the same result %d times; saying so instead of "
-                                "letting the turn spend itself repeating it",
-                                decision.tool_name,
-                                _identical_result_runs[0],
+                        try:
+                            while True:
+                                _kind, _payload = _p_queue.get()
+                                if _kind == "event":
+                                    yield _payload
+                                    continue
+                                if _kind == "result":
+                                    result = _payload
+                                    break
+                                raise _payload
+                        except _LlamaStreamCancelled:
+                            raise
+                        except Exception as _tool_exc:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise
+                            logger.exception(
+                                "Tool %s raised: %s",
+                                _p_decision.tool_name,
+                                _tool_exc,
                             )
-                            # Told, not silently stopped. The model can still finish the
-                            # task another way, and hard-stopping a turn that is otherwise
-                            # healthy would trade one dead end for a worse one.
-                            result = _repeated_result_message(
-                                decision.tool_name, _identical_result_runs[0], result
-                            )
-                            _identical_result_runs[0] = 0
-                            _last_tool_result_key[0] = None
-                    completion = tool_controller.record_result(decision, result)
-                    resolved_provisional_tool_call_ids.add(decision.tool_call_id)
-                    # A real execution opens the post-tool phase; carrying the pre-tool
-                    # stall text over would read the same sentence as a repeat and
-                    # swallow the one post-tool nudge.
-                    _last_reprompt_text = ""
-                    # A tool ran this turn, so it counts against the caller's budget.
-                    _turn_executed_real_tool = True
-                    _forced_choice_resolved = True
-                    yield completion.tool_end_event()
-                    conversation.append(completion.tool_message())
-                    if _compact_after_execution and decision.tool_call_id:
-                        # The promise the gate made when it let this run. Applied here
-                        # rather than on the next pass because the next pass may not
-                        # come: this turn's own generation is the request that would
-                        # otherwise be rejected.
-                        _before_len = len(json.dumps(conversation, default = str))
-                        conversation[:] = compact_executed_call_arguments(
-                            conversation, decision.tool_call_id
-                        )
-                        logger.info(
-                            "Compacted %s arguments after running it: %d -> %d chars",
-                            decision.tool_name,
-                            _before_len,
-                            len(json.dumps(conversation, default = str)),
-                        )
-                        # The compaction rebuilds the messages rather than mutating them,
-                        # so the local handle now points at a dict that is no longer in
-                        # `conversation`. One assistant turn can carry several calls, and
-                        # the next one in the batch appends its tool_call to this handle
-                        # while its RESULT goes to `conversation`: the model would receive
-                        # a tool result answering a call it cannot see. Rebind to the live
-                        # message carrying this call.
-                        # Backwards: generated ids restart at `call_0` every turn, so a
-                        # forward scan binds to the OLDEST turn carrying the id and the
-                        # rest of this batch is appended to history instead of to the live
-                        # exchange. The call being compacted is always the current one.
-                        for _msg in reversed(conversation):
-                            if _msg.get("role") != "assistant":
-                                continue
-                            if any(
-                                (_tc or {}).get("id") == decision.tool_call_id
-                                for _tc in (_msg.get("tool_calls") or [])
-                            ):
-                                assistant_msg = _msg
-                                break
-
-                    if _forced_tool_call_pending:
-                        _forced_tool_call_pending = False
+                            result = f"Error: tool raised an exception: {_tool_exc}"
+                    if _p_decision.tool_name in RAG_SEARCH_TOOLS:
+                        _kb_search_count += 1
+                    yield from _settle_tool_call(
+                        _p_decision, result, _p_budget, _p_starved
+                    )
+                _pending_calls = []
 
                 # A mixed execute/no-op batch already has a real tool result, so keeping the
                 # feedback with that result beats appending a newer user turn, which makes

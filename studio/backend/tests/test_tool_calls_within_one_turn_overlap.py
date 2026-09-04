@@ -342,3 +342,189 @@ class TestCancellation:
 
         lines = asyncio.run(_bounded())
         assert lines, "the round produced nothing before it was cancelled"
+
+
+# ── The local GGUF loop ───────────────────────────────────────────────────────────
+#
+# A separate implementation with the same requirement. It matters more for this work than
+# the provider loop does, because it is the path that decodes into the shared KV cache the
+# preemptor manages: a chat parked on three serial searches holds its cells for the sum of
+# the three.
+#
+# Its overlap comes from a different mechanism. `stream_tool_execution` spawns the tool's
+# worker inside its GENERATOR BODY, so building the generator starts nothing and the first
+# next() is what puts the tool in flight. The round primes every call, which starts them
+# all, and then reads their events back in order.
+
+
+from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
+from test_llama_cpp_tool_loop import _make_backend  # noqa: E402
+from test_llama_cpp_tool_loop import _sse as _gguf_sse  # noqa: E402
+
+
+def _gguf_round(calls):
+    """One assistant turn asking for `calls` = [(id, name, args-dict), ...]."""
+    return [
+        _gguf_sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": i,
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for i, (cid, name, args) in enumerate(calls)
+                ]
+            }
+        ),
+        _gguf_done(),
+    ]
+
+
+def _gguf_events(monkeypatch, calls, execute, *, tools = None, **kwargs):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [_gguf_round(calls), [_gguf_sse({"content": "Final answer."}), _gguf_done()]],
+        payloads,
+    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    names = sorted({name for _cid, name, _args in calls})
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = tools
+            or [{"type": "function", "function": {"name": name}} for name in names],
+            max_tool_iterations = 2,
+            **kwargs,
+        )
+    )
+    return events, payloads
+
+
+class TestTheLocalGgufLoopOverlapsToo:
+    def test_two_different_searches_run_together(self, monkeypatch):
+        barrier = threading.Barrier(2, timeout = 4)
+
+        def _execute(name, arguments, **_kwargs):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                return f"ALONE<{arguments.get('query')}>"
+            return f"TOGETHER<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 2
+        assert all("TOGETHER" in (end.get("result") or "") for end in ends), (
+            f"the round serialised: {[end.get('result') for end in ends]}"
+        )
+
+    def test_the_results_still_arrive_in_call_order(self, monkeypatch):
+        def _execute(name, arguments, **_kwargs):
+            return f"RESULT<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e.get("tool_call_id") for e in ends] == ["call_a", "call_b"]
+        assert [e.get("result") for e in ends] == ["RESULT<alpha>", "RESULT<beta>"]
+
+    def test_the_switch_reaches_this_loop_as_well(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "0")
+        barrier = threading.Barrier(2, timeout = 4)
+
+        def _execute(name, arguments, **_kwargs):
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                return f"ALONE<{arguments.get('query')}>"
+            return f"TOGETHER<{arguments.get('query')}>"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+            ],
+            _execute,
+        )
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert len(ends) == 2
+        assert all("ALONE" in (end.get("result") or "") for end in ends)
+
+    def test_a_round_that_repeats_a_call_stays_sequential(self, monkeypatch):
+        """The one dependency between a round's calls, and why it is checked up front.
+
+        `prepare_call` turns the second identical call into a no-op because
+        `record_result` put the first one's key in `_successful_keys`. Deciding that with
+        both in flight would run the tool twice, so a round containing a repeat keeps the
+        order it has always had, and the second call is suppressed exactly as before.
+        """
+        ran: list = []
+
+        def _execute(name, arguments, **_kwargs):
+            ran.append(arguments.get("query"))
+            return "search-result"
+
+        events, _payloads = _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "same"}),
+                ("call_b", "web_search", {"query": "same"}),
+            ],
+            _execute,
+        )
+        assert ran == ["same"], "the duplicate ran, so the round was overlapped"
+        # One card, not two: the suppressed call is an internal no-op and never opens one.
+        assert [e.get("type") for e in events].count("tool_end") == 1
+
+    def test_the_result_budget_is_divided_by_the_whole_batch(self, monkeypatch):
+        """Sequentially call k divides by the calls still to run, because `_spent` has
+        already grown by the results before it. Run together they all price against the
+        same `_spent`, so each dividing by its own remainder would hand out
+        B/N + B/(N-1) + ... , which is more than the batch has.
+        """
+        budgets: list = []
+
+        def _execute(name, arguments, **kwargs):
+            budgets.append(kwargs.get("result_budget_tokens"))
+            return f"RESULT<{arguments.get('query')}>"
+
+        _gguf_events(
+            monkeypatch,
+            [
+                ("call_a", "web_search", {"query": "alpha"}),
+                ("call_b", "web_search", {"query": "beta"}),
+                ("call_c", "web_search", {"query": "gamma"}),
+            ],
+            _execute,
+        )
+        given = [b for b in budgets if isinstance(b, int)]
+        if not given:
+            pytest.skip("this build does not pass result_budget_tokens")
+        # Not identical: each call still subtracts the ARGUMENTS of the calls after it,
+        # which is a real cost and differs per position. What must not differ is the
+        # divisor, and a wrong one shows up as a spread far larger than that: with three
+        # calls, B/3 against B/1 is a factor of three, where the argument term moves the
+        # figure by a few per cent.
+        assert max(given) <= min(given) * 1.2, (
+            f"the calls were priced against different batch sizes: {given}"
+        )
+        # And the batch as a whole must not be handed more than one call's worth of the
+        # window three times over.
+        assert sum(given) <= max(given) * 3.3
