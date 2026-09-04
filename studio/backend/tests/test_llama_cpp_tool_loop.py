@@ -5612,9 +5612,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     # The cap keeps the FIRST calls and drops the tail. Which of them reaches its tool
     # first is no longer fixed, since the round runs them together, so compare the set:
     # what the cap must never do is drop a leading call and keep a later one.
-    assert sorted(c[0] for c in calls) == sorted(
-        f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)
-    )
+    assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
 
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):

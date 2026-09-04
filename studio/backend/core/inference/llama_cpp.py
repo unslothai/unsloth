@@ -477,8 +477,6 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
-
-
 # What a started-but-not-yet-read call reports before it has finished.
 _TOOL_PRIME_PENDING = object()
 
@@ -523,6 +521,8 @@ def _start_tool_call(decision, stream, budget_cell, starved_cell):
     )
     driver.start()
     return (decision, stream, out_queue, _TOOL_PRIME_PENDING, None, budget_cell, starved_cell)
+
+
 class _CombinedCancelEvent:
     __slots__ = ("_events",)
 
@@ -31115,9 +31115,7 @@ class LlamaCppBackend:
                 # loop. Under `permission_mode == "auto"` only high-risk calls prompt, so a
                 # round of ordinary reads still overlaps.
                 _approval_gate = (
-                    bool(confirm_tool_calls)
-                    and not bypass_permissions
-                    and permission_mode != "off"
+                    bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
                 )
                 if _approval_gate and permission_mode == "auto":
 
@@ -31149,9 +31147,7 @@ class LlamaCppBackend:
                         except Exception:
                             return True
 
-                    _approval_gate = any(
-                        _round_call_is_risky(_tc) for _tc in (tool_calls or [])
-                    )
+                    _approval_gate = any(_round_call_is_risky(_tc) for _tc in (tool_calls or []))
                 # A round may only overlap when its calls cannot depend on each other's
                 # RESULTS. `prepare_call` has exactly two such dependencies, and both are
                 # written by `record_result`:
@@ -31796,7 +31792,8 @@ class LlamaCppBackend:
                                         # dividing by its own remainder would hand out
                                         # B/N + B/(N-1) + ... , more than the batch has. The
                                         # whole batch is the right divisor there.
-                                        len(tool_calls or []) if _parallel_round
+                                        len(tool_calls or [])
+                                        if _parallel_round
                                         else (len(_pending) + 1)
                                     )
                                     # A budget at or near zero means the call cannot deliver
@@ -31991,9 +31988,7 @@ class LlamaCppBackend:
                             result = f"Error: tool raised an exception: {_tool_exc}"
                     if _p_decision.tool_name in RAG_SEARCH_TOOLS:
                         _kb_search_count += 1
-                    yield from _settle_tool_call(
-                        _p_decision, result, _p_budget, _p_starved
-                    )
+                    yield from _settle_tool_call(_p_decision, result, _p_budget, _p_starved)
                 _pending_calls = []
 
                 # A mixed execute/no-op batch already has a real tool result, so keeping the

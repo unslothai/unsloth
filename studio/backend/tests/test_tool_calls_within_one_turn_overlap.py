@@ -382,7 +382,14 @@ def _gguf_round(calls):
     ]
 
 
-def _gguf_events(monkeypatch, calls, execute, *, tools = None, **kwargs):
+def _gguf_events(
+    monkeypatch,
+    calls,
+    execute,
+    *,
+    tools = None,
+    **kwargs,
+):
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -394,8 +401,7 @@ def _gguf_events(monkeypatch, calls, execute, *, tools = None, **kwargs):
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "go"}],
-            tools = tools
-            or [{"type": "function", "function": {"name": name}} for name in names],
+            tools = tools or [{"type": "function", "function": {"name": name}} for name in names],
             max_tool_iterations = 2,
             **kwargs,
         )
@@ -424,9 +430,9 @@ class TestTheLocalGgufLoopOverlapsToo:
         )
         ends = [e for e in events if e.get("type") == "tool_end"]
         assert len(ends) == 2
-        assert all("TOGETHER" in (end.get("result") or "") for end in ends), (
-            f"the round serialised: {[end.get('result') for end in ends]}"
-        )
+        assert all(
+            "TOGETHER" in (end.get("result") or "") for end in ends
+        ), f"the round serialised: {[end.get('result') for end in ends]}"
 
     def test_the_results_still_arrive_in_call_order(self, monkeypatch):
         def _execute(name, arguments, **_kwargs):
@@ -522,9 +528,9 @@ class TestTheLocalGgufLoopOverlapsToo:
         # divisor, and a wrong one shows up as a spread far larger than that: with three
         # calls, B/3 against B/1 is a factor of three, where the argument term moves the
         # figure by a few per cent.
-        assert max(given) <= min(given) * 1.2, (
-            f"the calls were priced against different batch sizes: {given}"
-        )
+        assert (
+            max(given) <= min(given) * 1.2
+        ), f"the calls were priced against different batch sizes: {given}"
         # And the batch as a whole must not be handed more than one call's worth of the
         # window three times over.
         assert sum(given) <= max(given) * 3.3
