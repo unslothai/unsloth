@@ -106,7 +106,7 @@ jobs:
               ("setsid", lambda: os.setsid()),
               ("nproc", bounded(resource.RLIMIT_NPROC, 10000)),
               ("fsize", bounded(resource.RLIMIT_FSIZE, 100 * 1024**2)),
-              ("data", bounded(resource.RLIMIT_DATA, 8 * 1024**3)),
+              ("rss", bounded(resource.RLIMIT_RSS, 8 * 1024**3)),
               ("cpu", bounded(resource.RLIMIT_CPU, 600)),
               ("nofile", bounded(resource.RLIMIT_NOFILE, int(os.sysconf("SC_OPEN_MAX")))),
           ]
