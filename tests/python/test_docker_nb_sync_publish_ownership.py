@@ -198,6 +198,43 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     assert (dest / REL).read_text(encoding = "utf-8") == V1
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root holds CAP_DAC_OVERRIDE, so a read-only marker does not stop the write",
+)
+def test_a_marker_the_user_cannot_truncate_is_still_advanced(tmp_path: Path):
+    """A root boot leaves the marker root-owned 0644 inside a directory the host user
+    owns. A later --user boot renames the state into place fine but `> marker` fails
+    on the truncate, so the refresh reported success while the marker stayed behind
+    and every start after that re-synced every notebook. Modelled here with a
+    read-only marker, which fails the same open(O_TRUNC)."""
+    template, dest, remote = _world(tmp_path)
+    synced = dest / ".unsloth_sync_commit"
+    synced.write_text("stale\n", encoding = "utf-8")
+    os.chmod(synced, 0o444)
+    try:
+        res = _run(tmp_path, template, dest, remote)
+    finally:
+        os.chmod(synced, 0o644)
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd = remote,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    assert res.returncode == 0, res.stderr
+    assert (dest / REL).read_text(encoding = "utf-8") == V2
+    assert synced.read_text(encoding = "utf-8").strip() == head, (
+        "the refresh published every notebook but left the marker at the old commit, "
+        "so every later start re-syncs the whole tree; "
+        f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    )
+    assert not (dest / ".unsloth_sync_commit.tmp").exists()
+    assert "Permission denied" not in res.stderr
+
+
 # mkdir(2) gives a new DIRECTORY the caller's uid and only setgid carries down, so a
 # category folder upstream adds lands root:root and the user cannot write into it
 

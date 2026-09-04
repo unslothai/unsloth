@@ -672,7 +672,13 @@ published=1
 mv "$TMPSTATE" "$STATE" 2>/dev/null || { rm -f "$TMPSTATE"; published=0; }
 # recording the commit after a failure makes the next boot exit on remote == last
 if [ "$failed" -eq 0 ] && [ "$published" -eq 1 ]; then
-    echo "$remote" > "$SYNCED" 2>/dev/null || true
+    # Renamed into place like the state above: a root boot leaves the marker root-owned
+    # 0644, so a later --user boot could publish the state but not truncate the marker,
+    # and every start after that re-synced every notebook while reporting success.
+    { printf '%s\n' "$remote" > "$SYNCED.tmp" && mv -f "$SYNCED.tmp" "$SYNCED"; } 2>/dev/null || {
+        rm -f "$SYNCED.tmp" 2>/dev/null || true
+        echo "[unsloth-nb] the sync marker could not be written in $DEST; the next start will refresh again"
+    }
 elif [ "$published" -eq 0 ]; then
     echo "[unsloth-nb] the sync state could not be written; leaving the sync marker so the next start retries"
 else
