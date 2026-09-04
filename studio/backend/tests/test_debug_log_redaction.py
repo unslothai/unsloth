@@ -113,6 +113,9 @@ SECRETS = [
     ('provider-cli --token="opaque Credential123456789"', "Credential123456789"),
     ("ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes", "hunter2hunter2"),
     ("Driver={SQL Server};Server=db;UID=app;Pwd=s3cretvalue", "s3cretvalue"),
+    ('{"credentials":"opaqueCredential123456"}', "opaqueCredential123456"),
+    ("credentials: opaqueCredential123456", "opaqueCredential123456"),
+    ("credential=opaqueCredential123456", "opaqueCredential123456"),
 ]
 
 # Real log lines. Each one must come back byte for byte.

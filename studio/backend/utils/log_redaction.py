@@ -51,6 +51,9 @@ _SECRET_KEYS = (
     "account[-_]?key|private[-_]?key(?:[-_]?data)?|pwd|"
     "password|passwd|passphrase|secret"
 )
+# "credentials" groups a mapping as often as it holds a secret, so only a scalar value is masked and a mapping keeps
+# its field names for the keys above to handle one by one
+_SCALAR_ONLY_KEYS = r"credentials?"
 _FLAG_SECRET_KEYS = _SECRET_KEYS + "|token"
 
 # No leading \b: "_" is a word character.
@@ -169,6 +172,16 @@ _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
     r"(?P<val>[^\"'\s,}\]]+)"
+)
+_QUOTED_SCALAR_ONLY_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SCALAR_ONLY_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
+    r"(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+)
+_PLAIN_SCALAR_ONLY_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SCALAR_ONLY_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
+    r"(?P<val>[^\"'\s|>,}\]{\[(][^\"'\r\n,}\]]*)"
 )
 # a flag takes its value after whitespace or "=": --token=<value> is as common as --token <value>
 _QUOTED_FLAG_RE = re.compile(
@@ -582,6 +595,8 @@ def _redact_credentials(text: str) -> str:
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _PLAIN_SCALAR_KV_RE.sub(_redact_kv, text)
     text = _KV_RE.sub(_redact_kv, text)
+    text = _QUOTED_SCALAR_ONLY_RE.sub(_redact_quoted_kv, text)
+    text = _PLAIN_SCALAR_ONLY_RE.sub(_redact_kv, text)
     text = _QUOTED_FLAG_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_FLAG_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _FLAG_RE.sub(_redact_kv, text)
