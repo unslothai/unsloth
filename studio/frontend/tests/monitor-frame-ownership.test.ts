@@ -204,7 +204,29 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
   );
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
   assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
-  assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
+  assert.match(
+    HOOK,
+    /clearFrame\(publisher\);\s*\n\s*\};/,
+    "and clear on unmount",
+  );
+});
+
+test("a closed lazy monitor cannot leave its load failure on screen", () => {
+  const mount = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/settings/settings-dialog-mount.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // Keep the rejected boundary mounted for a later retry, but only show its error while the user is
+  // still asking for the monitor. A slow rejected chunk must not outlive a quick Show -> Hide.
+  assert.match(
+    mount,
+    /fallback=\{\s*monitorOpen\s*\?\s*\(\s*<LazyImportFailure[\s\S]*?testId="floating-monitor-load-failure"[\s\S]*?\)\s*:\s*null\s*\}/,
+  );
 });
 
 

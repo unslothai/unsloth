@@ -2267,6 +2267,7 @@ test("every navigation waits for the query to settle, buttons included", async (
   assert.match(bar, /if \(count > 0\) \{\s*for \(const step of steps\)/);
 });
 
+
 test("the seam between the workspace and the surfaces in front of it is recorded", () => {
   const workspace = el("DIV", [el("P", [text("unsloth studio")])]);
   const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
