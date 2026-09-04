@@ -15,6 +15,7 @@ import {
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
+  deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
 } from "../model-config/per-model-config";
 
@@ -112,7 +113,7 @@ function foldCaseInsensitivePath(key: string): string | null {
   return trimmed.toLowerCase();
 }
 
-function foldOverrideKey(key: string): string {
+export function foldOverrideKey(key: string): string {
   // A path that folds does so whole, separators and casing together.
   const path = foldCaseInsensitivePath(key);
   if (path !== null) {
@@ -469,7 +470,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 
 // One in-flight write per model, so writes commit in issue order: otherwise the older
 // response can land last and resurrect the entry the newer one replaced. Models overlap.
-const writesByKey = new Map<string, Promise<void>>();
+const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
+
+export interface ModelOverrideWriteResult {
+  overrides: ApiModelOverrides;
+  /** Empty for a save, and from a backend that predates the field. */
+  removedKeys: string[];
+}
 
 export interface PutModelOverrideOptions {
   /**
@@ -491,7 +498,7 @@ export async function putModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
-): Promise<void> {
+): Promise<ModelOverrideWriteResult> {
   // Keyed by the folded identity: the backend resolves a legacy casing and the
   // normalized one to one row, so raw strings would open two queues and race again.
   const key = modelOverrideKey(
@@ -505,7 +512,7 @@ export async function putModelOverride(
     .then(() => sendModelOverride(modelId, ggufVariant, config, options));
   writesByKey.set(key, write);
   try {
-    await write;
+    return await write;
   } finally {
     // Only the last writer clears the slot, so a queue still building keeps order.
     if (writesByKey.get(key) === write) {
@@ -519,7 +526,7 @@ async function sendModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
-): Promise<void> {
+): Promise<ModelOverrideWriteResult> {
   const res = await authFetch(OVERRIDES_URL, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -556,12 +563,27 @@ async function sendModelOverride(
       await readFastApiError(res, "Failed to save model settings for the API"),
     );
   }
+  const body = (await res.json()) as {
+    overrides?: ApiModelOverrides;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    removed_keys?: unknown;
+  };
+  return {
+    overrides: body.overrides ?? {},
+    removedKeys: Array.isArray(body.removed_keys)
+      ? body.removed_keys.filter(
+          (key): key is string => typeof key === "string",
+        )
+      : [],
+  };
 }
 
 /**
  * Mirror a per-model config save to the backend without blocking the UI. Best-effort: the
  * localStorage write already happened, so a failed sync must not fail the save. Logged, not
  * toasted: an API load falls back to defaults until the next save.
+ *
+ * A forget also drops the local records for every spelling the server reports clearing.
  */
 export function syncModelOverride(
   modelId: string,
@@ -569,12 +591,18 @@ export function syncModelOverride(
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
 ): void {
-  void putModelOverride(modelId, ggufVariant, config, options).catch(
-    (error: unknown) => {
+  void putModelOverride(modelId, ggufVariant, config, options)
+    .then(({ removedKeys }) => {
+      if (!deletePerModelConfigsForOverrideKeys(removedKeys)) {
+        console.warn(
+          "Forgot model settings on the server, but this browser kept its own copy.",
+        );
+      }
+    })
+    .catch((error: unknown) => {
       console.warn(
         "Failed to mirror model settings to the server; an API load of this model will use defaults.",
         error,
       );
-    },
-  );
+    });
 }
