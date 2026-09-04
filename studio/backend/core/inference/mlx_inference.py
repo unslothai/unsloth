@@ -49,8 +49,9 @@ logger = get_logger(__name__)
 # the language model's forwards. mlx-vlm is driven through public generation kwargs
 # only: ``prompt_cache``, ``prompt_cache_state`` and ``prefill_step_size``.
 
-# Small enough that a short chat turn has a boundary; halving it costs roughly
-# a third of cold prefill throughput.
+# The grid the reuse boundary sits on, so it also decides how much of a short turn
+# can be reused: a prompt shorter than the step has no boundary at all. Cold prefill
+# is within noise of mlx-vlm's own step at 1k, 4k and 16k tokens.
 VLM_PROMPT_CACHE_PREFILL_STEP = 256
 VLM_PROMPT_CACHE_ENTRIES = 6
 
