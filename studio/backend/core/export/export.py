@@ -1364,9 +1364,7 @@ class ExportBackend:
                         GGUF_MODEL_CARD.format(
                             name = repo_id.split("/")[-1],
                             repo_id = repo_id,
-                            files = "\n".join(
-                                f"- `{os.path.basename(f)}`" for f in exported_ggufs
-                            ),
+                            files = "\n".join(f"- `{os.path.basename(f)}`" for f in exported_ggufs),
                         )
                     ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
                 else:
