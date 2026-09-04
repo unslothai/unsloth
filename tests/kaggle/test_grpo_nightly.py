@@ -171,20 +171,13 @@ def test_the_leg_list_default_survives_a_schedule_event():
 
 # ------------------------------------------------- the command line it composes
 
-# Every rule above reads the workflow as TEXT: that a leg list is selected, that
-# it replaces --all-kernels, that the schedule forces the gate. Each was true
-# and the nightly still never ran, because the build step also emitted
-# --with-studio unconditionally and build_kernel.py refuses that combination:
-#
-#     ::notice::running grpo,multi_gpu,latest_compile instead of the wired set
-#     --with-studio requires --all-kernels
-#     ##[error]Process completed with exit code 1
-#
-# Runs 33587255856 and 33716011285, which is every scheduled run there has ever
-# been. Both halves were guarded separately and neither guard could see the
-# other, so the rules below take the step's own shell body, run it, and hand the
-# argv it composes to the real parser. A pair of flags that cannot be passed
-# together is then a red on CPU rather than a nightly that quietly never fires.
+# Every rule above reads the workflow as TEXT, each was true, and the nightly
+# still never ran: the build step also emitted --with-studio unconditionally,
+# which build_kernel.py refuses next to --legs, so runs 33587255856 and
+# 33716011285 (every scheduled run there has ever been) died on
+# `--with-studio requires --all-kernels`. Two guards, neither able to see the
+# other. So the rules below run the step's own shell body and hand the argv it
+# composes to the real parser.
 
 
 def _build_step():
@@ -205,9 +198,9 @@ def _compose_argv(
 ):
     """Run the build step's shell body and return the argv it would invoke.
 
-    The body is executed by bash, not pattern-matched, so the branches decide
-    what is emitted exactly as they do on a runner. `python` is a stub on PATH
-    that records its arguments and exits 0, which is the only substitution.
+    Executed by bash, not pattern-matched, so the branches decide what is
+    emitted exactly as on a runner. The only substitution is `python`, a stub
+    on PATH that records its arguments.
     """
     import json
     import os
@@ -216,9 +209,8 @@ def _compose_argv(
 
     step = _build_step()
     # `inputs` is null on push and on a schedule, so every input expression is
-    # the empty string on both of the triggers modelled here. The one value
-    # that differs between them is LEG_LIST, and it comes from the workflow's
-    # own fallback rather than from a copy of the leg names kept here.
+    # empty on both triggers modelled here. Only LEG_LIST differs, and it comes
+    # from the workflow's own fallback rather than a copy kept here.
     nightly = ",".join(_nightly_legs())
     env_values = {
         "LEG_LIST": legs_input or (nightly if event == "schedule" else ""),
@@ -230,10 +222,7 @@ def _compose_argv(
         assert key in env_values, f"the build step gained {key}, which this rule does not model"
 
     body = step["run"]
-    # Interpolations left in the body itself. `steps.*.outputs.*` are refs the
-    # builder only echoes into the kernel, so any hex will do; the input
-    # expressions are empty for both triggers, which is what puts the run on
-    # the default branch of each `if`.
+    # `steps.*.outputs.*` are refs the builder only echoes, so any hex will do.
     body = body.replace("${{ steps.ref.outputs.ref }}", "0" * 40)
     body = body.replace("${{ steps.pins.outputs.zoo_ref }}", "1" * 40)
     body = body.replace("${{ inputs.shared_wheels }}", "")
@@ -252,8 +241,7 @@ def _compose_argv(
     (bindir / "python").chmod(0o755)
 
     env = dict(os.environ, PATH = f"{bindir}{os.pathsep}{os.environ['PATH']}", **env_values)
-    # The step writes its `studio` output here. Pointed at a real file so
-    # the rules can read what it published rather than what it printed.
+    # A real file, so the rules read what the step published, not what it printed.
     env["GITHUB_OUTPUT"] = github_output or str(tmp_path / "github_output")
     # `bash -e`, which is what GitHub runs a `run:` block under on Linux.
     proc = subprocess.run(
@@ -287,9 +275,8 @@ def _run_builder(argv, tmp_path):
 def test_the_nightly_command_line_is_one_the_builder_accepts(tmp_path):
     """THE RULE THAT WOULD HAVE CAUGHT IT.
 
-    Not "the flags look right" -- the step's own shell composes the argv and the
-    real builder is handed it. A nightly that cannot be built is a nightly that
-    does not exist, and it costs a scheduled run to find out.
+    Not "the flags look right": the step's own shell composes the argv and the
+    real builder is handed it.
     """
     argv, log, printed = _compose_argv("schedule", tmp_path)
     proc = _run_builder(argv, tmp_path)
@@ -302,10 +289,8 @@ def test_the_nightly_command_line_is_one_the_builder_accepts(tmp_path):
 
 
 def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
-    """The same rule for the trigger that was working, so a fix for the nightly
-    cannot be a regression for everything else. This is the pair: narrowing one
-    branch until it parses while breaking the other would satisfy the test
-    above on its own."""
+    """The pair to the rule above: narrowing one branch until it parses while
+    breaking the other would satisfy that one on its own."""
     argv, log, printed = _compose_argv("push", tmp_path)
     proc = _run_builder(argv, tmp_path)
     assert proc.returncode == 0, (
@@ -317,13 +302,9 @@ def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
 
 
 def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
-    """The specific pair that was mutually exclusive.
-
-    Asserted in BOTH directions. Dropping Studio from the nightly is only a fix
-    if the per-PR kernel still carries it -- otherwise the Studio payload is
-    covered by nothing at all, which is the failure
-    test_the_build_step_actually_packs_studio_in was written for.
-    """
+    """The pair that was mutually exclusive, asserted in BOTH directions:
+    dropping Studio from the nightly is only a fix if the per-PR kernel still
+    carries it, else the payload is covered by nothing."""
     nightly, _, _ = _compose_argv("schedule", tmp_path)
     assert "--with-studio" not in nightly, (
         "the nightly still asks for Studio alongside a leg list, which "
@@ -337,9 +318,9 @@ def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
 
 
 def test_studio_concurrent_still_reaches_the_builder_on_the_per_pr_run(tmp_path):
-    """`--studio-concurrent` moved inside the Studio branch, and a flag that
-    stops being passed is exactly the failure run 32674263571 shipped: the
-    variant of an A/B ran the control's schedule and nothing was red."""
+    """The flag moved inside the Studio branch. One that stops being passed is
+    the failure run 32674263571 shipped: the variant of an A/B ran the
+    control's schedule and nothing was red."""
     argv, _, _ = _compose_argv("push", tmp_path)
     assert "--studio-concurrent" in argv, (
         "the default per-PR build no longer shares a card, so Studio waits for "
@@ -355,9 +336,8 @@ def test_a_leg_list_dispatch_is_told_studio_is_not_aboard(tmp_path):
 
 
 def test_an_explicit_leg_dispatch_takes_the_same_path_as_the_nightly(tmp_path):
-    """`legs` is a workflow_dispatch input as well as a schedule fallback, and
-    it reaches the same branch. A hand dispatch naming one leg hit the identical
-    build failure."""
+    """`legs` is a dispatch input as well as a schedule fallback and reaches
+    the same branch, so a hand dispatch hit the identical build failure."""
     argv, _, printed = _compose_argv("workflow_dispatch", tmp_path, legs_input = "grpo")
     assert "--with-studio" not in argv, printed
     proc = _run_builder(argv, tmp_path)
@@ -365,18 +345,12 @@ def test_an_explicit_leg_dispatch_takes_the_same_path_as_the_nightly(tmp_path):
 
 
 def test_studio_concurrent_false_actually_removes_the_flag(tmp_path):
-    """The OTHER half of the input, and the text rules cannot see it.
+    """The OTHER half of the input, which the text rules cannot see.
 
-    `--studio-concurrent` moved into a branch, and a branch that hardcodes the
-    flag rather than reading the variable still contains every string the
-    workflow-text rules look for: STUDIO_CONCURRENT is still assigned from the
-    input, the input is still declared, and the flag still reaches the builder.
-    Only running it with the input set to `false` and finding the flag gone
-    says the switch works.
-
-    Reaching for it is not hypothetical either. Studio seeing both cards is the
-    only way its own device selection is under test at all, and that dispatch
-    is the one this input exists to make possible.
+    A branch that hardcoded the flag instead of reading the variable would
+    still contain every string they look for. Only running it with the input
+    `false` and finding the flag gone says the switch works, and that dispatch
+    is the only way Studio's own two-card device selection is under test.
     """
     off, _, printed = _compose_argv("workflow_dispatch", tmp_path, studio_concurrent = "false")
     assert "--studio-concurrent" not in off, (
@@ -394,15 +368,13 @@ def test_studio_concurrent_false_actually_removes_the_flag(tmp_path):
 
 
 def test_the_studio_reporter_is_told_when_studio_is_not_aboard(tmp_path):
-    """The build step publishes whether it packed Studio, and the reporter is
-    gated on it.
+    """The build step publishes whether it packed Studio; the reporter gates
+    on it.
 
-    `kaggle_studio_ci/report.py` filters the launcher's reports down to the
-    `studio-gpu` label and `own_verdict` answers an EMPTY set with `partial`,
-    carrying the notebook kernel's own reason. So an ungated reporter renders
-    "Unsloth GPU smoke: PARTIAL" on every leg-list run, describing a payload
-    that was never in the kernel and quoting a reason belonging to the other
-    half. Not red, which is worse: it is a section that reads like a result.
+    `own_verdict` answers an EMPTY `studio-gpu` report set with `partial`,
+    carrying the notebook kernel's reason, so an ungated reporter renders
+    "Unsloth GPU smoke: PARTIAL" on every leg-list run about a payload that was
+    never aboard. Not red, which is worse: it reads like a result.
     """
     for event, expected in (("schedule", "false"), ("push", "true")):
         outfile = tmp_path / f"out_{event}"

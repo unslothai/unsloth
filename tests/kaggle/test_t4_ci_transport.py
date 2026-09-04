@@ -2535,13 +2535,9 @@ def test_two_dispatches_can_hold_the_two_kaggle_slots_at_once():
 def _build_step_body(source):
     """The `Build the kernel notebooks` step, sliced by its NAME.
 
-    This used to slice from the first occurrence of the string
-    "build_kernel.py" anywhere in the file, which meant a comment mentioning
-    the script by name moved the window and the rules below started reading a
-    block of prose. That is a rule going red on a comment while the behaviour
-    it guards is untouched, and it is the shape that gets a check deleted
-    rather than read. The step's name is the stable anchor, and it is what
-    test_the_build_step_actually_packs_studio_in already uses.
+    Slicing from the first `build_kernel.py` in the file instead meant a
+    comment naming the script moved the window, and these rules went red on a
+    comment while the behaviour they guard was untouched.
     """
     return source.split("- name: Build the kernel notebooks")[1].split("- name:")[0]
 
