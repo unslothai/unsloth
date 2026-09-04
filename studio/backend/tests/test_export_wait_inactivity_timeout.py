@@ -20,19 +20,6 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-_loggers_stub = types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", types.ModuleType("structlog"))
-
-_utils_pkg = types.ModuleType("utils")
-_utils_pkg.__path__ = []
-_utils_paths_stub = types.ModuleType("utils.paths")
-_utils_paths_stub.outputs_root = lambda: Path("/tmp")
-sys.modules.setdefault("utils", _utils_pkg)
-sys.modules.setdefault("utils.paths", _utils_paths_stub)
-
-
 TIMEOUT = 10.0
 ONE_HOUR = 3600.0
 READ_SECONDS = 4.0
