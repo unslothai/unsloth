@@ -959,11 +959,14 @@ def test_live_unqualified_hosts_run_only_with_a_current_limited_grant(kind, monk
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object behavior")
-def test_windows_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp_path):
+def test_windows_limited_resource_setup_fails_before_payload_runs(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
     workdir = tmp_path / "limited-work"
     workdir.mkdir()
     sentinel = workdir / "payload-ran"
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_AS_GB", "invalid")
     capability = os_sandbox.capability_snapshot(force = True)
     grant = tool_isolation.issue_limited_grant(
@@ -986,11 +989,14 @@ def test_windows_limited_resource_setup_fails_before_payload_runs(monkeypatch, t
 
 
 @pytest.mark.skipif(os.name != "posix", reason = "POSIX pre-exec resource limits")
-def test_posix_limited_resource_setup_fails_before_payload_runs(monkeypatch, tmp_path):
+def test_posix_limited_resource_setup_fails_before_payload_runs(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
     workdir = tmp_path / "limited-work"
     workdir.mkdir()
     sentinel = workdir / "payload-ran"
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_AS_GB", "invalid")
     capability = os_sandbox.capability_snapshot(force = True)
     grant = tool_isolation.issue_limited_grant(
