@@ -2929,7 +2929,6 @@ def _cuda_ordinal_for(device: Any) -> int:
     if device is None:
         try:
             import torch
-
             return int(torch.cuda.current_device())
         except Exception:
             return 0
@@ -2961,7 +2960,6 @@ def available_system_memory_bytes() -> Optional[int]:
     """
     try:
         import psutil
-
         return int(psutil.virtual_memory().available)
     except Exception:
         pass
@@ -3009,9 +3007,8 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     # a load to the driver's figure is how a fit that the arithmetic says works pushes
     # the host into swap. Total is left alone: the pool really is that big, and callers
     # that reason about capacity rather than this moment's headroom want it.
-    if (
-        mod is getattr(torch, "cuda", None)
-        and cuda_device_is_unified_memory(_cuda_ordinal_for(device))
+    if mod is getattr(torch, "cuda", None) and cuda_device_is_unified_memory(
+        _cuda_ordinal_for(device)
     ):
         available = available_system_memory_bytes()
         if available is not None:

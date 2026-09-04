@@ -83,6 +83,7 @@ def HW():
     sys.modules["utils.hardware.hardware"] = module
     return module
 
+
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 
@@ -109,7 +110,8 @@ def _no_inherited_visibility_mask(monkeypatch):
 def integrated(HW, monkeypatch):
     """Classify device 0 as integrated with the measured pool size."""
     monkeypatch.setattr(
-        HW, "_cuda_device_integrated_and_total",
+        HW,
+        "_cuda_device_integrated_and_total",
         lambda index: (True, _REAL_POOL_BYTES) if index == 0 else None,
     )
     return _REAL_POOL_BYTES
@@ -119,7 +121,9 @@ def integrated(HW, monkeypatch):
 def discrete(HW, monkeypatch):
     """Classify every device as a normal card."""
     monkeypatch.setattr(
-        HW, "_cuda_device_integrated_and_total", lambda index: (False, 24 * GIB),
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (False, 24 * GIB),
     )
 
 
@@ -132,9 +136,11 @@ def unclassifiable(HW, monkeypatch):
 # ── the llama.cpp probe: nvidia-smi's carve-out ──────────────────────────────
 def test_smi_carve_out_is_replaced_by_the_real_pool(HW, integrated, monkeypatch):
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
     )
-    (idx, free_mib, total_mib), = LlamaCppBackend._apply_cuda_unified_memory_correction(
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
         [_SMI_CARVE_OUT]
     )
     assert idx == 0
@@ -147,9 +153,11 @@ def test_smi_carve_out_is_replaced_by_the_real_pool(HW, integrated, monkeypatch)
 def test_the_pool_is_capped_by_what_the_host_can_spare(HW, integrated, monkeypatch):
     """The pool is system RAM, so free RAM is the ceiling -- not the pool size."""
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 20000),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 20000),
     )
-    (_idx, free_mib, _total), = LlamaCppBackend._apply_cuda_unified_memory_correction(
+    ((_idx, free_mib, _total),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
         [_SMI_CARVE_OUT]
     )
     assert free_mib == 20000 - 1024
@@ -158,9 +166,11 @@ def test_the_pool_is_capped_by_what_the_host_can_spare(HW, integrated, monkeypat
 def test_unreadable_system_memory_still_beats_the_carve_out(HW, integrated, monkeypatch):
     """No RAM reading is not a reason to fall back to a figure known to be wrong."""
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: None),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: None),
     )
-    (_idx, free_mib, _total), = LlamaCppBackend._apply_cuda_unified_memory_correction(
+    ((_idx, free_mib, _total),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
         [_SMI_CARVE_OUT]
     )
     assert free_mib == 46477 - 1024
@@ -178,11 +188,14 @@ def test_an_unclassifiable_device_is_untouched(HW, unclassifiable):
 
 def test_only_the_integrated_device_in_a_mixed_host_is_rewritten(HW, monkeypatch):
     monkeypatch.setattr(
-        HW, "_cuda_device_integrated_and_total",
+        HW,
+        "_cuda_device_integrated_and_total",
         lambda index: (True, _REAL_POOL_BYTES) if index == 1 else (False, 24 * GIB),
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
     )
     rows = [(0, 20000, 24564), (1, 7929, 8128)]
     corrected = LlamaCppBackend._apply_cuda_unified_memory_correction(rows)
@@ -204,12 +217,16 @@ def test_a_visibility_mask_maps_physical_ids_to_driver_ordinals(HW, monkeypatch)
 
     monkeypatch.setattr(HW, "_cuda_device_integrated_and_total", _probe)
     monkeypatch.setattr(
-        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [3]),
+        LlamaCppBackend,
+        "_resolve_visible_physical_ids",
+        staticmethod(lambda: [3]),
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
     )
-    (idx, free_mib, total_mib), = LlamaCppBackend._apply_cuda_unified_memory_correction(
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
         [(3, 7929, 8128)]
     )
     assert asked == [0]
@@ -239,8 +256,8 @@ def _trusted(HW, monkeypatch, module, *, available_bytes):
 def test_free_is_capped_against_available_ram_on_a_unified_part(HW, integrated, monkeypatch):
     module = _FakeCudaModule(46297 * MIB, 46477 * MIB)
     free, total = _trusted(HW, monkeypatch, module, available_bytes = 39 * GIB)
-    assert free == (39 - 1) * GIB          # host reserve held back
-    assert total == 46477 * MIB            # capacity is real and left alone
+    assert free == (39 - 1) * GIB  # host reserve held back
+    assert total == 46477 * MIB  # capacity is real and left alone
 
 
 def test_a_free_reading_below_available_ram_is_kept(HW, integrated, monkeypatch):

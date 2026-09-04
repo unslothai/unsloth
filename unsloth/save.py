@@ -1190,7 +1190,6 @@ def unsloth_save_model(
         """
         try:
             from unsloth.models._uma_safetensors import is_integrated_unified_memory_gpu
-
             return is_integrated_unified_memory_gpu()
         except Exception:
             return False
@@ -1200,9 +1199,7 @@ def unsloth_save_model(
             return None
         idx = dev.index if dev.index is not None else torch.cuda.current_device()
         if idx not in _max_vram_by_device:
-            budget = int(
-                torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage
-            )
+            budget = int(torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage)
             # On a unified-memory part (GB10 / N1X, an AMD APU) that "VRAM" IS system
             # RAM, and `max_ram` above is a budget over the very same bytes. Two budgets
             # drawn on one pool is how a merge the arithmetic says fits sends the host to
