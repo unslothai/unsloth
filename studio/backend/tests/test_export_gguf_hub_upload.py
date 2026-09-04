@@ -465,3 +465,8 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
         .strip()
         .endswith("vision-language-model" if is_vlm else "unsloth")
     )
+    # The Hub filters on the exact string, and upstream's repos end up with both
+    # spellings: "llama.cpp" from its card, "llama-cpp" from its add_tags call.
+    tags = [line[2:] for line in seen["card"].split("---")[1].strip().splitlines()[1:]]
+    assert "llama.cpp" in tags
+    assert "llama-cpp" in tags

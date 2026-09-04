@@ -414,10 +414,13 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 """
 
 
+# Both llama.cpp spellings: the Hub filters on the exact string, and upstream ends up
+# with each -- "llama.cpp" from its card, "llama-cpp" from its add_tags call.
 GGUF_MODEL_CARD = """---
 tags:
 - gguf
 - llama.cpp
+- llama-cpp
 - unsloth{vlm_tag}
 ---
 
