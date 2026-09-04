@@ -31,7 +31,8 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 @pytest.fixture(scope = "module")
 def ips():
     spec = importlib.util.spec_from_file_location(
-        "_ips_wheelhouse_tags", REPO_ROOT / "studio" / "install_python_stack.py",
+        "_ips_wheelhouse_tags",
+        REPO_ROOT / "studio" / "install_python_stack.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -42,7 +43,12 @@ def _this_platform() -> str:
     return (sysconfig.get_platform() or "").replace("-", "_").replace(".", "_").lower()
 
 
-def _wheel(dist: str, py: str, abi: str, plat: str | None = None) -> str:
+def _wheel(
+    dist: str,
+    py: str,
+    abi: str,
+    plat: str | None = None,
+) -> str:
     return f"{dist}-1.0.0-{py}-{abi}-{plat or _this_platform()}.whl"
 
 
@@ -137,8 +143,8 @@ class TestInstallPs1Mirror:
 
     def test_wheel_names_are_filtered_by_interpreter_tag(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = source[source.index("$WoaWheelNames = @{}"):]
-        block = block[:block.index("$WoaDropCandidates")]
+        block = source[source.index("$WoaWheelNames = @{}") :]
+        block = block[: block.index("$WoaDropCandidates")]
         assert "$WoaWheelTag" in block, "the distribution name alone is not proof of availability"
         assert re.search(r"if \(\$parts\.Count -lt 5\) \{ continue \}", block)
         assert "abi3" in block and "^py3" in block

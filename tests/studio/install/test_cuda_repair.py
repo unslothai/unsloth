@@ -1317,9 +1317,12 @@ class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
 
     def test_an_explicit_cpu_pin_still_repairs_a_cuda_venv(self):
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cu134", repaired = "2.10.0+cpu",
-            expected_env = "cpu", index_url = self._PIN,
-            backend = "cpu", win_arm64 = True,
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_url = self._PIN,
+            backend = "cpu",
+            win_arm64 = True,
         )
         assert ok is True
         assert mock_pip.call_count == 1
@@ -1330,16 +1333,21 @@ class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
 
     def test_the_family_spelling_of_the_pin_is_honoured_too(self):
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cu134", repaired = "2.10.0+cpu",
-            expected_env = "cpu", index_family = "cpu",
-            backend = "cpu", win_arm64 = True,
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_family = "cpu",
+            backend = "cpu",
+            win_arm64 = True,
         )
         assert ok is True
         assert mock_pip.call_count == 1
 
     def test_a_driver_inferred_cuda_expectation_is_still_preserved(self):
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cu134", expected_env = "cu130", win_arm64 = True,
+            installed = "2.11.0+cu134",
+            expected_env = "cu130",
+            win_arm64 = True,
         )
         assert ok is True
         mock_pip.assert_not_called()
@@ -1348,8 +1356,10 @@ class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
         # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty; that
         # is a probe result, so the shortcut keeps the CUDA build as it does off-ARM.
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cu134", expected_env = "cpu",
-            nvidia = False, win_arm64 = True,
+            installed = "2.11.0+cu134",
+            expected_env = "cpu",
+            nvidia = False,
+            win_arm64 = True,
         )
         assert ok is True
         mock_pip.assert_not_called()
