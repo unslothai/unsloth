@@ -88,14 +88,25 @@ def test_the_child_does_not_repeat_the_parents_finalize(sync: str):
     )
 
 
-def test_the_child_re_arms_the_finalize_only_after_it_copies(sync: str):
+def test_the_child_re_arms_the_finalize_only_after_it_changes_the_tree(sync: str):
     tail = sync[sync.index("refreshed from GitHub") :]
     assert re.search(
-        r'if \[ "\$updated" -gt 0 \]; then\s*\n\s*_FINALIZED=0\s*\n\s*finalize', tail
+        r'if \[ "\$updated" -gt 0 \] \|\| \[ "\$removed" -gt 0 \]; then'
+        r"\s*\n\s*_FINALIZED=0\s*\n\s*finalize",
+        tail,
     ), (
-        "freshly copied notebooks arrive with the upstream Colab intro and have "
-        "to be stripped, but only when something was actually copied"
+        "freshly copied notebooks arrive with the upstream Colab intro and have to be "
+        "stripped, and a notebook deleted upstream leaves a link in the categorized "
+        "view, but neither justifies a second pass over a tree nothing touched"
     )
+
+
+def test_the_re_arm_is_still_conditional(sync: str):
+    """Non-vacuity for the test above: an unconditional finalize makes an up-to-date
+    boot noisy, which is why it is gated at all."""
+    tail = sync[sync.index("refreshed from GitHub") :]
+    assert "_FINALIZED=0" in tail
+    assert re.search(r"if \[[^\n]*\]; then\s*\n\s*_FINALIZED=0", tail), tail
 
 
 def test_the_lock_file_is_not_recorded_as_a_notebook(sync: str):

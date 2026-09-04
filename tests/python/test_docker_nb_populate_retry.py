@@ -146,3 +146,58 @@ def test_the_partial_marker_is_not_recorded_as_a_notebook(tmp_path: Path):
     skip = source[source.index("record_state() {") :]
     skip = skip[: skip.index("printf")]
     assert ".unsloth_sync_partial" in skip
+
+
+@behavioural
+def test_the_retry_keeps_records_the_refresh_added(tmp_path: Path):
+    """A retry rebuilds the state from the TEMPLATE alone, so anything the refresh did
+    in between is thrown away: a template file whose bytes upstream changed now differs
+    from the template and hits the "kept existing user file" branch, and a notebook that
+    exists only upstream is never visited at all. Both become user-owned for good, while
+    the commit marker is stamped anyway so it looks converged."""
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "sub").write_text("blocked", encoding = "utf-8")
+
+    assert _run(tmp_path, template, dest).returncode == 0
+    assert (dest / ".unsloth_sync_partial").exists()
+
+    # what the refresh does between the two boots
+    (dest / "a.ipynb").write_text("A-v2-from-upstream", encoding = "utf-8")
+    (dest / "remote_only.ipynb").write_text("R", encoding = "utf-8")
+    (dest / ".unsloth_sync_state").write_text(
+        f"{_sha256(dest / 'a.ipynb')}  a.ipynb\n"
+        f"{_sha256(dest / 'remote_only.ipynb')}  remote_only.ipynb\n",
+        encoding = "utf-8",
+    )
+
+    (dest / "sub").unlink()
+    second = _run(tmp_path, template, dest)
+    assert second.returncode == 0, second.stdout + second.stderr
+
+    state = _state(dest)
+    assert state.get("a.ipynb") == _sha256(dest / "a.ipynb"), (
+        "the refreshed copy is ours, not the user's; dropping its record freezes it"
+    )
+    assert state.get("remote_only.ipynb") == _sha256(dest / "remote_only.ipynb"), (
+        "a notebook that exists only upstream is never walked by the populate loop"
+    )
+    assert state.get("sub/b.ipynb") == _sha256(dest / "sub" / "b.ipynb")
+    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A-v2-from-upstream", (
+        "the retry must not overwrite the newer copy with the baked template"
+    )
+    assert len(state) == 3, state
+
+
+@behavioural
+def test_a_first_boot_records_only_what_it_populated(tmp_path: Path):
+    """Non-vacuity for the merge above: with no prior state there is nothing to carry
+    forward, so a stray file in DEST must not acquire a record."""
+    template = _template(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "not_ours.ipynb").write_text("N", encoding = "utf-8")
+
+    assert _run(tmp_path, template, dest).returncode == 0
+    assert set(_state(dest)) == {"a.ipynb", "sub/b.ipynb"}

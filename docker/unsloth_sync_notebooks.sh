@@ -9,6 +9,8 @@
 #                                     never touch the network
 #   UNSLOTH_KEEP_DELETED_NOTEBOOKS=1  do not restore notebooks the user deleted
 #                                     (default: deleted files are healed back)
+#   UNSLOTH_KEEP_REMOVED_NOTEBOOKS=1  keep pristine notebooks that upstream deleted
+#                                     or renamed (default: they are removed too)
 #   UNSLOTH_NOTEBOOKS_DIR=<path>      target dir (default /workspace/unsloth-notebooks)
 #   UNSLOTH_NOTEBOOKS_REPO=<url>      source repo (default unslothai/notebooks)
 #   UNSLOTH_NOTEBOOK_FETCH_TIMEOUT=N  seconds for each network op (default 60)
@@ -224,6 +226,27 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             populate_failed=$((populate_failed + 1))
         fi
     done < <(cd "$TEMPLATE" && find . -type f -print0)
+    # A RETRY must not throw away what we already manage. Between the failed populate
+    # and this run the refresh published newer bytes for template files and added
+    # notebooks that exist only upstream, and the loop above sees both as user files:
+    # the newer ones differ from the template so they hit the "kept existing user
+    # file" branch, and the upstream-only ones are never visited at all. Keeping only
+    # this loop's records hands all of them to the user permanently, while the commit
+    # marker below is stamped anyway, so it looks converged.
+    if [ -f "$STATE" ]; then
+        declare -A POPULATED=()
+        while IFS= read -r line; do
+            p="${line#*  }"
+            [ -n "$p" ] && [ "$p" != "$line" ] && POPULATED["$p"]=1
+        done < "$STATE.tmp"
+        while IFS= read -r line; do
+            p="${line#*  }"
+            [ -n "$p" ] && [ "$p" != "$line" ] || continue
+            [ -n "${POPULATED[$p]:-}" ] && continue
+            printf '%s\n' "$line" >> "$STATE.tmp"
+        done < "$STATE"
+        unset POPULATED
+    fi
     mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
     if [ "$populate_failed" -eq 0 ]; then
         rm -f "$PARTIAL" 2>/dev/null || true
@@ -353,6 +376,39 @@ while IFS= read -r -d '' f; do
     fi
 done < <(find "$TMP" -type f -print0)
 
+# Upstream deleted or renamed it. The loop above only walks the CLONE, so without
+# this the copy we published stays on disk while its record is dropped: the next
+# refresh reads it as user-owned, and unsloth_nb_view.py files it under "Other
+# Notebooks" for good. Over the last year upstream deleted 10 and renamed 7 nb/
+# notebooks, so these accumulate. Only a file that still hashes to what WE wrote is
+# removed, so an edited notebook stays; it merely stops being managed, which it had
+# already stopped being.
+removed=0
+if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ]; then
+    # A case-only rename upstream looks like a deletion here, because the clone is on
+    # a case-sensitive filesystem while $DEST may be a macOS or Windows bind mount
+    # where the old path resolves to the file just published.
+    declare -A CLONED_LOWER=()
+    while IFS= read -r -d '' f; do
+        p="${f#"$TMP"/}"
+        case "$p" in .git|.git/*) continue ;; esac
+        CLONED_LOWER["${p,,}"]=1
+    done < <(find "$TMP" -type f -print0)
+    for rel in "${!LAST[@]}"; do
+        [ -e "$TMP/$rel" ] && continue
+        [ -n "${CLONED_LOWER[${rel,,}]:-}" ] && continue
+        dst="$DEST/$rel"
+        [ -f "$dst" ] || continue
+        [ -n "${LAST[$rel]}" ] || continue
+        [ "$(hash_of "$dst")" = "${LAST[$rel]}" ] || continue
+        rm -f "$dst" 2>/dev/null && removed=$((removed + 1))
+        # one level, and never $DEST itself: `rmdir -p` would climb out of it
+        d="$(dirname "$dst")"
+        [ "$d" != "$DEST" ] && rmdir "$d" 2>/dev/null
+    done
+    unset CLONED_LOWER
+fi
+
 mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
 # recording the commit after a failure makes the next boot exit on remote == last
 if [ "$failed" -eq 0 ]; then
@@ -361,8 +417,8 @@ else
     echo "[unsloth-nb] $failed notebook(s) could not be written; leaving the sync marker so the next start retries"
 fi
 rm -rf "$TMP"
-echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream)"
-if [ "$updated" -gt 0 ]; then
+echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream), $removed removed upstream"
+if [ "$updated" -gt 0 ] || [ "$removed" -gt 0 ]; then
     _FINALIZED=0
     finalize
 fi
