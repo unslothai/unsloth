@@ -848,6 +848,86 @@ def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
         _update(studio)
 
 
+def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, tmp_path, capsys):
+    """Absence is what started the search, never what decided it.
+
+    With the launcher gone _launcher_health_error answers _LAUNCHER_ABSENT
+    whatever the cause, so reporting it named the one condition
+    _recovered_cli_health_error exists to excuse and said nothing about the
+    update. Issue #9804 is exactly that log: "not on disk", on an install whose
+    Studio then started normally, with no way to tell what actually failed.
+    """
+    _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3),
+    )
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the managed Python CLI returned 3 for --version" in err
+    assert "update failed because the updated launcher is not on disk" not in err
+
+
+def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tmp_path, capsys):
+    """The one branch where absence still belongs in the message.
+
+    _interpreter_health_error already spells this case out -- the launcher is
+    missing AND there is nothing beside it to ask -- so the reason carries the
+    absence itself and nothing is lost by reporting the reason alone.
+    """
+    scripts, _launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    (scripts / "python.exe").unlink()
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    # The whole clause, not "is missing": __enter__ already warns that the
+    # launcher is missing or invalid, and a loose match passes on that line
+    # alone -- which is what this test exists to catch.
+    assert (
+        "the updated launcher is missing and there is no managed interpreter"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_recovered_launcher_still_reports_what_setup_published(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """Parity guard: the reason only speaks when recovery could not answer.
+
+    Setup publishing a launcher that cannot run is still a failure, and the
+    previous one going back does not change what to report -- there the sampled
+    error IS the operative cause, so it must survive.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b"MZ-new")
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name == "unsloth.exe" and target.read_bytes() == ORIGINAL_LAUNCHER:
+            return types.SimpleNamespace(returncode = 0)
+        return types.SimpleNamespace(returncode = 1)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 1 for --version" in err
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    assert "The previous launcher was restored." in err
+
+
 def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
     monkeypatch, studio, tmp_path
 ):

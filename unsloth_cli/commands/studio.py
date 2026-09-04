@@ -4493,7 +4493,13 @@ class _WindowsLauncherUpdateTransaction:
         return False
 
     def _restore_runnable(self) -> bool:
-        """Put back the first copy that actually runs.
+        """Whether recovery left a runnable CLI. The bool of _restore_failure_reason."""
+        return self._restore_failure_reason() is None
+
+    def _restore_failure_reason(self) -> Optional[str]:
+        """Why the CLI is still not runnable, or None once it is.
+
+        Put back the first copy that actually runs.
 
         Passing the two-byte header check does not make a copy runnable, so a
         candidate that fails --version must not stop the next one being tried,
@@ -4508,13 +4514,19 @@ class _WindowsLauncherUpdateTransaction:
         corrupt one is to start it. It is confined to the case where the launcher
         was missing or truncated, since an intact one never reaches this loop:
         _launcher_health_error asks the interpreter and reports healthy.
+
+        Returns the reason rather than a bool because the reason is the only
+        thing that can say what went wrong: once the launcher is gone, the error
+        validate_launcher sampled is _LAUNCHER_ABSENT whatever the cause, so a
+        recovery decided by the interpreter probe reported the absence instead
+        of the verdict it actually acted on (issue #9804).
         """
         if self._launcher_health_error() is None:
-            return True
+            return None
         candidates = self._recovery_candidates()
         for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
-                return True
+                return None
         # Nothing ran. Leave the best candidate in place rather than whichever
         # one happened to be tried last.
         if candidates:
@@ -4523,7 +4535,7 @@ class _WindowsLauncherUpdateTransaction:
         # or one the policy denies, is still not a broken CLI, so ask the
         # interpreter before giving up. Asked only here, after every candidate
         # has been tried, so a launcher that could have been recovered still is.
-        return self._recovered_cli_health_error() is None
+        return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
         """Whether THIS launcher file starts and answers --version.
@@ -4725,7 +4737,8 @@ class _WindowsLauncherUpdateTransaction:
         published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
-            restored = self._restore_runnable()
+            reason = self._restore_failure_reason()
+            restored = reason is None
             # Setup publishing nothing is the case this transaction exists for:
             # a no-op pip update leaves the freed path empty, and the old
             # updater then deleted its own .deleteme, leaving no launcher at
@@ -4733,7 +4746,20 @@ class _WindowsLauncherUpdateTransaction:
             # launcher setup DID write and that cannot run is still a failure,
             # even though the previous one goes back.
             if published or not restored:
-                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                # Report what recovery actually decided on, not the condition
+                # that sent it looking. Once the launcher is gone `error` is
+                # _LAUNCHER_ABSENT for every cause, and absence is the one thing
+                # _recovered_cli_health_error has already excused -- so naming it
+                # here described the update by the symptom this class exists to
+                # forgive, and #9804 could not be diagnosed from its own log.
+                # `error` still answers when recovery SUCCEEDED and the launcher
+                # setup published is itself the broken one, which is the case the
+                # `published` arm above is for. _recover_missing_launcher already
+                # reports its cause this way.
+                typer.echo(
+                    f"Error: Unsloth Studio update failed because {reason or error}.",
+                    err = True,
+                )
                 if restored:
                     typer.echo("The previous launcher was restored.", err = True)
                 elif self._retained_backup() is not None:
