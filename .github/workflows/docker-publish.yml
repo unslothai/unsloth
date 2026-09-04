@@ -42,7 +42,11 @@ env:
 # Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
 # shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
 # run the moment a newer one is queued), so the earlier commit would publish no image
-# at all. tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
+# at all. The accepted cost is that two main commits can race to retag :core/:latest,
+# which is self-correcting on the next push, where a cancelled run leaves that commit
+# with no image at all. Each published image is still internally coherent: the digest
+# handoff and the smoke test read the immutable :core-sha- tag, never tags[0].
+# tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
