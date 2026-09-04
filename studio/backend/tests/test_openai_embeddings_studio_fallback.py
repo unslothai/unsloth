@@ -432,16 +432,19 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
         lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
     )
     request = _Request({"input": "alpha"})
+    # Relative to whatever the tally already holds: it is module state shared with the rest of
+    # the suite, so an absolute count is only right when this file runs alone.
+    before = kw.other_admitted_inference_count()
     kw.note_admitted_inference(request.scope)
-    assert kw.other_admitted_inference_count() == 1
+    assert kw.other_admitted_inference_count() == before + 1
     assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is True
     try:
         asyncio.run(inference_route.openai_embeddings(request, "tester"))
-        assert kw.other_admitted_inference_count() == 0
+        assert kw.other_admitted_inference_count() == before
         # Popped, so the middleware's finally cannot decrement the tally a second time.
         assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is None
     finally:
-        kw._admitted_inference = 0
+        kw._admitted_inference = before
 
 
 def test_cancelled_request_closes_its_monitor_row(studio_embedder):
