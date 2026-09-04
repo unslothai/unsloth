@@ -296,7 +296,8 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
 
 def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
     text = SETUP_PS1.read_text(encoding = "utf-8")
-    # The marker scan lives in Get-StudioAdoptableState;
+    # The marker scan lives in Get-StudioAdoptableState; Test-StudioOwnedAdoptable is the boolean
+    # view of it.
     helper_start = text.index("function Get-StudioAdoptableState")
     helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
     helper = text[helper_start:helper_end]
@@ -378,7 +379,7 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
 def test_install_ps1_writes_venv_marker_after_uv_venv():
     """install.ps1 must write .unsloth-studio-owned into $VenvDir after `uv venv` succeeds."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    # Anchored past the command token:
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
     venv_create = src.index("venv $VenvDir --python")
     tail = src[venv_create : venv_create + 1500]
     assert (

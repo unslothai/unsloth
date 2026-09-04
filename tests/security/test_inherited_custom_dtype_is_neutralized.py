@@ -65,7 +65,8 @@ def test_the_code_fields_of_an_inherited_value_are_emptied(monkeypatch):
     sanitized = neutralize_inherited_custom_dtype()
     checker, dtype, bnb, custom, execute = sanitized.split(";", 4)
     assert (custom, execute) == ("", "")
-    # The dtype fields of a well formed value still apply:
+    # The dtype fields of a well formed value still apply: that is what they already
+    # did, and the five fields stay because both packages assert on the count.
     assert (checker, dtype, bnb) == ("all", "torch.float16", "torch.float16")
     assert sanitized.count(";") == 4
 
@@ -171,7 +172,8 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
     monkeypatch.setenv(_ENV_KEY, hostile)
     monkeypatch.delenv("UNSLOTH_TEST_MARKER", raising = False)
 
-    # `disable = True` returns before any compilation, which is all this needs:
+    # `disable = True` returns before any compilation, which is all this needs: the
+    # sanitizing runs first.
     unsloth_compile_transformers(
         dtype = None,
         model_name = "unsloth/tiny",

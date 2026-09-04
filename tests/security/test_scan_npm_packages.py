@@ -394,7 +394,8 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
 
 
 def test_baseline_reopens_on_changed_evidence(tmp_path):
-    # Same package/file/pattern but changed flagged code must reopen:
+    # Same package/file/pattern but changed flagged code must reopen: the key now includes an
+    # evidence hash, so a new payload cannot ride a reviewed entry.
     bl = tmp_path / "bl.json"
     listed = _finding(
         "left-pad@1.0.0", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
@@ -920,7 +921,7 @@ def test_outbound_cred_surface_host_config_binds_full_context():
 
 
 def test_committed_baseline_is_empty_and_valid():
-    # Shipped baseline must parse and (by design) suppress nothing:
+    # Shipped baseline must parse and (by design) suppress nothing: the live corpus is clean.
     path = REPO_ROOT / "scripts" / "scan_npm_packages_baseline.json"
     assert path.is_file()
     doc = json.loads(path.read_text(encoding = "utf-8"))

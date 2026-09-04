@@ -93,6 +93,7 @@ def generate(self, prompts, **kwargs):
 """
 
 # A `sync_weights` the source patch cannot anchor on -- stands in for any future
+# TRL signature change, and is how we reach the all-or-nothing rollback branch.
 _SYNC_WEIGHTS_UNPATCHABLE = """
 def sync_weights(self, tags = None):
     self.llm.collective_rpc("update_weights")

@@ -211,7 +211,8 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
 
 
 def test_setup_publishing_no_launcher_restores_it_and_succeeds(monkeypatch, studio, tmp_path):
-    # The bug this transaction exists for:
+    # The bug this transaction exists for: pip finds unsloth already current, writes no launcher, and the old updater
+    # then deleted its own .deleteme and left the venv with none at all. Restoring is the right answer, not failing.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -412,7 +413,8 @@ def test_an_invalid_launcher_is_recovered_from_the_backup(monkeypatch, studio, t
 
 
 def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio, tmp_path):
-    # Refusing here would strand exactly the users the transaction exists for:
+    # Refusing here would strand exactly the users the transaction exists for: the previous updater could leave no
+    # launcher and no .deleteme, and before this the update simply carried on and let setup reinstall it.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     ran = []
 
@@ -494,7 +496,9 @@ def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, stud
 
 
 def test_a_replacement_published_by_setup_is_kept(monkeypatch, studio, tmp_path):
-    # The point of freeing the canonical path:
+    # The point of freeing the canonical path. uv only self-replaces its own executable, so it deletes a third-party
+    # console script outright and hard-errors when the file is in use; the pip fallback then no-ops on the
+    # already-satisfied bare unsloth and the upgrade is silently skipped.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     new_launcher = b"MZ-upgraded-launcher"
 
@@ -1047,7 +1051,8 @@ def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, stu
     monkeypatch.setattr(studio.subprocess, "run", blocked)
     assert not studio._managed_cli_package_present(python)
 
-    # A timeout is the other kind of no verdict, and it keeps the fallback:
+    # A timeout is the other kind of no verdict, and it keeps the fallback: slow is not broken, a cold venv under an
+    # antivirus scan is exactly this, and the re-exec has no timeout of its own to trip over.
     def slow(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd = "probe", timeout = 60)
 

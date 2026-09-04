@@ -309,7 +309,8 @@ def _macos_labels():
         for jid, job in doc["jobs"].items():
             if not isinstance(job, dict):
                 continue
-            # runs-on plus the matrix it may select from:
+            # runs-on plus the matrix it may select from: a retired image hides in an `include:`
+            # list just as easily as in a literal runs-on.
             blob = str(job.get("runs-on", ""))
             strategy = job.get("strategy") or {}
             blob += str((strategy.get("matrix") or {}) if isinstance(strategy, dict) else "")

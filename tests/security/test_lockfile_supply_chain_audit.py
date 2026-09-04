@@ -513,7 +513,8 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
     )
     combined_b = proc_b.stdout + proc_b.stderr
     assert "REQUIRES a justification" in combined_b, combined_b
-    # Per-file banner: a rejected value must fall through to the audit, not skip it.
+    # Per-file banner: a rejected value must fall through to the audit, not skip it. Clean fixture, so rc 0 with the
+    # audit performed.
     assert "[lockfile-audit] npm:" in combined_b, combined_b
     assert proc_b.returncode == 0, (
         f"rejected skip must still run the audit and pass a clean fixture; "

@@ -217,7 +217,8 @@ def test_apply_gpu_ids_predetect_never_probes_torch(spoof_xpu, monkeypatch):
 
 
 def test_apply_gpu_ids_predetect_xpu_build_writes_ze_mask(spoof_xpu, monkeypatch):
-    # Pre-detect on an XPU-build torch (version.xpu set, no cuda/hip):
+    # Pre-detect on an XPU-build torch (version.xpu set, no cuda/hip): the mask must go to
+    # ZE_AFFINITY_MASK without any runtime probe.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None)
@@ -343,8 +344,9 @@ def test_apply_gpu_ids_trusts_parent_backend_param(spoof_xpu, monkeypatch):
 
 
 def test_apply_gpu_ids_predetect_hidden_cuda_without_mask_prefers_xpu(spoof_xpu, monkeypatch):
-    # Hidden CUDA on an XPU-capable build prefers XPU even with NO ZE mask set (detection falls through to XPU in that
-    # Workers pass the parent's detected backend (config["device_backend"]):
+    # Hidden CUDA on an XPU-capable build prefers XPU even with NO ZE mask set (detection falls
+    # through to XPU in that state); writing the ids to CUDA_VISIBLE_DEVICES would re-expose the
+    # hidden CUDA.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = None, cuda_visible = "")

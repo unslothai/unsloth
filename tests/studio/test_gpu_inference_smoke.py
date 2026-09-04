@@ -18,9 +18,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-# Smallest instruct model in the CI fixture family;
+# Smallest instruct model in the CI fixture family; ~270M params loads and generates a few tokens
+# in seconds on any GPU.
 MODEL_ID = "unsloth/gemma-3-270m-it"
-# A handful of forced real tokens:
+# A handful of forced real tokens: enough to prove GPU decode produced content, short enough to
+# stay a few seconds.
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
 

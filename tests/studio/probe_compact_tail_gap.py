@@ -122,7 +122,8 @@ def run_engine(pw, engine: str) -> dict:
             result = page.evaluate(RUN_JS, [plan["messages"], 6])
             samples = result["samples"]
             first = samples[0]
-            # Empty band below the last mounted row, measured against the SETTLED value of the same quantity, not zero:
+            # Empty band below the last mounted row, measured against the SETTLED value of the same
+            # quantity, not zero: the bottom spacer and sticky footer leave a band either way.
             baseline = samples[-1]["gapBottom"]
 
             def netgap(s):
@@ -175,7 +176,8 @@ def run_engine(pw, engine: str) -> dict:
         )
         page.screenshot(path = str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
         out[height] = rounds
-        # After every height, not once at the end:
+        # After every height, not once at the end: a browser dying on the tallest viewport used to
+        # take every earlier measurement with it.
         (OUT / f"{LABEL}-{engine}-rounds.json").write_text(
             json.dumps(out, indent = 1), encoding = "utf-8"
         )

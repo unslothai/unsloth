@@ -577,7 +577,7 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
     assert failures and "not for this run" in failures[0]
     assert "Tesla P100-PCIE-16GB" in failures[0]
 
-    # Same reference, the card it was captured on:
+    # Same reference, the card it was captured on: compared normally.
     same = check_reference(
         observed,
         ref,
@@ -1046,7 +1046,8 @@ def _gptoss_result(**over) -> dict:
             "custom_dtype_env": "down_projs;mlp.router",
         },
         "environment": {"bf16_supported": False, "gpu_name": "Tesla T4"},
-        # What the feasibility probe measured:
+        # What the feasibility probe measured: every parameter on the one
+        # visible T4 and no accelerate dispatch at all.
         "placement_after_load": {
             "parameters_by_device": {"cuda:0": 20_900_000_000},
             "hf_device_map_devices": None,

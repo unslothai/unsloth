@@ -368,7 +368,8 @@ def run(base_url: str, pw) -> dict:
         scene["declared_default"] = denied_page.evaluate("() => window.__getDefaultPreference()")
         scene["page_errors"] = denied_errors
         s["12_storage_denied"] = scene
-        # Against the DECLARED default, not a hard-coded one:
+        # Against the DECLARED default, not a hard-coded one: which default
+        # ships is a product decision, this scene is about failing safe.
         if scene["preference"] is not scene["declared_default"]:
             p.append(
                 "12: a denied localStorage did not land on the declared default "

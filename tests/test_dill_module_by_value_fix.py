@@ -330,6 +330,7 @@ def test_the_widening_only_covers_modules_that_import_back():
     from unsloth.import_fixes import _dill_module_is_importable_by_name
 
     # Every call now carries the install ROOTS and the names installed there, because the widening is scoped to both;
+    # `json` stands in for a library that landed in one.
     package_dir = os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or ""))
     roots = (os.path.dirname(package_dir),)  # the package's install root
     installed = frozenset({os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"})
@@ -531,7 +532,7 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     (root / "withtop-1.0.dist-info" / "top_level.txt").write_text(
         "pkgone\n\n# comment\n", encoding = "utf-8"
     )
-    # The single module that name resolves to:
+    # The single module that name resolves to: a name is honoured only where it really is one file on disk.
     (root / "pkgone.py").write_text("X = 1\n", encoding = "utf-8")
     (root / "onlyrecord-1.0.dist-info").mkdir()
     (root / "onlyrecord-1.0.dist-info" / "RECORD").write_text(

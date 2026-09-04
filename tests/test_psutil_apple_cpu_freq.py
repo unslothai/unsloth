@@ -29,7 +29,7 @@ def _table(raw_freqs):
     return blob
 
 
-# Raw values as the tables actually appear:
+# Raw values as the tables actually appear: M1-M3 in Hz, M4+ in kHz.
 _M3_PERF_TABLE = _table([702_000_000, 2_016_000_000, 4_056_000_000])
 _M4_PERF_TABLE = _table([1_050_000, 3_000_000, 4_512_000])
 _M4_EFF_TABLE = _table([1_020_000, 2_592_000])
@@ -415,7 +415,8 @@ class TestOnRealAppleSilicon:
         assert IF._APPLE_MIN_PLAUSIBLE_CPU_MHZ <= sample.current <= IF._APPLE_MAX_PLAUSIBLE_CPU_MHZ
 
     def test_ioreg_reader_agrees_with_unaffected_psutil(self):
-        # On M1-M3 psutil is already right, so our reader must match it.
+        # On M1-M3 psutil is already right, so our reader must match it. On M4+
+        # psutil is the broken one, so compare against its x1000 rescale instead.
         freq_range = IF._apple_cpu_freq_range_mhz()
         if freq_range is None:
             pytest.skip("ioreg voltage-state tables unavailable on this host")

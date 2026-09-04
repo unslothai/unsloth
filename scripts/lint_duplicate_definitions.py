@@ -323,10 +323,13 @@ def _import_duplicates(body, scope, out) -> None:
         elif isinstance(node, ast.Import):
             module = None  # the source is per-alias for a plain import, not per-statement
         else:
-            # Class bodies are scanned too:
+            # Class bodies are scanned too: two `from m import x` inside one class bind x twice in that scope exactly
+            # as they would at module level.
             if isinstance(node, ast.ClassDef):
                 _import_duplicates(node.body, f"{scope}{node.name}.", out)
-            # Each control-flow branch on its own:
+            # Each control-flow branch on its own: `try: import x / except: import x` is the fallback idiom and stays
+            # clean, while two of the same import INSIDE one branch is the ordinary duplicate this looks for and used
+            # to be skipped with the branch.
             for nested in _branch_bodies(node):
                 _import_duplicates(nested, scope, out)
             continue
@@ -474,7 +477,8 @@ _SELF_TEST_CASES = [
     (1, "<<<<<<< HEAD\ndef go():\n    pass\n"),
     (1, "MAX_FUSED_SIZE: int = 65536\nMAX_FUSED_SIZE: int = 131072\n"),
     (1, "REGISTRY: dict = {}\nOTHER = 1\nREGISTRY = {'a': 1}\n"),
-    # Two aliases from one module landing on the same bound name:
+    # Two aliases from one module landing on the same bound name: the second wins and the first is dead, which is the
+    # silent half of this bug.
     (1, "from m import x as value\nfrom m import y as value\n"),
     (1, "from m import x as value, y as value\n"),
     # A class body is a scope too, for imports as well as for defs.
@@ -490,7 +494,8 @@ _SELF_TEST_CASES = [
         "    def v(self):\n        return 1\n\n    @functools.cached_property\n"
         "    def v(self):\n        return 2\n",
     ),
-    # Constants declared together in one tuple target:
+    # Constants declared together in one tuple target: duplicating the line rebinds every one of them, so each is its
+    # own finding.
     (4, "B, H, N, D = 1, 16, 50345, 128\nB, H, N, D = 2, 3, 4, 5\n"),
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
     # Negative controls: each of these is correct code and must report nothing.
@@ -540,10 +545,12 @@ _SELF_TEST_CASES = [
     ),
     # ...but the alias has to be typing's.
     (1, "import types as t\n@t.overload\ndef f(x): ...\n@t.overload\ndef f(x): ...\n"),
-    # One explicit alias, two sources:
+    # One explicit alias, two sources: the second silently replaces the first, so the first is a dead binding. Keying
+    # on the source made the two look unrelated.
     (1, "import urllib.parse as client\nimport urllib.request as client\n"),
     (1, "from os import path as v\nfrom sys import modules as v\n"),
-    # The shape that legitimately binds one name twice, and must stay legitimate:
+    # The shape that legitimately binds one name twice, and must stay legitimate: two plain imports of different
+    # submodules, both binding the package root.
     (0, "import urllib.parse\nimport urllib.request\n"),
     # A plain import binds the ROOT of its dotted path, so this repoints `urllib` from the package to the submodule and
     # Still caught: the same package root rebound from the package to a submodule.

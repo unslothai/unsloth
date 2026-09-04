@@ -199,7 +199,8 @@ def test_the_heartbeat_includes_a_poll_no_preference_can_switch_off():
     has no document.hidden check either, so a minimised window keeps it going.
     """
     assert freeze.INTERFACE.findall('127.0.0.1 "GET /api/export/status" 200')
-    # The preference-gated polls still count when they are running:
+    # The preference-gated polls still count when they are running: a hit from any of them
+    # is equally good proof that the webview is alive. Only their absence means nothing.
     optional = (
         '127.0.0.1 "GET /api/inference/monitor" 200\n'
         '127.0.0.1 "GET /api/inference/status" 200\n'
@@ -414,7 +415,8 @@ def test_the_gate_and_the_cleanup_share_one_attribution_rule():
     import inspect
 
     assert "studio_backend_pids()" in inspect.getsource(freeze.stop_leftover_backend)
-    # And the rule itself is the command line, not /proc/<pid>/exe:
+    # And the rule itself is the command line, not /proc/<pid>/exe: the backend runs from
+    # a venv whose python is a symlink, so exe resolves to the system interpreter.
     source = inspect.getsource(freeze.studio_backend_pids)
     assert "/cmdline" in source
     assert "{pid}/exe" not in source

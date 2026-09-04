@@ -154,7 +154,7 @@ def _guard_block():
 def test_the_backends_are_opted_out_of_before_transformers_loads():
     block = _guard_block()
     assert block is not None, "the opt-out block is gone"
-    # Run the block rather than grep its source:
+    # Run the block rather than grep its source: grepping only tracked the spelling.
     environ = {}
     _exec_guard({}, environ)
     assert environ.get("USE_TF") == "0"
@@ -565,7 +565,7 @@ def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
     _exec_guard({"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
     assert import_utils.USE_TF == "0"
     assert import_utils.USE_JAX == "0"
-    # Not a blunter write than the flag clearing:
+    # Not a blunter write than the flag clearing: the same opt-outs still hold.
     for modules, environ, kept in (
         ({"tensorflow": object()}, {}, "USE_TF"),
         ({"jax": object()}, {}, "USE_JAX"),

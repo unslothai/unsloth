@@ -104,6 +104,7 @@ def test_st_models_re_exports(tag: str):
     )
 
 
+# Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
@@ -124,7 +125,6 @@ def test_st_transformer_base_class_either_path(tag: str):
 
 
 # Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
-# Transformer base class: unsloth probes alternate paths;
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
     """unsloth builds saved ST models via Transformer.load(...) so the saved

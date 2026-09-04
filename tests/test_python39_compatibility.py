@@ -216,7 +216,8 @@ def evaluated_annotations(tree):
     return out
 
 
-# A `|` between these is a union, not arithmetic:
+# A `|` between these is a union, not arithmetic. These are the builtin types; `None` and whatever the module pulled
+# in from typing count as anchors too, and are handled in the check below.
 TYPE_ANCHORS = frozenset(
     {
         "str",

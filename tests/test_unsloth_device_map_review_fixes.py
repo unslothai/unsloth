@@ -408,7 +408,7 @@ def test_a_device_the_caller_names_but_we_cannot_measure_survives():
     budgets = planner.calls[0][1]["max_memory"]
     assert budgets[0] == 4 * 2**30
     assert budgets["cpu"] == 30 * 2**30
-    # Unreadable and unmeasured:
+    # Unreadable and unmeasured: theirs, verbatim, for the planner to make sense of.
     assert budgets["disk"] == "unreadable"
 
 

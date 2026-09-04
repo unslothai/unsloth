@@ -666,7 +666,8 @@ class TestSourceCodePatterns:
         # Usability gating (not routing) still distinguishes a hidden GPU.
         assert '[ "$_setup_nvidia_usable" = true ]' in content
         assert "CUDA_VISIBLE_DEVICES" in content
-        # The GPU-tooling probe (PR #4562) stays:
+        # The GPU-tooling probe (PR #4562) stays: ROCm detection goes through
+        # command -v, not a bare presence loop that mishandled a hidden nvidia-smi.
         assert "command -v rocminfo" in content
         assert "command -v amd-smi" in content
 
@@ -697,7 +698,7 @@ class TestSourceCodePatterns:
         assert 'build failed; retrying CPU build..." "$C_WARN"' in content
         assert 'run_quiet_no_exit "cmake llama.cpp (cpu fallback)"' in content
         assert "-DGGML_METAL=OFF" in content
-        # Reset to false in both fallback branches:
+        # Reset to false in both fallback branches: 1 init + 2 resets = >=3.
         assert content.count("_TRY_METAL_CPU_FALLBACK=false") >= 3, (
             "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
             "(init + configure fallback + build fallback)"

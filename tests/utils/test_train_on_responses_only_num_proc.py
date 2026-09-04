@@ -234,14 +234,16 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
 
 @pytest.fixture
 def _spawn(monkeypatch):
+    # Both modules on spawn, the ordinary Windows host. The interesting case is when they
+    # disagree, which is what _split below covers.
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: False)
 
 
 @pytest.fixture
 def _split(monkeypatch):
-    # Both modules on spawn, the ordinary Windows host.
-    # multiprocess on spawn, stdlib still on fork:
+    # multiprocess on spawn, stdlib still on fork: a None here is "size it for me" to the zoo,
+    # and datasets then builds that pool on the spawn context.
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: True)
 

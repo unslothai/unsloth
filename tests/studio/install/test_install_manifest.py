@@ -307,7 +307,9 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
 ):
     assert im.remove_manifest(install_root) is True
 
-    # A surviving marker must be reported, not swallowed:
+    # A surviving marker must be reported, not swallowed: the dependency pass
+    # would then run behind a manifest that still verifies, so a part-way kill
+    # looks complete.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = im.manifest_path(install_root)
 

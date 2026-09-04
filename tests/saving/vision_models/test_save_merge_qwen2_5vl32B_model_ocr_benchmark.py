@@ -67,7 +67,7 @@ def format_data(sample):
 
 
 system_message = "You are an expert french ocr system."
-# List comprehension (not .map):
+# List comprehension (not .map): .map would convert PIL images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 

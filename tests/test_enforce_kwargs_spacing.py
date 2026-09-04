@@ -306,6 +306,7 @@ def test_merge_adjacent_strings_skips(src):
 
 
 def test_fstring_fold_skipped_when_statement_would_not_collapse():
+    # Folding a long f + plain assert message can't fit on one line, so leave it.
     src = (
         "def f():\n"
         "    assert some_condition_holds_here, (\n"
@@ -327,8 +328,7 @@ def test_fstring_fold_applied_when_statement_collapses():
 
 
 def test_fstring_fold_applied_inside_large_multiline_call():
-    # Folding a long f + plain assert message can't fit on one line, so leave it.
-    # The fit guard only restricts asserts;
+    # The fit guard only restricts asserts; an f + plain arg in a big call folds.
     src = (
         "findings.append(\n"
         "    Finding(\n"

@@ -83,7 +83,7 @@ def _has_unsloth() -> bool:
     return importlib.util.find_spec("unsloth") is not None
 
 
-# unsloth-zoo modules with no top-level vllm/CUDA import:
+# unsloth-zoo modules with no top-level vllm/CUDA import: must load cleanly under spoof.
 _ZOO_VLLM_FREE_MODULES = [
     "unsloth_zoo.compiler",
     "unsloth_zoo.compiler_replacements",
@@ -234,7 +234,7 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
     )
 
 
-# FastModel.from_pretrained kwarg stability:
+# FastModel.from_pretrained kwarg stability: removal becomes silent positional drift.
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_fast_model_from_pretrained_kwargs_under_spoof():
     sys.modules.pop("unsloth", None)

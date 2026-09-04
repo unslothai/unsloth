@@ -207,7 +207,7 @@ def _staleness_inputs_ps1() -> set[str]:
     )
 
     found = set()
-    # The recursive subdirectory sweep:
+    # The recursive subdirectory sweep: foreach ($subDir in @("src", "public")).
     sub = re.search(r"foreach \(\$subDir in @\(([^)]*)\)\)", body)
     assert sub, "setup.ps1's staleness check no longer sweeps a list of subdirectories"
     for name in re.findall(r'"([^"]+)"', sub.group(1)):
@@ -580,7 +580,9 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
     assert (
         "building frontend" in body
     ), "the reuse assertion does not look for the rebuild marker both installers emit"
-    # Each guarded condition, and the failure that must follow it.
+    # Each guarded condition, and the failure that must follow it. Counting `exit 1`s
+    # instead let a mutation through: turning the missing-log branch into a warning plus
+    # `exit 0` left the total unchanged, because the `exit 1` beneath it stayed.
     for condition, what in (
         (r'\[\s+!\s+-f\s+"\$INSTALL_LOG"\s+\]', "a missing install log"),
         (r'\[\s+!\s+-d\s+"\$DIST"\s+\]', "a dist that vanished during the install"),

@@ -362,7 +362,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_a_cpu_build_with_no_version_alone(self, mock_pip):
-        # Every field empty is a CPU build with an unreadable version:
+        # Every field empty is a CPU build with an unreadable version: nothing to repair.
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -375,7 +375,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_the_venv_alone_when_the_probe_said_nothing(self, mock_pip):
-        # Exit 0 with no line of ours:
+        # Exit 0 with no line of ours: we learned nothing, so we touch nothing.
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",

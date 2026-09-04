@@ -318,7 +318,8 @@ def main():
         page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
 
         step("an unsaved chat still edits the installation defaults")
-        # plain /chat runs on a runtime-made thread id with no row:
+        # plain /chat runs on a runtime-made thread id with no row: treating that as an open
+        # chat would stop every toggle made before the first message from persisting at all.
         settle(page)
         pill(page, "Search").click()
         page.wait_for_timeout(600)
@@ -332,7 +333,8 @@ def main():
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh:
+        # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
+        # leave a permission level behind, so the default is set here rather than assumed.
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",

@@ -20,7 +20,7 @@ BNB_TAGS = [
 ]
 
 
-# bnb.functional dequantize_4bit / quantize_4bit:
+# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_4bit(tag: str):
     candidates = [
@@ -37,7 +37,7 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# bnb.nn.Linear4bit / Params4bit:
+# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 @pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_linear4bit_classes(tag: str):
     candidates = [

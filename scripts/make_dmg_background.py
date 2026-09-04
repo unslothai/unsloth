@@ -64,6 +64,7 @@ GLOW_BOTTOM_START = 50.0
 GLOW_BOTTOM_SPAN = 30.0
 
 # chevron between the two icons, sized to match the macOS installers this mirrors:
+# a light 16x27pt mark in neutral grey, not a heavy arrow.
 CHEVRON_HALF_W, CHEVRON_HALF_H = 8.0, 13.5
 CHEVRON_STROKE = 6.0
 CHEVRON_COLOR = (87, 87, 87, 255)

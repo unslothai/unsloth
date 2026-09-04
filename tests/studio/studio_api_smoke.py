@@ -175,7 +175,7 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
         fail(f"GET {endpoint} unauthenticated returned {code} (expected 401/403)")
 
 
-# Rotate password to NEW for a working bearer:
+# Rotate password to NEW for a working bearer: bootstrap login -> change-password -> login NEW.
 section("Rotate bootstrap password for downstream tests")
 code, old_token = login(OLD)
 if code != 200 or not old_token:
@@ -494,7 +494,7 @@ else:
     fail(f"bogus gguf_variant returned {code} (expected 4xx)")
 
 
-# Force-reload of the same repo:
+# Force-reload of the same repo: the child PID must change.
 def _llama_pid() -> int | None:
     code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):

@@ -757,7 +757,8 @@ class TestBuildPipCmdUpgradeIntent:
         assert "--upgrade-package" not in cmd, "pip does not understand the uv flag"
 
     def test_torch_is_not_dragged_along(self):
-        # only-if-needed is pip's current default, but it is the load-bearing part:
+        # only-if-needed is pip's current default, but it is the load-bearing part: eager would
+        # re-resolve the existing torch build.
         cmd = ips._build_pip_cmd(("--upgrade-package", "unsloth"))
         assert cmd[cmd.index("--upgrade-strategy") + 1] == "only-if-needed"
 
@@ -873,7 +874,7 @@ class TestDamagedCorePayloadRepair:
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
         monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is False
-        # Off before the core phase:
+        # Off before the core phase: a fresh run has nothing installed yet.
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
 
     def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
@@ -2110,7 +2111,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: order.append("install") or True)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        # Two records, so two uninstalls:
+        # Two records, so two uninstalls: pip removes one per invocation.
         assert order == ["stage", "uninstall", "uninstall", "install"]
 
     def test_repair_leaves_the_install_alone_when_the_replacement_cannot_be_fetched(
@@ -2637,7 +2638,8 @@ class TestExpectedTorchFlavorResolution:
             assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
 
     def test_a_credentialed_index_survives_intact(self):
-        # The URL is forwarded rather than rebuilt:
+        # The URL is forwarded rather than rebuilt: userinfo and a token query are not
+        # reconstructible from a family leaf.
         url = "https://user:tok@mirror.local/whl/cu128?token=abc"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = url):
             assert ips._expected_torch_index_url("cu128") == url

@@ -266,7 +266,8 @@ def test_the_helper_makes_apt_fail_fast() -> None:
         f"default that a stalled mirror still eats the step budget"
     )
 
-    # Ordering is the whole value:
+    # Ordering is the whole value: configured inside or after the retry loop, the first attempt,
+    # the one that actually stalls, runs unconfigured.
     configure = source.index("configure_apt_fail_fast\n\nfor attempt")
     loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
     assert configure < loop, (

@@ -445,7 +445,7 @@ def test_an_adapter_ref_never_reaches_the_base_tokenizer():
     """On a PEFT load the late gate is skipped, so the gated value still names the
     adapter. The base repo's tokenizer must take the model load's ref, which is None."""
     gate = _load_tokenizer_gate()
-    # Remote adapter, no explicit tokenizer_name:
+    # Remote adapter, no explicit tokenizer_name: the tokenizer follows the base model.
     assert gate(None, "org/base", "org/adapter", "v2", None) is None
 
 

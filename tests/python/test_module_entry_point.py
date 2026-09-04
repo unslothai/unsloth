@@ -119,7 +119,8 @@ def _console_argv(*args: str) -> list[str]:
     return [str(_CONSOLE_SCRIPT), *args]
 
 
-# Cover a clean exit, both help renderers (rich draws box characters here), and the two error shapes:
+# Cover a clean exit, both help renderers (rich draws box characters here), and the two error
+# shapes: an unknown option at the root and inside a subcommand.
 PARITY_CASES = [
     pytest.param(["--version"], id = "version"),
     pytest.param(["--help"], id = "help"),

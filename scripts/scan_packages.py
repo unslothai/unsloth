@@ -3276,7 +3276,8 @@ def main() -> int:
         _write_baseline(args.write_baseline, all_findings, source = baseline_path)
         return 0
 
-    # Exit 1 only if a NON-baselined CRITICAL or HIGH remains. This is the signal CI gates on.
+    # Exit 1 only if a NON-baselined CRITICAL or HIGH remains. This is the signal CI gates on once the baseline
+    # reaches a clean run.
     if any(f.severity in (CRITICAL, HIGH) for f in active):
         return 1
     return 0

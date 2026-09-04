@@ -220,6 +220,11 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     )
     job = document["jobs"]["ui-indicator"]
     # Two narrowings, each closing a way this check could pass on nothing:
+    #   uncommented -- commenting a line out is how an invocation gets disabled, and a raw substring
+    #     test reads `# bash ...engine` as coverage.
+    #   only the steps that invoke the helper -- scanning every run in the job would read
+    #     `playwright install --with-deps chromium firefox webkit` as coverage, and that step names
+    #     all three engines whether or not any of them is ever driven.
     runs = _uncommented(
         "\n".join(
             str(step.get("run", ""))

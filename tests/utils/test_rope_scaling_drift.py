@@ -202,7 +202,7 @@ def test_llama3_scaling_applied_to_inv_freq():
     expected = _reference_inv_freq(config, "llama3")
     vanilla = _vanilla_inv_freq()
 
-    # Guard against a vacuous test:
+    # Guard against a vacuous test: scaled inv_freq must differ from vanilla.
     assert not torch.allclose(
         expected, vanilla, rtol = 1e-4
     ), "test setup error: llama3-scaled inv_freq should differ from vanilla"
@@ -509,7 +509,7 @@ def test_object_style_rope_scaling_does_not_crash():
 
 def test_object_style_rope_scaling_on_config_delegates_correctly():
     # Object-style rope_scaling must be normalized, not .get()'d directly.
-    # 'linear' has no inline fallback;
+    # 'linear' has no inline fallback; only the normalized-config retry passes this.
     from dataclasses import dataclass
 
     from unsloth.models.llama import _compute_config_rope_inv_freq

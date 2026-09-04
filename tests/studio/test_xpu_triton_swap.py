@@ -281,7 +281,8 @@ class TestFailedSwapIsNotSurvivable:
     def test_a_failed_uninstall_changes_nothing(self, monkeypatch, tmp_path):
         # Warn and leave the venv working; never uninstall with nothing to install from.
         # The exit code alone is not enough:
-        # A read-only or locked venv leaves generic triton registered;
+        # A read-only or locked venv leaves generic triton registered; installing over it would let
+        # a later upgrade delete the shared files again and repeat the swap every pass.
         log = _run(
             monkeypatch,
             tmp_path,
@@ -578,7 +579,7 @@ class TestCpuRepairSeesAnXpuWheel:
                 if depth == 0:
                     end = i
                     break
-        # Re-wrapped in parentheses:
+        # Re-wrapped in parentheses: the predicate spans several indented lines.
         expr = "(" + seg[begin:end] + ")"
         import re as _re
 
@@ -619,7 +620,8 @@ class TestCpuRepairSeesAnXpuWheel:
         ],
     )
     def test_other_families_are_unchanged(self, ver, cuda, hip, want):
-        # The XPU arm must be additive:
+        # The XPU arm must be additive: a CPU build still reads as CPU, or every explicit CPU pin
+        # force-reinstalls torch on every update.
         assert self._classify(ver, cuda, hip) == want
 
 

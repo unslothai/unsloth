@@ -96,7 +96,8 @@ SELECTION_CASES = [
     ("2.11.1+cu128", "0.0.35"),
     ("2.12.4+cu126", "0.0.35"),
     ("2.14.0+cu130", "0.0.35"),
-    # Bounded in both directions:
+    # Bounded in both directions: below the floor there is no stable ABI to lean on, and a CUDA
+    # family that publishes nothing gains no wheel from the era.
     ("2.9.2+cu130", ""),
     ("2.12.0+cu124", ""),
     # Non-CUDA and nightly builds must miss the table outright.
@@ -156,7 +157,9 @@ def test_installer_installs_xformers_from_the_torch_index():
     assert "$_xfIndexUrl = $TorchIndexUrl" in block
     assert '$_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"' in block
     assert "--reinstall-package xformers $_xfWheelUrl" in block
-    # The already-installed check compares against the wheel's OWN build target, not the resident torch:
+    # The already-installed check compares against the wheel's OWN build target, not the resident
+    # torch: the stable-ABI wheel records the floor release it was compiled against, so the old
+    # comparison force-reinstalled a correct 0.0.35 on every run.
     assert "Get-XformersExpectedTorchBuild -Version $_xfVersion" in block
 
 

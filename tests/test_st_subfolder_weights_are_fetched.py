@@ -156,7 +156,8 @@ def _ignores(
         seen.update(kwargs)
         return "/nonexistent/snapshot"
 
-    # The prefetch is a no-op in offline mode, so clear it:
+    # The prefetch is a no-op in offline mode, so clear it: nothing here reaches
+    # the network anyway, the downloader is stubbed.
     for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(flag, raising = False)
 

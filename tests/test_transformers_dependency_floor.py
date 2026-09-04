@@ -275,7 +275,7 @@ def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, ca
     assert "typer is required, but it is not installed" in warning
     assert 'pip install --upgrade "safetensors>=0.8.0" "typer"' in warning
     assert "Install or upgrade the dependencies, not transformers" in warning
-    # An extras-only requirement stays out of it:
+    # An extras-only requirement stays out of it: not having it is correct.
     assert "fugashi" not in warning
     # Satisfied requirements stay out of it too.
     assert "tqdm" not in warning

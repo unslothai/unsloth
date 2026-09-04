@@ -151,7 +151,7 @@ def _route(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-# The generic-ROCm hosts are the interesting ones:
+# The generic-ROCm hosts are the interesting ones: that is where the skip arms live.
 HOSTS = {
     "gfx1103-cpu-torch": ("gfx1103", "2.10.0+cpu||"),
     "gfx1103-generic-rocm": ("gfx1103", "2.10.0+rocm7.1|7.1|"),
@@ -216,5 +216,5 @@ def test_the_states_are_distinguishable():
         assert stack_mod._installed_rocm_wheel_family() == "gfx110x-all"
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("two-families-after-switch"):
-        # Two runtimes, no `rocm` to arbitrate:
+        # Two runtimes, no `rocm` to arbitrate: unknowable, not a guess.
         assert stack_mod._installed_rocm_wheel_family() is None

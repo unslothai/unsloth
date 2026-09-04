@@ -116,7 +116,8 @@ FENCES = int(os.environ.get("SMOKE_FLICKER_FENCES", "3"))
 LINES_PER_FENCE = int(os.environ.get("SMOKE_FLICKER_FENCE_LINES", "22"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_FLICKER_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_FLICKER_GAP_MS", "8"))
-# Sampling kept alive past `done`:
+# Sampling kept alive past `done`: the re-render that causes the flicker lands a frame or two
+# after the generator returns, so stopping on `done` stops just short of it.
 TAIL_MS = int(os.environ.get("SMOKE_FLICKER_TAIL_MS", "2500"))
 
 
@@ -136,7 +137,9 @@ if not MUST_FLICKER & set(VARIANTS):
 
 # What each variant must have computed to on a settled block, checked before anything is measured.
 # Without this guard: the tree's override lives in `@layer utilities`, and for IMPORTANT declarations the cascade
-# REVERSES layer order, so an unlayered `!important` variant silently loses to it.
+# REVERSES layer order, so an unlayered `!important` variant silently loses to it. All four then
+# computed `visible`/`none`, reported zero collapses, and the run read as "nothing flickers
+# anywhere" having measured one stylesheet four times.
 EXPECTED_COMPUTED = {
     "streamdown": {"contentVisibility": "auto"},
     "released": {"contentVisibility": "auto"},
@@ -245,7 +248,7 @@ def run_case(page, variant: str) -> dict:
         raise RuntimeError(f"variant {variant}: stream failed: {results['error']}")
     stats = analyse_stream(results["frames"])
 
-    # Phase two, on the thread the stream left behind:
+    # Phase two, on the thread the stream left behind: scroll bottom to top, record any movement.
     page.evaluate("window.__flicker.startSampling()")
     sweep_meta = page.evaluate(
         "(a) => window.__flicker.sweepUp(a.steps, a.px)",

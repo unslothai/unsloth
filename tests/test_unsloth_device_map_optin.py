@@ -401,7 +401,7 @@ def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devic
     """
     ns = _load(devices = devices, planner = planner)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
-    # The plain sentinel is unchanged:
+    # The plain sentinel is unchanged: an existing caller keeps the answer it had.
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
 
 

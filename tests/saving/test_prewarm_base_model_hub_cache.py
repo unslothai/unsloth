@@ -127,7 +127,8 @@ def _build_env(
         hf_hub_download.results_fn = _hub_dl
     snapshot_download = _Recorder()
     determine_base_model_source = _Recorder(result = base_source)
-    # For the FP8 -> 16bit sibling swap:
+    # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the helper re-resolves the sibling,
+    # else the original base source.
     if fp8_sibling is not None:
         _sib_src = sibling_source or (fp8_sibling, False, None, False, None)
         determine_base_model_source.results_fn = (
@@ -362,7 +363,8 @@ def test_prewarm_downloads_into_live_env_cache(monkeypatch, tmp_path):
 
 
 def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
-    # Frozen constants vs the merge's runtime-redirected dir:
+    # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm must follow the redirect, else
+    # the cache-copy fast path misses and #6890 is unfixed.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,

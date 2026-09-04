@@ -359,7 +359,9 @@ with sync_playwright() as p:
         locale = "en-US",
     )
     install_view_transition_killer(ctx)
-    # On the CONTEXT, not the page:
+    # On the CONTEXT, not the page: a page replaced by the recovery helper below would otherwise lose the
+    # interception and reach the real endpoint, which on a runner with no GGUF answers unavailable, so the row would
+    # hide and this would read as the feature being broken.
     ctx.route("**/api/inference/estimate-memory*", _handle_estimate)
     page = ctx.new_page()
     page.set_default_timeout(60_000)
@@ -900,7 +902,9 @@ with sync_playwright() as p:
             soft_fail(f"the row lost its Beta pill (header text={head!r})")
         total_gib = _gib(STUB_TOTAL_BYTES)
         gpu_gib = _gib(STUB_GPU_BYTES)
-        # The total is shown in BOTH memory topologies:
+        # The total is shown in BOTH memory topologies: as the sole figure where the GPU and the host share one pool,
+        # and beside the GPU share where they do not. The GPU figure only exists in the second, so it is asserted
+        # only when its label is there; a CPU-only runner and an Apple machine legitimately show neither.
         if total_gib not in head:
             fail(
                 f"the row does not show the returned total {total_gib!r} "

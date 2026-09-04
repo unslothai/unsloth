@@ -86,7 +86,8 @@ def test_registration_failures_are_never_silenced():
 
 def test_psresourceget_is_preferred_over_the_nuget_bootstrap():
     run = _bootstrap_step()["run"]
-    # Match the invocation, not the `Get-Command Install-PSResource` probe:
+    # Match the invocation, not the `Get-Command Install-PSResource` probe: the probe
+    # alone would satisfy a bare substring check even with the branch deleted.
     assert "Install-PSResource -Name" in run, "the PSResourceGet branch must actually install"
     assert (
         "$usePSResourceGet = $hasPSResourceGet" in run

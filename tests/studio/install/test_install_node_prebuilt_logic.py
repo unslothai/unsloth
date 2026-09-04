@@ -89,7 +89,7 @@ def test_shasums_url():
 
 
 def test_binary_layout_is_host_aware():
-    # Windows ships node.exe + node_modules\npm at the root;
+    # Windows ships node.exe + node_modules\npm at the root; Unix uses bin/ + lib/.
     win = _host("win", "x64")
     nix = _host("linux", "x64")
     assert M.node_binary_path(Path("/n"), win) == Path("/n/node.exe")
@@ -598,6 +598,7 @@ def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path
 
 
 def test_install_prebuilt_failcloses_on_unpinned_latest(tmp_path: Path, monkeypatch):
+    # Unpinned `latest`, no opt-in, nothing on disk to keep: refuse.
     install_dir = tmp_path / "node"
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
@@ -615,8 +616,8 @@ def test_install_prebuilt_failcloses_on_unpinned_latest(tmp_path: Path, monkeypa
 def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
     tmp_path: Path, monkeypatch, channel
 ):
-    # Regression:
-    # Unpinned `latest`, no opt-in, nothing on disk to keep:
+    # Regression: an unpinned refusal must fail closed even with a usable install on disk; the keep-existing fallback
+    # is for transient failures only.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")

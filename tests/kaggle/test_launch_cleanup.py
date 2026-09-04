@@ -261,7 +261,7 @@ def _run_main(
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    # The retry backoffs, not the retries:
+    # The retry backoffs, not the retries: every attempt still runs.
     monkeypatch.setattr(launch, "PUSH_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "DELETE_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "_api", _stub_api)
@@ -555,7 +555,8 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
         "me/k-1" in c for c in _deletions(tmp_path)
     ), f"{signame} left the kernel behind; it would bill to its ceiling. Launcher said: {logged}"
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
-    # On the signal path, not on the way out of an ordinary run:
+    # On the signal path, not on the way out of an ordinary run: finish() satisfies
+    # the deletion above on its own, so a swallowed signal would pass without this.
     assert proc.returncode == -getattr(signal, signame), (
         f"the kernel was deleted, but the launcher exited {proc.returncode} rather than "
         f"dying of {signame}, so nothing here says the signal is what did it. "

@@ -131,7 +131,8 @@ TABS = [
     ("/export", "export", "Export"),
 ]
 
-# Routes that mean "not signed in".
+# Routes that mean "not signed in". Landing on one invalidates every later assertion, so they are matched explicitly
+# rather than folded into the generic redirect check.
 _SIGNED_OUT_PATHS = ("/login", "/change-password")
 
 # Rows the sidebar pins inline by default, per SIDEBAR_NAV_DEFAULT_PINNED in

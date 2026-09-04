@@ -90,7 +90,8 @@ def test_connections_are_hydrated_on_startup():
     assert (
         "bootstrapPersistedCredentials()" in root
     ), "nothing calls the credential bootstrap, so no page hydrates connections"
-    # The call lives inside CredentialBootstrapGate, so the gate has to be rendered too:
+    # The call lives inside CredentialBootstrapGate, so the gate has to be rendered too: dropping
+    # it stops hydration while the call still exists.
     assert "<CredentialBootstrapGate>" in root
     assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 

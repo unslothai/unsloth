@@ -117,7 +117,9 @@ SMOKE_ENTRY = "smoke-collapse-layout-main.tsx"
 
 ARMS = ("radix-height", "radix-grid", "unmeasured-grid", "reasoning")
 
-# The flag the `reasoning` arm follows is a build-time constant, so the page cannot report it.
+# The flag the `reasoning` arm follows is a build-time constant, so the page cannot report it. Read it out of the
+# source vite is serving instead, and record it beside the numbers: a before/after table with no note of which side of
+# the flag it came from is unreadable a week later.
 FLAG_SOURCE = FRONTEND / "src" / "components" / "assistant-ui" / "thread-feature-flags.ts"
 
 # Two document sizes, because the claim is about SCALING and a single size cannot show it. The small one is a plausible
@@ -184,14 +186,17 @@ CLICK_TRIGGER_JS = """
 }
 """
 
-# The arm mounted, and the hooks App installs in its effect are there to drive it.
+# The arm mounted, and the hooks App installs in its effect are there to drive it. Checked separately from
+# `__probeReady`, which is published from module scope and is therefore set even when the arm threw during render.
 ARM_DRIVABLE_JS = """
 () => Boolean(document.querySelector('[data-probe="trigger"]'))
     && typeof window.__probeGrow === "function"
     && typeof window.__probeReset === "function"
 """
 
-# `overflowPx` is the whole streaming question in one number:
+# `overflowPx` is the whole streaming question in one number: how far the last paragraph's bottom sits below the pane's
+# own box. A height animated to a value captured at toggle time clips whatever arrived afterwards; `1fr` re-resolves
+# against the content every frame and cannot.
 PANE_SNAPSHOT_JS = """
 () => {
   const content = document.querySelector('[data-probe="content"]');
@@ -225,7 +230,9 @@ def reasoning_flag_in_source() -> bool | None:
     None when the file cannot be read, which is the honest answer under SMOKE_BASE_URL: the
     server is then someone else's tree and this one says nothing about it.
     """
-    # SMOKE_BASE_URL serves a bundle built somewhere else, so the local working tree is not evidence about it.
+    # SMOKE_BASE_URL serves a bundle built somewhere else, so the local working tree is not evidence about it. Reading
+    # it anyway would label a flag-on bundle as flag-off in the report, which is the one thing the `reasoning` arm
+    # exists to get right.
     if _EXTERNAL:
         return None
     try:
@@ -632,7 +639,10 @@ def collect_failures(report: dict) -> list[str]:
                 "the streaming check measured nothing"
             )
 
-    # The forced column is the one the arms are read on, and it is the one that goes quietly to zero:
+    # The forced column is the one the arms are read on, and it is the one that goes quietly to zero: it needs the
+    # disabled-by-default stack category, and a trace without it reports every arm as forcing nothing, which looks like
+    # the fix already landed everywhere. radix-height is the anchor, because Radix's measurement is unconditional
+    # upstream and cannot legitimately read zero, so this is only asserted on a sweep that includes it.
     ran_radix_height = [cell for cell in cells if cell["arm"] == "radix-height"]
     if ran_radix_height and not any(cell["trace"]["forced_layouts"] for cell in cells):
         failures.append(

@@ -105,7 +105,7 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
-    # Match Unsloth's text dataset path:
+    # Match Unsloth's text dataset path: no EOS appended behind the user's back.
     ids = list(tokenizer.encode(text))
     if len(ids) < 2:
         raise RuntimeError(f"text too short to compute loss: {len(ids)} tokens")
@@ -201,7 +201,8 @@ def cmd_train(args) -> int:
     mx.random.seed(SEED)
 
     with Phase("apply_lora", metrics):
-        # Full q/k/v/o + gate/up/down set:
+        # Full q/k/v/o + gate/up/down set: q/k/v/o alone couldn't memorize
+        # the row, the MLP projections add the needed capacity.
         model = FastMLXModel.get_peft_model(
             model,
             r = 8,
@@ -340,7 +341,8 @@ def cmd_train(args) -> int:
             verbose = False,
         )
     metrics["in_memory_generation"] = in_mem_out
-    # Soft greedy-decode metric only (46-77% of seeds):
+    # Soft greedy-decode metric only (46-77% of seeds): fp16 + MLX generate
+    # noises the first token. The teacher-forced check below is load-bearing.
     metrics["in_memory_generation_has_expected"] = EXPECT_IN_OUTPUT in in_mem_out
     if EXPECT_IN_OUTPUT not in in_mem_out:
         print(
@@ -396,7 +398,9 @@ def cmd_train(args) -> int:
     metrics["gguf_dir"] = str(gguf_dir)
     with Phase("save_gguf", metrics):
         try:
-            # q8_0 (the exporter default), not bf16:
+            # q8_0 (the exporter default), not bf16: llama.cpp has optimized q8_0
+            # CPU kernels, whereas bf16 CPU decode is unusably slow on the runner
+            # and made the fresh-process llama-cli reload below time out.
             model.save_pretrained_gguf(
                 str(gguf_dir),
                 tokenizer = tokenizer,
@@ -497,7 +501,7 @@ def cmd_reload(args) -> int:
             f"reload={reload_loss:.4f}, in-memory={in_mem_loss:.4f}"
         )
     else:
-        # Fallback when train_metrics.json is missing:
+        # Fallback when train_metrics.json is missing: gate on non-empty output.
         body = out.replace(PROMPT, "", 1).strip()
         assert len(body) >= 4, (
             f"reload {args.format!r} produced no usable output for " f"{PROMPT!r}: {out!r}"

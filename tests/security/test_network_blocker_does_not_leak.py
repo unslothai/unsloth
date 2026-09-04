@@ -94,7 +94,8 @@ def test_the_finalizer_really_restores_the_original():
     real = C._BlockedSocket.__bases__[0]
     assert real is not C._BlockedSocket
 
-    # Stand the guard down first:
+    # Stand the guard down first: the fixture captures whatever is installed when it starts, so driving it from
+    # under itself would "restore" the blocker.
     outer, socket.socket = socket.socket, real
     try:
         generator = C.network_blocker.__wrapped__()

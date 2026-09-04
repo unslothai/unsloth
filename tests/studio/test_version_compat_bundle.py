@@ -36,7 +36,8 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "version-compat-ci.yml"
 SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 
-# The bundled job. Named, not detected:
+# The bundled job. Named, not detected: if it is ever renamed, that should be a deliberate edit here rather than this
+# whole file quietly asserting nothing.
 BUNDLE_JOB = "pinned-symbol-matrix"
 
 # Suites with no pull_request home today.

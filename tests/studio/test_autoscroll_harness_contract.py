@@ -168,7 +168,8 @@ def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
     main = verdict("playwright_stream_pacing.py")
     assert 'results.get("longTaskSupported")' in main
     assert 'results["longTasks"] <= 0' in main
-    # Same for an unthrottled run:
+    # Same for an unthrottled run: the renderer keeps up with any rate this can feed, so every budget passes on any
+    # tree.
     assert 'results["cpu_throttle"] <= 1' in main
 
 
@@ -260,7 +261,8 @@ def _thread_weight_recorded() -> dict[str, set[str]]:
 
 
 def test_thread_weight_records_the_four_actions() -> None:
-    # Guards the parser above as much as the harness:
+    # Guards the parser above as much as the harness: an empty result set would make the coverage test below pass by
+    # finding nothing to check.
     recorded = _thread_weight_recorded()
     assert {"keystroke", "scroll", "menu", "delete"} <= set(recorded)
     # Not `assert keys`: _thread_weight_recorded only stores an entry when it found keys, so

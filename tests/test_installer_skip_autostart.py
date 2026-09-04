@@ -129,7 +129,9 @@ def test_windows_skip_autostart_bypasses_only_the_interactive_prompt():
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_windows_installer_invalid_package_fails():
-    # run_pwsh, not subprocess.run:
+    # run_pwsh, not subprocess.run: this case asserts a non-zero exit, which a pwsh that aborted at
+    # startup also produces, so the crash would read as install.ps1 having rejected the bad package
+    # name. See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         [
             "pwsh",

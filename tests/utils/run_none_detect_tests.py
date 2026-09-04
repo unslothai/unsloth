@@ -330,7 +330,7 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
         "NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt"
     )
 
-    # Both columns are all-corrupt:
+    # Both columns are all-corrupt: every row has None.
     rows = [{"messages": None, "conversations": None}] * 5
     mock_ds = _MockDataset(rows, ["messages", "conversations"])
 
@@ -374,7 +374,7 @@ def test_new_p2_plain_string_messages_not_chatml():
         )
         return stats
     except ValueError as exc:
-        # ValueError is also acceptable:
+        # ValueError is also acceptable: not a valid conversation format.
         print(
             f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}"
         )

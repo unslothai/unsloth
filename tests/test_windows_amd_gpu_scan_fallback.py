@@ -164,12 +164,13 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured from inside the arch block's own scope:
+            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing bug corrupts, and
+            # its first element is what Get-GfxArchFromGpuName is actually handed.
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
             ),
-            # ConvertTo-Json, not string interpolation:
+            # ConvertTo-Json, not string interpolation: a null stays null instead of becoming "".
             "@{",
             "  wmi_type    = $(if ($null -ne $wmiGpus) { $wmiGpus.GetType().FullName } else { $null })",
             "  wmi_array   = [bool]($wmiGpus -is [array])",

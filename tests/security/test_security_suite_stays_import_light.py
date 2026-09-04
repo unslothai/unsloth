@@ -337,10 +337,10 @@ def _guarded_roots(node, loaders):
             if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
-        # The alias's ORIGIN decides:
+        # The alias's ORIGIN decides: an importlib alias lives in `loaders` too.
         if not _is_pytest_skip(attribute, loaders):
             # An import ABOVE the guard is reached first, so the scan stops here.
-            # The same stop, for calls:
+            # The same stop, for calls: a non-guard call may be the load itself.
             if _reaches_a_heavy_dependency(statement, loaders):
                 break
             continue
@@ -376,7 +376,7 @@ def test_the_workflow_still_runs_the_security_suite():
 def test_heavy_imports_are_declared_to_the_light_runner():
     ignored = _ignored_by_the_workflow()
     offenders = {}
-    # conftest.py and __init__.py too:
+    # conftest.py and __init__.py too: no per-file --ignore can cover them.
     support = [p for p in (_HERE / "conftest.py", _HERE / "__init__.py") if p.exists()]
     for path in sorted(_HERE.glob("test_*.py")) + support:
         heavy = _module_level_heavy_imports(path)
@@ -584,7 +584,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
                 for alias in node.names:
                     if alias.name.startswith("unsloth.models."):
                         protected.add(alias.name.split(".")[-1] + ".py")
-            # `__import__("unsloth.models.loader", ...)` too:
+            # `__import__("unsloth.models.loader", ...)` too: a suite reads it so.
             if isinstance(node, ast.Call) and node.args:
                 function = node.func
                 name = (

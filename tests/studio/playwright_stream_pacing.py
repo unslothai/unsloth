@@ -116,7 +116,9 @@ def run() -> dict:
                 {"totalChars": TOTAL_CHARS, "chunkChars": CHUNK_CHARS, "gapMs": GAP_MS},
             )
 
-            # Poll the harness's own verdict rather than deciding out here:
+            # Poll the harness's own verdict rather than deciding out here: every round
+            # trip is slowed by the throttling, so an outside "has it finished" arrives
+            # late enough to hide the effect.
             deadline = time.monotonic() + 300
             results: dict = {}
             while time.monotonic() < deadline:

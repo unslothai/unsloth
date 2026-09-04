@@ -104,7 +104,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/vue-start-client": {"1.166.46", "1.166.49"},
     "@tanstack/vue-start-server": {"1.166.50", "1.166.53"},
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: OpenSearch JS client.
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
     # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
     # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
@@ -203,7 +203,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages) (Aikido enumeration).
     "@tallyui/components": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-medusa": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-shopify": {"1.0.1", "1.0.2", "1.0.3"},
@@ -214,7 +214,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tallyui/pos": {"0.1.1", "0.1.2", "0.1.3"},
     "@tallyui/storage-sqlite": {"0.2.1", "0.2.2", "0.2.3"},
     "@tallyui/theme": {"0.2.1", "0.2.2", "0.2.3"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions) (Aikido enumeration).
     "@beproduct/nestjs-auth": {
         "0.1.2",
         "0.1.3",
@@ -235,16 +235,17 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
         "0.1.18",
         "0.1.19",
     },
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/* (Aikido enumeration).
     "@draftauth/client": {"0.2.1", "0.2.2"},
     "@draftauth/core": {"0.13.1", "0.13.2"},
     "@draftlab/auth": {"0.24.1", "0.24.2"},
     "@draftlab/auth-router": {"0.5.1", "0.5.2"},
     "@draftlab/db": {"0.16.1"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli (Aikido enumeration).
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*
+    # (Aikido enumeration).
     "@dirigible-ai/sdk": {"0.6.2", "0.6.3"},
     "@mesadev/rest": {"0.28.3"},
     "@mesadev/saguaro": {"0.4.22"},
@@ -253,7 +254,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@ml-toolkit-ts/xgboost": {"1.0.3", "1.0.4"},
     "@supersurkhet/cli": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
     "@supersurkhet/sdk": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: unscoped packages (10 entries) (Aikido enumeration).
     "safe-action": {"0.8.3", "0.8.4"},
     "ts-dna": {"3.0.1", "3.0.2", "3.0.3", "3.0.4"},
     "cross-stitch": {"1.1.3", "1.1.4", "1.1.5", "1.1.6"},
@@ -446,7 +447,8 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
             )
 
-    # Known IOC strings: scan the raw body to catch fields the structural pass doesn't enumerate (scripts, optional
+    # Known IOC strings: scan the raw body to catch fields the structural pass doesn't enumerate
+    # (scripts, optional deps, etc.).
     for ioc in NPM_IOC_STRINGS:
         if ioc in raw:
             line_no = _first_line_containing(raw, ioc)
@@ -741,7 +743,8 @@ def main(argv: list[str] | None = None) -> int:
             file = sys.stderr,
         )
         for f in advisory:
-            # GH Actions warning annotation;
+            # GH Actions warning annotation; _gha_escape collapses the multi-line Finding onto one
+            # line so it renders fully in the UI.
             print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
             print(file = sys.stderr)
 

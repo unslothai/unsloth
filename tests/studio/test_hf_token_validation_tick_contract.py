@@ -237,7 +237,8 @@ def test_accepted_training_start_stays_locked_during_preparation():
     pending = runtime_store.split("export function isTrainingStartPending", 1)[1]
     pending = pending.split("const initialState", 1)[0]
     assert "stopRequested" in pending
-    # Per term rather than one exact string:
+    # Per term rather than one exact string: scoped cancellation added the startRequestId disjunct, and formatting of
+    # the expression is not the contract.
     for term in (
         "state.stopRequested",
         "state.isStarting",
@@ -411,7 +412,8 @@ def test_superseded_start_cleanup_scopes_both_backend_mutations():
     reset_transport = api.split("export async function resetTraining", 1)[1].split(
         "export async function getTrainingStatus", 1
     )[0]
-    # The scope is no longer conditional:
+    # The scope is no longer conditional: resetTraining takes a RequiredTrainingJobScope and always sends the body,
+    # which is strictly stronger than the old hasScope branch.
     assert "scope: RequiredTrainingJobScope" in reset_transport
     assert "body: scopedTrainingBody({}, scope)" in reset_transport
 

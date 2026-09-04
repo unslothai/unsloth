@@ -134,7 +134,9 @@ def _torchao_is_broken_here() -> bool:
         return False
     import torch.nn.functional as F
 
-    # `_torch_really_has`, not `hasattr`:
+    # `_torch_really_has`, not `hasattr`: conftest.py imports unsloth, so on a
+    # broken environment the placeholders are already on F and hasattr would
+    # read it as healthy.
     return not all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS)
 
 

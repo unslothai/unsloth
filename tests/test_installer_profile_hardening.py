@@ -142,7 +142,9 @@ def test_profile_hardening_precedes_every_use_it_protects():
 def test_script_scoped_uv_state_is_reset_per_invocation():
     """Same hazard as $script:IsIntelXpu: under irm | iex, $script: is the caller's session."""
     src = _install_ps1()
-    # Anchored on the newline plus exactly four spaces:
+    # Anchored on the newline plus exactly four spaces: the real assignments sit deeper in the
+    # function and would otherwise satisfy this by accident, which is how a dropped reset for
+    # $script:UvInstallDestDir once slipped past.
     for reset, first_read in (
         ("\n    $script:UvExe = 'uv'\n", "& $script:UvExe"),
         ("\n    $script:UvInstallDestDir = $null\n", "foreach ($d in @($script:UvInstallDestDir"),
@@ -169,7 +171,8 @@ def test_no_bare_uv_token_survives_at_a_call_site():
 
 def test_uv_is_resolved_as_an_application():
     body = _extract_function("Get-UvExecutableCandidates")
-    # The whole invocation, not the flags separately:
+    # The whole invocation, not the flags separately: the function's own comment mentions both,
+    # so a substring test for either passes on a body that no longer uses them.
     assert "Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue" in body, (
         "Application-only lookup is what skips an alias or function, and ordering across "
         "several matches is only documented for -All"
@@ -540,6 +543,8 @@ def _uv_probe_body(*extra: str) -> str:
 def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
     fake = _fake_uv(tmp_path / "bin")
     # The stub stands in for Invoke-InstallCommand, which is how all 27 real call sites run:
+    # a scriptblock built in one scope and invoked with & from another. It has to be defined
+    # ahead of the call, which is what the "Install-UnslothStudio" line inside _uv_probe_body is.
     body = "\n".join(
         [
             "function Invoke-InstallCommandStub "
@@ -578,7 +583,8 @@ def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
 @requires_pwsh
 def test_uv_probe_reports_missing_when_only_the_alias_exists(tmp_path):
     """With no uv on PATH the installer must still take its install-uv branch, not pin the alias."""
-    # The inherited PATH is replaced, not prepended to:
+    # The inherited PATH is replaced, not prepended to: the machine running this may well have a
+    # real uv, and it would answer the probe and hide the branch under test.
     res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = tmp_path / "emptybin")
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "OK:False" in res.stdout
@@ -825,7 +831,8 @@ def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
         encoding = "utf-8",
         newline = "",
     )
-    # Same reading here for the casing and [uri] cases:
+    # Same reading here for the casing and [uri] cases: no stdout is indistinguishable from
+    # the prologue having filtered every key out.
     handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
@@ -881,7 +888,8 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
     off, a lowercase key and a [uri] value. The probe has to survive all of it and return only
     the proxy entries."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    # From the markers, not just the script:
+    # From the markers, not just the script: the record is framed, and the frame is part of
+    # what has to survive a profile that prints.
     start = _locate(src, "_PROXY_PROBE_BEGIN = ", "the probe framing")
     namespace: dict = {}
     exec(  # noqa: S102 - our own source
@@ -1640,7 +1648,7 @@ def test_disjoint_wildcard_families_from_two_hosts_both_survive(monkeypatch):
         ("invoke-web*", "invoke-restmethod", False),
         ("start-bits*", "invoke-web*", False),
         ("*-webrequest", "*-restmethod", False),
-        # A character class is assumed to overlap rather than decided:
+        # A character class is assumed to overlap rather than decided: the conservative answer.
         ("invoke-[wr]*", "start-bits*", True),
     ],
 )

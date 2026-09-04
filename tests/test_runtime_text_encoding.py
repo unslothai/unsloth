@@ -54,7 +54,7 @@ PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # Calls that return the platform default, so naming one pins nothing.
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
-# Modules whose `open` IS the builtin:
+# Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
 # Take an encoding in "t" mode but default to "rb".
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
@@ -64,7 +64,8 @@ UNKNOWN_MODE = object()
 
 def _mode(call: ast.Call, positional_index: int):
     """The call's mode, or UNKNOWN_MODE when it is not a literal."""
-    # A splat hides the mode, so it is unknown rather than absent:
+    # A splat hides the mode, so it is unknown rather than absent: falling through to "r" would flag a call that
+    # may resolve to binary, with no compliant way to fix it.
     if any(isinstance(a, ast.Starred) for a in call.args):
         return UNKNOWN_MODE
     if any(kw.arg is None for kw in call.keywords):
@@ -235,7 +236,8 @@ def _offender(
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # `Path.read_text(p)` is `p.read_text()` unbound:
+        # `Path.read_text(p)` is `p.read_text()` unbound: the instance takes slot 0, so every argument shifts
+        # one place right.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
@@ -257,7 +259,8 @@ def _offender(
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None
                 return None if _names_encoding(call) else f"{compressed}.open()"
-            # Any other imported receiver is somebody else's opener:
+            # Any other imported receiver is somebody else's opener: tarfile takes a compression mode, Image a
+            # binary file. Neither has an encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if _foreign_receiver(func.value, modules) or receiver in foreign:
@@ -360,7 +363,7 @@ def test_detects_the_plain_cases():
     assert _offenders_in("f = open('x')\n")
     assert _offenders_in("f = open('x', 'w')\n")
     assert _offenders_in("f = p.open()\n")
-    # Inside a function body too:
+    # Inside a function body too: shipping reads are not import-time.
     assert _offenders_in("def load(p):\n    return p.read_text()\n")
 
 

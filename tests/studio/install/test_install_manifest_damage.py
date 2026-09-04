@@ -429,7 +429,8 @@ def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", slow_stat)
     install_manifest.damaged_payload_files(PKG, budget_seconds = 5.0)
-    # The lower bound keeps the patched stat honest:
+    # The lower bound keeps the patched stat honest: unpatched the clock never moves, and the upper
+    # bound alone passes a scan that ignored the budget.
     assert 5.0 <= clock["now"] <= 6.0
 
 

@@ -34,7 +34,8 @@ def test_both_signed_plugin_directory_forms_are_present(template: str) -> None:
 
 
 def test_the_template_form_is_guarded(template: str) -> None:
-    # Unsigned builds omit signed_plugins_path entirely;
+    # Unsigned builds omit signed_plugins_path entirely; rendering it unguarded
+    # would point !addplugindir at an empty path.
     guard = template.index("{{#if signed_plugins_path}}")
     assert guard < template.index(TEMPLATE_FORM) < template.index("{{/if}}", guard)
 

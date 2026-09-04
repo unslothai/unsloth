@@ -67,7 +67,7 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
-# Finite PSNR cap for identical samples:
+# Finite PSNR cap for identical samples: well above the ~37 dB compile and ~21 dB quant noise floors.
 _PERFECT_MATCH_PSNR = 100.0
 
 

@@ -49,7 +49,8 @@ COMPILATION_CONFIG = 0
 # every metric below is reproducible.
 SEED = 42
 
-# Loose sanity bounds, not fitted values:
+# Loose sanity bounds, not fitted values: they catch divergence and degenerate rollouts while staying valid across
+# GPUs, models and vLLM versions.
 MAX_CHARS_PER_TOKEN = 20
 MAX_GRAD_NORM = 1e3
 MAX_KL = 1.0
@@ -84,7 +85,8 @@ def _metric(metrics, *names):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "fast_inference needs a CUDA GPU + vLLM")
 def test_fast_inference():
-    # Import here, not at module load:
+    # Import here, not at module load: importing unsloth probes for an accelerator and errors on CPU-only machines, so
+    # deferring keeps pytest collection and the skip path import-free. Unsloth must precede TRL.
     from unsloth import FastLanguageModel
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer

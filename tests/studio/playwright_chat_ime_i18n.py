@@ -199,7 +199,7 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
-    # Bootstrap auth via /change-password;
+    # Bootstrap auth via /change-password; retry absorbs React form-detach races.
     step("change-password through UI (Setup your account)")
     form_err: Exception | None = None
     for _form_attempt in range(3):
@@ -377,7 +377,7 @@ with sync_playwright() as p:
     shoot("03-baseline-ascii")
     clear()
 
-    # Multilingual paste round-trip;
+    # Multilingual paste round-trip; byte-for-byte readback required.
     step(f"multilingual paste round-trip ({len(I18N_SAMPLES)} samples)")
     paste_failures: list[tuple[str, str, str, str]] = []
     for code, label, text in I18N_SAMPLES:
@@ -558,7 +558,8 @@ with sync_playwright() as p:
         expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before keydown re-pin test")
-    # Fire IME-confirm Enter (keyCode 229) then submit synchronously:
+    # Fire IME-confirm Enter (keyCode 229) then submit synchronously: the keydown
+    # gate re-pins composingRef before handleSubmit, so preedit text is retained.
     submit_probe = composer.evaluate(
         """(el) => {
             el.focus();
@@ -583,7 +584,9 @@ with sync_playwright() as p:
     info("keydown re-pin gate PASS")
     clear()
 
-    # Keydown re-pin must also re-arm the watchdog:
+    # Keydown re-pin must also re-arm the watchdog: on the WSL+Chrome
+    # stuck-compositionend path no follow-up event arrives, so after re-pin the
+    # watchdog must clear composingRef again or Send re-locks forever.
     step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
     clear()
     composer.click()
@@ -718,7 +721,8 @@ with sync_playwright() as p:
         soft_fail("Send button not found for Mac IME switch (onKeyDown) repro")
     else:
         try:
-            # 1500ms < 2500ms watchdog:
+            # 1500ms < 2500ms watchdog: only the onKeyDown else-if path can
+            # clear composingRef this quickly.
             expect(send_btn_mac_kd).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
@@ -812,7 +816,8 @@ with sync_playwright() as p:
         soft_fail("Send button not found for Mac IME switch (onBlur) repro")
     else:
         try:
-            # 1500ms < 2500ms watchdog:
+            # 1500ms < 2500ms watchdog: only onBlur can clear composingRef this
+            # quickly when no keydown is fired.
             expect(send_btn_mac_blur).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
@@ -829,7 +834,7 @@ with sync_playwright() as p:
     info("Mac IME switch onBlur recovery PASS")
     clear()
 
-    # Final state: filter benign 401 noise via is_benign_*;
+    # Final state: filter benign 401 noise via is_benign_*; fail on real errors.
     shoot("07-final")
     _resolve_deferred_404s()
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]

@@ -736,7 +736,8 @@ class TestShadowingIntegratedGfxParity:
         assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_strix_is_excluded_from_every_copy(self):
-        # Supported training targets, not shadowing APUs:
+        # Supported training targets, not shadowing APUs: listing them would silently redirect
+        # Strix hosts.
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())

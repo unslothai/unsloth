@@ -88,7 +88,8 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
-    # Total comes from the `main` row, not by_cum[0]:
+    # Total comes from the `main` row, not by_cum[0]: -X importtime also prints the interpreter's
+    # own startup graph (`site`), which can outrank a trivial main.
     main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
     if main_row is None:
         return {

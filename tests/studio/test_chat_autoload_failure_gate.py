@@ -905,7 +905,7 @@ def _run(
     queued: bool = False,
 ) -> dict:
     _require_node()
-    # Its own directory per invocation:
+    # Its own directory per invocation: a shared file lets one runner read another's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)

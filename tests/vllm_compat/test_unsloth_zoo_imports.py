@@ -121,7 +121,8 @@ def test_empty_model_imports_without_vllm():
     ), "expected a create_empty_* helper in empty_model"
 
 
-# vllm_lora_request / vllm_lora_worker_manager / vllm_utils:
+# vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import vllm,
+# so skip without it (pinned-symbols test covers version compat statically).
 @pytest.mark.skipif(
     not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
 )

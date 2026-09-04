@@ -227,7 +227,9 @@ def _run_relocation_block(
             "HOMEPATH": tail,
         }
     )
-    # run_pwsh, not subprocess.run:
+    # run_pwsh, not subprocess.run: every relocation case below reads this run's exit code to tell
+    # "moved out of System32" from "routed through Exit-InstallFailure", and a pwsh killed by a
+    # signal is neither. See tests/_shared/unsloth_pwsh_runner.py.
     return run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -399,7 +401,8 @@ def _guard_outcome(
         chdir_calls.append(target)
         if chdir_error is not None:
             raise chdir_error
-        # A junction, or a profile that is itself inside the Windows tree:
+        # A junction, or a profile that is itself inside the Windows tree: the call succeeds and the
+        # process ends up somewhere else than it asked for.
         current["cwd"] = (
             chdir_lands_in if chdir_lands_in is not None and target == _RELOCATED else target
         )
@@ -1342,7 +1345,8 @@ def test_cli_guard_goes_back_when_the_move_lands_somewhere_still_refused():
         ["unsloth", "studio", "--api-only"],
         environ_extra = {"HF_HOME": "cache"},
         environ_out = environ_out,
-        # A junction under the profile:
+        # A junction under the profile: the move succeeds and the process is still inside the
+        # folder the guard refuses.
         chdir_lands_in = r"C:\Windows\System32\config\systemprofile",
     )
     assert colour == "red"
@@ -1460,7 +1464,8 @@ def test_cli_guard_pins_the_token_path_and_the_special_pythonpath_entries():
     assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
     assert environ_out["HF_TOKEN_PATH"] == r"C:\Windows\System32\secrets\token"
     assert environ_out["PYTHONPATH"] == (
-        # The empty component is the folder being left;
+        # The empty component is the folder being left; `~` is anchored as the literal relative
+        # folder Python reads there, not as the profile.
         r"C:\Windows\System32;C:\Windows\System32\~\plugins;C:\shared\lib"
     )
 

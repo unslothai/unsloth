@@ -124,7 +124,8 @@ def _if_test_containing(fn_name, needle, env):
     raise AssertionError(f"{fn_name}: no `if` test containing {needle!r}")
 
 
-# Reference implementations:
+# Reference implementations: the probe expressions as they stood at the merge base. Reproduced verbatim, only
+# re-indented from the `-c` strings they lived in.
 def _old_cuda_fields(ver, hip, cuda):
     """merge base studio/install_python_stack.py:2339-2346 (_ensure_cuda_torch)."""
     ver = ver.lower()

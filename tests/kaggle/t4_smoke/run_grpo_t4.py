@@ -425,7 +425,8 @@ def failures_for(result: dict, args) -> list[str]:
     """The GRPO assertions. See this file's docstring for why not the loss."""
     failures: list[str] = []
     history = result.get("log_history") or []
-    # The training steps, not every row:
+    # The training steps, not every row: `train()` appends a summary entry with
+    # the run totals and no loss, which is not a step.
     steps = [e for e in history if "loss" in e]
     rewards = [e["reward"] for e in history if e.get("reward") is not None]
     if not rewards:

@@ -690,7 +690,8 @@ with sync_playwright() as p:
         fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
     if CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER != "chromium":
         # Refused here rather than at the call: `new_cdp_session` is Chromium only, so firefox/webkit would abort
-        # mid-run with a Playwright error about CDP that says nothing about the option that caused it.
+        # mid-run with a Playwright error about CDP that says nothing about the option that caused it. Both are
+        # supported browsers, so this pairing is reachable from the documented environment alone.
         fail(f"STUDIO_UI_CPU_THROTTLE requires chromium, not {PLAYWRIGHT_BROWSER}")
     browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(

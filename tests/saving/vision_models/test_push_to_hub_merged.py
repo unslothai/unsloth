@@ -70,7 +70,7 @@ def format_data(sample):
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
-# Use a list comprehension (not .map) to keep PIL.Image type;
+# Use a list comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 print("✅ Dataset formatting completed!")

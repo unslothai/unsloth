@@ -43,7 +43,9 @@ GUARDED = {
     "playwright": (2,),
 }
 
-# One `pip install` argument:
+# One `pip install` argument: name, optional [extras], optional specifier. Optional on purpose: a bare
+# `pip install openai` resolves whatever major is current, and a pattern that required a specifier could not see it
+# at all.
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
 # pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not. mlx-ci.yml:439 uses

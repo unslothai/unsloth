@@ -327,7 +327,8 @@ def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
 
     assert trainer.args.max_length is None
     split = trainer.eval_dataset["validation"]
-    # The raw split is untouched:
+    # The raw split is untouched: no truncation ran over it, so the tokenizer pass that
+    # follows sees exactly what the user passed. A blanket map would have sliced it.
     if "text" in (split.column_names or []):
         assert all(r["text"] == text for r in split), "a raw column was sliced"
 
@@ -407,7 +408,7 @@ def test_unprepared_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
         assert (
             args.padding_free is False
         ), "padding-free must be dropped, since it disables truncation"
-    # The rows themselves are untouched:
+    # The rows themselves are untouched: the user owns preparation here.
     assert _longest(trainer) <= _MODEL_MAX_SEQ_LENGTH
 
 
@@ -521,7 +522,9 @@ def _pristine_sft_config_cls():
     `max_seq_length` field no TRL from 0.22.2 to 1.9.2 declares. A caller who
     imported SFTConfig before `import unsloth` still passes the pristine class.
     """
-    # Go by the marker rather than the name:
+    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's
+    # own name so that instances of it keep pickling, so `Unsloth` need not appear in
+    # `__name__` at all; the name check below only catches whatever kept the old name.
     from trl import SFTConfig
 
     cls = SFTConfig
@@ -931,9 +934,10 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     """Same rule the `labels` filter already applies, for the other two spellings."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    # completion_only_loss explicitly, because the collator's mode decides whether this mask is supervision at all.
-    # The two masks are gated the way TRL's collator gates them, which is not the same for both: `completion_mask`
-    # behind the RESOLVED `completion_only_loss`, `assistant_masks` on presence alone.
+    # completion_only_loss explicitly, because the collator's mode is what decides whether this mask is supervision
+    # at all. TRL resolves a None from the TRAIN sample, and this split has no prompt/completion columns, so the
+    # effective mode would be False, the collator would ignore the mask, and filtering on it would be deleting rows
+    # that still carry full-sequence supervision.
     trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
@@ -1370,7 +1374,9 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
         "_unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')"
         in block
     )
-    # And it drops the enforcement claim rather than the split:
+    # And it drops the enforcement claim rather than the split: packing needs `max_length`,
+    # so clearing it would make TRL raise instead.
+    # `or not _unsloth_known_mode`: a mode this cannot honour spares the split too.
     assert "if _unsloth_eval_packing or not _unsloth_known_mode:" in block
     assert "_unsloth_capped = False\\n" in block
     assert (
@@ -1396,7 +1402,7 @@ def test_the_codegen_does_not_raise_on_a_split_it_left_to_the_packer():
         "(eval_dataset if 'eval_dataset' in locals() else None)" in block
     )
     assert "_unsloth_splits_within_cap(_unsloth_scan_eval)" in block
-    # The train split is still scanned:
+    # The train split is still scanned: nothing packs that one.
     assert "_unsloth_within_cap(train_dataset) and" in block
     # And it is resolved outside the truncation block, which skip_prepare_dataset skips.
     packing_at = block.index("_unsloth_eval_packing = getattr(args, 'packing'")
@@ -1491,7 +1497,7 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
             _run(False, True, strategy) <= _MODEL_MAX_SEQ_LENGTH
         ), f"{strategy}: an uncapped split reached the collator"
 
-    # With `eval_packing` off, the cap applies on both sides:
+    # With `eval_packing` off, the cap applies on both sides: nothing packs it.
     for prepares_late in (False, True):
         assert _run(prepares_late, False) <= _MODEL_MAX_SEQ_LENGTH
 
@@ -1700,7 +1706,8 @@ def test_evaluate_intersects_labels_with_the_masks():
 
     cap = _MODEL_MAX_SEQ_LENGTH
     length = cap + 8
-    # Supervised label at position 0, assistant mask on at position 1:
+    # Supervised label at position 0, assistant mask on at position 1: each filter
+    # on its own says "keep", the intersection says the row is empty.
     crossed = {
         "input_ids": list(range(length)),
         "labels": [7] + [-100] * (length - 1),
@@ -2427,7 +2434,9 @@ def test_a_transformed_split_is_not_memoized_by_fingerprint():
     supervised = {"both": True}
 
     def _mask_second(batch):
-        # Keyed on the row's own contents:
+        # Keyed on the row's own contents: a transform is handed whatever batch
+        # the reader asks for, so positions in the batch say nothing about
+        # positions in the split.
         out = dict(batch)
         out["labels"] = [
             [-100] * 8 if (not supervised["both"] and list(row) == other) else list(lab)
@@ -2599,7 +2608,8 @@ def test_an_unprobeable_tokenized_stream_keeps_its_cap(tmp_path, trl_has_guard):
     tok = _load_plain()[1]
     ids = tok("The quick brown fox. " * 200)["input_ids"]
     rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)}] * 4
-    # Same reasoning as the transformed split above:
+    # Same reasoning as the transformed split above: the cap is kept, so the
+    # overlength rows are reported instead of being served uncapped.
     with pytest.raises(ValueError, match = "cannot be enforced"):
         _build(
             tmp_path,
@@ -2729,7 +2739,8 @@ def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
     without: read raw it declares the split safe and training starts at row 2,
     read tokenized it rejects a caller-owned stream it has already mutated."""
     block = _padding_free_codegen_block()
-    # Sliced to the next def, not a fixed window:
+    # Sliced to the next def, not a fixed window: a comment added inside the probe
+    # used to push the line under test out of the window and pass the test blind.
     start = block.index("def _unsloth_pretokenized")
     body = block[start : block.index("def _unsloth_cap_split", start)]
     assert (
@@ -2762,7 +2773,7 @@ def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
             eval_dataset = None,
             **kw,
         ):
-            # What Trainer.evaluate does:
+            # What Trainer.evaluate does: hand the stored split to the builder.
             return self.get_eval_dataloader(eval_dataset)
 
         def get_eval_dataloader(
@@ -3191,7 +3202,8 @@ def test_a_misaligned_later_row_keeps_its_own_length():
     the row never had."""
     from unsloth.models.rl import _CappedRows
 
-    # Longer than the tokens, not shorter, so cutting it is visible:
+    # Longer than the tokens, not shorter, so cutting it is visible: a shorter
+    # value comes back unchanged from the slice either way.
     rows = [_row(range(10), labels = [1] * 10), _row(range(10), labels = [1] * 20)]
     capped = _CappedRows(rows, slice(None, 4), (), ("input_ids", "labels"))
     out = list(capped)

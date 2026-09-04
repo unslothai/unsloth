@@ -46,7 +46,8 @@ SUFFIXES = (".py", ".ipynb")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = Path(__file__).resolve().parent / "exec_literals_baseline.json"
 
-# Not part of any commit, or not ours to fail on.
+# Not part of any commit, or not ours to fail on. `tests` is excluded because a test legitimately keeps a real `exec`
+# around as the thing it is asserting about.
 EXCLUDED_PARTS = frozenset(
     {
         "tests",
@@ -125,7 +126,8 @@ def scan_file(path: Path, relative: str) -> list[dict]:
         tree = ast.parse(source, filename = str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
         if path.suffix == ".ipynb":
-            # A notebook that does not parse as one module is ordinary:
+            # A notebook that does not parse as one module is ordinary: a cell may be mid-edit, or depend on an
+            # earlier `%%capture`. Nothing to check, and failing the build for it would be noise.
             return []
         # A .py file that will not parse has not been checked, and reporting it clean is the bypass this whole gate
         # exists to avoid.
@@ -198,7 +200,8 @@ def main() -> int:
     found = collect(targets)
 
     if arguments.update:
-        # Existing reasons are carried over.
+        # Existing reasons are carried over. Rebuilding the list from scratch reset every hand-written
+        # justification to nothing, which is how a reviewed entry silently becomes an unreviewed one.
         reasons = {
             (e["file"], e["sink"], e["digest"]): e.get("reason", "") for e in document["entries"]
         }

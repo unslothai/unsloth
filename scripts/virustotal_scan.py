@@ -48,7 +48,8 @@ DEFAULT_TIMEOUT_SECONDS = 1500.0
 DEFAULT_FAIL_THRESHOLD = 0
 
 _MAX_ATTEMPTS = 4
-# A failed upload means fetching a fresh signed URL, so this is deliberately small:
+# A failed upload means fetching a fresh signed URL, so this is deliberately small: each retry re-sends 40+ MB and
+# spends two more requests of quota.
 _UPLOAD_ATTEMPTS = 2
 _SOCKET_TIMEOUT = 300.0
 
@@ -472,7 +473,8 @@ class VirusTotalClient:
             upload_url = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(upload_url, str) or not upload_url:
                 raise RuntimeError("VirusTotal did not return an upload URL")
-            # Mask before the URL is ever used, so anything that later echoes it -- a traceback, a future debug print
+            # Mask before the URL is ever used, so anything that later echoes it -- a traceback, a future debug
+            # print, a library error string -- is scrubbed.
             _mask_in_actions(upload_url)
 
             try:

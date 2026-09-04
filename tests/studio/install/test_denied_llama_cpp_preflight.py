@@ -263,7 +263,7 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     # A denied path cannot resolve, so compare lexical full paths instead.
     assert "GetUnresolvedProviderPathFromPSPath" in canonicalizer
     assert "[System.IO.Path]::GetFullPath(" in canonicalizer
-    # One trim, after both branches:
+    # One trim, after both branches: Resolve-Path keeps a trailing separator too.
     assert canonicalizer.count("TrimEnd('\\', '/')") == 1
     assert canonicalizer.index("Resolve-Path") < canonicalizer.index("TrimEnd")
     assert INSTALL_PS1.count("Resolve-Path -LiteralPath $trimmedPath") == 1

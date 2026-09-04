@@ -214,7 +214,7 @@ def test_mixed_methods_share_16bit_base(monkeypatch, tmp_path):
 
 
 def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
-    # First method is the slowest:
+    # First method is the slowest: completion order != request order.
     h = _Harness(
         monkeypatch, tmp_path, quantize_delays = {"q4_k_m": 0.3, "q5_k_m": 0.05, "q6_k": 0.01}
     )

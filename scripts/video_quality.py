@@ -158,7 +158,8 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # A truncated candidate is gated FAIL, not prefix-compared:
+    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the
+    # missing tail.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
@@ -207,7 +208,7 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
         return float(np.sqrt((arr**2).mean())) if arr.size else 0.0
 
     ref_rms, cand_rms = _rms(ref_audio), _rms(cand_audio)
-    # NaN compares False against any threshold, so call it out:
+    # NaN compares False against any threshold, so call it out: a NaN track is a collapse.
     silent_collapse = (
         ref_rms is not None
         and ref_rms >= 1e-3

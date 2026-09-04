@@ -160,7 +160,7 @@ def test_vllm_lora_models_either_path(tag: str):
         )
 
 
-# Optional / version-gated symbols:
+# Optional / version-gated symbols: assert presence only on minors claiming support.
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_worker_lora_manager_class(tag: str):
     """vllm.lora.worker_manager.WorkerLoRAManager -- unsloth-zoo subclasses it; signature drives old_init vs new_init."""

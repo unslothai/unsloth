@@ -158,7 +158,7 @@ def spoof_hardware(monkeypatch):
         monkeypatch.setattr(platform, "machine", lambda: profile.machine)
 
         monkeypatch.setattr(torch.cuda, "is_available", lambda: profile.cuda_available)
-        # Stub get_device_properties:
+        # Stub get_device_properties: detect_hardware reads .name, which crashes on a CPU CI runner.
         if profile.cuda_available:
             stub_props = types.SimpleNamespace(
                 name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",

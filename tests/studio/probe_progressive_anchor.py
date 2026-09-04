@@ -245,7 +245,7 @@ def main() -> int:
     print()
     info(f"wrote {OUT / f'{LABEL}.json'}")
 
-    # The only failure asserted:
+    # The only failure asserted: it must have caught what it claims to measure.
     if not any(r["caughtWidening"] for r in results):
         info(
             "PROBE-BROKEN the thread was already whole at the first paint in every repetition, so "

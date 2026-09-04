@@ -365,7 +365,8 @@ def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     activity = source("features/chat/components/research-activity-panel.tsx")
 
     assert "stoppingResearchRunIdRef" in thread
-    # The composer selects the run status, not the run object, so a streamed research delta does not re-render it.
+    # The composer selects the run status, not the run object, so a streamed research delta
+    # does not re-render it. The cancelling guard reads that status.
     assert 'activeResearchRunStatus === "cancelling"' in thread
     assert 'aria-label={researchStopping ? "Stopping research"' in thread
     assert "cancelResearchRun" not in activity
@@ -388,7 +389,8 @@ def test_the_handoff_is_keyed_on_the_result_the_backend_writes() -> None:
     assert marker is not None
     assert f'DEEP_RESEARCH_STARTED_MARKER = "{marker.group(1)}"' in helper
     assert "result.startsWith(DEEP_RESEARCH_STARTED_MARKER)" in helper
-    # A gated call keeps its Allow / Deny card:
+    # A gated call keeps its Allow / Deny card: the loop blocks on a verdict, so hiding it
+    # asks the user nothing and the turn hangs there.
     assert "if (event.awaiting_confirmation === true) {\n      return false;" in helper
 
     # The clamp is the endpoint's own limit;
@@ -411,7 +413,8 @@ def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
     been picked, or failed outright when B runs no Studio tools.
     """
     adapter = source("features/chat/api/chat-adapter.ts")
-    # The generator's own body:
+    # The generator's own body: the main path's re-read after an auto-load is a different
+    # thing, and it happens at send time where reading the store is right.
     research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
         "const deepResearchHandoff = newDeepResearchHandoff();", 1
     )[0]

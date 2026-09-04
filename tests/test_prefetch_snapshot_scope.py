@@ -87,7 +87,8 @@ def capture(monkeypatch):
     return run
 
 
-# Representative repo listing:
+# Representative repo listing: root weights (sharded safetensors + index + a .bin) and aux configs, subdir weights,
+# a checkpoint dir, and an adapter.
 _SAMPLE_FILES = [
     "config.json",
     "tokenizer.json",

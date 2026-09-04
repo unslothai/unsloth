@@ -655,7 +655,7 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
             1,
             id = "model_already_resident",
         ),
-        # A page RELOAD of /chat?new=<uuid>:
+        # A page RELOAD of /chat?new=<uuid>: nothing is priceable until /api/inference/status answers.
         pytest.param("", 0, id = "reload_before_status_hydrates"),
         # New Chat opened FROM a populated conversation left running: its runtime stays mounted and
         # the live branch reader keeps returning its messages until switchToNewThread() settles.
@@ -923,7 +923,7 @@ NO_LOCAL_MODEL = """
     [
         # No GGUF window means nothing to price; the seeded placeholder must not stick.
         pytest.param(NO_LOCAL_MODEL, "false", 1, id = "no_local_model"),
-        # assistant-ui is still hydrating:
+        # assistant-ui is still hydrating: both effects bail before touching anything.
         pytest.param(LOADED_MODEL, "true", 0, id = "assistant_ui_still_loading"),
     ],
 )
@@ -991,7 +991,7 @@ TWO_STORED_TURNS = """
     ];
 """
 
-# A regenerated last answer:
+# A regenerated last answer: the newest stored leaf is not the branch the runtime is showing.
 RETRY_BRANCH_STORED = """
     world.storedMessages["thread-a"] = [
       { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
@@ -1224,7 +1224,7 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
 @pytest.mark.parametrize(
     ("mutation", "expected_total"),
     [
-        # A tool result landing on an existing tool-call part:
+        # A tool result landing on an existing tool-call part: no `text`, and no part added.
         ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
         # An edit to different text of the same length, which a size-based signature cannot see.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
@@ -1727,7 +1727,8 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
     assert (out["cached"] or {}).get("totalTokens") == 62
 
 
-# Revisiting a thread that was NOT open when the model changed:
+# Revisiting a thread that was NOT open when the model changed: setCheckpoint emptied
+# contextUsageByThreadId, and the thread is already mounted so its history loader never reruns.
 REVISIT_AFTER_A_MODEL_SWITCH = """
     seed({
       activeThreadId: "thread-b",
@@ -1746,7 +1747,8 @@ REVISIT_AFTER_A_MODEL_SWITCH = """
     renderThreadContextUsageRecount();
 """
 
-# A deep link to /chat/:id against a resident GGUF:
+# A deep link to /chat/:id against a resident GGUF: the history loader's own recount runs before
+# /api/inference/status answers, and status lands before ThreadAutoSwitch writes activeThreadId.
 DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     renderThreadContextUsageRecount();
     await refreshContextUsage({ threadId: "thread-a" });
@@ -1805,7 +1807,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
             """
         )
     )
-    # thread-b still holds a completion's usage:
+    # thread-b still holds a completion's usage: exact, so becoming active must leave it alone.
     assert out["beforeSwitch"] == 0, "nothing to reprice until the thread is the active one"
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "a thread the bar points at with no cached usage stays blank until the next "
@@ -1825,7 +1827,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
             ' content: [{ type: "text", text: "and another" }] }];',
             None,
         ),
-        # Mounted with the same branch:
+        # Mounted with the same branch: nothing moved, so the stored count still describes it.
         ("live = stored.slice();", 62),
         # Never mounted: there is nothing to compare against and nothing to invalidate.
         ("", 62),
@@ -1927,7 +1929,7 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
 @pytest.mark.parametrize(
     ("local_runs", "expected_counts"),
     [
-        # Decoding on the local llama-server:
+        # Decoding on the local llama-server: the count would share the process with generation.
         ('{ "thread-a": true }', 0),
         ('{ "thread-b": true }', 0),
         # Control: an idle server is what the count is for.

@@ -178,7 +178,8 @@ def test_has_tokenizer_model_offline_skips_model_info(tmp_path, monkeypatch):
 
     tok = SimpleNamespace(name_or_path = _REPO)
 
-    # A raising side_effect proves nothing:
+    # A raising side_effect proves nothing: _has_tokenizer_model wraps the call
+    # in `except Exception: return False`, so it passes with the fix reverted.
     with patch("huggingface_hub.HfApi.model_info") as model_info:
         assert _has_tokenizer_model(tok, token = None) is False
     assert model_info.call_count == 0

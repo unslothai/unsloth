@@ -193,7 +193,8 @@ class TestCudaRepairFires:
         assert mock_pip.call_count == 1
 
     def test_no_gpu_but_explicit_cuda_pin_repairs(self):
-        # Headless / CI cross-install:
+        # Headless / CI cross-install: an explicit cu* pin commits to CUDA wheels with no NVIDIA GPU visible, so a
+        # ROCm-poisoned venv is still repaired to the pinned family.
         mock_pip = _run_cuda_repair(
             nvidia = False,
             backend = "cuda",
@@ -238,7 +239,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_pin_repairs(self):
-        # torch present but unimportable under a CUDA pin:
+        # torch present but unimportable under a CUDA pin: the base update won't repair a broken already-installed
+        # torch, so reinstall from the pin instead of stranding it.
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1, index_family = "cu128")
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
@@ -471,7 +473,8 @@ class TestPreTuringWheelFamily:
             assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_mixed_host_outside_cu126_range_keeps_the_driver_family(self):
-        # Blackwell is past cu126's ceiling and Kepler under its floor, so no family covers either mix whole;
+        # Blackwell is past cu126's ceiling and Kepler under its floor, so no family covers either mix whole.
+        # Capping would strand the newer card entirely.
         for caps in (("7.0", "12.0"), ("3.7", "8.6")):
             assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
@@ -546,6 +549,7 @@ class TestPreTuringWheelFamily:
         assert "cu126" in _index_url(mock_pip)
 
     def test_pre_211_cu128_volta_build_is_kept(self):
+        # torch 2.10's cu128 wheels still shipped sm_70; no reinstall is warranted.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.10.0",
             cuda_version = "13.0",
@@ -554,6 +558,7 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_pre_211_cu128_pascal_build_is_repaired(self):
+        # ... but they never shipped sm_61, which only cu126 carries.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.10.0",
             cuda_version = "13.0",
@@ -584,8 +589,9 @@ class TestPreTuringWheelFamily:
             mock_pip.assert_not_called()
 
     def test_untagged_cuda_build_uses_the_runtime_family(self):
-        # ... but they never shipped sm_61, which only cu126 carries.
-        # torch 2.10's cu128 wheels still shipped sm_70;
+        # An untagged build still reports torch.version.cuda, so _family falls back to the runtime value and the
+        # architecture policy applies. The "family unknown, leave it alone" branch needs BOTH the tag and
+        # torch.version.cuda empty, which reads as a CPU build, so an untagged CUDA build is always classifiable.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0",
             cuda_version = "13.0",
@@ -772,8 +778,6 @@ def _run_flavor_invariant(
 
     def _pip(*args, **kwargs):
         # The real pip_install invalidates the memoized classification.
-        # list.append() returns None, so a stub that only appended reported failure on every call and every test here
-        # silently exercised the could-not-install branch.
         stack_mod._invalidate_torch_runtime_probe()
         if repaired is not None:
             state["version"] = repaired
@@ -871,7 +875,7 @@ class TestExpectedTorchFlavorFailsTheUpdate:
         assert mock_pip.call_count == 1
 
     def test_the_failure_verdict_reads_torch_version_cuda_not_just_the_tag(self):
-        # Untagged but carrying a CUDA runtime is a GPU build:
+        # Untagged but carrying a CUDA runtime is a GPU build: reinstall, do not fail.
         ok, _mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.11.0+cu124")
         assert ok is True
 
@@ -1538,7 +1542,7 @@ class TestSetupPs1CudaOnDiskFallback:
         assert "function Get-VenvTorchCudaTag" in _SETUP_SRC
         assert "function Test-VenvTorchIsCuda" in _SETUP_SRC
         block = _SETUP_SRC[_SETUP_SRC.index("function Get-VenvTorchCudaTag") :][:1400]
-        # The family, not a flat "cuda":
+        # The family, not a flat "cuda": the stale comparison below it is cu126-vs-cu128.
         assert "cu[0-9]+" in block
         assert "site-packages\\torch\\version.py" in block
 
@@ -1587,7 +1591,9 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         calls = {"torchao": [], "removed": []}
 
         def _try(*a, **k):
-            # Returns a BOOL, as the real pip_install_try does:
+            # Returns a BOOL, as the real pip_install_try does. list.append() returns None, so a stub that only
+            # appended reported failure on every call and every test here silently exercised the
+            # could-not-install branch.
             calls["torchao"].append([str(x) for x in a])
             return not torchao_install_fails
 
@@ -2034,7 +2040,7 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         block = source[source.index(marker) :][:1200]
         assert "_ensure_expected_torch_flavor" in block
         assert "_ensure_xpu_triton()" in block
-        # After, for the reason step 13 puts it last:
+        # After, for the reason step 13 puts it last: the swap keys off the +xpu label.
         assert block.index("_ensure_expected_torch_flavor") < block.index("_ensure_xpu_triton()")
 
 

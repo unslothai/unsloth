@@ -112,7 +112,10 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
-    # Assert the mechanism, not just the error strings:
+    # Assert the mechanism, not just the error strings: those survive a step that no longer loops or
+    # no longer reads a conclusion, and then the download races the matrix. Everything below is
+    # checked inside the loop body, because a one-shot `gh api` read beside a dead `while` would
+    # satisfy the same substrings while waiting for nothing.
     loop_body = _poll_loop_body(wait_run)
     assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
     assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
@@ -317,7 +320,7 @@ def test_the_updater_workflow_is_manual_dispatch_only():
     assert set(triggers) == {"workflow_dispatch"}, triggers
 
     job = workflow["jobs"]["publish-updater"]
-    # A leftover github.event.release ref is null under dispatch:
+    # A leftover github.event.release ref is null under dispatch: silently false, not an error.
     conditions = [job["if"]] + [step["if"] for step in job["steps"] if "if" in step]
     for condition in conditions:
         assert "github.event" not in condition, condition

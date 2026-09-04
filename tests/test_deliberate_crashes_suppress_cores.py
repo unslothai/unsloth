@@ -82,7 +82,8 @@ _DIRECTED_NAMES = {"raise_signal", "kill"}
 # dump.
 _SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 
-# A signal aimed at self dumps core only for these.
+# A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
+# which is why SIGKILL is the recommended way to make a child vanish.
 _FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP", "SIGQUIT")
 # Linux dump-core defaults: 3 QUIT, 4 ILL, 5 TRAP, 6 ABRT, 7 BUS, 8 FPE, 11 SEGV.
 _FATAL_SIGNAL_NUMBERS = {3, 4, 5, 6, 7, 8, 11}

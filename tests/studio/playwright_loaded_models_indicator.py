@@ -243,7 +243,8 @@ def boot(
 ) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
     page.goto(BASE, wait_until = "domcontentloaded")
-    # The indicator ships off, so every check that wants the card has to switch it on.
+    # The indicator ships off, so every check that wants the card has to switch it on. Pass show = False to
+    # exercise the default.
     seeded = dict(seed or {})
     if show:
         seeded.setdefault(SHOW_KEY, "true")

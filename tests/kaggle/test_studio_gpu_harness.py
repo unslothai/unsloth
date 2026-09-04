@@ -907,7 +907,8 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
         "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
     )
 
-    # Share of the shared 50h CI allowance, and the stand-down floor that enforces the priority:
+    # Share of the shared 50h CI allowance, and the stand-down floor that enforces the priority: the cheap leg stops
+    # first so the expensive one gets the tail of the week.
     assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
@@ -1422,7 +1423,7 @@ def test_the_marker_never_carried_an_install_kind(tmp_path):
     """
     module = _load_payload()
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
-    # Exactly the shape the installer writes:
+    # Exactly the shape the installer writes: no install_kind anywhere.
     marker.write_text(
         json.dumps(
             {
@@ -1627,10 +1628,10 @@ def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
     assert session.studio.posts[0][1]["model_path"] == "only-here.gguf"
 
 
-# The launcher collects each kernel into its own subdirectory and the workflow hands collect_evidence.py the parent, so
-
-
 # ------------------------------------------------- the evidence the launcher left
+#
+# The launcher collects each kernel into its own subdirectory and the workflow hands collect_evidence.py the parent, so
+# a non-recursive walk of that parent finds nothing at all.
 def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp_path):
     """launch.py::fetch_evidence writes kaggle_evidence/<slug>/..., and the
     workflow passes kaggle_evidence. A top-level glob reported every real run

@@ -36,7 +36,9 @@ def test_the_prompt_counts_conversations_not_generation_handles():
 
 
 def test_an_unload_is_not_described_as_a_reload():
-    # ejectModel confirms through the same dialog, but confirming calls /unload and leaves no model loaded:
+    # ejectModel confirms through the same dialog, but confirming calls /unload and leaves no model loaded: the older
+    # "Unloading the model reloads the model" and "Stop and reload" wording promised the opposite for the destructive
+    # one.
     dialog = _read("features/chat/components/stop-running-chats-dialog.tsx")
     assert "Stop and unload" in dialog and "Stop and reload" in dialog
     assert "leaves no model loaded" in dialog

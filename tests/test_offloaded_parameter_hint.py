@@ -145,7 +145,7 @@ def test_the_original_error_is_still_reported():
     again, and either shape satisfies what this is actually checking.
     """
     for anchor in ("Failed to save/merge model: ", "Failed to save model: "):
-        # All occurrences, not the first:
+        # All occurrences, not the first: a docstring also quotes these messages.
         windows = []
         i = SRC.find(anchor)
         assert i != -1, anchor
