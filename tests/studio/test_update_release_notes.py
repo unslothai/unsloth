@@ -39,6 +39,16 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+# An apostrophe in JSX text is prose, not the start of a string: "We're ready"
+# in a banner's copy would otherwise run a scanner to the next apostrophe or off
+# the end of the file, and a copy edit would fail these tests. The frontend is
+# formatted to double quotes, so nothing here is delimited with `'`.
+# A set of characters, not a string: `"" in '"`'` is true for a substring, and
+# a trailing comma leaves an empty argument to test.
+_QUOTES = frozenset('"`')
+
+_CALL = re.compile(r"[A-Za-z_$][\w$]*\(")
+
 _IMPORTANT = re.compile(r"^!|!$")
 
 
@@ -157,7 +167,7 @@ def _without_comments(source: str) -> str:
         char = source[index]
         # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
         # blanking from its `//` would eat the rest of the line and its quote.
-        if char in "\"'`":
+        if char in _QUOTES:
             index = _skip_literal(source, index)
             continue
         if source.startswith("//", index):
@@ -206,7 +216,7 @@ def _tag_end(source: str, start: int, at: int) -> int | None:
         if index == at:
             reached = depth == 0
         char = source[index]
-        if char in "\"'`":
+        if char in _QUOTES:
             index = _skip_literal(source, index)
             continue
         if char in "([{":
@@ -284,7 +294,7 @@ def _arguments(call: str) -> list[str]:
     index = at
     while index < len(call):
         char = call[index]
-        if char in "\"'`":
+        if char in _QUOTES:
             end = _skip_literal(call, index)
             current.append(call[index:end])
             index = end
@@ -319,15 +329,19 @@ def _always_rendered(expression: str) -> str:
     literals out of the whole expression would call all three the same.
     """
     text = expression.strip()
-    if text[:1] in ('"', "'", "`") and _skip_literal(text, 0) == len(text):
+    if text[:1] in _QUOTES and _skip_literal(text, 0) == len(text):
         return text[1:-1]
     if "(" not in text:
         return ""
     literals = []
     for argument in _arguments(text):
         part = argument.strip()
-        if part[:1] in ('"', "'", "`") and _skip_literal(part, 0) == len(part):
+        if part[:1] in _QUOTES and _skip_literal(part, 0) == len(part):
             literals.append(part[1:-1])
+        elif _CALL.match(part) and _balanced(part, part.index("(")) == len(part):
+            # Grouping the arguments in a nested `cn()` renders the same
+            # classes, so it has to read the same rather than as none at all.
+            literals.append(_always_rendered(part))
     return " ".join(literals)
 
 
@@ -337,7 +351,7 @@ def _balanced(source: str, at: int) -> int:
     index = at
     while index < len(source):
         char = source[index]
-        if char in "\"'`":
+        if char in _QUOTES:
             index = _skip_literal(source, index)
             continue
         if char in "([{":
@@ -1658,20 +1672,30 @@ def _unpositioned_branch(text: str) -> str:
     satisfy a check about the card. Split at the colon at bracket depth zero
     and outside any literal, so a Tailwind variant in the first arm
     (`dark:bg-card`) is not mistaken for the separator.
+
+    Ternary nesting is counted, not just brackets. A ternary inside the first
+    arm has a colon of its own at the same bracket depth, and taking that one
+    returns the tail of the `positioned` arm as though it were the card, so
+    every floor could be asserted against the wrong element.
     """
-    index = text.index("?", text.index("positioned"))
+    index = text.index("?", text.index("positioned")) + 1
+    pending = 1
     depth = 0
     while index < len(text):
         char = text[index]
-        if char in "\"'`":
+        if char in _QUOTES:
             index = _skip_literal(text, index)
             continue
         if char in "([{":
             depth += 1
         elif char in ")]}":
             depth -= 1
+        elif char == "?" and depth == 0 and text[index + 1 : index + 2] not in (".", "?"):
+            pending += 1
         elif char == ":" and depth == 0 and text[index - 1] != "?":
-            return text[index + 1 :]
+            pending -= 1
+            if pending == 0:
+                return text[index + 1 :]
         index += 1
     raise AssertionError("the positioned card has no unpositioned branch")
 
