@@ -2341,10 +2341,7 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_param(resp, param)
 
-    # Same pair of rejection sites as the GGUF case, and the same reason to pin
-    # which one runs: `_should_validate_before_switch()` reads process-wide state,
-    # so unpinned this asserted whichever site the rest of the worker left
-    # reachable.
+    # Same two rejection sites, and same reason to pin one, as the GGUF case below.
     @pytest.mark.parametrize("validate_before_switch", [False, True])
     def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
         self, monkeypatch, validate_before_switch
@@ -2392,7 +2389,7 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
         if validate_before_switch:
-            # Rejected ahead of the switch, before the monitor row is opened.
+            # Early site rejects before the monitor row is opened.
             assert monitor.snapshot() == []
         else:
             [entry] = monitor.snapshot()
@@ -4209,14 +4206,10 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == "tool_choice"
 
-    # Two sites reject this shape, and `_should_validate_before_switch()` picks
-    # which: the early one runs ahead of the model switch so an invalid request
-    # cannot evict the resident model, and the one inside the GGUF branch runs
-    # after the monitor row is opened. That predicate reads process-wide state
-    # (an automatic load being possible, or a preview-owned slot), so leaving it
-    # unpinned asserted whichever site the rest of the worker happened to leave
-    # reachable. It passed alone and failed in CI once #10221 added cases and
-    # changed how xdist packed its workers. Pinned, and both sites are covered.
+    # Two sites reject this shape and `_should_validate_before_switch()` picks
+    # which; the early one runs before the api_monitor row is opened. It reads
+    # process-wide state, so unpinned this asserted whichever site the xdist
+    # worker happened to leave reachable. Pinned, both sites are covered.
     @pytest.mark.parametrize("validate_before_switch", [False, True])
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
         self, monkeypatch, validate_before_switch
@@ -4262,19 +4255,17 @@ class TestGgufVisionToolRouting:
                     current_subject = "test",
                 )
             )
-        # The rejection itself is the same from either site.
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
         if validate_before_switch:
-            # Rejected ahead of the switch, before the monitor row is opened, so
-            # there is no row to fail. Recording one here would change what the
-            # monitor shows and is a decision of its own, not a test fix.
+            # Early site rejects before the monitor row is opened, so there is no
+            # row to fail; opening one here would be a behaviour change, not a fix.
             assert monitor.snapshot() == []
         else:
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "confirm_tool_calls requires stream=true" in entry["error"]
-        # Neither site may leave a row running, including the site that opens none.
+        # Neither site may leave a row running.
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
