@@ -18,10 +18,8 @@ on:
       - 'studio/backend/tests/test_safetensors_tool_loop.py'
       - 'studio/backend/tests/test_tool_loop_controller.py'
       - 'studio/frontend/**'
+      - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/studio-tool-isolation-ci.yml'
-  push:
-    branches:
-      - 'codex/studio-minimal-os-sandbox-*'
   workflow_dispatch:
 
 permissions:
@@ -177,9 +175,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Bubblewrap and test dependencies in the outer container
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: 2
+          RETRY_ATTEMPT_TIMEOUT: 120
         run: |
-          apt-get update
-          apt-get install -y bubblewrap python3 python3-pip python3-venv
+          bash .github/scripts/retry-with-apt-lock.sh apt-get update
+          bash .github/scripts/retry-with-apt-lock.sh apt-get install -y bubblewrap python3 python3-pip python3-venv
           python3 -m venv /opt/tool-isolation-venv
           echo "/opt/tool-isolation-venv/bin" >> "$GITHUB_PATH"
           /opt/tool-isolation-venv/bin/python -m pip install --upgrade pip

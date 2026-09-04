@@ -422,7 +422,7 @@ export function PermissionModeDropdown({
               permissionMode === "full" &&
                 "text-bypass hover:text-bypass border-bypass/50",
             )}
-            aria-label={`Tool permissions: ${active.label}. ${isolation.label}`}
+            aria-label="Permission level for tool calls"
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
             <span className="min-w-0 flex-1 truncate text-left">
@@ -504,7 +504,7 @@ export function PermissionModeComposerPill({
             data-pill-label={`${active.label} · ${isolation.label}`}
             data-active={fullAccess ? "true" : "false"}
             data-variant={fullAccess ? "danger" : undefined}
-            aria-label={`Tool permissions: ${active.label}. ${isolation.label}`}
+            aria-label="Permission level for tool calls"
             title={`${active.label}: ${active.description}. ${isolation.label}.`}
           >
             <span className="composer-pill-glyph">
