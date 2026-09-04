@@ -312,18 +312,23 @@ def test_a_bus_id_beats_ordinal_guessing(HW, monkeypatch):
     it right; translating index to ordinal would classify the other card.
     """
     monkeypatch.setattr(
-        HW, "cuda_integrated_by_pci_bus_id",
+        HW,
+        "cuda_integrated_by_pci_bus_id",
         lambda: {"0:01:00.0": (True, _REAL_POOL_BYTES)},
     )
     monkeypatch.setattr(
-        HW, "_cuda_device_integrated_and_total",
+        HW,
+        "_cuda_device_integrated_and_total",
         lambda index: (False, 24 * GIB),  # what guessing by ordinal would answer
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000),
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
     )
-    (idx, free_mib, total_mib), = LlamaCppBackend._apply_cuda_unified_memory_correction(
-        [_SMI_CARVE_OUT], bus_ids = {0: "00000000:01:00.0"},
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT],
+        bus_ids = {0: "00000000:01:00.0"},
     )
     assert (idx, free_mib, total_mib) == (0, 46477 - 1024, 0)
 
@@ -331,22 +336,32 @@ def test_a_bus_id_beats_ordinal_guessing(HW, monkeypatch):
 def test_a_device_the_driver_did_not_report_is_left_alone(HW, monkeypatch):
     """Never fall back to ordinal guessing for a bus id the driver did not list."""
     monkeypatch.setattr(
-        HW, "cuda_integrated_by_pci_bus_id",
+        HW,
+        "cuda_integrated_by_pci_bus_id",
         lambda: {"0:02:00.0": (True, _REAL_POOL_BYTES)},
     )
     monkeypatch.setattr(
-        HW, "_cuda_device_integrated_and_total",
+        HW,
+        "_cuda_device_integrated_and_total",
         lambda index: (True, _REAL_POOL_BYTES),
     )
     rows = [(0, 7929, 8128)]
-    assert LlamaCppBackend._apply_cuda_unified_memory_correction(
-        rows, bus_ids = {0: "00000000:01:00.0"},
-    ) == rows
+    assert (
+        LlamaCppBackend._apply_cuda_unified_memory_correction(
+            rows,
+            bus_ids = {0: "00000000:01:00.0"},
+        )
+        == rows
+    )
 
 
 # ── the classifier itself ────────────────────────────────────────────────────
 class _FakeCompleted:
-    def __init__(self, stdout = "", returncode = 0):
+    def __init__(
+        self,
+        stdout = "",
+        returncode = 0,
+    ):
         self.stdout = stdout
         self.stderr = ""
         self.returncode = returncode

@@ -2918,8 +2918,7 @@ def _cuda_visibility_key() -> str:
     classification made under the old mask.
     """
     return "\x00".join(
-        os.environ.get(name, "\x01")
-        for name in ("CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES")
+        os.environ.get(name, "\x01") for name in ("CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES")
     )
 
 
@@ -3005,7 +3004,7 @@ def canonical_pci_bus_id(text: Any) -> str:
     try:
         head, _, function = raw.rpartition(".")
         fields = head.split(":")
-        if len(fields) == 2:          # bus:device, no domain
+        if len(fields) == 2:  # bus:device, no domain
             fields = ["0"] + fields
         if len(fields) != 3 or not function:
             return ""
