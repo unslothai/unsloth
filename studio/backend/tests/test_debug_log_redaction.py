@@ -145,6 +145,11 @@ KEEP = [
     "provider config: api_key = None",
     "https://example.com?email=alice@example.com",
     "server --token-id 128009",
+    # The shell's working directory, and variables that name a file rather than hold a secret.
+    "PWD=/home/dan/Downloads/unsloth-work",
+    "secret_sauce_path=/data/recipes/default.yaml",
+    "PRIVATE_KEY_PATH=/etc/ssl/private/server.key",
+    "HF_TOKEN_PATH=/home/dan/.cache/huggingface/token",
 ]
 
 
@@ -158,6 +163,11 @@ def test_a_credential_never_survives(line, secret):
 @pytest.mark.parametrize("line", KEEP, ids = [k[:28] for k in KEEP])
 def test_ordinary_log_content_is_untouched(line):
     assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize("line", KEEP, ids = [k[:28] for k in KEEP])
+def test_the_streaming_redactor_leaves_ordinary_records_alone(line):
+    assert StreamingLogRedactor().redact_record(line + "\n") == line + "\n"
 
 
 @pytest.mark.parametrize("line", [s[0] for s in SECRETS] + KEEP)

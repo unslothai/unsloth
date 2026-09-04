@@ -57,6 +57,13 @@ _FLAG_SECRET_KEYS = _SECRET_KEYS + "|token"
 # \b never fires inside OPENAI_API_KEY / db_password, the shape an env dump or argv line carries; the trailing \b stays,
 # so eos_token_id and secret_sauce_path are left alone.
 _KEY_START = r"(?<![A-Za-z0-9])"
+# every rule below needs one of these fragments, so a line without any is returned untouched before the regex passes
+_TRIGGER_RE = re.compile(
+    r"(?i)key|token|secret|pass|pwd|auth|cookie|credential|connstr|connectionstring|signature|[?&]sig=|"
+    r"hf_|sk-|gsk_|xai-|gh[pousr]_|github_pat_|glpat-|xox[abpsr]-|ya29\.|aiza|akia|asia|eyj|://|-----begin|"
+    r"ld_preload|ssh_agent|gpg_agent|gnupghome|kubeconfig|docker_host|"
+    r"aws_|azure_|google_|gcp_|gcloud_|dyld_|[\x1b\x90\x98\x9b\x9d-\x9f]"
+)
 _QUERY_SECRET_KEYS = (
     r"token|api[-_]key|apikey|sig|signature|x-amz-signature|"
     r"x-amz-credential|x-amz-security-token|x-goog-signature|access_token"
@@ -295,6 +302,9 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
+    # the uppercase shell variable is the working directory; "pwd" stays for odbc style connection strings
+    if match.group("key") == "PWD":
+        return match.group(0)
     value = match.group("val")
     boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
     tail = ""
@@ -390,6 +400,9 @@ def _is_shell_secret_env_name(name: str) -> bool:
     if not is_secret_env_name(name):
         return False
     upper = name.upper()
+    # a location variable such as private_key_path or hf_token_path names a file, not the secret in it
+    if upper.endswith(("_PATH", "_FILE", "_DIR", "_HOME", "_ROOT")):
+        return False
     if name != upper and name.lower() in {"password", "passwd", "pwd", "secret"}:
         return False
     if name == upper or upper in SECRET_ENV_NAMES:
@@ -528,6 +541,20 @@ def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
         return text
+    if _TRIGGER_RE.search(text):
+        text = _redact_credentials(text)
+    return _mask_native_paths(text)
+
+
+def _mask_native_paths(text: str) -> str:
+    try:
+        from utils.native_path_leases import redact_native_paths
+        return redact_native_paths(text)
+    except Exception:
+        return text
+
+
+def _redact_credentials(text: str) -> str:
     text = _PRIVATE_KEY_BLOCK_RE.sub(REDACTED, text)
     # Nothing anchored below survives an escape between a key and its value, so
     # strip first, guarded by one introducer scan: ordinary content is untouched.
@@ -555,11 +582,6 @@ def redact_log_text(text: str) -> str:
     text = _QUOTED_FLAG_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_FLAG_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _FLAG_RE.sub(_redact_kv, text)
-    try:
-        from utils.native_path_leases import redact_native_paths
-        text = redact_native_paths(text)
-    except Exception:
-        pass
     return text
 
 
@@ -579,15 +601,7 @@ class StreamingLogRedactor:
 
     @staticmethod
     def _masked_record(text: str) -> str:
-        newline = (
-            "\r\n"
-            if text.endswith("\r\n")
-            else "\n"
-            if text.endswith("\n")
-            else "\r"
-            if text.endswith("\r")
-            else ""
-        )
+        newline = text[len(text.rstrip("\r\n")) :]
         indent = re.match(r"[ \t]*", text).group(0)
         return f"{indent}{REDACTED}{newline}"
 
@@ -737,7 +751,20 @@ class StreamingLogRedactor:
             indent = whitespace + " " * (len(prefix) - len(whitespace))
         return indent + text[start:]
 
+    @property
+    def _tracking(self) -> bool:
+        """Whether an earlier record left a value open that this one may continue."""
+        return (
+            self._plain_key_indent is not None
+            or self._block_key_indent is not None
+            or self._cookie_key_indent is not None
+            or self._quoted_secret is not None
+            or self._private_key_block
+        )
+
     def redact_record(self, text: str) -> str:
+        if not self._tracking and not _TRIGGER_RE.search(text):
+            return _mask_native_paths(text)
         physical = text.rstrip("\r\n")
         physical_context = self._context_view(physical)
         if self._private_key_block:
