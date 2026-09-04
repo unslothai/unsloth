@@ -1384,19 +1384,18 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
         # `n_decoded` on top would count the generated half twice.
         if slot.get("is_processing"):
             tokens += _slot_decoded(slot)
-            # LIVE pressure is decoding slots only. An idle slot's cache is cells
-            # llama.cpp will recycle by itself the moment it needs them
-            # (`try_clear_idle_slots`, gated on kv_unified alone), so counting it as
-            # occupancy evicts live conversations to make room that was already free.
-            #
-            # Summing both was measured 2026-09-03 to be not merely pessimistic but
-            # meaningless: it reported 27115 and 28745 cells in a 16384 cache, which is
-            # physically impossible, and two of the three runs that spent hundreds of
-            # samples "over the ceiling" on that figure finished perfectly cleanly. A
-            # watermark that cannot be exceeded in a way that predicts anything is not a
-            # watermark.
-            resident += max(0, tokens)
-        elif tokens > 0:
+        # Idle slots count too. Excluding them was tried on 2026-09-04, on the reasoning
+        # that llama.cpp recycles an idle slot's cache by itself so charging for it evicts
+        # live chats to reclaim room that was already free. The reasoning is wrong in the
+        # one way that matters: `try_clear_idle_slots` is called FROM the KV-full retry,
+        # so that recycling happens only after a decode has ALREADY failed, which is the
+        # path #24840 throws on and the exact path this module exists to stay off. Cells
+        # that are only freed by crashing first are occupied as far as we are concerned.
+        #
+        # Measured, same harness and config: counting them gave 3 clean runs of 4;
+        # excluding them gave 0 clean of 2, with sub-batch errors in both.
+        resident += max(0, tokens)
+        if not slot.get("is_processing") and tokens > 0:
             idle_tokens += max(0, tokens)
             idle.append((slot.get("id"), max(0, tokens)))
     # Largest first: the fewest erases free the most.

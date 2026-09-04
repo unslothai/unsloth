@@ -1136,8 +1136,11 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         # reported separately rather than counted as occupancy -- summing both produced
         # figures larger than the physical cache (27115 and 28745 in a 16384 cache) and
         # evicted live chats to reclaim room that was already free.
-        assert occupancy["resident"] == 2000
-        assert occupancy["idle_tokens"] == 25592, "still visible, just not as pressure"
+        assert occupancy["resident"] == 27592, (
+            "idle caches are only recycled by llama.cpp from the KV-full retry, i.e. "
+            "after a decode has already failed, so they are occupancy to us"
+        )
+        assert occupancy["idle_tokens"] == 25592, "and separately reclaimable"
         assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
 
     def test_generated_tokens_count_as_residency(self):
@@ -1178,11 +1181,11 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
             },
         ]
         occupancy = read_slot_occupancy(lambda: slots)
-        assert occupancy["resident"] == 0, "an idle slot is reclaimable, not pressure"
-        assert occupancy["idle_tokens"] == 9000, (
-            "and its cache already holds the whole sequence, so the generated half must "
-            "not be added a second time"
+        assert occupancy["resident"] == 9000, (
+            "its cache already holds the whole sequence it produced, so the generated "
+            "half must not be added a second time"
         )
+        assert occupancy["idle_tokens"] == 9000, "and it is reclaimable without a pause"
 
     def test_the_decoded_count_is_read_from_either_shape(self):
         """llama-server nests it in a one-element list here and a bare object elsewhere."""
