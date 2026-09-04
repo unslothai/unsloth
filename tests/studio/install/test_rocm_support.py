@@ -2275,7 +2275,7 @@ class TestRocmTorchIndex:
             + "\n"
             + "for tag in "
             + " ".join(tags)
-            + "; do _rocm_bnb_compatible_generic_tag \"$tag\"; done\n"
+            + '; do _rocm_bnb_compatible_generic_tag "$tag"; done\n'
         )
         result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
         assert result.returncode == 0, result.stderr
