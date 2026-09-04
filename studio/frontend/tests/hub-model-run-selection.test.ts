@@ -35,6 +35,23 @@ function selectedModel(
   };
 }
 
+function localModel(
+  id: string,
+  overrides: Partial<SelectedModelView> = {},
+): SelectedModelView {
+  return selectedModel({
+    id,
+    loadId: id,
+    kind: "local",
+    displayId: id,
+    hubRepoId: null,
+    path: id,
+    localSource: "custom",
+    isLocal: true,
+    ...overrides,
+  });
+}
+
 function eligible(
   model: SelectedModelView,
   overrides: Partial<{
@@ -118,29 +135,78 @@ test("MLX inventory identities never enter the Hub Run handoff", () => {
   );
 });
 
-test("GGUF remains runnable when its conversion retains an MLX identity", () => {
-  const model = selectedModel({
-    id: "mlx-community/Model-MLX-GGUF",
-    hubRepoId: "mlx-community/Model-MLX-GGUF",
-    isGguf: true,
-    modelFormat: "gguf",
-    requiresVariant: true,
-    tags: ["mlx", "gguf"],
-    libraryName: "mlx",
-  });
+test("local MLX identities fail closed across desktop path styles", () => {
+  const paths = [
+    "/models/mlx-community/Qwen2",
+    "/mnt/c/Models/mlx-community/Qwen2",
+    "/Users/alice/Models/mlx-community/Qwen2",
+    String.raw`C:\Models\mlx-community\Qwen2`,
+    String.raw`\\server\share\mlx-community\Qwen2`,
+    "/models/Org/Qwen2_MLX",
+  ];
 
-  assert.equal(eligible(model), true);
-  assert.notEqual(
-    createHubModelConfigHandoff({
-      requestId: "request-gguf",
-      model,
-      selection: {
-        ggufVariant: "Q4_K_M",
-        ggufFilename: "model-Q4_K_M.gguf",
-      },
+  for (const path of paths) {
+    const model = localModel(path);
+    assert.equal(eligible(model), false, path);
+    assert.equal(
+      createHubModelConfigHandoff({
+        requestId: path,
+        model,
+        selection: {},
+      }),
+      null,
+      path,
+    );
+  }
+});
+
+test("local MLX identity matching does not overreach", () => {
+  const paths = [
+    "/models/not-mlx-community/Qwen2",
+    "/models/Org/MyMLX",
+    String.raw`C:\Models\XMLX\Qwen2`,
+    String.raw`\\mlx-community\share\Org\Qwen2`,
+  ];
+
+  for (const path of paths) {
+    assert.equal(eligible(localModel(path)), true, path);
+  }
+});
+
+test("GGUF remains runnable when its conversion retains an MLX identity", () => {
+  const models = [
+    selectedModel({
+      id: "mlx-community/Model-MLX-GGUF",
+      hubRepoId: "mlx-community/Model-MLX-GGUF",
+      isGguf: true,
+      modelFormat: "gguf",
+      requiresVariant: true,
+      tags: ["mlx", "gguf"],
+      libraryName: "mlx",
     }),
-    null,
-  );
+    localModel(String.raw`C:\Models\mlx-community\Model.gguf`, {
+      isGguf: true,
+      modelFormat: "gguf",
+      requiresVariant: true,
+      tags: ["mlx", "gguf"],
+      libraryName: "mlx",
+    }),
+  ];
+
+  for (const model of models) {
+    assert.equal(eligible(model), true);
+    assert.notEqual(
+      createHubModelConfigHandoff({
+        requestId: "request-gguf",
+        model,
+        selection: {
+          ggufVariant: "Q4_K_M",
+          ggufFilename: "model-Q4_K_M.gguf",
+        },
+      }),
+      null,
+    );
+  }
 });
 
 test("managed cache handoffs retain separate public, loader, and GGUF identities", () => {

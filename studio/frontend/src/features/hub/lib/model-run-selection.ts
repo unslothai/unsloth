@@ -3,7 +3,6 @@
 
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import type { SelectedModelView } from "../types";
-import { detectResultFormat } from "./format-filters.ts";
 
 export interface HubModelRunSelection {
   ggufVariant?: string;
@@ -15,17 +14,37 @@ function isPresent(value: string | null | undefined): value is string {
   return Boolean(value?.trim());
 }
 
-function hasSupportedFormat(model: SelectedModelView): boolean {
-  const detectedFormat = detectResultFormat({
-    id: model.hubRepoId ?? model.id,
-    isGguf: model.isGguf,
-    libraryName: model.libraryName,
-    tags: model.tags,
-  });
+const MLX_MODEL_NAME = /(?:^|[-_.])mlx(?:$|[-_.])/i;
+const MODEL_IDENTITY_SEPARATOR = /[\\/]+/;
+
+function identityLooksLikeMlx(value: string | null | undefined): boolean {
+  if (!value?.trim()) {
+    return false;
+  }
+  const parts = value.trim().split(MODEL_IDENTITY_SEPARATOR).filter(Boolean);
+  const leaf = parts.at(-1) ?? "";
+  const parent = parts.at(-2)?.toLowerCase();
+  return parent === "mlx-community" || MLX_MODEL_NAME.test(leaf);
+}
+
+function hasMlxRunEvidence(model: SelectedModelView): boolean {
   return (
-    (model.modelFormat === "gguf" && detectedFormat === "gguf") ||
-    (model.modelFormat === "safetensors" && detectedFormat === "safetensors")
+    model.libraryName?.trim().toLowerCase() === "mlx" ||
+    model.tags?.some((tag) => tag.trim().toLowerCase() === "mlx") === true ||
+    [model.hubRepoId, model.id, model.loadId, model.path].some(
+      identityLooksLikeMlx,
+    )
   );
+}
+
+function hasSupportedFormat(model: SelectedModelView): boolean {
+  if (model.modelFormat === "gguf") {
+    return model.isGguf;
+  }
+  if (model.modelFormat !== "safetensors" || model.isGguf) {
+    return false;
+  }
+  return !hasMlxRunEvidence(model);
 }
 
 function hasRunnableInventoryModel(model: SelectedModelView): boolean {

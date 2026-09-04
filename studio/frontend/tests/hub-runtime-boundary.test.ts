@@ -241,6 +241,10 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
     modelInspector,
     /safetensorsRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
   );
+  assert.match(
+    modelInspector,
+    /<ModelStatusChips[\s\S]*?chatOnly=\{chatOnly\}/,
+  );
   assert.doesNotMatch(
     HUB_RENDER_SOURCES,
     />\s*(?:Eject|Loaded|Use in Chat|New Chat|Train)\s*</,
@@ -280,7 +284,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   assert.match(modelSelector, /requestedConfigTarget \?\? configTarget/);
   assert.match(
     modelSelector,
-    /`Run settings for \$\{visibleConfigTarget\.displayName\}`/,
+    /aria-label=\{\s*visibleConfigTarget\s*\? `Run settings for \$\{visibleConfigTarget\.displayName\}`\s*:\s*undefined\s*\}/,
   );
   assert.match(
     modelSelector,

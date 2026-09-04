@@ -441,6 +441,7 @@ export const ModelInspector = memo(function ModelInspector({
     runConfigPending = false,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
@@ -809,7 +810,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnlyMeasured}
+          chatOnly={chatOnly}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

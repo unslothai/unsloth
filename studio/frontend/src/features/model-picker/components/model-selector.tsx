@@ -589,7 +589,7 @@ function ModelSelectorContent({
       aria-label={
         visibleConfigTarget
           ? `Run settings for ${visibleConfigTarget.displayName}`
-          : "Select model"
+          : undefined
       }
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
