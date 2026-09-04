@@ -563,6 +563,7 @@ async (timeoutMs) => {
     bubbles: true, cancelable: true, composed: true,
     button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
   };
+  const triggerFocusedBeforeOpen = document.activeElement === trigger;
   window.__hv.begin();
   const openStarted = performance.now();
   trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
@@ -596,6 +597,9 @@ async (timeoutMs) => {
     bodyPointerEventsAfterClose: getComputedStyle(document.body).pointerEvents,
     itemsWhileOpen,
     triggersWhileHovered,
+    triggerFocusedBeforeOpen,
+    focusReturnedToTrigger: document.activeElement === trigger,
+    activeElementAfterClose: document.activeElement?.tagName || null,
     metrics,
   };
 }
@@ -912,6 +916,12 @@ def one_repetition(page, cdp) -> dict[str, dict]:
         timeout = ACTION_TIMEOUT_MS,
     )
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
+    page.evaluate(
+        """async () => {
+            window.__heavyThread.actionButton("More")?.focus();
+            await window.__nextPaint();
+        }"""
+    )
     rep["menu"] = run_action(page, cdp, "menu", MENU_JS, SETTLE_TIMEOUT_MS)
 
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
@@ -979,9 +989,22 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
             merged[key] = median([r.get(key) for r in rows])
         # Values that are not numbers are proofs the action really happened, not timings, so the
         # last repetition's is kept verbatim rather than aggregated.
-        for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
+        for key in (
+            "domText",
+            "runtimeText",
+            "bodyPointerEvents",
+            "bodyPointerEventsAfterClose",
+        ):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
+        for key in ("triggerFocusedBeforeOpen", "focusReturnedToTrigger"):
+            if any(key in row for row in rows):
+                merged[key] = all(row.get(key, False) for row in rows)
+        if any("activeElementAfterClose" in row for row in rows):
+            failed_focus = next(
+                (row for row in rows if not row.get("focusReturnedToTrigger", False)), rows[-1]
+            )
+            merged["activeElementAfterClose"] = failed_focus.get("activeElementAfterClose")
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
@@ -1285,6 +1308,9 @@ TABLE_ROWS = TABLE_ROWS + (
     ("menu body pe while open", _action("menu", "bodyPointerEvents")),
     ("menu body pe after close", _action("menu", "bodyPointerEventsAfterClose")),
     ("menu triggers hovered", _action("menu", "triggersWhileHovered")),
+    ("menu trigger focused", _action("menu", "triggerFocusedBeforeOpen")),
+    ("menu focus returned", _action("menu", "focusReturnedToTrigger")),
+    ("menu active after close", _action("menu", "activeElementAfterClose")),
     ("delete ms", _action("delete", "ms")),
     ("delete messages before", _action("delete", "before")),
     ("delete messages after", _action("delete", "after")),
@@ -1862,6 +1888,13 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 # An empty popover satisfies "the menu opened" and costs nothing to render.
                 elif not menu["itemsWhileOpen"]:
                     failures.append(f"{where} opened an action menu with no items in it")
+                elif not menu["triggerFocusedBeforeOpen"]:
+                    failures.append(f"{where} could not focus the message action menu trigger")
+                elif not menu["focusReturnedToTrigger"]:
+                    failures.append(
+                        f"{where} left focus on {menu['activeElementAfterClose']} instead of "
+                        "returning it to the message action menu trigger after Escape"
+                    )
                 if not menu["triggersWhileHovered"] and counts["actionBars"] <= 0:
                     failures.append(
                         f"{where} mounted no action bar at rest and none under the pointer either"

@@ -437,7 +437,9 @@ globalThis.getComputedStyle = () => ({ pointerEvents: menuOpen ? "none" : "auto"
 // under this metric: the settle loop's first comparison runs before the callback has updated the
 // flag, so it always waits out one __nextPaint() even when the menu opened instantly.
 const notify = () => { queueMicrotask(() => { if (observer) observer(); }); };
-const trigger = { dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } } };
+const trigger = {
+  dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
+};
 globalThis.document = {
   body: {},
   querySelector: (sel) => (sel === ".aui-action-bar-more-content" && menuOpen ? {} : null),
@@ -490,7 +492,11 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
 # ── a null repetition is a failure, not a sample to drop ──────────────
 
 
-def menu_repetition(open_ms: float | None) -> dict:
+def menu_repetition(
+    open_ms: float | None,
+    focus_returned: bool = True,
+    active_element: str = "BUTTON",
+) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
     return {
@@ -504,6 +510,9 @@ def menu_repetition(open_ms: float | None) -> dict:
             "bodyPointerEventsAfterClose": "auto",
             "itemsWhileOpen": 5,
             "triggersWhileHovered": 3,
+            "triggerFocusedBeforeOpen": True,
+            "focusReturnedToTrigger": focus_returned,
+            "activeElementAfterClose": active_element,
         }
     }
 
@@ -531,6 +540,18 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
         [menu_repetition(80.0), menu_repetition(100.0), menu_repetition(120.0)]
     )
     assert summary["menu"]["openMs"] == 100.0, summary["menu"]
+
+
+def test_one_focus_failure_poisons_the_summary() -> None:
+    summary = HARNESS.summarise(
+        [
+            menu_repetition(80.0),
+            menu_repetition(100.0, focus_returned = False, active_element = "BODY"),
+            menu_repetition(120.0),
+        ]
+    )
+    assert summary["menu"]["focusReturnedToTrigger"] is False, summary["menu"]
+    assert summary["menu"]["activeElementAfterClose"] == "BODY", summary["menu"]
 
 
 # ── the verdict must reject an action that never settled ──────────────
@@ -588,6 +609,9 @@ def clean_cell() -> dict:
                 "triggersWhileHovered": 3,
                 "bodyPointerEvents": "none",
                 "bodyPointerEventsAfterClose": "auto",
+                "triggerFocusedBeforeOpen": True,
+                "focusReturnedToTrigger": True,
+                "activeElementAfterClose": "BUTTON",
             },
             "delete": {**action, "ms": 100.0, "before": 20, "after": 19},
             "reopen": {
@@ -678,6 +702,14 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
     assert any("jump action but it never reached a settled state" in f for f in failures), failures
 
 
+def test_escape_must_return_focus_to_the_menu_trigger() -> None:
+    cell = copy.deepcopy(clean_cell())
+    cell["actions"]["menu"]["focusReturnedToTrigger"] = False
+    cell["actions"]["menu"]["activeElementAfterClose"] = "BODY"
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("returning it to the message action menu trigger" in f for f in failures), failures
+
+
 # ── the per-repetition fixture ────────────────────────────────────────
 
 
@@ -729,6 +761,9 @@ class StubPage:
         if "restore()" in script:
             self.log.append(("evaluate", "restore"))
             return 20
+        if 'actionButton("More")?.focus' in script:
+            self.log.append(("evaluate", "focusMenu"))
+            return None
         if "__hvTokens = undefined" in script:
             return None
         self.log.append(("evaluate", "other"))
@@ -821,6 +856,11 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     )
     assert "restore(): number" in page
     assert "seeded.current = built.messages" in page
+
+
+def test_menu_focus_setup_runs_before_the_measured_action() -> None:
+    log = repetition_log()
+    assert log.index(("evaluate", "focusMenu")) < log.index(("action", "MENU_JS")), log
 
 
 # ── the declared paint floor ──────────────────────────────────────────
