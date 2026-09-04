@@ -69,7 +69,7 @@ _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16
 # it keeps the ENTIRE prefill, so reading it as a ceiling under-priced an 8k prompt sixty-six fold.
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 
-# mlx-vlm's own ``quantized_kv_start``.
+# Fallback for mlx-vlm's own ``quantized_kv_start``, used where the loader cannot be reached.
 _VLM_QUANT_START = 5000
 
 
@@ -309,6 +309,16 @@ def _generation_settings(config: dict) -> tuple:
     if vision and _routes_to_diffusion(config):
         raise ValueError("mlx-vlm would divert this to a diffusion generator")
     return mlx_prefill_chunk(vision = vision), mlx_kv_group_size(vision = vision)
+
+
+def _vlm_quant_start() -> int:
+    """Token offset mlx-vlm begins quantizing at, asked of the loader like the prefill chunk is."""
+    try:
+        from core.inference.mlx_inference import _vlm_quantized_kv_start
+    except Exception as exc:
+        logger.debug("MLX estimate cannot reach the loader's quantization start: %s", exc)
+        return _VLM_QUANT_START
+    return _vlm_quantized_kv_start()
 
 
 def _loads_as_vision(config: dict) -> bool:
@@ -729,7 +739,7 @@ def _cache_plan(config: dict, dtype, kv_bits, kv_group_size):
         )
     quant_start = None
     if near["quantized"]:
-        quant_start = _VLM_QUANT_START if _loads_as_vision(config) else 0
+        quant_start = _vlm_quant_start() if _loads_as_vision(config) else 0
     return (
         plan,
         quant_start,

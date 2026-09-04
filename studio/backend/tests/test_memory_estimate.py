@@ -898,6 +898,21 @@ class TestEstimateMemoryRoute:
         assert resp.available is False
         assert resp.reason == "not_gguf"
 
+    def test_a_native_audio_load_is_not_priced_as_an_mlx_one(self, monkeypatch, tmp_path):
+        # The worker hands these to the native audio backend ahead of the MLX path, so an MLX
+        # host must still refuse them: the language model priced here is never built.
+        import core.inference.native_audio as native_audio
+
+        self._mlx_target(monkeypatch, str(tmp_path))
+        priced = []
+        monkeypatch.setattr(
+            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: priced.append(a) or (None, None)
+        )
+        monkeypatch.setattr(native_audio, "is_native_audio_model", lambda name: name == "org/tts")
+        resp = _estimate(model_path = "org/tts")
+        assert (resp.available, resp.reason, priced) == (False, "not_gguf", [])
+        assert _estimate(model_path = "org/model").reason != "not_gguf"
+
     @staticmethod
     def _mlx_target(monkeypatch, model_dir, **config):
         """A resolved non-GGUF config on an MLX host, with its weights at *model_dir*."""
@@ -3892,6 +3907,34 @@ class TestGenerationSettingsComeFromTheLoader:
         mm._generation_settings({"model_type": "qwen3"})
         assert seen == [True, False]
 
+    def test_the_quantization_start_follows_the_loader_too(self, monkeypatch):
+        # It moves the full-width/quantized crossover and the score buffer, so restating it here
+        # would price a VLM at a footprint the load does not run at.
+        from core.inference import mlx_inference as mi
+
+        monkeypatch.setattr(mi, "_vlm_quantized_kv_start", lambda: 1234)
+        assert mm._vlm_quant_start() == 1234
+        # And the plan carries the loader's answer rather than the fallback beside it.
+        entry = {
+            "bytes": 1,
+            "quant_bytes": 1,
+            "bound_spec": None,
+            "conv_width": 0,
+            "block": 1,
+            "converts": True,
+        }
+        probe = {
+            "entries": [entry],
+            "quantized": True,
+            "whole_prompt": False,
+            "layers": 1,
+            "widths": (1, 1, 1),
+        }
+        monkeypatch.setattr(mm, "_probe", lambda *a, **kw: probe)
+        for vision, expected in ((True, 1234), (False, 0)):
+            monkeypatch.setattr(mm, "_loads_as_vision", lambda _c, v = vision: v)
+            assert mm._cache_plan({}, None, 4, 64)[1] == expected
+
     def test_a_host_without_the_loader_prices_the_fallback(self, monkeypatch):
         import builtins
 
@@ -3904,6 +3947,7 @@ class TestGenerationSettingsComeFromTheLoader:
 
         monkeypatch.setattr(builtins, "__import__", _no_loader)
         assert mm._generation_settings({"model_type": "llama"}) == (mm.MLX_PREFILL_CHUNK, 64)
+        assert mm._vlm_quant_start() == mm._VLM_QUANT_START
 
 
 @_NEEDS_MLX

@@ -15730,6 +15730,12 @@ async def estimate_memory(
             # MLX allocates on a different plan, so the GGUF arithmetic would be invented.
             if not _mlx_estimate_available():
                 return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            from core.inference.native_audio import is_native_audio_model
+
+            if is_native_audio_model(model_identifier):
+                # The worker hands these to the native audio backend ahead of the MLX path, so
+                # pricing one here would quote a language model this load never builds.
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
             if getattr(config, "is_lora", False):
                 # Not the base underneath it either: the adapter's own tensors go resident on top.
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
