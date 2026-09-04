@@ -615,7 +615,9 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
-    result = _bash_exec(command, timeout = None, output_callback = chunks.append)
+    result = _bash_exec(
+        command, timeout = None, output_callback = chunks.append, disable_sandbox = True
+    )
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)
@@ -629,7 +631,12 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    result = _bash_exec(
+        command,
+        timeout = 1,
+        output_callback = lambda _t: None,
+        disable_sandbox = True,
+    )
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -643,7 +650,9 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
+    result = _bash_exec(
+        command, timeout = 1, disable_sandbox = True
+    )  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -1383,7 +1392,12 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     timer.start()
     started = time.monotonic()
     try:
-        result = _bash_exec(command, cancel_event = cancel_event, timeout = 30)
+        result = _bash_exec(
+            command,
+            cancel_event = cancel_event,
+            timeout = 30,
+            disable_sandbox = True,
+        )
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
@@ -1405,7 +1419,12 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     timer.start()
     started = time.monotonic()
     try:
-        result = _python_exec(code, cancel_event = cancel_event, timeout = 30)
+        result = _python_exec(
+            code,
+            cancel_event = cancel_event,
+            timeout = 30,
+            disable_sandbox = True,
+        )
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
