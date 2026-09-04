@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 
 from dataclasses import dataclass, field
@@ -1148,35 +1149,58 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
         return _STEP_DONE
 
 
-async def _drain_step_task(task: Any, cancel_event: threading.Event) -> None:
-    """Join a pending ``next(gen)`` worker before its generator is closed.
+_PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 
-    Cancelling the awaiting task does not stop the worker thread, and calling
-    close() while next() is still running raises "generator already executing"
-    and skips the generator's own cleanup. Setting the cancel flag lets a
-    cancel-observing tool return, then the task is shielded until it finishes.
+
+def parallel_tool_calls_enabled() -> bool:
+    """Whether one turn's tool calls may run at the same time. On unless switched off.
+
+    A model that asks for three web searches in one turn was getting them one after the
+    other, so the turn cost the sum of the three rather than the longest. Every provider
+    that emits parallel tool calls expects them to be independent -- that is what makes
+    them parallel calls rather than three turns -- so overlapping them is the behaviour
+    the format already promises.
+
+    The switch exists because "independent" is the model's claim, not a guarantee: two
+    calls that write the same file interleave differently when they overlap. Setting this
+    to 0 restores the strict one-at-a-time order.
     """
-    if task is None:
-        return
-    if task.done():
-        try:
-            task.exception()
-        except (asyncio.CancelledError, Exception):
-            pass
-        return
-    cancel_event.set()
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancel_event.set()
-            continue
-        except Exception:
-            break
+    raw = os.environ.get(_PARALLEL_TOOL_CALLS_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _pump_tool_stream(
+    tool_stream: Any,
+    outcome: dict[str, Any],
+    queue: "asyncio.Queue[Any]",
+    cancel_event: threading.Event,
+) -> None:
+    """Drive one tool's event stream to completion, buffering what it emits.
+
+    The tool only advances while somebody is calling ``next()`` on its generator, so
+    running two tools at once means having two of these in flight. Events go to a queue
+    instead of being yielded, because the SSE stream has ONE order and it must stay the
+    order the model asked for: a card that fills in before the card above it opened would
+    read as the wrong tool answering.
+
+    Ends with ``_STEP_DONE``, always, so a consumer never waits on a pump that has died.
+    """
     try:
-        task.exception()
-    except (asyncio.CancelledError, Exception):
-        pass
+        while True:
+            if cancel_event.is_set():
+                break
+            event = await asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
+            if event is _STEP_DONE:
+                break
+            await queue.put(event)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - handed back to the model as the result
+        outcome["error"] = exc
+    finally:
+        await queue.put(_STEP_DONE)
 
 
 async def stream_with_studio_tools(
@@ -1534,10 +1558,101 @@ async def stream_with_studio_tools(
         noop_messages: list[dict[str, Any]] = []
         turn_executed_real_tool = False
 
+        # Whether this round's calls may overlap. Decided BEFORE any of them is prepared,
+        # because the decision has to hold for the whole round: starting call two while
+        # call one is still running and then discovering call three needs an approval
+        # dialog would put a modal in front of work already in flight.
+        #
+        # Approval gating keeps the strict order. It is interactive, one prompt at a time,
+        # and a user answering "Allow" for a tool whose siblings have already run is being
+        # asked about a decision that was made without them. Under `permission_mode ==
+        # "auto"` only the high-risk calls prompt, so a round of ordinary reads still
+        # overlaps.
+        _approval_gate = confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+        if _approval_gate and permission_mode == "auto":
+            _approval_gate = any(
+                is_high_risk_tool_call(
+                    (item.get("function") or {}).get("name", ""), item.get("arguments")
+                )
+                for item in calls
+            )
+        parallel_round = (
+            parallel_tool_calls_enabled() and len(calls) > 1 and not _approval_gate
+        )
+        # (decision, name, call_id, card_id, tool_stream, outcome, queue, pump)
+        pending_calls: list[tuple] = []
+
+        async def _settle_call(entry: tuple) -> AsyncIterator[str]:
+            """Yield one call's events in order, then record its result.
+
+            Everything after the tool returns is unchanged and stays sequential: the
+            controller's ledger, the call budget and the transcript are all order
+            sensitive, and only the WAITING was ever worth overlapping.
+            """
+            nonlocal remaining, turn_executed_real_tool, executed_any, last_reprompt_text
+            decision, name, call_id, card_id, tool_stream, outcome, queue, pump = entry
+            # The pump queues _STEP_DONE from its own `finally` and then returns, so the
+            # consumer can see the sentinel a tick before `pump.done()` is true. Reading
+            # that gap as "still running" and setting the cancel flag would stop the whole
+            # answer to tidy up a tool that had already finished.
+            drained = False
+            try:
+                while True:
+                    event = await queue.get()
+                    if event is _STEP_DONE:
+                        drained = True
+                        break
+                    if isinstance(event, dict) and event.get("type") == "heartbeat":
+                        yield _SSE_KEEPALIVE
+                    else:
+                        yield _sse(event)
+                if outcome.get("error") is not None:
+                    result = f"Error: tool raised an exception: {outcome['error']}"
+                elif "result" in outcome:
+                    result = outcome["result"]
+                elif cancel_event.is_set():
+                    # Stopped before the tool returned. Defaulting to "" here would record a successful empty result and
+                    # paint a normal tool_end, so the transcript would claim a tool ran and produced nothing, when in
+                    # truth it was abandoned partway and its side effects may already have happened.
+                    result = _TOOL_CANCELLED
+                else:
+                    result = ""
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported back to the model
+                result = f"Error: tool raised an exception: {exc}"
+            finally:
+                if not drained and not pump.done():
+                    # The worker thread cannot be cancelled, so tell the tool to stop and
+                    # join it rather than closing a generator that is still executing:
+                    # close() during next() raises "generator already executing" and skips
+                    # the generator's own cleanup.
+                    cancel_event.set()
+                try:
+                    await asyncio.shield(pump)
+                except (asyncio.CancelledError, Exception):
+                    pass
+                tool_stream.close()
+
+            completion = controller.record_result(decision, result)
+            # Counted whether or not the tool succeeded: a failing call has already done its work (and possibly its side
+            # effects), so letting it run for free would put the budget past max_calls. Counted per call rather than per
+            # turn, so parallel calls each spend one.
+            if not unlimited:
+                remaining -= 1
+            turn_executed_real_tool = True
+            executed_any = True
+            last_reprompt_text = ""
+            yield _sse(completion.tool_end_event())
+            tool_messages.append(completion.tool_message())
+
         for call in calls:
             if cancel_event.is_set():
                 break
-            if not unlimited and remaining <= 0:
+            # `len(pending_calls)` are launched and will each spend one when they settle,
+            # so a parallel round must not start a call the budget cannot pay for. In a
+            # sequential round the list is empty and this is the check it always was.
+            if not unlimited and remaining - len(pending_calls) <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
@@ -1727,56 +1842,27 @@ async def stream_with_studio_tools(
                 cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}
-            step_task: Any = None
-            try:
-                while True:
-                    if cancel_event.is_set():
-                        # A tool that does not watch the cancel event would keep producing heartbeats and hold the
-                        # answer open forever. Stop asking for them and let the drain below join the worker under its
-                        # own bounded timeout.
-                        break
-                    step_task = asyncio.create_task(
-                        asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
-                    )
-                    # wait, not await: cancelling this coroutine must leave the worker pending so the drain below can
-                    # still join it.
-                    await asyncio.wait({step_task})
-                    event = step_task.result()
-                    step_task = None
-                    if event is _STEP_DONE:
-                        break
-                    if isinstance(event, dict) and event.get("type") == "heartbeat":
-                        yield _SSE_KEEPALIVE
-                    else:
-                        yield _sse(event)
-                if "result" in outcome:
-                    result = outcome["result"]
-                elif cancel_event.is_set():
-                    # Stopped before the tool returned. Defaulting to "" here would record a successful empty result and
-                    # paint a normal tool_end, so the transcript would claim a tool ran and produced nothing, when in
-                    # truth it was abandoned partway and its side effects may already have happened.
-                    result = _TOOL_CANCELLED
-                else:
-                    result = ""
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - reported back to the model
-                result = f"Error: tool raised an exception: {exc}"
-            finally:
-                await _drain_step_task(step_task, cancel_event)
-                tool_stream.close()
+            # Unbounded on purpose: the pump must never block on a consumer that has not
+            # reached this call yet, or two overlapping tools deadlock on each other.
+            events: "asyncio.Queue[Any]" = asyncio.Queue()
+            pump = asyncio.create_task(
+                _pump_tool_stream(tool_stream, outcome, events, cancel_event)
+            )
+            entry = (decision, name, call_id, card_id, tool_stream, outcome, events, pump)
+            if parallel_round:
+                # Started, not awaited. The next call's tool is launched while this one is
+                # still working, and both are drained below in the order the model asked.
+                pending_calls.append(entry)
+                continue
+            async for line in _settle_call(entry):
+                yield line
 
-            completion = controller.record_result(decision, result)
-            # Counted whether or not the tool succeeded: a failing call has already done its work (and possibly its side
-            # effects), so letting it run for free would put the budget past max_calls. Counted per call rather than per
-            # turn, so parallel calls each spend one.
-            if not unlimited:
-                remaining -= 1
-            turn_executed_real_tool = True
-            executed_any = True
-            last_reprompt_text = ""
-            yield _sse(completion.tool_end_event())
-            tool_messages.append(completion.tool_message())
+        # Whatever was left running. In a sequential round this list is empty and the loop
+        # below does nothing, so that path is exactly what it was.
+        for entry in pending_calls:
+            async for line in _settle_call(entry):
+                yield line
+        pending_calls = []
 
         yield _status_sse("")
 

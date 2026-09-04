@@ -7,8 +7,13 @@ a parked chat's room first precisely because it is holding cells while consuming
 compute.
 
 Measured with `temp/overlap_probe.py`: four chats making three 0.3s calls each finish in
-0.90s against 3.60s if fully serialised, with 60 cross-chat overlapping pairs and 0
-within-chat ones. That is the shape asserted here.
+0.90s against 3.60s if fully serialised, with 60 cross-chat overlapping pairs. That is the
+shape asserted here.
+
+The within-chat half of that measurement, 0 overlapping pairs, is no longer true and is no
+longer meant to be: a round's calls now run together as well. That is asserted in
+`test_tool_calls_within_one_turn_overlap.py`, which owns the behaviour; this file stays
+about the cross-chat property, which came first and must survive the other changing.
 """
 
 import asyncio
@@ -76,32 +81,47 @@ class TestToolCallsOverlapAcrossChats:
         assert "asyncio.to_thread(" in source
 
 
-class TestWithinOneChatCallsAreSerial:
-    """Documented, not asserted as desirable: a round's calls run one after another.
+class TestWithinOneChatCallsAlsoOverlapNow:
+    """A round's calls used to run one after another. They no longer do.
 
-    `for call in calls` at the execution loop, so three independent searches in one turn
-    take three times as long as one. Worth changing, and a bigger change than it looks.
+    This class asserted the serial behaviour and described what changing it would take:
+    "gate and dispatch the auto-approved calls as tasks, pump them concurrently, and
+    interleave their events by card id, with confirmations still taken one at a time".
+    That is what `_pump_tool_stream` and `_settle_call` do, so the assertions here would
+    now be pinning the old shape in place.
 
-    The obstacle is not the approval gate, which only some calls need, nor result
-    ordering, which a sort would fix. It is that a tool is not a single blocking call:
-    `_advance_tool_stream` is pumped in a loop and the loop yields the tool's progress
-    events into the same SSE stream as it goes. Running several at once means
-    multiplexing several event streams through one generator while keeping each card's
-    events in their own order, and keeping the approval prompt sequential because a user
-    can only answer one at a time.
+    Kept rather than deleted, because the STRUCTURE still matters: the per-call loop is
+    still a plain `for`, since preparing a call, gating it and recording its result are
+    all order sensitive, and only the waiting was ever worth overlapping. What changed is
+    that the loop starts a pump and moves on instead of draining inline.
 
-    So the shape would be: gate and dispatch the auto-approved calls as tasks, pump them
-    concurrently, and interleave their events by card id, with confirmations still taken
-    one at a time. Noted here rather than attempted alongside a preemption change.
+    The behaviour itself is measured in `test_tool_calls_within_one_turn_overlap.py`, with
+    a barrier rather than a timing assertion.
     """
 
-    def test_the_execution_loop_is_a_plain_sequential_for(self):
+    def test_preparing_and_recording_a_call_is_still_sequential(self):
         from pathlib import Path
 
         from core.inference import studio_tool_loop
 
-        source = Path(studio_tool_loop.__file__).read_text()
+        source = Path(studio_tool_loop.__file__).read_text(encoding = "utf-8")
         assert "for call in calls:" in source
-        # If this ever becomes a gather, the docstring above is stale and the sibling
-        # suite for approval ordering needs to be revisited rather than deleted.
+        # A gather over the whole loop body would run approvals, the call budget and the
+        # controller's ledger concurrently, which is not what was made parallel.
         assert "asyncio.gather(*(" not in source.split("for call in calls:", 1)[1][:2000]
+
+    def test_the_calls_are_launched_before_they_are_drained(self):
+        """The one structural fact that makes the round overlap at all.
+
+        If `_settle_call` were awaited inside the loop for every call, the pumps would run
+        one at a time again and every behavioural test would still pass on a machine fast
+        enough to hide it.
+        """
+        from pathlib import Path
+
+        from core.inference import studio_tool_loop
+
+        source = Path(studio_tool_loop.__file__).read_text(encoding = "utf-8")
+        body = source.split("for call in calls:", 1)[1]
+        assert "pending_calls.append(entry)" in body
+        assert "_pump_tool_stream(" in source
