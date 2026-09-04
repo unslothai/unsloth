@@ -1105,9 +1105,8 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot.
-      // A queue that appears while the dialog is open must not be stopped
-      // without having been included in the user's confirmation.
+      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
+      // the dialog is open must not be stopped without having been included in the confirmation.
       const lifecycleLease = useChatRuntimeStore
         .getState()
         .beginModelLoading();

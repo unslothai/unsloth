@@ -915,10 +915,8 @@ function toOpenAIImageEditReferenceMessage(
   return { role: "assistant", content };
 }
 
-// Refusal flag stamped on assistant metadata when the backend emits the
-// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
-// request body (Anthropic: leaving refusals in context keeps refusing).
-// Using metadata, not text, prevents content from spoofing a reset.
+// Refusal marker on metadata, not text, which content could spoof: Anthropic keeps refusing
+// while refusals stay in context.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
   const metadata = (message as { metadata?: unknown }).metadata as
@@ -1781,11 +1779,8 @@ export async function buildLocalTokenCountHistory(
   };
 }
 
-/**
- * The reasoning fields a completion would send. llama-server falls back to the load-time
- * `--chat-template-kwargs` only for keys a request omits, so a count sending none renders the
- * template in whatever mode the model was LOADED in and misreports any prefilled thinking block.
- */
+/** The reasoning fields a completion would send: llama-server falls back to load-time
+ *  --chat-template-kwargs only for omitted keys, so sending none misreports the mode. */
 export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   const {
     supportsReasoning,
@@ -1819,10 +1814,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   };
 }
 
-/**
- * The tool flags a completion would send, so the count includes the schemas and the action nudge.
- * Same gates the adapter applies; the render_html image gate is left to the server.
- */
+/** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
 ): Promise<Record<string, unknown>> {
@@ -3617,8 +3609,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       return { loaded: false, blockedByTrustRemoteCode: false };
     }
 
-    // Nothing on the device: fetch the default as a managed download job, and
-    // only hand it to /api/inference/load once the bytes are here.
+    // Fetch the default as a managed download job and hand it to /api/inference/load only once the bytes are here.
     try {
       const rt = useChatRuntimeStore.getState();
       if (rt.selectedGpuIds != null) {
@@ -4433,7 +4424,6 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      // Re-read store after auto-load / model-ready wait.
       const liveRuntime = useChatRuntimeStore.getState();
       runtime = queuedRunSettings
         ? queuedRunSettings.params.checkpoint
@@ -4531,9 +4521,9 @@ export function createOpenAIStreamAdapter(
         runtime = { ...runtime, deepResearchEnabled: false };
         toast.info("Deep Research needs a model that supports tools");
       }
-      // Project sources auto-scope: a chat inside a project retrieves from the
-      // project's indexed sources even when the Docs pill is off. The probe is
-      // cached, so this is one round trip per project every ~30s at most.
+      // A chat inside a project retrieves from its indexed sources even with the Docs pill off;
+      // the probe is cached.
+      // The probe is cached, so this is one round trip per project every ~30s at most.
       const ragProjectId = await resolveProjectId(
         resolvedThreadId,
         readThreadRecord,
