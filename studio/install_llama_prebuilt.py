@@ -1976,13 +1976,17 @@ def _fetch_download_host_json(url: str) -> Any:
     )
 
 
-def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
-    """Resolve the latest fork release from the download host with zero
-    api.github.com calls, reusing the API path's parsing and validation. The latest
-    tag is the authoritative /releases/latest redirect tag, and the checksum asset's
+def _download_host_resolved_release(
+    repo: str, published_release_tag: str = ""
+) -> ResolvedPublishedRelease | None:
+    """Resolve a fork release from the download host with zero api.github.com calls,
+    reusing the API path's parsing and validation.
+
+    When *published_release_tag* is set, that tag is fetched directly. Otherwise the
+    latest tag comes from the /releases/latest redirect and the checksum asset's
     self-reported release_tag is cross-checked against it. Returns None (caller falls
     back to the API) on a missing JSON asset or a tag mismatch."""
-    release_tag = _download_host_latest_release_tag(repo)
+    release_tag = (published_release_tag or "").strip() or _download_host_latest_release_tag(repo)
     if not release_tag:
         return None
     sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
@@ -2109,6 +2113,48 @@ def iter_resolved_published_releases(
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
 
+    # Fast path: resolve a pinned or latest fork release from the download host (no
+    # api.github.com rate limit). Latest surfaces only the single newest release, so
+    # the caller disables it when the multi-release walk-back is needed (macOS
+    # skipping too-new prebuilts); a broken latest then drops to source build, not
+    # an older release. Pinned tags use the same CDN path so in-app updates avoid
+    # the API entirely (#9970). Any rejection/network error is non-fatal and falls
+    # through to the API.
+    fast_path_tag: str | None = None
+    if published_release_tag:
+        fast_path_tag = published_release_tag
+    elif normalized_requested == "latest":
+        fast_path_tag = ""
+
+    if (
+        fast_path_tag is not None
+        and allow_download_host_fast_path
+        and repo == DEFAULT_PUBLISHED_REPO
+        and _download_host_resolve_enabled()
+    ):
+        tag_label = fast_path_tag or "latest"
+        try:
+            resolved = _download_host_resolved_release(repo, fast_path_tag)
+        except PrebuiltFallback as exc:
+            log(f"download-host release rejected for {repo}@{tag_label} ({exc}); trying GitHub API")
+            resolved = None
+        except Exception as exc:
+            log(
+                f"download-host resolve unavailable for {repo}@{tag_label} ({exc}); trying GitHub API"
+            )
+            resolved = None
+        if resolved is not None:
+            if published_release_tag and not published_release_matches_request(
+                resolved.bundle, normalized_requested
+            ):
+                raise PrebuiltFallback(
+                    "published release "
+                    f"{repo}@{resolved.bundle.release_tag} targeted upstream tag "
+                    f"{resolved.bundle.upstream_tag}, but requested {normalized_requested}"
+                )
+            yield resolved
+            return
+
     if published_release_tag:
         bundle = pinned_published_release_bundle(repo, published_release_tag)
         if not published_release_matches_request(bundle, normalized_requested):
@@ -2122,29 +2168,6 @@ def iter_resolved_published_releases(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
-
-    # Fast path: resolve the fork's latest release from the download host (no
-    # api.github.com rate limit). It surfaces only the single latest release, so the
-    # caller disables it when the multi-release walk-back is needed (macOS skipping
-    # too-new prebuilts); a broken latest then drops to source build, not an older
-    # release. Any rejection/network error is non-fatal and falls through to the API.
-    if (
-        allow_download_host_fast_path
-        and repo == DEFAULT_PUBLISHED_REPO
-        and normalized_requested == "latest"
-        and _download_host_resolve_enabled()
-    ):
-        try:
-            resolved = _download_host_resolved_release(repo)
-        except PrebuiltFallback as exc:
-            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        except Exception as exc:
-            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        if resolved is not None:
-            yield resolved
-            return
 
     matched_any = False
     skipped_invalid = 0
@@ -2365,6 +2388,8 @@ def run_capture(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **windows_hidden_subprocess_kwargs(),
@@ -2538,8 +2563,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     int(cuda_match.group(1)),
                     int(cuda_match.group(2)),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
             caps = run_capture(
@@ -3361,6 +3386,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             if result.returncode == 0:
@@ -3371,11 +3398,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
-    # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
-    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    # Distro package-manager fallbacks. Deliberately diverges from install.sh and
+    # _detect_rocm_version(): stops at the first answer, no "installed" status word gate.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
@@ -3389,6 +3413,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
         except Exception:
@@ -5705,6 +5731,8 @@ def validate_quantize(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
@@ -5795,6 +5823,8 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
@@ -6467,7 +6497,6 @@ def write_prebuilt_metadata(
         # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
-        # Records whether this install includes the paired Windows cudart archive.
         "runtime_asset": choice.runtime_name,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6635,10 +6664,7 @@ def _marker_selection_patch(
     sms = [str(s).strip() for s in (choice.supported_sms or []) if str(s).strip()]
     if sms and marker.get("supported_sms") != sms:
         patch["supported_sms"] = sms
-    # Same shape as the targets above: the paired cudart archive is in the fingerprint but
-    # not readable back out of it, so an install predating the field only gains it here.
-    # Set, never cleared: reuse requires a fingerprint match, so a bundle with no pair is
-    # one the marker already describes as pair-less.
+    # Set, never cleared: reuse needs a fingerprint match, so a pair-less bundle matches.
     if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
         patch["runtime_asset"] = choice.runtime_name
     return patch
@@ -6924,7 +6950,7 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
     )
     if not kinds:
-        # Unknown markers still owe the payload shared by every kind on this platform.
+        # An unknown backend still owes the payload every kind on this platform shares.
         kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
     if not kinds:
         return True
@@ -6945,16 +6971,14 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
 
-# Broken image, not something intervening: SIGKILL is absent because it is an OOM.
+# SIGKILL is absent: that is an OOM, not a broken image.
 _BROKEN_IMAGE_SIGNALS = frozenset(
     {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}
     | ({signal.SIGBUS} if hasattr(signal, "SIGBUS") else set())
 )
 # Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
 _ERROR_BAD_EXE_FORMAT = 193
-# A Windows loader failure is not a signal: CreateProcess succeeds and the process exits
-# the NTSTATUS (0xC0000135 missing DLL), which Python reports as a large POSITIVE code.
-# Unreachable on POSIX, where an exit status is 0-255, so no host guard is needed.
+# A Windows loader failure is not a signal: it exits the NTSTATUS (0xC0000135) positive.
 _NTSTATUS_FAILURE_FLOOR = 0xC0000000
 
 
@@ -6964,23 +6988,20 @@ def _binary_image_runs(
     host: HostInfo,
     runtime_line: str | None = None,
 ) -> bool:
-    """Whether the OS will actually start ``path``.
-
-    ``os.access`` asks "may I execute this", not "is this an executable": a truncated file
-    keeps its mode bits and ``ldd`` on a non-ELF only says it is not a dynamic executable.
-    execve sees it -- measured on Linux, zero-byte and non-ELF both raise ENOEXEC.
-
-    The exit code is NOT the verdict: llama-quantize answers ``--version`` by printing its
-    table and exiting non-zero, the same reason ``macos_dyld_load_issues`` reads output. So
-    a timeout, a failed spawn or an ordinary non-zero exit all read as healthy, because a
-    false positive here spends a source build on a working install.
-    """
+    """Whether the OS will actually start ``path``. ``os.access`` asks "may I execute this", not
+    "is this an executable": a truncated file keeps its mode bits and ``ldd`` on a non-ELF only
+    says it is not a dynamic executable, while execve raises ENOEXEC (measured on Linux, for
+    zero-byte and non-ELF alike). The exit code is NOT the verdict: llama-quantize answers
+    ``--version`` by printing its table and exiting non-zero, the same reason
+    ``macos_dyld_load_issues`` reads output. So a timeout, a failed spawn or an ordinary
+    non-zero exit all read as healthy, since a false positive spends a source build on a
+    working install."""
     try:
         result = run_capture(
             [str(path), "--version"],
             timeout = 60,
-            # runtime_line as validate_prebuilt_choice passes it: it is what puts the
-            # CUDA toolkit on PATH, and a pair-less Windows install dies 0xC0000135 without it.
+            # runtime_line puts the CUDA toolkit on PATH; a pair-less Windows install
+            # cannot start without it.
             env = binary_env(path, install_dir, host, runtime_line = runtime_line),
         )
     except OSError as exc:
@@ -7019,9 +7040,8 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
         return False
-    # Root copies first: _find_llama_server_binary searches <install>/llama-server BEFORE
-    # build/bin, so that is what inference launches. resolve() collapses the usual symlink;
-    # when symlinking was unavailable it is a separate file that can rot alone.
+    # Root copies first: _find_llama_server_binary reaches them first, and without a
+    # symlink they can rot alone.
     probes: list[Path] = []
     seen: set[Path] = set()
     for binary in [install_dir / p.name for p in binaries] + binaries:
@@ -7035,8 +7055,6 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
             continue
         seen.add(key)
         probes.append(binary)
-    # Last, because it is the only check that spawns anything: neither preflight runs on
-    # Windows, and on Linux ldd cannot see a file that is not an executable image at all.
     return all(
         _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
     )
@@ -8004,18 +8022,14 @@ def install_prebuilt(
 ) -> None:
     choice: AssetChoice | None = None
     # Anything this RUN asked for that keeping the old tree would silently ignore. Read
-    # from the parameters before the body mutates them (force_cpu becomes True further
-    # down for a stored "cpu" choice, which is the opposite of a request made here).
-    # backend_mandatory joins it in the handler, because it is only known after the
-    # marker is read; it starts False, so a failure before that keeps today's behaviour.
+    # before the body mutates force_cpu, which it sets True for a stored "cpu" choice.
     explicit_version_request = (
         normalized_requested_llama_tag(llama_tag) != "latest"
         or bool((published_release_tag or "").strip())
         or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
-        # --cpu-fallback only ever arrives from setup.sh's deliberate arm64 recovery, so
-        # it is a mechanism this run chose. --has-rocm and --rocm-gfx are NOT: both setup
-        # entrypoints forward their DETECTED GPU on every AMD host, so counting them here
-        # would take the keep path away from essentially every AMD update.
+        # --cpu-fallback is setup.sh's deliberate arm64 recovery, so it counts. --has-rocm
+        # and --rocm-gfx do not: both entrypoints forward a DETECTED GPU on every AMD host,
+        # so counting them would take the keep path away from all of them.
         or force_cpu
     )
     # The failure handler can run before selection assigns these.
@@ -8071,8 +8085,8 @@ def install_prebuilt(
             #
             # Not dead code despite the download-host fast path: macOS skips it
             # entirely (see allow_download_host_fast_path below), as does a
-            # pinned UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
-            # --published-repo, and any CDN outage.
+            # non-latest requested tag without a published-release pin, a
+            # non-default --published-repo, and any CDN outage.
             #
             # Transport shapes only: URLError covers HTTPError and the socket/DNS
             # errors urllib wraps, JSONDecodeError is a ValueError, and
@@ -8284,8 +8298,7 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
-        # A stored preference may reuse a matching install. A backend requested on this
-        # run must still be satisfied by this run.
+        # A stored preference may reuse a matching install; one requested on this run may not.
         satisfied_stored_backend = (
             preserve_backend
             and not backend_mandatory
@@ -8294,9 +8307,7 @@ def install_prebuilt(
         if (
             (not preserve_backend or satisfied_stored_backend)
             and not explicit_version_request
-            # A backend named on this run is a live instruction even when it is "auto":
-            # that asks for re-detection, and answering it with the tree already on disk
-            # leaves both the old backend and its marker exactly as they were.
+            # Even "auto" is a live instruction: it asks for re-detection.
             and not backend_mandatory
             and host is not None
             and _existing_install_runs(install_dir, host)
@@ -8309,7 +8320,9 @@ def install_prebuilt(
             if preserve_backend
             else "prebuilt install path failed; falling back to source build"
         )
-        log(f"prebuilt fallback reason: {exc}")
+        # log_lines, not log: a preflight failure lists one library per line, and
+        # only prefixed lines are distinguishable from the system report below.
+        log_lines(f"prebuilt fallback reason: {exc}".splitlines())
         # Diagnostics must never change the verdict: a probe that raises here
         # would replace the fallback with EXIT_ERROR, which never source builds.
         try:
@@ -8754,7 +8767,9 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
+        log(
+            f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
+        )
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

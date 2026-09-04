@@ -150,7 +150,7 @@ interface ModelSelectorProps {
   loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
@@ -360,7 +360,7 @@ function ModelSelectorContent({
   value,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onSelect,
@@ -385,7 +385,7 @@ function ModelSelectorContent({
   value?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -540,7 +540,12 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
+          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
+            // the rounded box the scroller put the scrollbar inside it, running the full height
+            // and straight through the top and bottom right corners, which squared them off on
+            // any machine set to show scrollbars always. The padding moves in with the scroller so
+            // the bar sits beside the content instead of on the edge.
+            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
@@ -562,7 +567,8 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          <ModelConfigPage
+          <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">
+            <ModelConfigPage
             key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
@@ -585,7 +591,7 @@ function ModelSelectorContent({
               value === visibleConfigTarget.id &&
               (activeGgufVariant ?? null) ===
                 (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeGgufContextLength ?? null)
+                ? (activeLoadedContextLength ?? null)
                 : null
             }
             initialConfig={
@@ -595,7 +601,8 @@ function ModelSelectorContent({
                 ? (selectedConfig ?? null)
                 : null
             }
-          />
+            />
+          </div>
         ) : (
           <>
             <HubModelPicker
@@ -619,6 +626,9 @@ function ModelSelectorContent({
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
+                  // Wider tabs than the shared default. The panel reserves
+                  // --picker-tab-pad a pill, so keep the two in step.
+                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
@@ -649,7 +659,7 @@ export function ModelSelector({
   defaultValue,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
@@ -820,7 +830,7 @@ export function ModelSelector({
         value={selected}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
-        activeGgufContextLength={activeGgufContextLength}
+        activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}

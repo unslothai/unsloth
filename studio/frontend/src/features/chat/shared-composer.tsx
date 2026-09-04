@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
@@ -43,12 +44,13 @@ import {
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
-  AUDIO_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
   fileToBase64,
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { isVideoFile } from "@/lib/video-utils";
+import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -66,6 +68,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
@@ -110,13 +113,16 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
-  normalizeMaxSeqLength,
+  isServedByMlx,
+  savedContextPin,
   resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
+import { usePlatformStore } from "@/config/env";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -127,7 +133,14 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveExplicitCtxPin } from "./presets/preset-policy";
+import {
+  loadedContextForParams,
+  resolveExplicitCtxPin,
+  resolveFitMaxSeqLength,
+  retainedContextPin,
+  unpinnedLoadContext,
+  replayMaxTokensCap,
+} from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -169,7 +182,6 @@ import {
   type CompositionEvent,
   type ClipboardEvent,
   type DragEvent as ReactDragEvent,
-  type FC,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
@@ -205,22 +217,6 @@ const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -944,8 +940,11 @@ export function SharedComposer({
   }, [text]);
 
   const addFiles = useCallback(
-    (files: FileList | readonly File[] | null) => {
-      if (!files?.length) return;
+    async (input: FileList | readonly File[] | null) => {
+      if (!input?.length) return;
+      // Compare takes audio, so an audio-only 3GP must not be read off its
+      // extension as a clip and refused with the video message.
+      const files = await classifiedAttachmentFiles(input);
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
@@ -953,7 +952,8 @@ export function SharedComposer({
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
-        if (file.type.match(/^audio\//i)) {
+        // Handle audio files
+        if (isAudioAttachmentFile(file)) {
           const sizeError = getAudioSizeError(file.size);
           if (sizeError) {
             audioSizeError ??= sizeError;
@@ -999,16 +999,19 @@ export function SharedComposer({
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
         event,
-        async (files) => {
+        async (pasted) => {
+          // Classify before the check, so a pasted audio-only 3GP is not read
+          // as unsupported on its extension alone.
+          const files = await classifiedAttachmentFiles(pasted);
           // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              file.type.match(/^audio\//i) ||
+              isAudioAttachmentFile(file) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
           if (!supported) throw new Error("Unsupported compare attachment");
-          addFiles(files);
+          await addFiles(files);
         },
         () =>
           toast.error("Could not paste files.", {
@@ -1296,6 +1299,7 @@ export function SharedComposer({
         const targetIsGguf =
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
+        const platform = usePlatformStore.getState();
         let resolvedIsDiffusion = sel.isDiffusion;
         // Set when the preflight could not classify the GGUF, so a false resolvedIsDiffusion below must
         // not be read as "ordinary".
@@ -1364,13 +1368,19 @@ export function SharedComposer({
             // The load still works; a real overrides outage surfaces there.
           }
         }
-        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit context loads at
-        // native, not the session maxSeqLength. A non-GGUF pane with no saved maxSeqLength falls back
-        // to the app default, not the active model's snapshot, else a saved 128K model OOMs it.
+        // Mirror single-view resolveLoadMaxSeqLength: a pane with no explicit context
+        // hands sizing to whichever local backend serves it, not the session
+        // maxSeqLength, which would silently shrink the shown context. One no local
+        // backend serves falls back to the app default rather than the active model's
+        // runtime snapshot, else comparing a saved 128K model against an unconfigured
+        // one loads the latter at 128K and OOMs.
         const effectiveMaxSeqLength =
-          ownConfig.customContextLength ??
-          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+          savedContextPin(ownConfig) ??
+          unpinnedLoadContext(
+            targetIsGguf,
+            isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason),
+            DEFAULT_MAX_SEQ_LENGTH,
+          );
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
@@ -1592,23 +1602,36 @@ export function SharedComposer({
           // Same cap as the interactive load: this replays the model's remembered settings, and a budget
           // kept from a larger context does not fit the one it just loaded with.
           {
-            maxTokensCap: resp.is_gguf
-              ? (resp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+            // The reported window leads and the request stands in only for a backend
+            // that sizes nothing, as on the interactive load: an unpinned pane sends
+            // the auto-size sentinel, and capping a budget at 0 asks for no output.
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(resp).loadedContextLength ??
+                (!resp.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
+            ),
           },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // This pane's own saved Context Length, not compareMaxSeqLength: the wire value is Auto-resolved
-        // for a same-model reload, so pinning it would convert Auto into a number the user never
-        // set. Non-GGUF compare loads send a sequence length rather than an n_ctx, so their baseline
-        // clears.
+        // This pane's own saved Context Length, not compareMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // A non-GGUF pane keeps an MLX pin instead of clearing its baseline.
         const keepCustomCtx = targetIsGguf
           ? resolveExplicitCtxPin(effectiveCustomContextLength)
-          : null;
-        // Slots this compare load committed. Diffusion ignores --parallel, so a count there would mint a
-        // phantom override.
+          : retainedContextPin({
+              isMlx: isServedByMlx(
+                targetIsGguf,
+                platform.deviceType,
+                platform.chatOnlyReason,
+              ),
+              requestedContextLength: compareMaxSeqLength,
+            });
+        // Slots this compare load committed. Diffusion ignores --parallel, so a
+        // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nParallel ?? null)
@@ -1657,11 +1680,12 @@ export function SharedComposer({
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The context baseline this pane loaded with, so a later Apply/Reset cannot silently revert a
-          // Manual+Auto pin.
+          // The context baseline this pane loaded with (see keepCustomCtx above), so a
+          // later Apply/Reset can't silently revert the pin it was serving.
           loadedCustomContextLength: keepCustomCtx,
-          // Adopt the load response's GPU-memory fields so the GPU controls round-trip. (gguf context,
-          // customContextLength and the native-path token clear in the tail below.)
+          // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
+          // plus loaded baselines) so the GPU controls round-trip. (The context group,
+          // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
@@ -1674,24 +1698,24 @@ export function SharedComposer({
           // Same value as the baseline above, so when this pane becomes the active model the UI and a later
           // reload use the context it actually loaded with.
           customContextLength: keepCustomCtx,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          ggufNativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          ggufMaxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
-          // Compare selections load by repo/variant, never from the file picker, so they carry no native
-          // lease; clear any prior picked file's token so the reload path never sends a stale one.
+          ...loadedContextFields(resp),
+          // Compare selections load by repo/variant, never from the file picker,
+          // so they carry no native lease. Clear any prior picked file's
+          // token/expiry so the reload path never sends a stale lease.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
+          const paneParams = useChatRuntimeStore.getState().params;
           store.setParams({
-            ...useChatRuntimeStore.getState().params,
-            maxSeqLength: effectiveMaxSeqLength,
+            ...paneParams,
+            maxSeqLength: loadedContextForParams(
+              loadedContextFields(resp).loadedContextLength,
+              effectiveMaxSeqLength,
+              paneParams.maxSeqLength,
+            ),
           });
         }
         loadedFromConfig = config != null;
@@ -2113,6 +2137,9 @@ export function SharedComposer({
   return (
     <div
       className="chat-composer-surface"
+      // Compare mode's composer, same as the thread's: find searches the conversation, not the
+      // chrome around it. This one is rendered from `chat-page.tsx`, outside the marked one.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       onDragOver={(e) => {
         if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
@@ -2125,7 +2152,7 @@ export function SharedComposer({
         if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
-        addFiles(e.dataTransfer.files);
+        void addFiles(e.dataTransfer.files);
       }}
     >
       <PromptStorageDialog
@@ -2254,17 +2281,17 @@ export function SharedComposer({
             multiple
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
+              void addFiles(e.target.files);
               e.target.value = "";
             }}
           />
           <input
             ref={audioInputRef}
             type="file"
-            accept={AUDIO_ACCEPT}
+            accept={AUDIO_PICKER_ACCEPT}
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
+              void addFiles(e.target.files);
               e.target.value = "";
             }}
           />
@@ -2562,7 +2589,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent

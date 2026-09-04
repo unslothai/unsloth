@@ -90,7 +90,7 @@ class LlamaServerStatsLogger:
         if not running or decode_calls != self._last_decode:
             self._last_decode = decode_calls
             self._stall_since = now if running else None
-            self._stall_reported = False  # progress re-arms the report
+            self._stall_reported = False
             return 0.0
         if self._stall_since is None:
             self._stall_since = now
@@ -126,13 +126,12 @@ class LlamaServerStatsLogger:
             m = self._scrape()
             if not m:
                 misses += 1
-                if misses == 3:  # transient stall (load/GC); keep polling.
+                if misses == 3:  # transient stall (load/GC); keep polling
                     self._log.debug("engine_stats: /metrics scrape failing, still retrying")
                 continue  # real shutdown is driven by stop() from _kill_process
             misses = 0
-            # Generation tokens come from tokens_predicted_total (counter) and
-            # predicted_tokens_seconds (gauge); n_decode_total counts
-            # llama_decode() calls, not tokens, so it must not feed tok/s.
+            # Generation tokens come from tokens_predicted_total (counter) and predicted_tokens_seconds (gauge);
+            # n_decode_total counts llama_decode() calls, not tokens, so it must not feed tok/s.
             now = time.monotonic()
             predicted = m.get("tokens_predicted_total", 0.0)
             prompt = m.get("prompt_tokens_total", 0.0)
@@ -142,18 +141,18 @@ class LlamaServerStatsLogger:
                 gen_delta = max(0.0, (predicted - prev[1]) / dt)
                 prompt_delta = max(0.0, (prompt - prev[2]) / dt)
             prev = (now, predicted, prompt)
-            # Prefer llama.cpp's own throughput gauges; fall back to the counter
-            # delta for binaries that expose only the counters.
+            # Prefer llama.cpp's own throughput gauges; fall back to the counter delta for binaries that expose only the
+            # counters.
             gen_tps = m.get("predicted_tokens_seconds") or gen_delta
             prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
             running, waiting = (
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            # A held slot not calling llama_decode() is a wedge, and its only symptom
-            # is an endless run of identical info lines. A build without n_decode_total
-            # reads None and never "changes", accumulating the same way, so the message
-            # is chosen at report time.
+            # a build without n_decode_total reads None and never "changes", accumulating the same way
+            # A held slot not calling llama_decode() is a wedge, and its only symptom is an endless run of identical
+            # info lines. A build without n_decode_total reads None and never "changes", accumulating the same way, so
+            # the message is chosen at report time.
             decode_calls = m.get("n_decode_total")
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
@@ -180,11 +179,11 @@ class LlamaServerStatsLogger:
                 )
 
 
-# A week already means "never" for a poll interval or a stall timeout. Bounded by
-# threading.TIMEOUT_MAX as well, because the ceiling is platform specific and much lower
-# than it looks: Linux accepts ~9.2e9 seconds, Windows about 49.7 days, since the timeout
-# becomes a DWORD of milliseconds there. Picking a constant by hand got this wrong once
-# already, so let the platform state its own limit.
+# bounded by threading.TIMEOUT_MAX as well
+# A week already means "never" for a poll interval or a stall timeout. Bounded by threading.TIMEOUT_MAX as well, because
+# the ceiling is platform specific and much lower than it looks: Linux accepts ~9.2e9 seconds, Windows about 49.7 days,
+# since the timeout becomes a DWORD of milliseconds there. Picking a constant by hand got this wrong once already, so
+# let the platform state its own limit.
 _MAX_ENV_SECONDS = min(7.0 * 24.0 * 60.0 * 60.0, threading.TIMEOUT_MAX)
 
 
@@ -211,9 +210,10 @@ def _env_float(name, default, logger):
         )
         return default
     if value > _MAX_ENV_SECONDS:
-        # Event.wait() builds an absolute deadline, and one far enough out raises
-        # "timestamp out of range for platform time_t" once the wait is entered, killing
-        # the poll thread. Measured: a century still waits, 1e10 seconds does not.
+        # Event.wait() builds an absolute deadline
+        # Event.wait() builds an absolute deadline, and one far enough out raises "timestamp out of range for platform
+        # time_t" once the wait is entered, killing the poll thread. Measured: a century still waits, 1e10 seconds does
+        # not.
         logger.warning(
             "engine_stats_env_clamped",
             variable = name,
@@ -230,8 +230,8 @@ def maybe_start_stats_logger(base_url, logger):
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
     interval = _env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, logger)
-    # Generously above any legitimate pause between decode calls; 0 silences the
-    # stall line and keeps the poller as a pure stats logger.
+    # Generously above any legitimate pause between decode calls; 0 silences the stall line and keeps the poller as a
+    # pure stats logger.
     stall_timeout = _env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, logger)
     sl = LlamaServerStatsLogger(
         base_url,

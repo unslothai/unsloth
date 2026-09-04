@@ -30,8 +30,12 @@ const CLEAR: CtxPinSeed = {
 export function resolveCtxPinSeed(options: {
   /** ``status.requested_context_length``; undefined on a backend that omits the field. */
   incoming: number | null | undefined;
-  /** ``status.is_gguf``: only a GGUF load carries an n_ctx. */
+  /** ``status.is_gguf``. A non-GGUF status reports ``incoming`` too, so this flag, not
+   * its presence, is what keeps a non-GGUF load out of the pin. */
   isGguf: boolean;
+  /** MLX sizes its own window, and an unpinned MLX load sends 0, so a positive echo
+   *  from it is proof of a pin rather than the ambiguous resolved n_ctx GGUF reports. */
+  isMlx?: boolean;
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;
   /** The model/variant changed underneath this tab, so nothing recorded here survives it. */
@@ -48,6 +52,7 @@ export function resolveCtxPinSeed(options: {
   const {
     incoming,
     isGguf,
+    isMlx,
     seedLoadParams,
     modelChanged,
     remembered,
@@ -67,11 +72,19 @@ export function resolveCtxPinSeed(options: {
   }
   // 0 is the wire value for Auto and only an Auto load sends it, so this is the one echo that proves its own meaning.
   if (incoming === null || !(incoming > 0)) return CLEAR;
-  // One placement mode has no ambiguity: under Manual memory with Auto layers the load sends its
-  // pin through resolveFitMaxSeqLength, which answers `customContextLength > 0 ? it : 0`. Auto
-  // there is 0 on the wire, always, so a POSITIVE echo in this mode proves an explicit pin. Read
-  // before the branches below because it outranks both: better evidence than a saved config, and
-  // on a model change it describes the model that arrived.
+  // Unambiguous on MLX, so it is adopted without needing a saved config to corroborate
+  // it: another tab or an API client leaving a pinned model resident would otherwise
+  // read as Auto here, and the next Apply would send 0 and drop their pin.
+  if (isMlx) {
+    return { customContextLength: incoming, loadedCustomContextLength: incoming };
+  }
+  // One placement mode has no ambiguity to reason around: under Manual memory
+  // with Auto layers the load sends its pin as max_seq_length through
+  // resolveFitMaxSeqLength, which answers `customContextLength > 0 ? it : 0`.
+  // Auto there is 0 on the wire, always, so a POSITIVE echo in this mode is
+  // proof of an explicit pin rather than evidence of nothing. Read before the
+  // branches below because it outranks both of them: it is better evidence than
+  // a saved config, and on a model change it describes the model that arrived.
   if (gpuMemoryMode === "manual" && gpuLayers != null && gpuLayers < 0) {
     return { customContextLength: incoming, loadedCustomContextLength: incoming };
   }

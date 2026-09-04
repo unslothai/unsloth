@@ -22,7 +22,11 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
-import { resolveInitialConfig } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  loadedContextFields,
+  resolveInitialConfig,
+} from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -108,7 +112,9 @@ import {
 
 import {
   createBoundaryScan,
+  mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
 import {
@@ -126,6 +132,10 @@ import {
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import { isSpeechOnlyStatus } from "../lib/speech-only-status";
+import {
+  beginServerModelWait,
+  statusPollSignal,
+} from "../lib/server-model-wait";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
@@ -142,6 +152,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -155,12 +166,18 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
+  awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
+  loadedContextForParams,
+  localMaxTokensCeiling,
+  unreportedWindowMaxTokens,
   resolveFitMaxSeqLength,
   resolveExplicitCtxPin,
+  retainedContextPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -176,6 +193,7 @@ import type {
   CpuFallbackReason,
   MmprojFallbackReason,
   GgufVariantDetail,
+  InferenceStatusResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -1812,8 +1830,19 @@ export async function buildLocalTokenCountExtras(
     autoHealToolCalls,
     bypassPermissions,
     deepResearchEnabled,
+    permissionMode,
+    maxToolCallsPerMessage,
+    ragAutoInject,
+    ragAutoInjectMinScore,
+    residentCheckpoint,
   } = useChatRuntimeStore.getState();
-  if (!supportsTools) return {};
+  // Explicit false, as the completion sends: an omitted field lets the launcher's
+  // tools-on default answer and the server renders a catalog the completion does not.
+  // No budget, because the completion sends none either, so a policy that injects tools
+  // past this false gets the server default on both sides.
+  if (!supportsTools) {
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
+  }
 
   const ragProjectId = await resolveProjectId(threadId);
   const projectRagEnabled = ragProjectId
@@ -1837,7 +1866,13 @@ export async function buildLocalTokenCountExtras(
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
-    // Full access swaps the python/terminal descriptions and adds a nudge sentence, so the count needs the flag.
+    // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
+    // turn rather than declining one the completion never retrieves for.
+    permission_mode: permissionMode,
+    // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
+    max_tool_calls_per_message: maxToolCallsPerMessage,
+    // Full access swaps the python/terminal descriptions and adds a nudge
+    // sentence, so the count needs the flag to price the same prompt.
     bypass_permissions: bypassPermissions,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
@@ -1846,9 +1881,13 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Top level, not inside rag_scope: an archived thread puts search_conversation and its
+    // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
+    ...(threadId ? { thread_id: threadId } : {}),
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
-    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
+    // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
+    // a count, but the scope's ids and switches are read to decide whether one would.
     ...(ragOn
       ? {
           rag_scope: {
@@ -1864,6 +1903,11 @@ export async function buildLocalTokenCountExtras(
             // drop the tool and its nudge.
             default_top_k: ragTopK,
             mode: ragMode,
+            // Retrieval turned off means the loop renders exactly these messages, so the
+            // count can price the turn instead of declining a retrieval that never runs.
+            autoinject: resolveAutoInject(ragAutoInject, residentCheckpoint ?? ""),
+            autoinject_min_score: ragAutoInjectMinScore,
+            ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
           },
         }
       : {}),
@@ -2108,7 +2152,7 @@ type QueuedResolvedModelRuntime = {
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
-  ggufContextLength: number | null;
+  loadedContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2124,9 +2168,11 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
   "activeModelIsLocal",
-  "ggufContextLength",
-  "ggufMaxContextLength",
-  "ggufNativeContextLength",
+  "loadedContextLength",
+  "maxContextLength",
+  "nativeContextLength",
+  "loadedIsGguf",
+  "loadedIsMlx",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -2253,7 +2299,7 @@ function queuedResolvedModelFromStore(
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
-    ggufContextLength: state.ggufContextLength,
+    loadedContextLength: state.loadedContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -2705,6 +2751,112 @@ async function ensureDefaultModelDownloaded(
   });
 }
 
+// The test harness slices helpers from here; keep them below MAX_AUTO_LOAD_ATTEMPTS.
+// Slow downloads and llama-server warm-up need a long cap.
+const CLI_LOAD_ADOPT_MAX_MS = 600_000;
+
+type ServerLoadBlocked = "still-loading" | "status-unavailable";
+
+type SettledServerStatus =
+  | { outcome: "settled"; status: InferenceStatusResponse }
+  | { outcome: "stopped"; status?: undefined }
+  | { outcome: ServerLoadBlocked; status?: undefined };
+
+/**
+ * Poll until nothing is loading. A status carrying `loading` still names the model being
+ * replaced, so no caller may read a residency off it. `stopEarly` abandons the wait; a
+ * caller that passes none never sees that outcome.
+ */
+async function waitForSettledServerStatus(options: {
+  abortSignal?: AbortSignal;
+  stopEarly: () => boolean;
+}): Promise<SettledServerStatus>;
+async function waitForSettledServerStatus(options?: {
+  abortSignal?: AbortSignal;
+}): Promise<Exclude<SettledServerStatus, { outcome: "stopped" }>>;
+async function waitForSettledServerStatus(options?: {
+  abortSignal?: AbortSignal;
+  stopEarly?: () => boolean;
+}): Promise<SettledServerStatus> {
+  const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
+  let failures = 0;
+  let announced = false;
+  // This loop owns settlement while it runs, so an ordinary refresh must not publish a
+  // status taken mid-replacement as the pick: stopEarly would read the outgoing model as
+  // a user selection and hand it to the send.
+  const release = beginServerModelWait(options?.abortSignal);
+
+  try {
+    for (;;) {
+      options?.abortSignal?.throwIfAborted();
+      if (options?.stopEarly?.()) return { outcome: "stopped" };
+
+      let status: InferenceStatusResponse | null = null;
+      // Capped, or a half-open read parks this poll past the deadline below, holding the
+      // send's model-loading lease and the gate above with it.
+      const poll = statusPollSignal(options?.abortSignal);
+      try {
+        status = await getInferenceStatus(poll.signal);
+        failures = 0;
+      } catch {
+        // Cancellation, not a server that cannot answer: it must not become a toast.
+        options?.abortSignal?.throwIfAborted();
+        // A failed read is not evidence the server is idle. A timed-out one is a failure
+        // like any other, so two in a row still end the wait rather than repeat it.
+        if (++failures >= 2) return { outcome: "status-unavailable" };
+      } finally {
+        poll.dispose();
+      }
+
+      options?.abortSignal?.throwIfAborted();
+      if (options?.stopEarly?.()) return { outcome: "stopped" };
+      if (status && (status.loading?.length ?? 0) === 0) {
+        return { outcome: "settled", status };
+      }
+      if (status && !announced) {
+        toast.info("Waiting for model to finish loading…");
+        announced = true;
+      }
+      if (Date.now() >= deadline) return { outcome: "still-loading" };
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  } finally {
+    release();
+  }
+}
+
+/** Name the reason nothing loaded, so the caller's generic advice stays suppressed. */
+function reportBlockedServerLoad(outcome: ServerLoadBlocked): void {
+  const stillLoading = outcome === "still-loading";
+  toast.error(
+    stillLoading ? "A model is still loading" : "Could not reach the model server",
+    {
+      description: stillLoading
+        ? "Send again once it finishes, or pick a model in the top bar."
+        : "Check that the server is running, then send again.",
+    },
+  );
+}
+
+type CliLoadAdoption = "adopted" | "server-idle" | ServerLoadBlocked;
+
+async function adoptInFlightServerLoad(
+  abortSignal?: AbortSignal,
+): Promise<CliLoadAdoption> {
+  const settled = await waitForSettledServerStatus({
+    abortSignal,
+    stopEarly: () => Boolean(useChatRuntimeStore.getState().params.checkpoint),
+  });
+  if (settled.outcome === "stopped") return "adopted";
+  if (settled.outcome !== "settled") return settled.outcome;
+  return (await tryAdoptServerActiveModel({
+    allowWhileModelLoading: true,
+    status: settled.status,
+  }))
+    ? "adopted"
+    : "server-idle";
+}
+
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -2713,10 +2865,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 }> {
   options?.abortSignal?.throwIfAborted();
   if (!options?.skipAdoptServerModel) {
-    const adoptedServerModel = await tryAdoptServerActiveModel();
+    const adoption = await adoptInFlightServerLoad(options?.abortSignal);
     options?.abortSignal?.throwIfAborted();
-    if (adoptedServerModel) {
+    if (adoption === "adopted") {
       return { loaded: true, blockedByTrustRemoteCode: false };
+    }
+    if (adoption !== "server-idle") {
+      // Never auto-load unless status confirmed the server is idle.
+      reportBlockedServerLoad(adoption);
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode: false,
+        loadFailureReported: true,
+      };
     }
   }
 
@@ -2899,15 +3060,22 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.id,
       candidate.ggufVariant,
     );
+    const platform = usePlatformStore.getState();
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      ggufContextLength: null,
+      loadedContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      pinnedMaxSeqLength: config.maxSeqLength,
+      defaultMaxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
     // The GPU knobs are per-model: on a background auto-load the live store holds session
@@ -3059,6 +3227,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       );
       return false;
     }
+    const autoLoadPin = retainedContextPin({
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      // What the load asked for, so a pin carried in either field is kept.
+      requestedContextLength: fitMaxSeqLength,
+    });
     loadAttempts += 1;
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
@@ -3127,26 +3304,36 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
+      // The window the model serves. Neither backend's own request will do: when it
+      // sizes its own window that request is the auto-size sentinel.
+      const loadedWindow = loadedContextForParams(
+        loadedContextFields(loadResp).loadedContextLength,
+        effectiveMaxSeqLength,
+        store.params.maxSeqLength,
+      );
       store.setParams(
         {
           ...store.params,
-          ...(candidate.kind === "gguf"
-            ? {}
-            : { maxSeqLength: effectiveMaxSeqLength }),
-          maxTokens:
-            candidate.kind === "gguf"
-              ? (loadResp.context_length ?? 131072)
-              : effectiveMaxSeqLength,
+          ...(candidate.kind === "gguf" ? {} : { maxSeqLength: loadedWindow }),
+          // Through the ceiling, so the value and its slider agree at both ends. The app
+          // default would halve Max Tokens for a model whose record carries a longer one.
+          maxTokens: localMaxTokensCeiling(
+            loadedContextFields(loadResp).loadedContextLength,
+            loadedWindow,
+          ),
         },
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
           fromModelDefaults: true,
-          // A budget remembered from a larger context does not fit this load.
-          maxTokensCap:
+          // A budget remembered from a larger context does not fit this load. The
+          // window, not the request: a backend that sizes its own was sent the
+          // auto-size sentinel, which as a budget is zero.
+          maxTokensCap: replayMaxTokensCap(
             candidate.kind === "gguf"
-              ? (loadResp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+              ? loadedContextFields(loadResp).loadedContextLength
+              : loadedWindow,
+          ),
         },
       );
       // Upsert: the load response is the authority on audio capability, which a pre-load catalog entry lacks.
@@ -3168,10 +3355,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedNUbatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          ggufNativeContextLength: loadResp.native_context_length ?? null,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3256,7 +3440,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          customContextLength: null,
+          // The whole of the previous model's serving state, not just the window: a
+          // retained lease token still reads as a GGUF pick. This model's own pin is
+          // kept, though -- clearing it would reload it auto-sized next time.
+          customContextLength: autoLoadPin,
+          loadedCustomContextLength: autoLoadPin,
+          ...loadedContextFields(loadResp),
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
@@ -3509,13 +3700,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         store.setParams(
           {
             ...store.params,
-            maxTokens: loadResp.context_length ?? 131072,
+            maxTokens: localMaxTokensCeiling(
+              loadedContextFields(loadResp).loadedContextLength,
+              unreportedWindowMaxTokens(loadResp.is_gguf ?? false, store.params.maxTokens),
+            ),
           },
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
             fromModelDefaults: true,
-            maxTokensCap: loadResp.context_length ?? undefined,
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(loadResp).loadedContextLength,
+            ),
           },
         );
         const defaultModel: ChatModelRow = {
@@ -3532,9 +3728,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3627,11 +3821,23 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
       // evidence that the local server is empty.
       // Its response cannot become stale behind a foreground or sibling queued load, and only this owner
       // may clear modelLoading afterward.
-      const status = await getInferenceStatus();
+      // A failed probe is not evidence the local server is empty, and neither is one read
+      // mid-replacement: fail closed, or the outgoing model stands in for the incoming one.
+      const settled = await waitForSettledServerStatus({ abortSignal });
       abortSignal.throwIfAborted();
-      // A speech model is not one chat can queue against, so read the slot as empty and let the
-      // sweep load a real chat model.
-      // The other door into adoption, bypassing tryAdoptServerActiveModel.
+      if (settled.outcome !== "settled") {
+        reportBlockedServerLoad(settled.outcome);
+        return {
+          loaded: false,
+          blockedByTrustRemoteCode: false,
+          loadFailureReported: true,
+          modelRuntime: null,
+        };
+      }
+      const status = settled.status;
+      // The other door into adoption, bypassing tryAdoptServerActiveModel: a speech
+      // model is not one chat can queue against, so read the slot as empty and let the
+      // sweep below load a real chat model.
       const checkpoint = isSpeechOnlyStatus(status)
         ? null
         : resolveInferenceCheckpointId(status);
@@ -3649,9 +3855,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
-            ggufContextLength: status.is_gguf
-              ? (status.context_length ?? null)
-              : null,
+            loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -3743,8 +3947,17 @@ export function createOpenAIStreamAdapter(
       // After the hydrate: the backend reads some settings out of SQLite at call time and the
       // mirror is a trailing debounce, so sending inside that window uses pre-toggle values.
       await flushPendingChatSettings();
-      // Waiting for the open chat's own settings here keeps every run off the installation defaults
-      // (a chat stored "ask" would run tools without asking). Bound to this run's own chat.
+      // And the migration a model pick may have just scheduled: an external
+      // selection gets no load or status callback, so this is the only join
+      // between it and the run that would otherwise send the replayed row.
+      await awaitPendingQwenDefaultsMigration();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
       const runThreadId =
         unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
       // Refused rather than run on whatever the store holds now: the wait only runs out for a chat
@@ -3873,7 +4086,7 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
-                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4029,7 +4242,11 @@ export function createOpenAIStreamAdapter(
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
-            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            // A stored null is an edited root; `??` would reparent it.
+            parentId:
+              storedUserMessage && storedUserMessage.parentId !== undefined
+                ? storedUserMessage.parentId
+                : userMessageParentId,
             role: "user",
             content: userMessage.content,
             ...(userMessage.attachments?.length
@@ -4247,10 +4464,10 @@ export function createOpenAIStreamAdapter(
               preserveThinking:
                 queuedEmptyModelRuntime?.preserveThinking ??
                 liveRuntime.preserveThinking,
-              ggufContextLength:
+              loadedContextLength:
                 queuedEmptyModelRuntime !== null
-                  ? queuedEmptyModelRuntime.ggufContextLength
-                  : liveRuntime.ggufContextLength,
+                  ? queuedEmptyModelRuntime.loadedContextLength
+                  : liveRuntime.loadedContextLength,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -5697,10 +5914,11 @@ export function createOpenAIStreamAdapter(
                             ...(ragAutoInject === "off"
                               ? { whole_doc: false }
                               : {}),
-                            context_length:
-                              runtime.ggufContextLength ??
-                              params.maxSeqLength ??
-                              undefined,
+                            context_length: ragScopeContextLength({
+                              isExternalRequest,
+                              loadedContextLength: runtime.loadedContextLength,
+                              maxSeqLength: params.maxSeqLength,
+                            }),
                           },
                         }
                       : {}),
@@ -5911,10 +6129,11 @@ export function createOpenAIStreamAdapter(
                           ...(ragAutoInject === "off"
                             ? { whole_doc: false }
                             : {}),
-                          context_length:
-                            runtime.ggufContextLength ??
-                            params.maxSeqLength ??
-                            undefined,
+                          context_length: ragScopeContextLength({
+                            isExternalRequest,
+                            loadedContextLength: runtime.loadedContextLength,
+                            maxSeqLength: params.maxSeqLength,
+                          }),
                         },
                       }
                     : {}),
@@ -6069,17 +6288,26 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    // Only when the request targets the LOCAL model: ggufContextLength stays populated for a
-                    // resident GGUF even while an external model is selected. `maxSeqLength` comes last and is
-                    // coerced from 0, and the LOADED custom length is used, not the editable field.
-                    // An external request with a 16K cap was being measured against an unrelated 4096-token local
-                    // window. `loadedCustomContextLength`, not `customContextLength`: the latter is the EDITABLE
-                    // field, and a model serving at 4096 while the field reads 8192 would make its stop look
-                    // user-imposed.
+                    // Only when the request targets the LOCAL model. loadedContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
                     isExternalRequest
                       ? null
                       : (runtime.loadedCustomContextLength ??
-                        runtime.ggufContextLength ??
+                        runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
                   );
             // Per run, not per module: two turns must not share a cycle.
@@ -6339,6 +6567,10 @@ export function createOpenAIStreamAdapter(
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
+                  const toolArgsText = toolCallArgumentsText(
+                    toolEvent.arguments_text,
+                    toolArgs,
+                  );
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6349,7 +6581,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       provenance: mergeToolProvenance(
                         existing.provenance,
@@ -6361,7 +6593,7 @@ export function createOpenAIStreamAdapter(
                       type: "tool-call" as const,
                       toolCallId: id,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       textCursor: cumulativeText.length,
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
@@ -6526,8 +6758,12 @@ export function createOpenAIStreamAdapter(
                       ...(toolCallParts[idx].args ?? {}),
                       ...(nextArgs ?? {}),
                     } as ToolCallMessagePart["args"];
-                    // Merge tool_end native_part into args.google so the outbound translator replays both
-                    // executableCode and result on one turn; concatenated, so each part keeps its signature.
+                    const overwrittenArgumentKeys =
+                      nextArgs !== undefined ? Object.keys(nextArgs) : [];
+                    // Merge tool_end native_part into args.google so the
+                    // outbound translator replays both start (executableCode)
+                    // and end (result / inlineData) on the same turn.
+                    // Concatenate so each part keeps its own thoughtSignature.
                     const endGoogle = (
                       toolEvent as { google?: { native_part?: unknown } }
                     ).google;
@@ -6604,7 +6840,11 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       args: mergedArgs,
-                      argsText: JSON.stringify(mergedArgs ?? {}),
+                      argsText: mergedToolCallArgumentsText(
+                        existing.argsText,
+                        mergedArgs,
+                        overwrittenArgumentKeys,
+                      ),
                       result: parsedResult,
                       provenance: mergeToolProvenance(
                         existing.provenance,

@@ -254,8 +254,8 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
     data = next((repo_root / "snapshots").iterdir()) / "data"
     (data / "loop").symlink_to(data, target_is_directory = True)
-    # a junction resolves like a link while reporting `is_symlink()` False, and Linux cannot
-    # create one, so this is a symlink that answers the way a junction does.
+    # a junction resolves like a link while reporting is_symlink() False, and Linux cannot create one,
+    # so this is a symlink that answers the way a junction does
     real_is_symlink = Path.is_symlink
     monkeypatch.setattr(
         Path,
@@ -442,8 +442,8 @@ def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch
     (outside / "deep").mkdir(parents = True)
     (outside / "deep" / "huge.parquet").write_bytes(b"PAR1")
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
-    # Named like clutter, so it is not payload evidence either, and the tree behind it is
-    # never entered -- which is what stops a scan from stalling on someone else's disk.
+    # Named like clutter, so it is not payload evidence either, and the tree behind it is never entered,
+    # which is what stops a scan from stalling on someone else's disk.
     (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(outside, target_is_directory = True)
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
@@ -704,8 +704,8 @@ def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path)
     )
 
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
-    assert not (selected_root / "Org___Data").exists()  # the selected copy is deleted
-    assert (other_root / "Org___Data").exists()  # the other cache home is untouched
+    assert not (selected_root / "Org___Data").exists()
+    assert (other_root / "Org___Data").exists()
 
 
 def _app_cache_entry(monkeypatch, hub_cache: Path, repo_id: str, commit_hash: str):

@@ -80,9 +80,15 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
 interface PinnedModelsState {
   pinned: string[];
   togglePinned: (repoId: string, quant?: string) => void;
-  /** Move `fromKey` into `toKey`'s slot. Both keys must already be pinned; anything else is a
-   *  no-op. Outside a drag session the new order persists immediately, inside one it waits for
-   *  `endPinnedDrag`. */
+  /** Drop a repo's own pin and every per-quant pin under it. A whole-repo delete takes the quants
+   *  with it, and a `repoId::quant` pin outlives the row that showed it: nothing lists it, so
+   *  nothing can unpin it, and it reappears the day that quant is downloaded again. */
+  unpinRepo: (repoId: string) => void;
+  /**
+   * Move `fromKey` into `toKey`'s slot. Both keys must already be pinned;
+   * anything else is a no-op. Outside a drag session the new order is
+   * persisted immediately, inside one it is held until `endPinnedDrag`.
+   */
   movePinned: (fromKey: string, toKey: string) => void;
   /** Snapshot the current order so a cancelled drag can be undone. */
   beginPinnedDrag: () => void;
@@ -101,6 +107,16 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];
+      writePinned(next);
+      return { pinned: next };
+    }),
+  unpinRepo: (repoId) =>
+    set((state) => {
+      const prefix = `${pinKey(repoId)}::`;
+      const next = state.pinned.filter(
+        (key) => key !== pinKey(repoId) && !key.startsWith(prefix),
+      );
+      if (next.length === state.pinned.length) return state;
       writePinned(next);
       return { pinned: next };
     }),

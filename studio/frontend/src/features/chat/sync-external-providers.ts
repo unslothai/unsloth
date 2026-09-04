@@ -33,7 +33,6 @@ import {
   supportsProviderReasoningToggle,
 } from "./external-providers";
 
-const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 // Rejected for every ChatGPT account, so drop it from selections saved earlier.
 const OPENAI_CODEX_UNSUPPORTED_MODELS = new Set(["gpt-5.3-codex-spark"]);
@@ -117,9 +116,10 @@ export function pruneProviderModelIds(
   providerType: string,
   modelIds: string[],
 ): string[] {
-  if (providerType === "anthropic") {
-    return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
-  }
+  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the
+  // whole pre-4.6 generation, not a snapshot. This mirrored the backend
+  // denylist and outlived it, stripping those ids from the server catalog,
+  // the seeds and saved selections alike.
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
   }

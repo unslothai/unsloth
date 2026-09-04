@@ -10,6 +10,7 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
+import { isExternalModelId } from "@/features/chat/external-providers";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
   SEPARATE_DRAFT_MODEL_SPEC_TYPES,
@@ -108,8 +109,8 @@ export const N_BATCH_LLAMA_DEFAULT = 2048;
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length when a non-GGUF model has no override. Both paths fall
-// back here rather than an active model's runtime value, so an unconfigured pane never OOMs.
+// App default for a model no local backend sizes itself. Every path falls back here, not
+// to an active model's runtime value, so an unconfigured pane never inherits and OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
@@ -135,6 +136,22 @@ export function isServedByMlx(
   );
 }
 
+/** Whether MLX serves the RESIDENT model.
+ *
+ *  The platform cannot answer it alone: the worker picks NativeAudioBackend for a
+ *  native-audio checkpoint before the MLX fast-path, so those load on Apple Silicon
+ *  without MLX serving them. `loadedIsMlx` is the backend's own answer, and null there
+ *  means nothing is loaded yet, where the platform is still the best available one.
+ */
+export function residentIsServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason: string | null | undefined,
+  loadedIsMlx: boolean | null | undefined,
+): boolean {
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false;
+}
+
 export function presetLoadSettingNames(
   isGguf: boolean,
   deviceType: string | null | undefined,
@@ -146,6 +163,93 @@ export function presetLoadSettingNames(
   return isServedByMlx(isGguf, deviceType, chatOnlyReason)
     ? "max seq length, KV cache dtype"
     : "max seq length";
+}
+
+/** Whether llama.cpp serves the active model.
+ *
+ *  `loadedIsGguf` is the backend's own answer; the rest identify a GGUF that has not
+ *  reported one yet. A context length is not among them -- MLX reports one too, so it
+ *  says a model is loaded, not which backend loaded it. An external provider is excluded
+ *  because its id keeps a `.gguf` suffix while the flag describes a local load.
+ */
+export function isServedByLlamaCpp(x: {
+  loadedIsGguf?: boolean | null;
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  checkpoint?: string | null;
+}): boolean {
+  if (isExternalModelId(x.checkpoint)) return false;
+  // A reported non-GGUF backend settles it: the variant and path token outlive the pick
+  // that set them, so neither is evidence past a reload.
+  if (x.loadedIsGguf === false) return false;
+  return (
+    x.loadedIsGguf === true ||
+    x.activeGgufVariant != null ||
+    x.activeNativePathToken != null ||
+    String(x.checkpoint ?? "").toLowerCase().endsWith(".gguf")
+  );
+}
+
+/** The store's record of the context window a load left behind.
+ *
+ *  A window counts when the backend that reported it sized one. MLX always does, so its
+ *  `context_length` stands alone even with no trained window in the config. Transformers
+ *  sizes nothing and echoes the requested max_seq_length, so without a native length it
+ *  contributes no window.
+ *
+ *  One constructor because the four move together: a window without the backend that
+ *  produced it is what made a context length read as proof of a GGUF.
+ */
+export function loadedContextFields(resp: {
+  is_gguf?: boolean;
+  is_mlx?: boolean;
+  context_length?: number | null;
+  native_context_length?: number | null;
+  max_context_length?: number | null;
+  context_length_enforced?: boolean | null;
+} | null): {
+  loadedContextLength: number | null;
+  maxContextLength: number | null;
+  nativeContextLength: number | null;
+  loadedIsGguf: boolean | null;
+  loadedIsMlx: boolean | null;
+  loadedContextEnforced: boolean | null;
+} {
+  if (!resp) {
+    return {
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
+      loadedIsGguf: null,
+      loadedIsMlx: null,
+      loadedContextEnforced: null,
+    };
+  }
+  const isGguf = resp.is_gguf ?? false;
+  // Unknown, not a default: a response omits it when reading the model's window failed.
+  const loaded = resp.context_length ?? null;
+  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+    return {
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
+      loadedIsGguf: false,
+      loadedIsMlx: resp.is_mlx ?? null,
+      loadedContextEnforced: null,
+    };
+  }
+  return {
+    loadedContextLength: loaded,
+    maxContextLength: resp.max_context_length ?? loaded,
+    nativeContextLength: resp.native_context_length ?? null,
+    loadedIsGguf: isGguf,
+    // The backend's own answer, so a checkpoint the worker serves off the MLX path
+    // (native audio) is not taken for MLX by the platform alone.
+    loadedIsMlx: resp.is_mlx ?? null,
+    // llama.cpp allocates what it reports, so GGUF is enforced by construction.
+    // Everything else answers for itself, or says nothing.
+    loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+  };
 }
 
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
@@ -319,7 +423,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (s === "auto" || s === "default") {
     return null;
   }
-  if (s === "off") {
+  // _LEGACY_SPEC_MODE_MAP's four. A stored override arrives raw, and the null below
+  // is "follow the global preference", which would enable a drafter under Auto.
+  if (s === "off" || s === "none" || s === "disable" || s === "disabled") {
     return "off";
   }
   if (s === "mtp" || s === "draft-mtp") {
@@ -380,6 +486,49 @@ export function normalizeMaxSeqLength(value: unknown): number | null {
   }
   const snapped = Math.round(value / MAX_SEQ_LENGTH_STEP) * MAX_SEQ_LENGTH_STEP;
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(MAX_SEQ_LENGTH_MAX, snapped));
+}
+
+/** The context a saved record pins, whichever field it was written in.
+ *
+ *  MLX's pin moved into `customContextLength` beside llama.cpp's, while transformers
+ *  keeps its own in `maxSeqLength` and a record written before the move still carries an
+ *  MLX pin there. The same record is read on a host that serves it with a different
+ *  backend, so every read has to honour both.
+ *
+ *  A *saved* record only. `currentRuntimePerModelConfig` builds the same shape from the
+ *  live store, where `maxSeqLength` is the length the model resolved to rather than one
+ *  anybody chose; read that through `customContextLength` alone.
+ */
+export function savedContextPin(config: {
+  customContextLength?: number | null;
+  maxSeqLength?: number | null;
+}): number | null {
+  return config.customContextLength ?? normalizeMaxSeqLength(config.maxSeqLength ?? null);
+}
+
+/** The patch that pins a context for a non-GGUF target, on the backend serving it.
+ *
+ *  An edit leaves a pin in exactly one field, clearing whichever the record arrived with:
+ *  a record holding both loads at a different length depending on who asked -- the picker
+ *  resolves `customContextLength` first, the API's auto-switch load `maxSeqLength`.
+ */
+export function contextPinPatch(value: number, isMlx: boolean): Partial<PerModelConfig> {
+  // Held to what a load may ask for, but not rounded to the control's step: a pin taken
+  // from a resolved window need not sit on that grid.
+  const pin = boundContextPin(value) ?? MAX_SEQ_LENGTH_MIN;
+  return isMlx
+    ? { customContextLength: pin, maxSeqLength: null }
+    : { customContextLength: null, maxSeqLength: pin };
+}
+
+function boundContextPin(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(
+    MAX_SEQ_LENGTH_MIN,
+    Math.min(MAX_SEQ_LENGTH_MAX, Math.floor(value)),
+  );
 }
 
 export function floorMaxSeqLength(value: unknown): number | null {
@@ -1139,10 +1288,71 @@ export function deletePerModelConfig(
   return writeMap(map);
 }
 
-/** Move a saved config from an id an older release keyed it by onto the current one. A repo
- *  cached outside the active HF cache is now keyed by repo id, not the snapshot path, and
- *  nothing else migrates that. Renamed in ONE write rather than save-then-delete: holding
- *  both copies puts a full map over budget and silently evicts an unrelated model. */
+/**
+ * Every stored record an override key names. Matched, not split: a colon is legal in
+ * a path, and two records can spell one key.
+ */
+function findModelOverrideKeyOwners(
+  overrideKey: string,
+): { modelId: string; ggufVariant: string | null }[] {
+  const key = overrideKey.trim();
+  const foldedKey = normalizeModelIdentity(key);
+  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  for (const storageKey of Object.keys(readMap())) {
+    const modelId = modelIdFromStorageKey(storageKey);
+    if (!modelId) {
+      continue;
+    }
+    // Already lowercased by modelStorageKey, which is why only the tail folds below.
+    const variant = normalizeGgufVariantIdentity(
+      ggufVariantFromStorageKey(storageKey),
+    );
+    if (!variant) {
+      if (foldedKey === normalizeModelIdentity(modelId)) {
+        owners.push({ modelId, ggufVariant: null });
+      }
+      continue;
+    }
+    const cut = key.length - variant.length - 1;
+    if (
+      cut > 0 &&
+      key[cut] === ":" &&
+      key.slice(cut + 1).toLowerCase() === variant &&
+      normalizeModelIdentity(key.slice(0, cut)) ===
+        normalizeModelIdentity(modelId)
+    ) {
+      owners.push({ modelId, ggufVariant: variant });
+    }
+  }
+  return owners;
+}
+
+/** Delete the records the server keys name; false when one was left behind. */
+export function deletePerModelConfigsForOverrideKeys(
+  overrideKeys: readonly string[],
+): boolean {
+  let deleted = true;
+  for (const overrideKey of overrideKeys) {
+    for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
+        deleted = false;
+      }
+    }
+  }
+  return deleted;
+}
+
+/**
+* Move a saved config from an id an older release keyed it by onto the current one.
+*
+* A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
+* auto-switch index use); it used to be keyed by the snapshot path it loads from. Nothing else
+* migrates that, so without this the model reads as never remembered after an upgrade.
+*
+* The key is renamed in one write rather than saved then deleted: holding both copies puts an
+* already-full map over budget, and the save then silently evicts an unrelated model whose
+* server override outlives anything the UI could forget. A rename cannot grow the entry count.
+*/
 export function adoptLegacyConfigKey(
   modelId: string,
   legacyModelId: string,

@@ -25,14 +25,17 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft02Icon,
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
   Wifi02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Eye, EyeOff } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -1297,7 +1300,7 @@ export function ChatProvidersSettings({
             aria-label="Back to connections"
             title="Back to connections"
           >
-            <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+            <ArrowLeftIcon className="size-4" />
           </Button>
           <div className="flex min-w-0 items-center gap-2 leading-none">
             <span className="text-xs font-medium text-muted-foreground">

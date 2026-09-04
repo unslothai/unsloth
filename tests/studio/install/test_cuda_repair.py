@@ -859,8 +859,8 @@ class TestExpectedTorchFlavorRepairs:
     def test_the_repair_uses_install_ps1s_bounded_trio(self):
         _ok, mock_pip = _run_flavor_invariant(repaired = "2.10.0+cu124")
         call_args = [str(a) for a in mock_pip.call_args.args]
-        # NOT the <2.12 Linux range: an unbounded trio resolves back to the 2.11 wheel.
-        for spec in ("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0"):
+        # The bounded trio install.ps1 repairs with; Windows now shares the Linux <2.12 window.
+        for spec in ("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0", "torchaudio>=2.4,<2.12.0"):
             assert spec in call_args
 
     def test_untagged_pypi_wheel_is_repaired(self):
@@ -1863,6 +1863,182 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
             assert stack_mod._installed_flavor_tag_now("cu124") == "cpu"
             assert stack_mod._installed_flavor_tag_now() == "cpu"
 
+    def test_an_untagged_xpu_wheel_does_not_satisfy_a_cpu_expectation(self):
+        """torch.version.xpu is where an untagged source, conda or private-index XPU
+        build carries its runtime -- .hip and .cuda are both empty there. Reading only
+        those two accepted the XPU wheel under a /cpu pin, returned success without
+        replacing it, and then recorded a PINNED cpu flavor for a venv still holding it.
+        """
+        with (
+            patch.object(
+                stack_mod,
+                "_probe_torch_runtime",
+                return_value = (True, True, "2.9.0", "", ""),
+            ),
+            patch.object(stack_mod, "_TORCH_RUNTIME_XPU", "20250101"),
+        ):
+            assert stack_mod._installed_flavor_tag_now("cpu") == "xpu"
+
+    def test_the_cpu_pin_repair_agrees_with_the_check_that_triggers_it(self):
+        """_ensure_cpu_torch's own GPU-build predicate has to see the untagged XPU build
+        too. Reading only the tag and .hip/.cuda made it return without reinstalling, so
+        the post-repair check saw xpu again and failed the update instead of honouring
+        the pin: the detection improved and the repair did not follow it."""
+        source = inspect.getsource(stack_mod._ensure_cpu_torch)
+        predicate = source[source.index("_is_gpu_build = ") :]
+        predicate = predicate[: predicate.index("if not _is_gpu_build")]
+        assert (
+            "_TORCH_RUNTIME_XPU" in predicate
+        ), "an untagged XPU wheel carries its runtime only in torch.version.xpu"
+        for marker in ("_hip", "_cuda", "+xpu", "rocm"):
+            assert marker in predicate, f"{marker} must still count"
+
+    def test_the_gpu_family_reading_prefers_the_explicit_runtimes(self):
+        # An XPU marker beside a CUDA or HIP one names the accelerator that wheel was
+        # BUILT for; xpu is the answer only when it is the sole marker.
+        assert stack_mod._gpu_family_from_runtime_markers("6.4", "12.4") == "rocm"
+        assert stack_mod._gpu_family_from_runtime_markers("", "12.4") == "cuda"
+        assert stack_mod._gpu_family_from_runtime_markers("", "") == "xpu"
+
+
+class TestAFailedGpuPinIsNotADeliberateCpuChoice:
+    """setup.ps1 falls back to the CPU index when a pinned ROCm or XPU install fails and
+    publishes the resolved cpu tag, while the original GPU pin is still in the
+    environment. Recording that as pinned makes _expected_cpu_flavor_was_chosen() read a
+    failed install as an intentional one and suppress the repair guidance for good."""
+
+    @staticmethod
+    def _pinned(
+        monkeypatch,
+        flavor,
+        *,
+        url = "",
+        family = "",
+        backend = "",
+        recorded = None,
+    ):
+        for var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        if url:
+            monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
+        if family:
+            monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+        monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE", raising = False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", backend)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", (recorded or ("", False))[0])
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG_PINNED", (recorded or ("", False))[1])
+        return stack_mod._expected_torch_flavor_was_pinned(flavor)
+
+    def test_a_rocm_pin_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert (
+            self._pinned(monkeypatch, "cpu", url = "https://download.pytorch.org/whl/rocm6.4")
+            is False
+        )
+
+    def test_an_xpu_family_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", family = "xpu") is False
+
+    def test_a_gpu_backend_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", backend = "rocm") is False
+
+    def test_a_carried_forward_gpu_record_does_not_pin_a_cpu_fallback(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", recorded = ("cu124", True)) is False
+
+    def test_a_cpu_pin_that_settled_on_cpu_still_counts(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", url = "https://download.pytorch.org/whl/cpu") is True
+
+    def test_a_rocm_pin_that_settled_on_rocm_still_counts(self, monkeypatch):
+        assert (
+            self._pinned(monkeypatch, "rocm", url = "https://download.pytorch.org/whl/rocm6.4")
+            is True
+        )
+
+    def test_a_cuda_pin_counts_for_any_cuda_flavor(self, monkeypatch):
+        # cu124 and cu128 are both the cuda family: the pin names the family, and the
+        # recorded tag names the exact index within it.
+        assert (
+            self._pinned(monkeypatch, "cu128", url = "https://download.pytorch.org/whl/cu124") is True
+        )
+
+    def test_a_carried_forward_cpu_record_still_counts_for_cpu(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", recorded = ("cpu", True)) is True
+
+    def test_a_gpu_request_this_run_retires_the_old_cpu_record(self, monkeypatch):
+        """The record can only speak for a run that said nothing to contradict it.
+
+        A ROCm pin that settled on CPU is the failed-pin case the arms above refuse to call
+        deliberate, and reviving the old CPU provenance underneath them re-records the venv
+        as pinned CPU anyway: the mismatch is then suppressed for good once the requested
+        GPU works.
+        """
+        assert (
+            self._pinned(
+                monkeypatch,
+                "cpu",
+                url = "https://download.pytorch.org/whl/rocm6.4",
+                recorded = ("cpu", True),
+            )
+            is False
+        )
+        assert self._pinned(monkeypatch, "cpu", backend = "cuda", recorded = ("cpu", True)) is False
+
+    def test_a_derived_backend_does_not_retire_the_old_cpu_record(self, monkeypatch):
+        # install.sh marks the backend it resolved, and "cpu" on a GPU-less machine is not a
+        # preference either way, so it contradicts nothing the previous run recorded.
+        monkeypatch.setenv("UNSLOTH_TORCH_BACKEND_SOURCE", "resolved")
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "cuda")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cpu")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True)
+        for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(var, raising = False)
+        assert stack_mod._expected_torch_flavor_was_pinned("cpu") is True
+
+    def test_an_authoritative_url_silences_a_stale_family(self, monkeypatch):
+        """install.sh returns on the URL and never reads the family, so a family that
+        disagrees is dead. An unknown-family corporate /simple URL names no flavor, and
+        falling through to a stale ..._FAMILY=cpu recorded the CPU wheel a GPU-less host
+        legitimately got as DELIBERATE. A later eGPU there gets no mismatch and no repair.
+        """
+        assert (
+            self._pinned(
+                monkeypatch,
+                "cpu",
+                url = "https://mirror.corp.invalid/simple",
+                family = "cpu",
+            )
+            is False
+        )
+
+    def test_the_family_still_answers_when_no_url_was_supplied(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", family = "cpu") is True
+
+    def test_a_url_whose_leaf_does_name_the_flavor_still_counts(self, monkeypatch):
+        assert (
+            self._pinned(
+                monkeypatch,
+                "cpu",
+                url = "https://download.pytorch.org/whl/cpu",
+                family = "rocm6.4",
+            )
+            is True
+        )
+
+    def test_the_provenance_check_reads_the_family_only_through_the_shared_resolver(self):
+        """One read of the pair, so the precedence cannot be bypassed by a second one."""
+        body = inspect.getsource(stack_mod._expected_torch_flavor_was_pinned)
+        assert "UNSLOTH_TORCH_INDEX_FAMILY" not in body, (
+            "the family has to come through _explicit_torch_index_url(), which applies "
+            "install.sh's precedence; a direct read here reintroduces the bug"
+        )
+        assert "_explicit_torch_index_url()" in body
+
+    def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
+        assert self._pinned(monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4") is True
+
 
 class TestTheWindowsXpuTritonSwapReachesADirectRun:
     """setup.ps1 performs the swap after this script exits; a direct run has no such
@@ -2018,3 +2194,36 @@ class TestARepairedTorchThatCannotImport:
         monkeypatch.setattr(stack_mod, "pip_install", _pip)
         assert stack_mod._ensure_expected_torch_flavor() is False
         assert any("cannot be imported" in ln for ln in lines), lines
+
+
+# What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173).
+_LOCALIZED_NVIDIA_SMI = (
+    "import sys\n"
+    "if sys.argv[1:] == ['--query-gpu=compute_cap', '--format=csv,noheader,nounits']:\n"
+    "    sys.stdout.buffer.write(b'8.6\\n')\n"
+    "else:\n"
+    "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
+    "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
+)
+
+
+def test_detect_index_url_reads_a_localized_nvidia_smi_banner(monkeypatch, tmp_path):
+    fake = tmp_path / "nvidia-smi.py"
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    real_run = subprocess.run
+
+    def run_fake_nvidia_smi(command, *args, **kwargs):
+        if command and command[0] == "nvidia-smi":
+            command = [sys.executable, str(fake), *command[1:]]
+        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setattr(stack_mod.subprocess, "run", run_fake_nvidia_smi)
+    monkeypatch.setattr(
+        stack_mod.shutil,
+        "which",
+        lambda name, *a, **k: "nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    assert _detect_cuda_torch_index_url() == f"{stack_mod._PYTORCH_WHL_BASE}/cu130"

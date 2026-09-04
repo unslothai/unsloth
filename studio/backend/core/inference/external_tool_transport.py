@@ -23,8 +23,8 @@ from typing import Any
 from core.inference.external_provider import ExternalProviderClient
 
 
-# /inference/cancel and the model-load path only set a threading.Event, so an
-# asyncio consumer has to poll it. Same interval as the Codex client's watcher.
+# /inference/cancel and the model-load path only set a threading.Event, so an asyncio consumer has to poll it. Same
+# interval as the Codex client's watcher.
 _CANCEL_POLL_S = 0.05
 
 
@@ -44,10 +44,10 @@ class OAICompatTransport:
     """
 
     heals_text_tool_calls = True
-    # ExternalProviderClient sanitizes every raw upstream line at the point it
-    # arrives, before any translation. What it yields on top of that is this
-    # server's own synthesized frames (a provider-hosted image or web-search
-    # result), which a second pass in the loop could no longer tell apart.
+    # the client sanitizes raw upstream lines on arrival
+    # ExternalProviderClient sanitizes every raw upstream line at the point it arrives, before any translation. What it
+    # yields on top of that is this server's own synthesized frames (a provider-hosted image or web-search result),
+    # which a second pass in the loop could no longer tell apart.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -71,12 +71,10 @@ class OAICompatTransport:
         tool_choice: Any,
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
-        # "Resume the trailing assistant turn", so it is only ever true of the
-        # first request. Once a tool runs the conversation ends with a role="tool"
-        # result (or a role="user" no-op note), and vLLM / llama.cpp would splice
-        # the generation prompt off the end of *that* message: the model continues
-        # the tool output instead of answering it, or the chat template raises and
-        # the server 400s. Re-read the tail every turn rather than replaying the
+        # "Resume the trailing assistant turn", so it is only ever true of the first request. Once a tool runs the
+        # conversation ends with a role="tool" result (or a role="user" no-op note), and vLLM / llama.cpp would splice
+        # the generation prompt off the end of *that* message: the model continues the tool output instead of answering
+        # it, or the chat template raises and the server 400s. Re-read the tail every turn rather than replaying the
         # flag the transport was constructed with.
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
@@ -132,8 +130,8 @@ class OAICompatTransport:
                 yield line
         finally:
             watcher.cancel()
-            # The pre-existing teardown: the route or the loop closing this
-            # generator still reaches the provider stream through here.
+            # The pre-existing teardown: the route or the loop closing this generator still reaches the provider stream
+            # through here.
             aclose = getattr(upstream, "aclose", None)
             if aclose is not None:
                 with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):

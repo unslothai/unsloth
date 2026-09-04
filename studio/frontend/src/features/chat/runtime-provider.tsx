@@ -3,6 +3,10 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  classifiedAttachmentFile,
+  needsAttachmentTrackInspection,
+} from "@/lib/video-utils";
+import {
   AssistantRuntimeProvider,
   type Attachment,
   type AttachmentAdapter,
@@ -59,6 +63,16 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import {
+  isBinaryPropertyList,
+  isBinaryTrackerModule,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  isBinaryOfficeTemplate,
+  isCompiledFortranModule,
+  isBinaryVobSubSubtitle,
+  readTextAttachmentOnce,
+  UndecodableTextError,
+} from "./text-attachment-accept";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -122,6 +136,7 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+import { createParentResolver } from "./utils/message-order";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -209,7 +224,31 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 
   add(state: { file: File }) {
-    return this.delegate.add(state);
+    // A composite picks its adapter synchronously from the name and MIME type,
+    // and both say "video" for an audio-only 3GP recording, so settle that from
+    // the container's own tracks first, as the native readers do. Every other
+    // file goes straight through, keeping the delegate's own return.
+    if (!needsAttachmentTrackInspection(state.file)) {
+      return this.delegate.add(state);
+    }
+    return this.addInspected(state);
+  }
+
+  private async addInspected(state: {
+    file: File;
+  }): Promise<PendingAttachment> {
+    const file = await classifiedAttachmentFile(state.file);
+    const added = await this.delegate.add({ ...state, file });
+    if (Symbol.asyncIterator in added) {
+      // Only the audio and video adapters claim a 3GP and both resolve to one
+      // attachment, so this drains a generator to its last value rather than
+      // forwarding the progress an adapter here does not report.
+      let last: PendingAttachment | undefined;
+      for await (const value of added) last = value;
+      if (!last) throw new Error("The attachment adapter yielded nothing.");
+      return last;
+    }
+    return added;
   }
 
   remove(attachment: Attachment): Promise<void> {
@@ -368,6 +407,55 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    // Before any read: decoding an .mbox of arbitrary size would hold the bytes
+    // and the decoded string at once, and the native path already stops here.
+    if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+      const reason = `Text attachments are limited to ${
+        MAX_TEXT_ATTACHMENT_BYTES / (1024 * 1024)
+      } MB.`;
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryPropertyList(file)) {
+      const reason =
+        "Binary property-list files aren't supported. Convert the file to text before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryVobSubSubtitle(file)) {
+      const reason =
+        "VobSub bitmap subtitles aren't supported. Convert the .sub file to SRT or VTT before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryTrackerModule(file)) {
+      const reason =
+        "Tracker .mod audio files aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isCompiledFortranModule(file)) {
+      const reason =
+        "Compiled Fortran .mod modules aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryOfficeTemplate(file)) {
+      const reason =
+        "Legacy Word and PowerPoint templates aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    // Decodes here so an unreadable encoding is reported while attaching rather
+    // than at send, where the composer has no room to explain it.
+    try {
+      await readTextAttachmentOnce(file);
+    } catch (error) {
+      if (error instanceof UndecodableTextError) {
+        toast.error(error.message);
+      }
+      throw error;
+    }
     return {
       id: crypto.randomUUID(),
       type: "document",
@@ -379,7 +467,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await attachment.file.text();
+    const text = await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -1919,17 +2007,21 @@ function useStudioRuntimeAdapters(
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // Window check applies only when a local GGUF window is known; external providers have
-        // ggufContextLength === null.
+        // Window check applies only when a local GGUF window is known; external
+        // providers have loadedContextLength === null. llama.cpp stops at the window, so
+        // a saved count past it is stale; MLX runs past it by design, and a thread whose
+        // recount is unsupported -- a VLM, or one carrying tool history -- would never
+        // get another count to replace the one rejected here.
+        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !store.ggufContextLength ||
-          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-        // Legacy unscoped usage (no modelId) is trusted only when a known local window bounds the
-        // totals, so an old local turn cannot be misattributed to a new external provider.
+          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
+        // Legacy unscoped usage (no modelId) is trusted only when a known local
+        // window bounds the totals, so an old local turn can't be misattributed
+        // to a newly-selected external provider.
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
-          : typeof store.ggufContextLength === "number" &&
-            store.ggufContextLength > 0;
+          : typeof store.loadedContextLength === "number" &&
+            store.loadedContextLength > 0;
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
@@ -1955,17 +2047,13 @@ function useStudioRuntimeAdapters(
         // back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
-          let previousId: string | null = null;
+          const resolveParent = createParentResolver();
           return completeLoad(
             {
-              messages: msgs.map((m) => {
-                const parentId = m.parentId != null ? m.parentId : previousId;
-                previousId = m.id;
-                return {
-                  parentId,
-                  message: toThreadMessage(m),
-                };
-              }),
+              messages: msgs.map((m) => ({
+                parentId: resolveParent(m),
+                message: toThreadMessage(m),
+              })),
             },
             remoteId,
           );
@@ -2354,7 +2442,7 @@ function ThreadNewChatSwitch({
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // Read only by the recount below: New Chat itself must not care whether a run is still going.
   const runActive = useChatRuntimeStore((s) =>
@@ -2547,7 +2635,7 @@ function ThreadNewChatSwitch({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -2559,7 +2647,7 @@ function ThreadNewChatSwitch({
     // and nothing else re-fires this when the run ends.
   }, [
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     isLoading,
     modelLoading,
     nonce,
@@ -2857,7 +2945,7 @@ function ThreadContextUsageRecount({
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
   // for being busy would never be retried. Every run, since that is what the endpoint refuses on.
@@ -2872,7 +2960,7 @@ function ThreadContextUsageRecount({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -2883,7 +2971,7 @@ function ThreadContextUsageRecount({
     activeThreadId,
     checkpoint,
     enabled,
-    ggufContextLength,
+    loadedContextLength,
     runActive,
     modelLoading,
   ]);

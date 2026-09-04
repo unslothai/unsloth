@@ -2,34 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-
-export type QwenThinkingParams = {
-  temperature: number;
-  topP: number;
-  topK: number;
-  minP: number;
-  presencePenalty?: number;
-};
-
-/** Resolve the sampling table shared by model load and the Think toggle. */
-export function resolveQwenThinkingParams(
-  checkpoint: string,
-  thinkingOn: boolean,
-): QwenThinkingParams | null {
-  const normalized = checkpoint.toLowerCase();
-  if (!normalized.includes("qwen3")) {
-    return null;
-  }
-
-  const needsPresencePenalty =
-    normalized.includes("qwen3.5") ||
-    normalized.includes("qwen3.6") ||
-    normalized.includes("qwen3.8");
-  const base = thinkingOn
-    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
-    : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  return needsPresencePenalty ? { ...base, presencePenalty: 1.5 } : base;
-}
+// The table itself lives in qwen-sampling-table.ts, free of store imports, so
+// the defaults migration can read it without a resolver -> store -> migration
+// cycle. Import it from there directly rather than through this module.
+import { resolveQwenThinkingParams } from "./qwen-sampling-table";
 
 /** Apply Qwen3-family recommended sampling parameters when the Think toggle changes. Qwen3.5,
  *  Qwen3.6 and Qwen3.8 also need a presence_penalty bump on top of the Qwen3 defaults. Used by

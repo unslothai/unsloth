@@ -4,6 +4,8 @@
 import {
   getChatSettings,
   saveChatSettingsPatch,
+  saveChatSettingsPatchIfCurrent,
+  type ChatSettingsPath,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
@@ -255,7 +257,7 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
-function sanitizeChatSettings(value: unknown): PersistedChatSettings {
+export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
   const settings: PersistedChatSettings = {};
@@ -460,6 +462,13 @@ export interface LoadedChatSettings {
    *  False when the read fell back to this browser's legacy storage: nothing is then known about the
    *  server, and treating every field as absent would back this browser's stale values over another's. */
   fromServer: boolean;
+  /**
+   * Whether these values are what the server holds. False when a legacy import
+   * merged local values but failed to save them: the server answered, so
+   * absence is still authoritative, but the merge exists only in this session
+   * and a later re-read would silently drop it.
+   */
+  persisted: boolean;
 }
 
 export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
@@ -471,7 +480,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
     if (isEmptyChatSettings(legacySettings)) {
       throw error;
     }
-    return { settings: legacySettings, fromServer: false };
+    return { settings: legacySettings, fromServer: false, persisted: false };
   }
 
   const legacySettings = loadLegacyChatSettings();
@@ -480,7 +489,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
       !isEmptyChatSettings(dbSettings) ||
       isEmptyChatSettings(legacySettings)
     ) {
-      return { settings: dbSettings, fromServer: true };
+      return { settings: dbSettings, fromServer: true, persisted: true };
     }
     try {
       return {
@@ -488,16 +497,17 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
           await saveChatSettingsPatch(legacySettings),
         ),
         fromServer: true,
+        persisted: true,
       };
     } catch {
       // The GET still answered (empty), so absence remains authoritative.
-      return { settings: legacySettings, fromServer: true };
+      return { settings: legacySettings, fromServer: true, persisted: false };
     }
   }
 
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
-    return { settings: dbSettings, fromServer: true };
+    return { settings: dbSettings, fromServer: true, persisted: true };
   }
 
   const mergedSettings = {
@@ -513,9 +523,9 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
-    return { settings: savedSettings, fromServer: true };
+    return { settings: savedSettings, fromServer: true, persisted: true };
   } catch {
-    return { settings: mergedSettings, fromServer: true };
+    return { settings: mergedSettings, fromServer: true, persisted: false };
   }
 }
 
@@ -526,4 +536,22 @@ export async function savePersistedChatSettingsPatch(
   return sanitizeChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );
+}
+
+export async function savePersistedChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+  expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const result = await saveChatSettingsPatchIfCurrent(
+    sanitizeChatSettings(expected),
+    sanitizeChatSettings(patch),
+    expectedAbsent,
+    expectedAbsentPaths,
+  );
+  return {
+    settings: sanitizeChatSettings(result.settings),
+    applied: result.applied,
+  };
 }

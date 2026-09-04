@@ -324,15 +324,24 @@
 	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
 	/* Model picker header controls. Padding and gaps come from the pinned
 	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
-	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
+	   plus --picker-control-pad. Height matches the h-9 it replaces at the
+	   16px default. */
 	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
+	   like the rest: it pads, and it stops the "Trending" label clipping. */
+	--picker-control-pad: 0.75rem;
+	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
+	   side, i.e. px-3 to px-4 on the tabs. */
+	--picker-tab-pad: 0.5rem;
+	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
-	   label, then the two dropdowns. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
-	/* Provider row adds one more control; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
+	   label, then the two dropdowns. The control row fills this exactly, which
+	   keeps the last dropdown flush with Search Hub above it. Widening a
+	   control takes the difference from the search field, not the panel. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control and the Connected pill; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -3463,4 +3472,50 @@ html[data-chat-font] .aui-root {
 .reload-snapshot-shell *::after {
 	animation: none !important;
 	transition: none !important;
+}
+
+/* Find in page. The bar paints matches through the CSS Custom Highlight API,
+   so these two pseudo-elements are the whole visual: nothing is inserted into
+   the thread and nothing reflows when a match moves. An engine without the
+   registry falls back to selecting the active match.
+
+   Fixed colours in both themes, not palette tokens: a highlight has to stay
+   legible over body text, over a code fence with its own background, and over
+   a badge, and the accent colours move with the palette while that text does
+   not. `color` is set alongside the background because the API paints over
+   text of any colour. */
+::highlight(unsloth-find) {
+	background-color: #ffd84d;
+	color: #1a1a1a;
+}
+
+::highlight(unsloth-find-active) {
+	background-color: #ff8c1a;
+	color: #1a1a1a;
+}
+
+/* The find bar's surface: no border in either mode, so colour and shadow are
+   what separate it from the conversation.
+
+   Light is the chatbox's own background and shadow, so the panel a reader
+   summons over the conversation is made of the same material as the one they
+   type into. Dark cannot copy it: the composer sits at `--card` with no shadow,
+   because nothing overlaps it. This bar floats over cards that are themselves
+   `--card`, so it sits one step lighter, which also gives the ghost buttons
+   inside somewhere to go: their default `--muted/50` hover lands within a shade
+   of `--card` and reads as nothing. The shadow is the page background rather
+   than black, a halo that fades what passes underneath instead of a dark edge
+   around a panel that has given up its border. */
+.find-bar-surface {
+	background-color: #ffffff;
+	/* The composer's shadow spread wider and softened: that one sits at the
+	   bottom of the page with nothing under it, this one floats over content and
+	   needs more to sit on, but not more weight. Kept in step by
+	   tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.13);
+}
+
+.dark .find-bar-surface {
+	background-color: #2c2c2c;
+	box-shadow: 0 4px 20px 6px var(--background);
 }
