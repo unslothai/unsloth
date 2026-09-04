@@ -575,3 +575,65 @@ class TestTheRoundLevelLimitsThatAreReadWhileItIsPrepared:
             f"{len(ran)} searches ran against a cap of {RAG_MAX_SEARCHES_PER_TURN}: the "
             "cap was read while the round was being prepared and written when it settled"
         )
+
+
+class TestNothingNewSlipsIntoTheSameHazard:
+    """A guard on the shape of the bug, not on any one instance of it.
+
+    Three bugs in this change were the same mistake: state that the loop READS while
+    preparing a call and WRITES when that call settles is read at its starting value by
+    every call in an overlapped round. The duplicate ledger, the RAG search cap and the
+    forced tool choice were each found separately, by running it.
+
+    So pin the list. Both settle paths declare what they write, and adding a name to
+    either is exactly the moment to ask whether the head reads it too. A test that fails
+    on a NEW name is worth more than three tests for the three names already handled.
+    """
+
+    def _nonlocals(self, path, marker):
+        import ast
+        import pathlib
+
+        source = pathlib.Path(path).read_text(encoding = "utf-8")
+        tree = ast.parse(source)
+        found: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == marker:
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Nonlocal):
+                        found.update(inner.names)
+        return found
+
+    def test_the_gguf_settle_path_writes_only_the_reviewed_names(self):
+        import core.inference.llama_cpp as mod
+        names = self._nonlocals(mod.__file__, "_settle_tool_call")
+        assert names == {
+            # counted at LAUNCH for an overlapped round; the write here is the sequential path
+            "_kb_search_count",
+            # spent at launch too, for the same reason
+            "_forced_tool_call_pending",
+            # read only after the round, so settling order is enough
+            "_last_reprompt_text",
+            "_turn_executed_real_tool",
+            "_forced_choice_resolved",
+            # rebound by compaction; every call was appended to it before any settled
+            "assistant_msg",
+        }, (
+            f"the settle path now writes {sorted(names)}. If the loop reads any new one "
+            "while preparing a call, an overlapped round reads it before this runs."
+        )
+
+    def test_the_provider_settle_path_writes_only_the_reviewed_names(self):
+        import core.inference.studio_tool_loop as mod
+        names = self._nonlocals(mod.__file__, "_settle_call")
+        assert names == {
+            # the launch site subtracts len(pending_calls) so the budget counts launches
+            "remaining",
+            # read only after the round
+            "turn_executed_real_tool",
+            "executed_any",
+            "last_reprompt_text",
+        }, (
+            f"the settle path now writes {sorted(names)}. If the loop reads any new one "
+            "while preparing a call, an overlapped round reads it before this runs."
+        )
