@@ -868,8 +868,14 @@ _DEST_DIR_FLAGS = {"--target", "-t", "--prefix", "--root"}
 _DEST_PYTHON_FLAGS = {"--python", "-p"}
 # pip honours PIP_<OPTION> for every option and uv documents --python as
 # [env: UV_PYTHON=]; both redirect with nothing on the command line at all.
-_DEST_DIR_ENV = ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT")
-_DEST_PYTHON_ENV = ("UV_PYTHON", "PIP_PYTHON")
+# Per TOOL, because each ignores the other's variables and a bypass granted on a
+# variable the invoked tool never reads is the dangerous direction: the install lands
+# in the baked venv with no filtering at all. Measured against both CLIs: pip honours
+# PIP_TARGET, PIP_PREFIX, PIP_ROOT and PIP_PYTHON and ignores UV_PYTHON; uv honours
+# UV_PYTHON, ignores every PIP_ variable, and has no environment form for its
+# --target/--prefix at all.
+_DEST_DIR_ENV = {"pip": ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"), "uv": ()}
+_DEST_PYTHON_ENV = {"pip": ("PIP_PYTHON",), "uv": ("UV_PYTHON",)}
 
 
 def _flag_values(argv, flags):
@@ -900,7 +906,7 @@ def _inside_base_venv(path):
     return resolved == root or resolved.startswith(root + os.sep)
 
 
-def _installs_elsewhere(argv):
+def _installs_elsewhere(tool, argv):
     """True when this install is aimed at an environment that is NOT the baked venv.
 
     Every reason to filter is about protecting that venv, so filtering an install
@@ -909,13 +915,15 @@ def _installs_elsewhere(argv):
 
     Deliberately conservative: only a destination we can positively resolve OUTSIDE
     the venv counts. A bare `--python python3` or `--python 3.12` may well name the
-    baked interpreter, so it keeps the protective behaviour."""
+    baked interpreter, so it keeps the protective behaviour. Environment variables
+    count only for the tool that actually reads them; a flag is left unscoped because
+    a tool that does not accept one fails loudly on it rather than silently."""
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
-    dirs += [os.environ[v] for v in _DEST_DIR_ENV if os.environ.get(v)]
+    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if os.environ.get(v)]
     if any(not _inside_base_venv(d) for d in dirs):
         return True
     pythons = _flag_values(argv, _DEST_PYTHON_FLAGS)
-    pythons += [os.environ[v] for v in _DEST_PYTHON_ENV if os.environ.get(v)]
+    pythons += [os.environ[v] for v in _DEST_PYTHON_ENV[tool] if os.environ.get(v)]
     return any((os.path.isabs(p) or os.sep in p) and not _inside_base_venv(p) for p in pythons)
 
 
@@ -932,7 +940,7 @@ def main():
 
     # Before the sync refusal as well: `uv pip sync --python <other>` only uninstalls
     # from that other environment, so there is no baked stack for it to strip.
-    if _installs_elsewhere(argv):
+    if _installs_elsewhere(tool, argv):
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 

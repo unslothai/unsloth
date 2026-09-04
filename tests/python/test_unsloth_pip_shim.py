@@ -1654,3 +1654,41 @@ def test_the_baked_venv_is_still_protected(shim, monkeypatch, argv):
     assert (
         ran is None or "torch==2.5.0" not in ran
     ), f"the baked torch was forwarded for replacement: {ran}"
+
+
+# Each tool ignores the other's environment variables, and a bypass granted on a
+# variable the invoked tool never reads is the dangerous direction: the install lands
+# in the BAKED venv having skipped every filter. Measured against both CLIs: with
+# UV_PYTHON set, `pip install idna==3.18` reported "already satisfied" from the base
+# environment, and with PIP_PYTHON set, `uv pip install` reported "environment at:
+# <base>"; each honoured only its own.
+@pytest.mark.parametrize(
+    "tool, var",
+    [
+        ("pip", "UV_PYTHON"),
+        ("uv", "PIP_PYTHON"),
+        ("uv", "PIP_TARGET"),
+        ("uv", "PIP_PREFIX"),
+        ("uv", "PIP_ROOT"),
+    ],
+    ids = [
+        "pip-ignores-uv-python",
+        "uv-ignores-pip-python",
+        "uv-ignores-pip-target",
+        "uv-ignores-pip-prefix",
+        "uv-ignores-pip-root",
+    ],
+)
+def test_the_other_tools_destination_variable_buys_no_bypass(shim, monkeypatch, tool, var):
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    monkeypatch.setenv(var, "/tmp/elsewhere")
+    argv = (
+        ["uv", "pip", "install", "torch==2.5.0"]
+        if tool == "uv"
+        else ["pip", "install", "torch==2.5.0"]
+    )
+    ran = _full_argv(shim, argv)
+    assert ran is None or "torch==2.5.0" not in ran, (
+        f"{var} is ignored by {tool}, so the install went to the BAKED venv with no "
+        f"filtering: {ran}"
+    )
