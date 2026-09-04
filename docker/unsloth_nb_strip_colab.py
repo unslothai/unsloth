@@ -124,42 +124,87 @@ def _clean_widgets(nb):
     return changed
 
 
-def strip_notebook(path, staged = None):
-    """True if the notebook was modified and written back. `staged`, when given, gets
-    {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
+def _unlink(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _stage_clean(path):
+    """(tmp, hash_before, hash_after) for a cleaned copy written beside the notebook but
+    NOT published, or None when there was nothing to change or the write failed.
+
+    Split out of strip_notebook so migrate can record the new hash before the notebook
+    carries it."""
     try:
         before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)
     except Exception:
-        return False
+        return None
 
     changed = _strip_intro(nb)
     changed = _clean_widgets(nb) or changed
     if not changed:
-        return False
+        return None
 
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(nb, f, indent = 1, ensure_ascii = False)
             f.write("\n")
-        after = _sha256(tmp)
+        return tmp, before, _sha256(tmp)
+    except Exception:
+        _unlink(tmp)
+        return None
+
+
+def _publish(tmp, path, before):
+    """Move the staged copy onto the notebook. False if it was not published."""
+    try:
         # JupyterLab is already serving the tree, so a save between the read above and
         # this replace would be overwritten and then recorded as pristine forever
         if _sha256(path) != before:
-            os.remove(tmp)
+            _unlink(tmp)
             return False
         _stage_metadata(tmp, path)
         os.replace(tmp, path)
-        if staged is not None:
-            staged["sha256"] = after
     except Exception:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        _unlink(tmp)
         return False
+    return True
+
+
+def _write_state(state_path, lines):
+    """Replace the state file durably; False when it could not be written.
+
+    fsync before the rename, because a crash between the two makes the rename visible
+    with the content unwritten, which strands the notebooks the same way."""
+    tmp = state_path + ".tmp"
+    try:
+        with open(tmp, "w", encoding = "utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, state_path)
+    except OSError:
+        _unlink(tmp)
+        return False
+    return True
+
+
+def strip_notebook(path, staged = None):
+    """True if the notebook was modified and written back. `staged`, when given, gets
+    {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
+    st = _stage_clean(path)
+    if st is None:
+        return False
+    tmp, before, after = st
+    if not _publish(tmp, path, before):
+        return False
+    if staged is not None:
+        staged["sha256"] = after
     return True
 
 
@@ -172,41 +217,66 @@ def _sha256(path):
 
 
 def migrate(state_path, dest):
+    """Clean every notebook the state file says we own, recording each one BEFORE it is
+    published.
+
+    Publishing the whole set first and then writing the state once meant that losing
+    that single write left every cleaned notebook no longer matching its record. The
+    refresh reads a hash mismatch as a user edit and carries the stale record forward,
+    so upstream updates stop reaching those notebooks permanently, while this reports
+    success. It is not a one-notebook risk either: on the first boot after this ships,
+    migrate cleans the entire set in one pass, so a docker stop or an ENOSPC anywhere
+    in that window stranded all of them at once.
+
+    Ordering it the other way is safe in the direction that matters. If the state write
+    fails, nothing has been published and the disk still matches the record, so the next
+    start simply tries again."""
     try:
         with open(state_path, "r", encoding = "utf-8") as f:
             lines = f.read().splitlines()
     except OSError:
         return 0
 
-    out = []
+    out = list(lines)  # malformed lines and untouched records survive verbatim
     changed = 0
-    for line in lines:
+    stopped = False
+    for i, line in enumerate(lines):
         parts = line.split("  ", 1)  # "<sha256>  <relpath>"
         if len(parts) != 2:
-            out.append(line)
             continue
         rec, rel = parts
         path = os.path.join(dest, rel)
-        if rel.endswith(".ipynb") and os.path.isfile(path):
-            try:
-                if _sha256(path) == rec:  # we own it and it is unedited
-                    published = {}
-                    if strip_notebook(path, published):
-                        rec = published["sha256"]
-                        changed += 1
-            except OSError:
-                pass
-        out.append("%s  %s" % (rec, rel))
+        if not (rel.endswith(".ipynb") and os.path.isfile(path)):
+            continue
+        try:
+            if _sha256(path) != rec:  # not ours, or the user has edited it
+                continue
+        except OSError:
+            continue
+        staged = _stage_clean(path)
+        if staged is None:
+            continue
+        tmp, before, after = staged
+        out[i] = "%s  %s" % (after, rel)
+        if not _write_state(state_path, out):
+            _unlink(tmp)
+            out[i] = line
+            stopped = True
+            break
+        if _publish(tmp, path, before):
+            changed += 1
+        else:
+            # nothing landed, so take the record back off
+            out[i] = line
+            _write_state(state_path, out)
 
     if changed:
-        tmp = state_path + ".tmp"
-        try:
-            with open(tmp, "w", encoding = "utf-8") as f:
-                f.write("\n".join(out) + "\n")
-            os.replace(tmp, state_path)
-        except OSError:
-            pass
         print(f"[unsloth-nb] cleaned {changed} notebook(s) (Colab intro + widget outputs)")
+    if stopped:
+        print(
+            "[unsloth-nb] could not record the cleaned notebooks; leaving the rest for "
+            "the next start"
+        )
     return 0
 
 
