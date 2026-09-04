@@ -162,9 +162,9 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
     # user could not edit a notebook upstream had just added. It now falls
     # through to own_like_dir instead.
     assert 'if [ ! -e "$2" ]; then' in block
-    assert "own_like_dir" in block, (
-        "a brand-new notebook must take the owner of the directory it lands in"
-    )
+    assert (
+        "own_like_dir" in block
+    ), "a brand-new notebook must take the owner of the directory it lands in"
 
 
 @pytest.mark.skipif(
@@ -297,19 +297,20 @@ def _drive_sh(tmp_path: Path, snippet: str, *funcs: str) -> list:
     log = tmp_path / "chown.log"
     shim = bin_dir / "chown"
     shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$*" >> "{log}"\n'
-        "exit 0\n",
+        "#!/usr/bin/env bash\n" f'printf "%s\\n" "$*" >> "{log}"\n' "exit 0\n",
         encoding = "utf-8",
     )
     shim.chmod(0o755)
 
     driver = tmp_path / "driver.sh"
-    driver.write_text("#!/usr/bin/env bash\nset -u\numask 022\n" + blocks + "\n" + snippet,
-                      encoding = "utf-8")
+    driver.write_text(
+        "#!/usr/bin/env bash\nset -u\numask 022\n" + blocks + "\n" + snippet, encoding = "utf-8"
+    )
     result = subprocess.run(
         ["bash", str(driver)],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
         env = dict(os.environ, PATH = f"{bin_dir}{os.pathsep}" + os.environ["PATH"]),
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -324,17 +325,18 @@ def test_a_brand_new_notebook_gets_the_destination_directorys_owner(tmp_path: Pa
     dest_dir.mkdir()
     staged = dest_dir / ".unsloth_nb_new.1"
     staged.write_text("{}", encoding = "utf-8")
-    os.chmod(staged, 0o600)   # what the clone / mkstemp hands over
+    os.chmod(staged, 0o600)  # what the clone / mkstemp hands over
 
     calls = _drive_sh(
         tmp_path,
         f'stage_metadata "{staged}" "{dest_dir / "new.ipynb"}"\n',
-        "own_like_dir", "stage_metadata",
+        "own_like_dir",
+        "stage_metadata",
     )
 
-    assert calls == [f"--reference={dest_dir} {staged}"], (
-        f"a new notebook must take the owner of the directory it lands in: {calls}"
-    )
+    assert calls == [
+        f"--reference={dest_dir} {staged}"
+    ], f"a new notebook must take the owner of the directory it lands in: {calls}"
     # 0666 & ~022, the mode a plain write would have produced.
     assert stat.S_IMODE(os.stat(staged).st_mode) == 0o644, oct(
         stat.S_IMODE(os.stat(staged).st_mode)
@@ -353,7 +355,8 @@ def test_an_existing_notebook_still_inherits_from_the_file_not_the_directory(tmp
     calls = _drive_sh(
         tmp_path,
         f'stage_metadata "{staged}" "{live}"\n',
-        "own_like_dir", "stage_metadata",
+        "own_like_dir",
+        "stage_metadata",
     )
 
     assert calls == [f"--reference={live} {staged}"], (
@@ -368,13 +371,14 @@ def test_both_template_copies_hand_the_file_to_the_host_user():
     the publish path alone is how this class of bug keeps coming back."""
     source = SYNC_SH.read_text(encoding = "utf-8")
     copies = [
-        i for i, line in enumerate(source.splitlines())
+        i
+        for i, line in enumerate(source.splitlines())
         if 'cp -a "$TEMPLATE/$rel" "$DEST/$rel"' in line
     ]
     assert len(copies) == 2, f"expected the populate and restore copies, got {copies}"
     lines = source.splitlines()
     for i in copies:
         window = "\n".join(lines[i : i + 4])
-        assert "own_like_dir" in window, (
-            f"the copy at line {i + 1} publishes the template's root:root mode"
-        )
+        assert (
+            "own_like_dir" in window
+        ), f"the copy at line {i + 1} publishes the template's root:root mode"
