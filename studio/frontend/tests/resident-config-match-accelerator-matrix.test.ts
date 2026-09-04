@@ -112,6 +112,10 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
   // An MLX server records a KV width and none of the llama.cpp placement fields at all. A
   // default load leaves the width unrequested; a pinned width is swept below like any other
   // field, and is not part of the base for the same reason placement is not.
+  // Deliberately not is_gguf: false. This matrix sweeps every field against one uniform
+  // "pinned and different means reload" rule, which only the GGUF branch obeys -- the
+  // non-GGUF branch reads a few fields and adopts on the rest. That branch is judged
+  // field by field in resident-config-match.test.ts instead.
   "apple-mlx": {
     mlx_kv_bits_requested: null,
   },

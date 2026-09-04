@@ -9,7 +9,7 @@ import test from "node:test";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
 installLocalStorageFake();
-register("./status-applier-resolver.mjs", import.meta.url);
+register("./store-settings-resolver.mjs", import.meta.url);
 
 const { useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
@@ -58,4 +58,40 @@ test("a status reporting no width clears the baseline it would otherwise re-send
   applyActiveModelStatusToStore(statusFor(null, null), { previousCheckpoint: MODEL });
 
   assert.equal(useChatRuntimeStore.getState().loadedNParallel, null);
+});
+
+test("a remembered non-GGUF width is adopted into the control, not just the baseline", async () => {
+  // The baseline above only feeds a rollback. Without this the control stays blank while
+  // the model runs on the remembered width, and the next Apply would save the blank over it.
+  const { setResidentInitialConfig } = await import(
+    "./helpers/store-stubs/model-picker.ts"
+  );
+  setResidentInitialConfig({ remembered: true, config: { nParallel: 2 } });
+  useChatRuntimeStore.setState({
+    modelLoading: false,
+    loadedNParallel: null,
+    nParallel: null,
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: "unsloth/Other" },
+  });
+
+  applyActiveModelStatusToStore(statusFor(2), { previousCheckpoint: "unsloth/Other" });
+  setResidentInitialConfig(null);
+
+  assert.equal(useChatRuntimeStore.getState().nParallel, 2);
+});
+
+test("the baseline follows a width the server changed underneath this tab", () => {
+  // An MLX width changes without a reload, so the running count can move while this tab
+  // holds the same model. A baseline left at the first count seen would show no pending
+  // difference and roll back to a width the server stopped running.
+  useChatRuntimeStore.setState({
+    modelLoading: false,
+    loadedNParallel: 2,
+    nParallel: 2,
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: MODEL },
+  });
+
+  applyActiveModelStatusToStore(statusFor(4), { previousCheckpoint: MODEL });
+
+  assert.equal(useChatRuntimeStore.getState().loadedNParallel, 4);
 });

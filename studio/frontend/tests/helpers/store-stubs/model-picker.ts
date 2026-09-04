@@ -13,8 +13,15 @@ export function perModelConfigsEqual(): boolean {
   return true;
 }
 
-export function resolveResidentInitialConfig(): null {
-  return null;
+/** What the next lookup answers. Nothing remembered unless a test says otherwise. */
+let residentConfig: unknown = null;
+
+export function setResidentInitialConfig(value: unknown): void {
+  residentConfig = value;
+}
+
+export function resolveResidentInitialConfig(): unknown {
+  return residentConfig;
 }
 
 export function loadedContextFields(): Record<string, unknown> {
