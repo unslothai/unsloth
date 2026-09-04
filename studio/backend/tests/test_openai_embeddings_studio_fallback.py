@@ -162,6 +162,9 @@ def test_base64_encoding_format(studio_embedder):
         {"input": [[1, 2, 3]]},
         {"input": ["alpha", ""]},
         {"input": "alpha", "encoding_format": "int8"},
+        {"input": "alpha", "encoding_format": ""},
+        {"input": "alpha", "encoding_format": False},
+        {"input": "alpha", "encoding_format": 0},
         {"input": "alpha", "dimensions": 999},
     ],
 )
@@ -801,3 +804,13 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
         assert calls["n"] == cap + 1
 
     asyncio.run(run())
+
+
+def test_batch_cap_applies_only_to_the_studio_fallback():
+    from fastapi import HTTPException
+
+    body = {"input": ["x"] * (inference_route._STUDIO_EMBED_MAX_INPUTS + 1)}
+    assert len(inference_route._embeddings_items(body, tokens_ok = True)) == len(body["input"])
+    with pytest.raises(HTTPException) as exc:
+        inference_route._embeddings_texts(body)
+    assert exc.value.status_code == 400

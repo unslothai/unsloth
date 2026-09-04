@@ -25763,7 +25763,7 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
         items = []
     if not items:
         raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    if len(items) > _STUDIO_EMBED_MAX_INPUTS:
+    if not tokens_ok and len(items) > _STUDIO_EMBED_MAX_INPUTS:
         raise HTTPException(
             status_code = 400,
             detail = f"'input' may hold at most {_STUDIO_EMBED_MAX_INPUTS} items.",
@@ -25784,7 +25784,8 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
             status_code = 400,
             detail = "'input' must be a non-empty string or an array of non-empty strings.",
         )
-    if (body.get("encoding_format") or "float") not in ("float", "base64"):
+    encoding_format = body.get("encoding_format")
+    if encoding_format is not None and encoding_format not in ("float", "base64"):
         raise HTTPException(
             status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
         )
@@ -25895,7 +25896,9 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     untrack_admitted_inference(_scope)
 
     texts = _embeddings_texts(body)
-    encoding_format = body.get("encoding_format") or "float"
+    encoding_format = body.get("encoding_format")
+    if encoding_format is None:
+        encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = rag_config.effective_embedding_model()
     label = _public_embedding_name(model_name)
