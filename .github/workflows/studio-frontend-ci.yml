@@ -24,6 +24,7 @@ on:
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_tool_activity.py'
@@ -436,6 +437,15 @@ jobs:
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
+
+      # The node suite reaches the reducers, the store and the JSX wiring through the
+      # TypeScript AST, and none of that sees a Radix Collapsible: whether closed content
+      # is still in the DOM, what aria-expanded says, and where the page lands after a
+      # collapse are browser questions. Added by #9803 without a step, so it ran nowhere
+      # and every job stayed green over it.
+      - name: Browser smoke for the collapse-tool-activity preference
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_tool_activity.py
 
       # A listener is not a pure function: what a chord does to a focused button, to a
       # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
