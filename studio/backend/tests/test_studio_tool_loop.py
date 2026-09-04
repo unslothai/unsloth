@@ -58,6 +58,7 @@ def _tool(name: str, description: str = "") -> dict:
 
 WEB = _tool("web_search")
 PY = _tool("python")
+TERMINAL = _tool("terminal")
 
 
 class FakeTransport:
@@ -111,6 +112,9 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    current_subject = None,
+    tool_ui_session_id = None,
+    limited_grant = None,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -134,6 +138,9 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -208,8 +215,13 @@ def test_structured_call_executes_and_continues(executed):
 
     assert [call["name"] for call in executed] == ["web_search"]
     assert executed[0]["arguments"] == {"query": "unsloth"}
-    assert len(_events(lines, "tool_start")) == 1
-    assert _events(lines, "tool_end")[0]["result"] == "RESULT<web_search>"
+    starts = _events(lines, "tool_start")
+    end = _events(lines, "tool_end")[0]
+    assert len(starts) == 1
+    assert "execution_state" not in starts[0]
+    assert "execution_record" not in starts[0]
+    assert end["result"] == "RESULT<web_search>"
+    assert "execution_record" not in end
     assert "Here is what I found." in _visible_text(lines)
 
     # The follow-up turn replays assistant tool_calls then the tool result.
@@ -624,6 +636,94 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal"])
+def test_local_process_events_carry_the_actual_execution_record(monkeypatch, tool_name):
+    record_payload = {
+        "requested_mode": "limited",
+        "effective_mode": "limited",
+        "environment": "windows",
+        "backend": "limited",
+        "profile_id": "limited-v1",
+        "probe_generation": "generation-1",
+        "os_isolation": False,
+        "retained_safeguards": ["process_guard"],
+    }
+
+    class Record:
+        def as_dict(self):
+            return dict(record_payload)
+
+    execute_kwargs = {}
+
+    def _execute(
+        name,
+        arguments,
+        output_callback = None,
+        launch_record_callback = None,
+        **_kwargs,
+    ):
+        execute_kwargs.update(_kwargs)
+        launch_record_callback(Record())
+        output_callback("first output\n")
+        return "done"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": tool_name, "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    lines = _run(
+        transport,
+        tools = [PY if tool_name == "python" else TERMINAL],
+        tool_execution_mode = "limited",
+        current_subject = "actor-1",
+        tool_ui_session_id = "ui-session-1",
+        limited_grant = "grant-1",
+    )
+    events = [
+        json.loads(line[6:])
+        for line in lines
+        if line.startswith("data: ") and line[6:] != "[DONE]"
+    ]
+    starts = [event for event in events if event.get("type") == "tool_start"]
+    end = next(event for event in events if event.get("type") == "tool_end")
+    output_index = next(
+        i for i, event in enumerate(events) if event.get("type") == "tool_output"
+    )
+    recorded_start_index = next(
+        i for i, event in enumerate(events) if event.get("execution_record") == record_payload
+    )
+
+    assert starts[0]["execution_state"] == "pending"
+    assert "execution_record" not in starts[0]
+    assert starts[1]["execution_state"] == "started"
+    assert starts[1]["execution_record"] == record_payload
+    assert recorded_start_index < output_index
+    assert end["execution_record"] == record_payload
+    assert execute_kwargs["tool_execution_mode"] == "limited"
+    assert execute_kwargs["current_subject"] == "actor-1"
+    assert execute_kwargs["tool_ui_session_id"] == "ui-session-1"
+    assert execute_kwargs["limited_grant"] == "grant-1"
 
 
 # ── Forced tool choice ────────────────────────────────────────────

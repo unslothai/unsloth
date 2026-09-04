@@ -535,6 +535,10 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
+    tool_execution_mode: str = "os_isolation_required",
+    current_subject: Optional[str] = None,
+    tool_ui_session_id: Optional[str] = None,
+    limited_grant: Optional[str] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -1287,9 +1291,17 @@ def run_safetensors_tool_loop(
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            records_local_launch = decision.tool_name in (
+                "python",
+                "terminal",
+            ) and _accepts_kwarg(execute_tool, "launch_record_callback")
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
+            if records_local_launch:
+                start_event["execution_state"] = (
+                    "awaiting_approval" if needs_confirm else "pending"
+                )
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1353,7 +1365,27 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                execution_record: dict[str, object] = {}
+
+                def _launch_event(record) -> dict:
+                    record_payload = record.as_dict()
+                    execution_record["value"] = record_payload
+                    event = decision.tool_start_event()
+                    event.update(
+                        {
+                            "approval_id": approval_id,
+                            "awaiting_confirmation": False,
+                            "execution_state": "started",
+                            "execution_record": record_payload,
+                        }
+                    )
+                    return event
+
+                def _invoke_tool(
+                    _output_callback,
+                    _launch_record_callback = None,
+                    _decision = decision,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1462,6 +1494,16 @@ def run_safetensors_tool_loop(
                         ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
+                    for key, value in (
+                        ("tool_execution_mode", tool_execution_mode),
+                        ("current_subject", current_subject),
+                        ("tool_ui_session_id", tool_ui_session_id),
+                        ("limited_grant", limited_grant),
+                    ):
+                        if _accepts_kwarg(execute_tool, key):
+                            kwargs[key] = value
+                    if records_local_launch and _launch_record_callback is not None:
+                        kwargs["launch_record_callback"] = _launch_record_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
@@ -1471,6 +1513,7 @@ def run_safetensors_tool_loop(
                         tool_name = decision.tool_name,
                         tool_call_id = decision.tool_call_id,
                         cancel_event = cancel_event,
+                        launch_event_factory = _launch_event if records_local_launch else None,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
@@ -1478,7 +1521,13 @@ def run_safetensors_tool_loop(
                 if decision.tool_name in RAG_SEARCH_TOOLS:
                     kb_search_count += 1
 
-            completion = tool_controller.record_result(decision, result)
+            completion = tool_controller.record_result(
+                decision,
+                result,
+                execution_record = (
+                    execution_record.get("value") if records_local_launch else None
+                ),
+            )
             if provisional_match:
                 provisional_resolved = True
             # A tool ran this turn, so it counts against the caller's budget.

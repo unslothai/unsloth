@@ -288,15 +288,19 @@ class ToolCallCompletion:
     result: str
     is_error: bool = False
     executed: bool = False
+    execution_record: dict[str, Any] | None = None
 
     def tool_end_payload(self) -> dict[str, Any]:
         """Build the payload fields for a real tool_end event."""
-        return {
+        payload = {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
             "result": self.result,
             "provenance": self.decision.provenance,
         }
+        if self.execution_record is not None:
+            payload["execution_record"] = self.execution_record
+        return payload
 
     def tool_end_event(self) -> dict[str, Any]:
         """Build the existing backend event shape for a real execution result."""
@@ -1045,7 +1049,13 @@ class ToolLoopController:
             noop_result = noop,
         )
 
-    def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
+    def record_result(
+        self,
+        decision: ToolCallDecision,
+        result: Any,
+        *,
+        execution_record: dict[str, Any] | None = None,
+    ) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
@@ -1066,6 +1076,7 @@ class ToolLoopController:
             result = result_text,
             is_error = failed,
             executed = True,
+            execution_record = execution_record,
         )
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:

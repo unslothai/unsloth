@@ -136,12 +136,31 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
 
     assert completion.tool_end_payload()["result"] == "Search result\n__IMAGES__:{...}"
     assert completion.tool_end_event()["type"] == "tool_end"
+    assert "execution_record" not in completion.tool_end_event()
     assert completion.tool_message() == {
         "role": "tool",
         "name": "web_search",
         "content": "Search result",
         "tool_call_id": "call_0",
     }
+
+
+def test_tool_end_carries_the_authoritative_execution_record():
+    controller = ToolLoopController(tools = [_tool("python")])
+    decision = controller.prepare_call(_call("python", {"code": "print(1)"}))
+    execution_record = {
+        "effective_mode": "os_isolation_required",
+        "backend": "linux-bubblewrap",
+        "os_isolation": True,
+    }
+
+    completion = controller.record_result(
+        decision,
+        "1\n",
+        execution_record = execution_record,
+    )
+
+    assert completion.tool_end_event()["execution_record"] is execution_record
 
 
 def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():

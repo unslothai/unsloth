@@ -1215,6 +1215,80 @@ def _make_loop(
     ), exec_fn
 
 
+@pytest.mark.parametrize("tool_name", ["python", "terminal"])
+def test_local_process_events_carry_the_actual_execution_record(tool_name):
+    record_payload = {
+        "requested_mode": "limited",
+        "effective_mode": "limited",
+        "environment": "windows",
+        "backend": "limited",
+        "profile_id": "limited-v1",
+        "probe_generation": "generation-1",
+        "os_isolation": False,
+        "retained_safeguards": ["process_guard"],
+    }
+
+    class Record:
+        def as_dict(self):
+            return dict(record_payload)
+
+    execute_kwargs = {}
+
+    def execute_tool(
+        name,
+        arguments,
+        *,
+        output_callback = None,
+        launch_record_callback = None,
+        **kwargs,
+    ):
+        execute_kwargs.update(kwargs)
+        launch_record_callback(Record())
+        output_callback("first output\n")
+        return "done"
+
+    turns = iter(
+        [
+            [f'<tool_call>{{"name":"{tool_name}","arguments":{{}}}}</tool_call>'],
+            ["finished"],
+        ]
+    )
+
+    def single_turn(_messages, *, active_tools = None):
+        yield from next(turns, [])
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": tool_name}}],
+            execute_tool = execute_tool,
+            max_tool_iterations = 1,
+            tool_execution_mode = "limited",
+            current_subject = "actor-1",
+            tool_ui_session_id = "ui-session-1",
+            limited_grant = "grant-1",
+        )
+    )
+    starts = [event for event in events if event["type"] == "tool_start"]
+    end = next(event for event in events if event["type"] == "tool_end")
+    output_index = next(i for i, event in enumerate(events) if event["type"] == "tool_output")
+    recorded_start_index = next(
+        i for i, event in enumerate(events) if event.get("execution_record") == record_payload
+    )
+
+    assert starts[0]["execution_state"] == "pending"
+    assert "execution_record" not in starts[0]
+    assert starts[1]["execution_state"] == "started"
+    assert starts[1]["execution_record"] == record_payload
+    assert recorded_start_index < output_index
+    assert end["execution_record"] == record_payload
+    assert execute_kwargs["tool_execution_mode"] == "limited"
+    assert execute_kwargs["current_subject"] == "actor-1"
+    assert execute_kwargs["tool_ui_session_id"] == "ui-session-1"
+    assert execute_kwargs["limited_grant"] == "grant-1"
+
+
 class TestParserDeepSeek:
     """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
     (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a

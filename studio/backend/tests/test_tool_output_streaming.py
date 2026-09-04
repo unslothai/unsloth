@@ -146,6 +146,34 @@ def test_incremental_output_streams_as_tool_output_events():
     assert all(e["tool_call_id"] == "call_1" for e in outputs)
 
 
+def test_launch_event_precedes_output_in_the_same_fifo():
+    class Record:
+        def as_dict(self):
+            return {"effective_mode": "limited", "os_isolation": False}
+
+    def tool(output_callback, launch_callback):
+        launch_callback(Record())
+        output_callback("first output\n")
+        return "done"
+
+    events, result = _run_stream(
+        tool,
+        tool_name = "python",
+        tool_call_id = "call_1",
+        launch_event_factory = lambda record: {
+            "type": "tool_start",
+            "execution_record": record.as_dict(),
+        },
+    )
+
+    assert result == "done"
+    assert [event["type"] for event in events] == ["tool_start", "tool_output"]
+    assert events[0]["execution_record"] == {
+        "effective_mode": "limited",
+        "os_isolation": False,
+    }
+
+
 def test_heartbeats_emitted_while_tool_blocks():
     release = threading.Event()
 
@@ -876,6 +904,87 @@ def test_gguf_loop_emits_tool_output_between_start_and_end(monkeypatch):
         if e["type"] == "tool_output":
             assert e["tool_name"] == "python"
             assert e["tool_call_id"] == "call_1"
+
+
+def test_gguf_loop_records_the_actual_launch_before_output(monkeypatch):
+    record_payload = {
+        "requested_mode": "limited",
+        "effective_mode": "limited",
+        "environment": "windows",
+        "backend": "limited",
+        "profile_id": "limited-v1",
+        "probe_generation": "generation-1",
+        "os_isolation": False,
+        "retained_safeguards": ["process_guard"],
+    }
+
+    class Record:
+        def as_dict(self):
+            return dict(record_payload)
+
+    execute_kwargs = {}
+
+    def recorded_tool(
+        name,
+        arguments,
+        output_callback = None,
+        launch_record_callback = None,
+        **_kwargs,
+    ):
+        execute_kwargs.update(_kwargs)
+        launch_record_callback(Record())
+        output_callback("started\n")
+        return "started\n"
+
+    tool_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "index": 0,
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print('hi')"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "All done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    monkeypatch.setattr("core.inference.tools.execute_tool", recorded_tool)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            tool_execution_mode = "limited",
+            current_subject = "actor-1",
+            tool_ui_session_id = "ui-session-1",
+            limited_grant = "grant-1",
+        )
+    )
+    starts = [event for event in events if event["type"] == "tool_start"]
+    end = next(event for event in events if event["type"] == "tool_end")
+    output_index = next(i for i, event in enumerate(events) if event["type"] == "tool_output")
+    recorded_start_index = next(
+        i for i, event in enumerate(events) if event.get("execution_record") == record_payload
+    )
+
+    assert starts[0]["execution_state"] == "pending"
+    assert "execution_record" not in starts[0]
+    assert starts[1]["execution_state"] == "started"
+    assert starts[1]["execution_record"] == record_payload
+    assert recorded_start_index < output_index
+    assert end["execution_record"] == record_payload
+    assert execute_kwargs["tool_execution_mode"] == "limited"
+    assert execute_kwargs["current_subject"] == "actor-1"
+    assert execute_kwargs["tool_ui_session_id"] == "ui-session-1"
+    assert execute_kwargs["limited_grant"] == "grant-1"
 
 
 def test_gguf_loop_plain_tool_yields_no_tool_output(monkeypatch):

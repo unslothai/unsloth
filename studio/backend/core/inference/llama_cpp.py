@@ -28462,6 +28462,10 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        tool_execution_mode: str = "os_isolation_required",
+        current_subject: Optional[str] = None,
+        tool_ui_session_id: Optional[str] = None,
+        limited_grant: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -30614,9 +30618,17 @@ class LlamaCppBackend:
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
                     )
+                    records_local_launch = decision.tool_name in (
+                        "python",
+                        "terminal",
+                    ) and accepts_kwarg(execute_tool, "launch_record_callback")
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
+                    if records_local_launch:
+                        start_event["execution_state"] = (
+                            "awaiting_approval" if needs_confirm else "pending"
+                        )
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
@@ -30942,8 +30954,27 @@ class LlamaCppBackend:
                         # the budget that was actually handed over, from a scope that
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
+                        execution_record: dict[str, Any] = {}
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        def _launch_event(record: Any) -> dict[str, Any]:
+                            record_payload = record.as_dict()
+                            execution_record["value"] = record_payload
+                            event = decision.tool_start_event()
+                            event.update(
+                                {
+                                    "approval_id": approval_id,
+                                    "awaiting_confirmation": False,
+                                    "execution_state": "started",
+                                    "execution_record": record_payload,
+                                }
+                            )
+                            return event
+
+                        def _invoke_tool(
+                            _output_callback,
+                            _launch_record_callback = None,
+                            _decision = decision,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -31221,6 +31252,16 @@ class LlamaCppBackend:
                                     )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
+                            for _key, _value in (
+                                ("tool_execution_mode", tool_execution_mode),
+                                ("current_subject", current_subject),
+                                ("tool_ui_session_id", tool_ui_session_id),
+                                ("limited_grant", limited_grant),
+                            ):
+                                if accepts_kwarg(execute_tool, _key):
+                                    kwargs[_key] = _value
+                            if records_local_launch and _launch_record_callback is not None:
+                                kwargs["launch_record_callback"] = _launch_record_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             return execute_tool(
                                 _decision.tool_name,
@@ -31237,6 +31278,9 @@ class LlamaCppBackend:
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
                                 cancel_event = cancel_event,
+                                launch_event_factory = (
+                                    _launch_event if records_local_launch else None
+                                ),
                             )
                         except _LlamaStreamCancelled:
                             # Subclasses Exception, so the arm below would eat
@@ -31340,7 +31384,13 @@ class LlamaCppBackend:
                             )
                             _identical_result_runs[0] = 0
                             _last_tool_result_key[0] = None
-                    completion = tool_controller.record_result(decision, result)
+                    completion = tool_controller.record_result(
+                        decision,
+                        result,
+                        execution_record = (
+                            execution_record.get("value") if records_local_launch else None
+                        ),
+                    )
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                     # A real execution opens the post-tool phase; carrying the pre-tool
                     # stall text over would read the same sentence as a repeat and
