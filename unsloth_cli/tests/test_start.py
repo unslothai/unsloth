@@ -45,6 +45,11 @@ def _assert_env_unset(output: str, name: str) -> None:
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 
+def _assert_env_kept(output: str, name: str) -> None:
+    needle = f"Remove-Item Env:{name}" if os.name == "nt" else f"unset {name}"
+    assert needle not in output, f"{needle!r} unexpectedly found in:\n{output}"
+
+
 def _assert_env_cwd(output: str, name: str) -> None:
     needle = f"$env:{name} = (Get-Location).Path" if os.name == "nt" else f'export {name}="$PWD"'
     assert needle in output, f"{needle!r} not found in:\n{output}"
@@ -2320,6 +2325,10 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--model" not in command
     parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
     _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
+    # The parent here is the user's own cloud Codex, so its provider credentials
+    # must survive; only the local `unsloth start codex` session drops them.
+    for name in start._CODEX_ENV_UNSET:
+        _assert_env_kept(result.output, name)
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
