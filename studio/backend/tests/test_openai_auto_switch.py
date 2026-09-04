@@ -2077,6 +2077,51 @@ def test_idle_stash_reload_carries_hf_cache_companion_roots(tmp_path, monkeypatc
     assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
 
 
+def test_companion_root_scan_does_not_block_the_event_loop(tmp_path, monkeypatch):
+    import time
+
+    old = tmp_path / "models--org--Vision-GGUF" / "snapshots" / "weights-revision"
+    old.mkdir(parents = True)
+    (old / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(old), "Q4_K_M", "org/Vision-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_companion_scan(_load_path):
+        entered.set()
+        release.wait(1.0)
+        return ()
+
+    monkeypatch.setattr(resolver, "local_gguf_companion_roots", _slow_companion_scan)
+
+    async def _drive():
+        started = time.monotonic()
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision-GGUF",
+                object(),
+                "tester",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2.0)
+        loop_was_responsive = time.monotonic() - started < 0.5
+        release.set()
+        await task
+        assert loop_was_responsive
+
+    asyncio.run(_drive())
+    assert len(recorder.calls) == 1
+
+
 def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     """Inactive cache rows point at a snapshot but still select complete weights."""
     import os
