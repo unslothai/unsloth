@@ -413,9 +413,16 @@ def default_install_dir() -> Path:
     leave a managed runtime behind after ``rm -rf <root>``. A nested master at ``~/.unsloth`` still
     remaps: it owns that level, and its llama.cpp, node and whisper.cpp sit beside studio/ in it.
 
-    Kept byte-identical in meaning to ``sd_cpp_engine.managed_install_root``; the two
-    are separate because this script must run standalone, before the backend package is
-    importable.
+    The STANDALONE fallback only. Every backend auto-install passes ``install_dir``
+    explicitly, from ``sd_cpp_engine.managed_install_root()``, because that resolver can read a
+    portable root out of the on-disk record while this one can only be told about it through the
+    environment -- and a backend started the documented direct way (``uvicorn main:app``, or an
+    activated venv) inherits none of the launcher's exports. What is left here is the CLI at the
+    bottom of this file, which cannot import the backend at all; a portable install whose root no
+    exported variable names should pass ``--install-dir``.
+
+    Kept identical in meaning to ``sd_cpp_engine.managed_install_root`` for every root the
+    environment does name, which is what the two are pinned together on.
 
     Derived from an absolute home: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the
     install dir relative to whatever the working directory happens to be."""

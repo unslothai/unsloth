@@ -179,7 +179,10 @@ def test_rejected_legacy_sd_allows_managed_install(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "install_sd_cpp_prebuilt", stub)
 
     assert backend.ensure_sd_cpp_binary(accelerator = "cpu") == str(installed)
-    assert installs == [{"accelerator": "cpu"}]
+    # The target is passed EXPLICITLY, and it is the root the finder just read. install()'s own
+    # default has to answer standalone, so it sees only UNSLOTH_STUDIO_HOME / STUDIO_HOME and
+    # cannot find a portable root that only the on-disk record names.
+    assert installs == [{"accelerator": "cpu", "install_dir": eng.managed_install_root()}]
 
 
 def test_identity_probe_is_memoized_per_file_revision(tmp_path, monkeypatch):

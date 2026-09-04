@@ -751,7 +751,18 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(accelerator = accelerator)
+                # The root the FINDER just used, never install()'s own default. That default is
+                # install_sd_cpp_prebuilt.default_install_dir(), which has to answer standalone and
+                # so sees only UNSLOTH_STUDIO_HOME / STUDIO_HOME. A portable backend started the
+                # documented direct way -- ``uvicorn main:app``, or an activated venv -- carries
+                # none of the launcher's exports, so that default falls all the way back to
+                # ~/.unsloth/stable-diffusion.cpp while managed_install_root() has already read
+                # <master>/studio/stable-diffusion.cpp off the in-root record. The bundle would
+                # land outside the one directory ``rm -rf <root>`` is advertised to remove, and
+                # nothing on the discovery side ever looks there, so every later load downloads it
+                # again. Passing the resolved root makes the writer and the reader the same answer
+                # by construction instead of two derivations that have to be kept in step.
+                path = _install(install_dir = managed_install_root(), accelerator = accelerator)
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -812,7 +823,13 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+                # Same root the finder reads, for the reason spelled out in ensure_sd_cpp_binary:
+                # install()'s standalone default cannot see a portable root that only the on-disk
+                # record names.
+                _install(
+                    install_dir = managed_install_root(),  # extracts sd-cli AND sd-server
+                    accelerator = accelerator,
+                )
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives (a legacy server-less tree): the router probes ensure_sd_cpp_binary
