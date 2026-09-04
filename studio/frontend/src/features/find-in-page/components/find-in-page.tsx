@@ -192,6 +192,9 @@ function FindBar() {
 
   const searching = query.length > 0;
   const empty = !queryPending && searching && count === 0;
+  // A pending query has no count of its own yet, so the settled one's zero must not disable the
+  // walk: `stepWhenSettled` queues the press and runs it once the count arrives.
+  const canStep = searching && (count > 0 || queryPending);
   const counter =
     searching && !queryPending
       ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
@@ -254,7 +257,7 @@ function FindBar() {
         variant="ghost"
         size="icon"
         className={FIND_BUTTON_CLASS}
-        disabled={count === 0}
+        disabled={!canStep}
         onMouseDown={keepFocusInField}
         onClick={() => stepWhenSettled(-1)}
         aria-label={t("shell.find.previous")}
@@ -266,7 +269,7 @@ function FindBar() {
         variant="ghost"
         size="icon"
         className={FIND_BUTTON_CLASS}
-        disabled={count === 0}
+        disabled={!canStep}
         onMouseDown={keepFocusInField}
         onClick={() => stepWhenSettled(1)}
         aria-label={t("shell.find.next")}

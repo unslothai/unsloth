@@ -2041,6 +2041,14 @@ test("every navigation waits for the query to settle, buttons included", async (
   assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(1\)\}/);
   // No control reaches the raw pair, so a new one cannot copy the losing spelling.
   assert.equal(/onClick=\{(next|previous)\}/.test(bar), false);
+  // Reaching the handler at all: a settled zero must not disable the walk while the next query is
+  // still pending, or editing "no matches" into a match loses the press to a disabled button.
+  assert.match(
+    bar,
+    /const canStep = searching && \(count > 0 \|\| queryPending\);/,
+  );
+  assert.equal((bar.match(/disabled=\{!canStep\}/g) ?? []).length, 2);
+  assert.equal(bar.includes("disabled={count === 0}"), false);
   // The helper queues the step and forces the settle rather than dropping it.
   assert.match(
     bar,
