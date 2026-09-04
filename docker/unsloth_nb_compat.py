@@ -261,7 +261,12 @@ def _pre_run_cell(info = None):
     and every later cell got "already imported; cannot switch"."""
     if "transformers" in sys.modules:
         return
-    v = requested_version() or pin_in_cell(getattr(info, "raw_cell", None))
+    # The cell's own pin outranks the marker, which is a record of an install that has
+    # ALREADY run. Within one notebook a later cell can pin a different version, and
+    # the marker still holds the earlier one; the marker path also falls back to
+    # pid-<pid> when the ipykernel connection file cannot be read, and /tmp is never
+    # swept, so a recycled pid inherits someone else's pin.
+    v = pin_in_cell(getattr(info, "raw_cell", None)) or requested_version()
     if v:
         activate(v)
 

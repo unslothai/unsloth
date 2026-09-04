@@ -10,7 +10,8 @@ kernel process is coherent, and executes every cell with nbconvert.
 
 Usage:
   unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
-              [--transformers X.Y.Z]   # force a version, skip auto-detect
+              [--fetch-timeout SECONDS] # URL download stall limit (default 60)
+              [--transformers X.Y.Z]    # force a version, skip auto-detect
 """
 
 import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
@@ -43,9 +44,21 @@ else:
     _strip_comment = _live_source = _install_lines = None
 
 
-def _load(path_or_url):
+DEFAULT_FETCH_TIMEOUT = int(os.environ.get("UNSLOTH_NOTEBOOK_FETCH_TIMEOUT", "60") or 60)
+
+
+def _load(path_or_url, fetch_timeout = None):
+    """Parsed notebook. A URL is fetched with a socket timeout: --timeout only ever
+    reached nbconvert, so a host that accepted the connection and then went quiet hung
+    the run before a single cell had executed. This bounds each blocking socket
+    operation, not the total transfer, which is what that failure needs; a server
+    trickling bytes forever is a different problem and not one seen here."""
     if path_or_url.startswith(("http://", "https://")):
-        with urllib.request.urlopen(path_or_url) as r:  # nosec - user-provided nb
+        if fetch_timeout is None:
+            fetch_timeout = DEFAULT_FETCH_TIMEOUT
+        with urllib.request.urlopen(  # nosec - user-provided nb
+            path_or_url, timeout = fetch_timeout
+        ) as r:
             data = r.read().decode()
         return json.loads(data)
     with open(path_or_url) as f:
@@ -134,10 +147,17 @@ def main():
     ap.add_argument("notebook")
     ap.add_argument("--out")
     ap.add_argument("--timeout", type = int, default = 3600)
+    ap.add_argument(
+        "--fetch-timeout",
+        dest = "fetch_timeout",
+        type = int,
+        default = DEFAULT_FETCH_TIMEOUT,
+        help = "seconds a URL fetch may stall before giving up (default 60)",
+    )
     ap.add_argument("--transformers", dest = "tf")
     args = ap.parse_args()
 
-    nb = _load(args.notebook)
+    nb = _load(args.notebook, fetch_timeout = args.fetch_timeout)
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None

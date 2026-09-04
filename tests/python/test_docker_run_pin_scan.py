@@ -229,3 +229,55 @@ def test_a_real_pin_still_drives_the_kernel(run_mod, monkeypatch, tmp_path):
     seen = _launch(run_mod, monkeypatch, tmp_path, nb, "pinned")
     assert _sidecars_on_path(seen["env"]) == ["t_5_10_2"]
     assert seen["marker"] == "5.10.1"
+
+
+# `--timeout` only ever reached nbconvert, so a URL host that accepted the connection
+# and then went quiet hung unsloth-run before a single cell had executed.
+
+
+def test_a_url_fetch_is_bounded(run_mod, monkeypatch):
+    seen = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+
+    def _urlopen(url, *args, **kwargs):
+        seen["url"] = url
+        seen["timeout"] = kwargs.get("timeout", args[2] if len(args) > 2 else None)
+        return _Response()
+
+    monkeypatch.setattr(run_mod.urllib.request, "urlopen", _urlopen)
+
+    run_mod._load("https://example.invalid/x.ipynb")
+    assert seen["timeout"] == run_mod.DEFAULT_FETCH_TIMEOUT
+    assert seen["timeout"] is not None and seen["timeout"] > 0
+
+    run_mod._load("https://example.invalid/x.ipynb", fetch_timeout = 7)
+    assert seen["timeout"] == 7
+
+
+def test_the_stall_limit_is_separate_from_the_execution_budget(run_mod):
+    """--timeout is nbconvert's whole-notebook budget, an hour by default; reusing it
+    for the download would mean an hour of silence before the first cell."""
+    source = (REPO_ROOT / "docker" / "unsloth_run.py").read_text(encoding = "utf-8")
+    assert "--fetch-timeout" in source
+    assert run_mod.DEFAULT_FETCH_TIMEOUT < 3600
+
+
+def test_a_local_path_is_not_given_a_timeout(run_mod, tmp_path):
+    """Only the URL branch changed; a local file must still open normally."""
+    path = tmp_path / "x.ipynb"
+    path.write_text(
+        json.dumps({"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}),
+        encoding = "utf-8",
+    )
+    assert run_mod._load(str(path)) == {
+        "cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    }
