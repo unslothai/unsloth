@@ -6681,7 +6681,6 @@ export function createOpenAIStreamAdapter(
                     // suffix still renders.
                     let mcpImages: McpImageToolResult | null = null;
                     if (mcpImgIdx !== -1) {
-                    // The backend uses the same dir when there is no session_id; see tools.py _get_workdir.
                       try {
                         const images = JSON.parse(
                           rawResult.slice(mcpImgIdx + mcpImgMarker.length),

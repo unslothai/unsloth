@@ -230,10 +230,10 @@ export function providerSupportsBuiltinWebSearch(
   modelId?: string | null | undefined,
   baseUrl?: string | null | undefined,
 ): boolean {
-  // Gemini ships grounded search on chat-capable models. Most image-tier ids reject text-tool
-  // wiring, but Google documents it on the Gemini 3 image family, so allow only there.
-  // Custom Gemini OpenAI-compat proxies skip the native translator, so hide the pill.
-  // Output comes back inline as executableCode / codeExecutionResult parts.
+  // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on chat-capable models. Most
+  // image-tier ids reject text-tool wiring, but Google documents Search grounding on the Gemini 3
+  // image family, so allow it there and hide on older image ids. Custom Gemini OpenAI-compat
+  // proxies skip the native translator, so hide the pill.
   if (providerType === "gemini") {
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -348,7 +348,8 @@ export function providerSupportsBuiltinCodeExecution(
   if (providerType === "gemini") {
     // Gemini code execution works on chat-capable models, but image-tier ids reject text-tool
     // wiring (mutually exclusive with the inline-image path), and custom OAI-compat proxies
-    // skip the native translator. Wire-up lives in `_stream_gemini`.
+    // skip the native translator. Wire-up lives in `_stream_gemini`; output comes back inline
+    // as executableCode / codeExecutionResult parts.
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     if (isGeminiImageModel(normalized)) return false;
     return normalized.startsWith("gemini-");
