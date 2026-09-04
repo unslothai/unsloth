@@ -173,12 +173,10 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
     assert "<SettingsDialogMount active={active && ready} />" in root
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
-    # SettingsDialogMount must render nothing whenever it is not active, which is what
-    # keeps the auth routes clear. What ELSE the guard tests is the lazy-mount
-    # bookkeeping and not this test's business: #10237 gave the mount a second surface,
-    # so the one `mounted` flag became `settingsMounted || monitorMounted` and an exact
-    # spelling stopped matching. `|| ...` is allowed after `!active` and `&& ...` is not,
-    # because the return has to happen for EVERY inactive render, not just some.
+    # The mount must render nothing whenever inactive, which is what keeps the auth routes
+    # clear. The rest of the guard is lazy-mount bookkeeping that #10237 changed from one
+    # flag to two, so an exact spelling stopped matching. `|| ...` after `!active` is allowed,
+    # `&& ...` is not, because the return must happen on every inactive render.
     mount_body = mount[mount.index("export function SettingsDialogMount("):]
     assert re.search(r"if \(!active(\)|\s*\|\|[^\n]*\))\s*return null;", mount_body), (
         "SettingsDialogMount no longer returns null while inactive, so the settings "
