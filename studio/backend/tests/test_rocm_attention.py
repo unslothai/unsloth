@@ -41,13 +41,29 @@ def test_defaults_to_the_real_environment(monkeypatch):
     assert os.environ[AOTRITON_ENV] == "1"
 
 
-def test_run_py_opens_the_gate_before_importing_torch():
-    """The whole fix is ordering: torch latches the var at import, so a late set is dead code."""
+def _backend_source(name):
     from pathlib import Path
+    return (Path(__file__).resolve().parents[1] / name).read_text(encoding = "utf-8")
 
-    src = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding = "utf-8")
+
+def test_run_py_opens_the_gate_before_importing_torch():
+    """Torch latches the variable at its first SDPA capability check, so the real deadline is
+    the first attention call. Pinning the launcher's call above every torch import keeps it
+    there without having to know who probes first."""
+    src = _backend_source("run.py")
     gate = src.index("enable_rocm_aotriton_attention()")
     # Nothing before the gate may pull torch, directly or via the stub installers.
     assert "import torch" not in src[:gate]
     assert src.index("from utils.cpu_threads") > gate
     assert src.index("install_torchao_windows_rocm_stub()") > gate
+
+
+def test_main_py_opens_the_gate_for_direct_uvicorn_launches():
+    """`uvicorn main:app` never imports run.py, so main.py has to open the gate itself, and
+    above the route and hardware imports that can reach torch."""
+    src = _backend_source("main.py")
+    gate = src.index("enable_rocm_aotriton_attention()")
+    assert "import torch" not in src[:gate]
+    assert src.index("from utils.cpu_threads") > gate
+    assert src.index("from routes import") > gate
+    assert src.index("from utils.hardware import") > gate

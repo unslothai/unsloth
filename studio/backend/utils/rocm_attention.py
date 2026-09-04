@@ -16,11 +16,16 @@ Measured on an RX 9060 XT (gfx1200, torch 2.11.0+rocm7.13.0) at B=1 H=16 N=9408 
     flash            17.3 ms   peak  0.18 GiB   max|d| vs math = 1.221e-04
     mem_efficient    24.6 ms   peak  0.20 GiB   max|d| vs math = 1.221e-04
 
-1.221e-04 is 2**-13, fp16 epsilon: these agree with the reference to rounding, so the
-gate is not buying accuracy. It is only costing the kernel.
+1.221e-04 is one fp16 ulp for outputs in [0.125, 0.25), which is where these peak; it is
+not fp16 epsilon, which is 2**-10 at 1.0. Re-measured on an R9700 (gfx1201): flash and
+mem-efficient differ from MATH by exactly one ulp at the output magnitude, and both sit
+as far from an fp64 reference as MATH does. The gate is not buying accuracy. It is only
+costing the kernel.
 
-Stdlib only, and MUST run before torch is imported: torch reads the var once while
-loading its C++ extension, so setting it afterwards is dead code.
+Stdlib only. Torch latches the value into a function-local static at its first SDPA
+capability check (aten/.../sdp_utils.cpp), not at import, so the deadline is the first
+attention call. Running before torch is imported is the earliest point, and the one that
+needs no reasoning about who probes first.
 """
 
 # studio/ still ships on the 3.9 floor, where `dict | None` in a signature raises at
@@ -38,8 +43,8 @@ def enable_rocm_aotriton_attention(env: dict | None = None) -> bool:
     Returns whether this call set it. Any pre-existing value wins, including "0": that
     is the opt-out for someone who hits an AOTriton bug and wants the math fallback back.
 
-    Set unconditionally rather than only on ROCm, because knowing the build requires
-    importing torch and by then it is too late to matter. Non-ROCm torch never reads a
+    Set unconditionally rather than only on ROCm, because knowing the build means importing
+    torch first, which the launcher deliberately defers. Non-ROCm torch never reads a
     TORCH_ROCM_* var, so the cost of being wrong is one unused entry in the environment.
     """
     target = os.environ if env is None else env
