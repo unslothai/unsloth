@@ -17,7 +17,9 @@ import {
   FIND_HIGHLIGHT,
   FIND_HIGHLIGHT_ACTIVE,
   MAX_PAINTED_RANGES,
+  clearHighlights,
   mutatesSearchableText,
+  paintHighlights,
   paintWindow,
   resolvePortalSurfaces,
   selectRangeFallback,
@@ -37,10 +39,10 @@ import {
   findMatches,
   foldText,
   normalizeQuery,
+  renumbersMatches,
   segmentAt,
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
-import { useFindInPageStore } from "../src/features/find-in-page/stores/find-in-page-store.ts";
 
 // --- the hand-rolled tree ----------------------------------------------------------------------
 
@@ -124,6 +126,38 @@ test("aria-hidden false does not hide a subtree", () => {
     el("P", [text("shown")], { "aria-hidden": "false" }),
   ]);
   assert.equal(buildTextIndex(root).text, "shown");
+});
+
+test("KaTeX indexes its painted tree instead of its clipped accessibility mirror", () => {
+  const mathmlText = text("x2");
+  const paintedText = text("x2");
+  const root = el(
+    "SPAN",
+    [
+      el("SPAN", [mathmlText], { class: "katex-mathml" }),
+      el("SPAN", [paintedText], {
+        class: "katex-html",
+        "aria-hidden": "true",
+      }),
+    ],
+    { class: "katex" },
+  );
+
+  const index = buildTextIndex(root);
+  const [match] = findMatches(index, "x2");
+  assert.ok(match);
+  assert.equal(
+    index.segments.some((segment) => segment.node === mathmlText),
+    false,
+    "the clipped MathML mirror must not create ranges",
+  );
+  assert.equal(
+    index.segments.some((segment) => segment.node === paintedText),
+    true,
+    "the painted KaTeX tree must create the range",
+  );
+  assert.equal(startPositionAt(index.segments, match.start)?.node, paintedText);
+  assert.equal(endPositionAt(index.segments, match.end)?.node, paintedText);
 });
 
 // --- offsets -----------------------------------------------------------------------------------
@@ -866,6 +900,132 @@ test("an occurrence that mixes the two spellings is still one word", () => {
   assert.equal(findMatches(split, `caf${composed}caf${composed}`).length, 1);
 });
 
+test("Hangul canonical spellings match without changing document offsets", () => {
+  const composed = "가각";
+  const decomposed = composed.normalize("NFD");
+  const mixed = `가${"각".normalize("NFD")}`;
+
+  for (const written of [composed, decomposed, mixed]) {
+    for (const typed of [composed, decomposed, mixed]) {
+      const node = text(`a ${written} b`);
+      const index = buildTextIndex(el("P", [node]));
+      const matches = findMatches(index, typed);
+      assert.deepEqual(
+        matches,
+        [{ start: 2, end: 2 + written.length }],
+        `text ${escape(written)} and query ${escape(typed)} did not meet`,
+      );
+      assert.equal(
+        startPositionAt(index.segments, matches[0].start)?.node,
+        node,
+      );
+      assert.equal(
+        startPositionAt(index.segments, matches[0].start)?.offset,
+        2,
+      );
+      assert.equal(
+        endPositionAt(index.segments, matches[0].end)?.offset,
+        2 + written.length,
+      );
+    }
+  }
+
+  const leading = text("ᄀ");
+  const rest = text("ᅡ각");
+  const split = buildTextIndex(el("P", [leading, el("EM", [rest])]));
+  const [match] = findMatches(split, composed);
+  assert.ok(
+    match,
+    "a decomposed syllable split across inline nodes must match",
+  );
+  assert.equal(startPositionAt(split.segments, match.start)?.node, leading);
+  assert.equal(endPositionAt(split.segments, match.end)?.node, rest);
+  assert.equal(
+    endPositionAt(split.segments, match.end)?.offset,
+    rest.data.length,
+  );
+});
+
+test("an open Hangul syllable cannot match the prefix of a closed one", () => {
+  const open = "가";
+  const closed = "각";
+  for (const written of [closed, closed.normalize("NFD"), `${open}\u11a8`]) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    assert.deepEqual(
+      findMatches(index, open),
+      [],
+      `open ${escape(open)} matched part of closed ${escape(written)}`,
+    );
+  }
+
+  for (const written of [open, open.normalize("NFD")]) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    assert.deepEqual(findMatches(index, open), [
+      { start: 0, end: written.length },
+    ]);
+  }
+});
+
+test("the jamo boundary holds for Hangul that has only one spelling", () => {
+  // Extended and Old Hangul jamo have no precomposed form, so NFC and NFD spell them the same way.
+  // One spelling used to take the literal scan, which writes no boundary, and the open syllable
+  // painted the first two jamo of a visibly closed one. Modern Hangul always has two spellings and
+  // reached the pattern anyway, so this only ever showed up out here.
+  const open = "ꥠힰ";
+  const closed = "ꥠힰퟋ";
+  assert.equal(open.normalize("NFC"), open);
+  assert.equal(open.normalize("NFD"), open);
+
+  const inClosed = buildTextIndex(el("P", [text(closed)]));
+  assert.deepEqual(findMatches(inClosed, open), []);
+  assert.deepEqual(findMatches(inClosed, closed), [
+    { start: 0, end: closed.length },
+  ]);
+
+  const inOpen = buildTextIndex(el("P", [text(open)]));
+  assert.deepEqual(findMatches(inOpen, open), [{ start: 0, end: open.length }]);
+  assert.deepEqual(findMatches(inOpen, closed), []);
+});
+
+test("complete Old Hangul clusters cannot match inside a longer syllable", () => {
+  const leadAndVowels = "ꥠힰힱ";
+  const withTrailing = `${leadAndVowels}ퟋ`;
+  const withTwoTrailing = `${withTrailing}ퟌ`;
+
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTrailing)])), leadAndVowels),
+    [],
+  );
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTwoTrailing)])), withTrailing),
+    [],
+  );
+  assert.deepEqual(
+    findMatches(buildTextIndex(el("P", [text(withTrailing)])), withTrailing),
+    [{ start: 0, end: withTrailing.length }],
+  );
+});
+
+test("a half-composed Hangul syllable is found and covered whole", () => {
+  // Hangul composes in two steps, L+V into a syllable and then the trailing jamo into it, and text
+  // can stop after the first. NFC and NFD both write past that spelling, so a document holding one
+  // used to be invisible to every query, its own spelling included.
+  const closed = "각";
+  const spellings = [closed, closed.normalize("NFD"), `각`];
+  for (const written of spellings) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    for (const query of spellings) {
+      assert.deepEqual(
+        findMatches(index, query),
+        [{ start: 0, end: written.length }],
+        `${escape(query)} did not cover ${escape(written)}`,
+      );
+    }
+    // The open syllable still stops at the trailing jamo, whichever way the closed one is written.
+    assert.deepEqual(findMatches(index, "가"), []);
+  }
+});
+
 test("the index itself is left in the form the document wrote", () => {
   // Normalizing it is the other way to fix the above, and it would change its length: every offset
   // in the index stands for one character of a text node, so a shorter index misplaces them all.
@@ -1261,6 +1421,120 @@ test("the stylesheet paints the two highlights the code registers", async () => 
   }
 });
 
+test("registered ranges are cleared and repainted before deletion or replacement", () => {
+  const events: string[] = [];
+  class FakeHighlight {
+    priority = 0;
+    constructor(..._ranges: Range[]) {}
+    clear(): void {
+      events.push("clear");
+    }
+  }
+  class FakeElement {
+    private opacity = "";
+    style = {
+      get opacity() {
+        return root.opacity;
+      },
+      set opacity(value: string) {
+        events.push(`opacity:${value}`);
+        root.opacity = value;
+      },
+    };
+    get offsetHeight(): number {
+      events.push("reflow");
+      return 1;
+    }
+  }
+  const root = new FakeElement();
+  const entries = new Map<string, FakeHighlight>([
+    [FIND_HIGHLIGHT, new FakeHighlight()],
+    [FIND_HIGHLIGHT_ACTIVE, new FakeHighlight()],
+  ]);
+  const registry = {
+    get: (name: string) => entries.get(name),
+    set: (name: string, highlight: FakeHighlight) => {
+      events.push(`set:${name}`);
+      entries.set(name, highlight);
+    },
+    delete: (name: string) => {
+      events.push(`delete:${name}`);
+      return entries.delete(name);
+    },
+  };
+  const scope = globalThis as {
+    CSS?: unknown;
+    Highlight?: unknown;
+    HTMLElement?: unknown;
+    document?: unknown;
+  };
+  const saved = {
+    css: scope.CSS,
+    document: scope.document,
+    highlight: scope.Highlight,
+    htmlElement: scope.HTMLElement,
+    hadCss: "CSS" in scope,
+    hadDocument: "document" in scope,
+    hadHighlight: "Highlight" in scope,
+    hadHtmlElement: "HTMLElement" in scope,
+  };
+  scope.CSS = { highlights: registry };
+  scope.Highlight = FakeHighlight;
+  scope.HTMLElement = FakeElement;
+  scope.document = {
+    querySelector: () => root,
+    body: root,
+    documentElement: root,
+  };
+  try {
+    clearHighlights();
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      "opacity:0.999999",
+      "reflow",
+      "opacity:",
+    ]);
+
+    events.length = 0;
+    entries.set(FIND_HIGHLIGHT, new FakeHighlight());
+    entries.set(FIND_HIGHLIGHT_ACTIVE, new FakeHighlight());
+    paintHighlights([{} as Range], {} as Range);
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      `set:${FIND_HIGHLIGHT}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      `set:${FIND_HIGHLIGHT_ACTIVE}`,
+    ]);
+
+    events.length = 0;
+    paintHighlights([], null);
+    assert.deepEqual(events, [
+      "clear",
+      `delete:${FIND_HIGHLIGHT}`,
+      "clear",
+      `delete:${FIND_HIGHLIGHT_ACTIVE}`,
+      "opacity:0.999999",
+      "reflow",
+      "opacity:",
+    ]);
+  } finally {
+    for (const [key, value, had] of [
+      ["CSS", saved.css, saved.hadCss],
+      ["document", saved.document, saved.hadDocument],
+      ["Highlight", saved.highlight, saved.hadHighlight],
+      ["HTMLElement", saved.htmlElement, saved.hadHtmlElement],
+    ] as const) {
+      if (had) Object.assign(scope, { [key]: value });
+      else delete scope[key];
+    }
+  }
+});
+
 test("the bar keeps itself out of the region it searches", async () => {
   const bar = await readFile(
     new URL(
@@ -1388,6 +1662,16 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   assert.equal(/\babsolute\b/.test(surface[1]), false);
   // And capped, so a narrow window cannot push it off the left edge.
   assert.match(surface[1], /max-w-\[calc\(100vw-2rem\)\]/);
+
+  // The counter grows from `1/2` to `1234/5000+` in a long chat. The pill must keep its nominal
+  // responsive width and let the query field yield that already-reserved room instead of growing.
+  // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
+  assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
+  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(bar);
+  assert.ok(input);
+  assert.match(input[1], /\bflex-1\b/);
+  assert.equal(/\bw-(?:40|64)\b/.test(input[1]), false);
 });
 
 test("the reveal looks again while the scroll is still moving", async () => {
@@ -1527,6 +1811,24 @@ test("a fresh query starts from the scroll container's top, not the window's", a
   assert.equal(/top >= 0/.test(engine), false);
 });
 
+test("a pending query clears the previous highlight before the next paint", async () => {
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // The input value is committed during the event. A passive effect may run only after the browser
+  // has painted that new value beside the old query's ranges, which is the visible `sta`/`stan`
+  // mismatch this guards. A layout effect clears those ranges in the same commit, before paint.
+  assert.match(engine, /import \{[^}]*useLayoutEffect[^}]*\} from "react";/);
+  assert.match(
+    engine,
+    /useLayoutEffect\(\(\) => \{\s*if \(queryPending\) \{\s*cancelRevealPasses\(\);\s*clearHighlights\(\);/,
+  );
+});
+
 test("re-indexing while the document changes is a throttle, and says so", async () => {
   const engine = await readFile(
     new URL(
@@ -1625,7 +1927,7 @@ function withPortals<T>(surfaces: Element[], body: () => T): T {
     return body();
   } finally {
     if (had) view.document = saved;
-    else delete view.document;
+    else view.document = undefined;
   }
 }
 
@@ -1648,6 +1950,39 @@ test("a portaled surface is searched unless it is on its way out", () => {
     withPortals([open, closing, plain], () => resolvePortalSurfaces(scope)),
     [open, plain],
   );
+});
+
+test("explicit monitor portals are searched but are not dismissible surfaces", async () => {
+  const monitor = surface(null);
+  const popover = surface("open");
+  const scope = { contains: () => false } as unknown as Element;
+  const view = globalThis as { document?: unknown };
+  const had = "document" in view;
+  const saved = view.document;
+  view.document = {
+    querySelectorAll: (selector: string) =>
+      selector.includes("data-find-portal") ? [monitor, popover] : [popover],
+  };
+  try {
+    assert.deepEqual(resolvePortalSurfaces(scope), [monitor, popover]);
+  } finally {
+    if (had) view.document = saved;
+    else view.document = undefined;
+  }
+
+  const dom = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(dom, /export function resolveDismissiblePortalSurfaces/);
+
+  for (const path of [
+    "../src/features/api-monitor/api-monitor-overlay.tsx",
+    "../src/components/floating-monitor.tsx",
+  ]) {
+    const component = await readFile(new URL(path, import.meta.url), "utf8");
+    assert.match(component, /\[FIND_PORTAL_ATTRIBUTE\]: ""/);
+  }
 });
 
 test("a surface inside the scope, or inside one already taken, is not indexed twice", () => {
@@ -1727,7 +2062,7 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
   // Two presses it deliberately does not take: a modal above the bar owns Escape, and an open
   // popover, menu or listbox is dismissed by its own Escape first.
   assert.match(body, /isSurfaceBackgrounded\(/);
-  assert.match(body, /resolvePortalSurfaces\(/);
+  assert.match(body, /resolveDismissiblePortalSurfaces\(/);
   // And nothing left on the landmark, which would take the inside presses before the window does.
   const landmark = bar.slice(bar.indexOf('role="search"'));
   assert.equal(
@@ -1881,9 +2216,10 @@ test("the ordinal survives an append and nothing else", async () => {
     ),
     "utf8",
   );
+  // One rule, and it lives in the pure module so the tests below can exercise it directly.
   assert.match(
     engine,
-    /const before = indexRef\.current\.text;[\s\S]*?return !indexRef\.current\.text\.startsWith\(before\);/,
+    /return renumbersMatches\(before, indexRef\.current, activeStartRef\.current\);/,
   );
   // Every rebuild goes through it: no call site decides for itself that the numbering held.
   assert.equal(engine.includes("search(false, false)"), false);
@@ -1893,6 +2229,191 @@ test("the ordinal survives an append and nothing else", async () => {
     engine,
     /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/,
   );
+});
+
+test("every navigation waits for the query to settle, buttons included", async () => {
+  // The buttons stay enabled on the previous query's count while an edit is pending, and `apply`
+  // will not paint until it settles, so calling `next`/`previous` from a click dropped it silently.
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(-1\)\}/);
+  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(1\)\}/);
+  // No control reaches the raw pair, so a new one cannot copy the losing spelling.
+  assert.equal(/onClick=\{(next|previous)\}/.test(bar), false);
+  // Reaching the handler at all: a settled zero must not disable the walk while the next query is
+  // still pending, or editing "no matches" into a match loses the press to a disabled button.
+  assert.match(
+    bar,
+    /const canStep = searching && \(count > 0 \|\| queryPending\);/,
+  );
+  assert.equal((bar.match(/disabled=\{!canStep\}/g) ?? []).length, 2);
+  assert.equal(bar.includes("disabled={count === 0}"), false);
+  // The helper queues the step and forces the settle rather than dropping it.
+  assert.match(
+    bar,
+    /if \(queryPending\) \{\s*queuedStepRef\.current = delta;\s*settleQuery\(\);/,
+  );
+});
+
+test("the seam between the workspace and the surfaces in front of it is recorded", () => {
+  const workspace = el("DIV", [el("P", [text("unsloth studio")])]);
+  const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
+  const alone = buildTextIndex(workspace);
+  assert.equal(alone.rootLength, alone.text.length);
+  const withMonitor = buildTextIndex(workspace, [monitor]);
+  // The joining separator belongs to the surface, so the workspace slice is only the workspace.
+  assert.equal(withMonitor.rootLength, alone.text.length);
+  assert.equal(withMonitor.text.slice(0, withMonitor.rootLength), alone.text);
+  assert.match(withMonitor.text.slice(withMonitor.rootLength), /cpu 12%$/);
+});
+
+test("inserting an earlier surface renumbers a reader in a later one", () => {
+  const workspace = el("DIV", [el("P", [text("workspace")])]);
+  const laterSurface = el("DIV", [el("P", [text("target")])]);
+  const before = buildTextIndex(workspace, [laterSurface]);
+  const reader = findMatches(before, "target")[0].start;
+
+  const earlierSurface = el("DIV", [el("P", [text("target")])]);
+  const after = buildTextIndex(workspace, [earlierSurface, laterSurface]);
+  assert.equal(findMatches(after, "target")[0].start, reader);
+  assert.equal(renumbersMatches(before, after, reader), true);
+});
+
+test("a monitor polling behind a streaming reply does not move the reader", () => {
+  // The monitor is a permanent tail that rewrites itself on a timer. Judged as one string, every
+  // poll and every streamed character reads as renumbered and re-anchors the reader.
+  const monitorAt = (load: string) => el("DIV", [el("P", [text(load)])]);
+  const reply = (body: string) => el("DIV", [el("P", [text(body)])]);
+
+  const before = buildTextIndex(reply("unsloth one"), [monitorAt("cpu 12%")]);
+  // Where the reader is: on the occurrence in the workspace.
+  const readerInWorkspace = findMatches(before, "unsloth")[0].start;
+
+  // The monitor polls; the workspace has not moved.
+  const polled = buildTextIndex(reply("unsloth one"), [monitorAt("cpu 34%")]);
+  assert.equal(renumbersMatches(before, polled, readerInWorkspace), false);
+
+  // The reply streams on; the monitor has not moved.
+  const streamed = buildTextIndex(reply("unsloth one unsloth two"), [
+    monitorAt("cpu 12%"),
+  ]);
+  assert.equal(renumbersMatches(before, streamed, readerInWorkspace), false);
+  // And the occurrence really is still at the offset the search looks it up by.
+  assert.equal(findMatches(streamed, "unsloth")[0].start, readerInWorkspace);
+
+  // Both at once, which is the ordinary case while a reply lands.
+  const both = buildTextIndex(reply("unsloth one unsloth two"), [
+    monitorAt("cpu 34%"),
+  ]);
+  assert.equal(renumbersMatches(before, both, readerInWorkspace), false);
+});
+
+test("a reader inside a surface gives up its place when the workspace grows under it", () => {
+  // Growing the workspace moves the tail along, so an occurrence inside a surface is no longer at
+  // the offset it is looked up by. That reader, and only that reader, re-anchors.
+  const monitorText = { nodeType: 3 as const, data: "unsloth monitor" };
+  const monitor = el("DIV", [el("P", [monitorText])]);
+  const before = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
+    monitor,
+  ]);
+  const readerInMonitor = findMatches(before, "unsloth")[0].start;
+  assert.ok(readerInMonitor >= before.rootLength);
+
+  const grown = buildTextIndex(
+    el("DIV", [el("P", [text("reply one reply two")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, grown, readerInMonitor), true);
+
+  // The same growth leaves a reader in the workspace exactly where they were.
+  const workspaceReader = 0;
+  assert.equal(renumbersMatches(before, grown, workspaceReader), false);
+
+  // A poll that does not move the seam keeps even the surface's own reader in place.
+  monitorText.data = "unsloth monitor idle";
+  const polled = buildTextIndex(el("DIV", [el("P", [text("reply one")])]), [
+    monitor,
+  ]);
+  assert.equal(renumbersMatches(before, polled, readerInMonitor), false);
+});
+
+test("a surface reader only minds the text ahead of their occurrence", () => {
+  // A monitor rewrites a reading every second. Only what sits before the occurrence can move it, so
+  // an occurrence in the static label survives the number below it changing.
+  const reply = el("DIV", [el("P", [text("reply one")])]);
+  const labelledText = {
+    nodeType: 3 as const,
+    data: "unsloth monitor cpu 12%",
+  };
+  const labelled = el("DIV", [el("P", [labelledText])]);
+  const before = buildTextIndex(reply, [labelled]);
+  const reader = findMatches(before, "unsloth")[0].start;
+  assert.ok(reader >= before.rootLength);
+  labelledText.data = "unsloth monitor cpu 345%";
+  const polled = buildTextIndex(reply, [labelled]);
+  assert.equal(renumbersMatches(before, polled, reader), false);
+  assert.equal(findMatches(polled, "unsloth")[0].start, reader);
+
+  // A reading AHEAD of the occurrence changing width does move it, and there the offset stops
+  // naming anything: `search` finds no match starting there and re-anchors itself.
+  const leadingText = { nodeType: 3 as const, data: "cpu 12% unsloth monitor" };
+  const leading = el("DIV", [el("P", [leadingText])]);
+  const wasLeading = buildTextIndex(reply, [leading]);
+  const readerAfter = findMatches(wasLeading, "unsloth")[0].start;
+  leadingText.data = "cpu 345% unsloth monitor";
+  const grewLeading = buildTextIndex(reply, [leading]);
+  assert.equal(
+    findMatches(grewLeading, "unsloth").some((m) => m.start === readerAfter),
+    false,
+  );
+
+  // Changing it without changing its width leaves the occurrence exactly where it was, which is
+  // the ordinary poll and must not move the reader.
+  leadingText.data = "cpu 99% unsloth monitor";
+  const sameWidth = buildTextIndex(reply, [leading]);
+  assert.equal(renumbersMatches(wasLeading, sameWidth, readerAfter), false);
+  assert.equal(
+    findMatches(sameWidth, "unsloth").some((m) => m.start === readerAfter),
+    true,
+  );
+});
+
+test("history arriving above the reader still renumbers the list", () => {
+  // The rule this all rests on has not been widened: a prepend is not an append on either side.
+  const monitorText = { nodeType: 3 as const, data: "cpu 12%" };
+  const monitor = el("DIV", [el("P", [monitorText])]);
+  const before = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
+    monitor,
+  ]);
+  const prepended = buildTextIndex(
+    el("DIV", [el("P", [text("older unsloth one")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, prepended, 0), true);
+
+  // A surface whose reading is replaced rather than extended is the ordinary poll, and it must not
+  // renumber anything for a reader in the conversation behind it.
+  monitorText.data = "gpu 12%";
+  const replaced = buildTextIndex(el("DIV", [el("P", [text("unsloth one")])]), [
+    monitor,
+  ]);
+  assert.equal(renumbersMatches(before, replaced, 0), false);
+  // Nor for a reader inside it: the rewrite kept its width, so nothing moved for them either.
+  assert.equal(
+    renumbersMatches(before, replaced, before.text.length - 1),
+    false,
+  );
+  // Growing the workspace under them is what moves a surface reader, and that still renumbers.
+  const grown = buildTextIndex(
+    el("DIV", [el("P", [text("unsloth one unsloth two")])]),
+    [monitor],
+  );
+  assert.equal(renumbersMatches(before, grown, before.text.length - 1), true);
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
@@ -1915,41 +2436,17 @@ test("a breakpoint that changes what is rendered invalidates the index", async (
   );
 });
 
-test("leaving the shell forgets the search", () => {
-  // The store is module-global and keeps the query across a close on purpose. Signing out unmounts
-  // the shell, and the next person to sign in in the same tab must not be handed the last one's
-  // search, open and focused.
-  const store = useFindInPageStore;
-  store.getState().setQuery("someone else's search");
-  store.getState().requestFocus();
-  assert.equal(store.getState().open, true);
-  store.getState().reset();
-  assert.deepEqual(
-    { open: store.getState().open, query: store.getState().query },
-    { open: false, query: "" },
-  );
-});
-
-test("the shell unmounting is what calls it, not the bar closing", async () => {
-  const bar = await readFile(
+test("closing preserves the query while leaving the shell forgets the session", async () => {
+  const controller = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",
       import.meta.url,
     ),
     "utf8",
   );
-  // As an unmount cleanup. Not `enabled`: a dialog turns that off, and the search should still be
-  // there when it closes.
-  assert.match(bar, /useEffect\(\(\) => reset, \[reset\]\);/);
-  // And `close` still keeps the query, which is what makes reopening offer the last search.
-  const store = await readFile(
-    new URL(
-      "../src/features/find-in-page/stores/find-in-page-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
+  assert.match(controller, /useEffect\(\(\) => reset, \[reset\]\);/);
+  assert.equal(controller.includes('setQuery("")'), false);
+  assert.match(controller, /useFindInPageStore/);
 });
 
 test("the capped window follows the reader, not the top of the document", () => {
@@ -2145,9 +2642,9 @@ test("Escape is left to the IME while it is composing", async () => {
     ),
     "utf8",
   );
-  const escape = bar.slice(bar.indexOf("const onEscape ="));
-  const guard = escape.indexOf("isImeComposing(event)");
-  const consume = escape.indexOf("event.preventDefault()");
+  const escapeHandler = bar.slice(bar.indexOf("const onEscape ="));
+  const guard = escapeHandler.indexOf("isImeComposing(event)");
+  const consume = escapeHandler.indexOf("event.preventDefault()");
   assert.ok(guard > 0 && guard < consume);
   // Safe to let through: the global listener stands aside for a composing event before it looks
   // for a binding, so the bare-Escape decline cannot take it either.
@@ -2280,19 +2777,4 @@ test("a container query resizing the scope invalidates the index", async () => {
     engine,
     /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/,
   );
-});
-
-test("nothing of the engine is mounted while the bar is closed", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  // The index, the observer and the highlights all live in `useFindInPage`, and the only component
-  // that calls it is behind this return. A hook moved above it would run them on every route.
-  assert.match(bar, /if \(!enabled \|\| !open\) return null;/);
-  const engineCallers = bar.match(/useFindInPage\(/g) ?? [];
-  assert.equal(engineCallers.length, 1);
 });
