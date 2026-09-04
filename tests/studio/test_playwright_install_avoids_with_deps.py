@@ -46,7 +46,10 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
-# `playwright install --with-deps`, however the flag is spelled or ordered, and whether invoked as `playwright`
+# `playwright install --with-deps`, however the flag is spelled or ordered, and
+# whether invoked as `playwright`, `python -m playwright` or `python3 -m playwright`.
+# Deliberately NOT anchored on `chromium`/`webkit`: the engine list is irrelevant
+# to the defect, which is that apt runs at all.
 _WITH_DEPS = re.compile(r"playwright\s+install\b[^\n]*--with-deps")
 
 

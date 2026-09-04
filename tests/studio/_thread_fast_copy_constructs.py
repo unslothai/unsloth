@@ -67,15 +67,18 @@ CONSTRUCTS = {
     "collapse_ws": "<p>trailing   whitespace   collapse</p>",
 }
 
-# : The only constructs the serialiser is allowed to refuse on a mapped engine.
+#: The only constructs the serialiser is allowed to refuse on a mapped engine. Everything else
+#: must be answered AND must match the clipboard byte for byte.
 MUST_REFUSE = frozenset({"input_text", "input_password", "input_checkbox", "textarea", "select"})
 
-# : Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
+#: Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
 NO_COPY = frozenset({"user_select_none", "display_none", "visibility_hidden"})
 
-# : A SELECTION THAT LIES ENTIRELY INSIDE THE TRANSFORMED ELEMENT.
-# Its common ancestor is the text : node, so the scope is the transformed element ITSELF, which `querySelectorAll("*")`
-# does not : include.
+#: A SELECTION THAT LIES ENTIRELY INSIDE THE TRANSFORMED ELEMENT. Its common ancestor is the text
+#: node, so the scope is the transformed element ITSELF, which `querySelectorAll("*")` does not
+#: include. Raised in review against the earlier gate; it applies with more force to a serialiser
+#: that patches the scope's descendants, because the miss produces a wrong string rather than a
+#: slow copy. All three failed before the fix that added the root to the patched set.
 INSIDE_SCOPE = {
     "inside a transformed span": (
         '<p><span style="text-transform:uppercase" id="t">transformed heading</span></p>',

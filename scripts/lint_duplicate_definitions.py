@@ -498,6 +498,8 @@ _SELF_TEST_CASES = [
     # Constants declared together in one tuple target: duplicating the line rebinds every one of them, so each is its
     # own finding.
     (4, "B, H, N, D = 1, 16, 50345, 128\nB, H, N, D = 2, 3, 4, 5\n"),
+    # A plain import binds the ROOT of its dotted path, so this repoints `urllib` from the package to the submodule and
+    # the first binding is dead.
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
     # Negative controls: each of these is correct code and must report nothing.
     (0, "if FAST:\n    def go():\n        pass\nelse:\n    def go():\n        pass\n"),
@@ -553,7 +555,6 @@ _SELF_TEST_CASES = [
     # The shape that legitimately binds one name twice, and must stay legitimate: two plain imports of different
     # submodules, both binding the package root.
     (0, "import urllib.parse\nimport urllib.request\n"),
-    # A plain import binds the ROOT of its dotted path, so this repoints `urllib` from the package to the submodule and
     # Still caught: the same package root rebound from the package to a submodule.
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
     # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first.

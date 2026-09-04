@@ -1028,6 +1028,8 @@ def test_the_codegen_carries_the_third_round_fixes():
     assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in block
 
     # The masks apply onto the same labels one after another, so a row survives only where they all agree, and `labels`
+    # is in that intersection, not a filter of its own: a row supervised at one position and masked in at another
+    # passes two separate filters and still goes out all -100.
     assert (
         "_unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks"
         in block

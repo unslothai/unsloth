@@ -57,8 +57,9 @@ _HOSTILE_TREE = {
     # the SPEC, so this file is never executed and needs no content.
     "pyarrow.py": "VERSION = '0'\n",
     # The class that cannot be pickled by reference.
-    # and a self-reference, which puts it in dill's postproc list so the second encounter takes `save_global` rather
-    # than writing the class out by value and succeeding.
+    # Both properties are taken from the real `MonthDayNano` and both are necessary: `__module__ = "builtins"`, where
+    # the class is not found, as pyarrow's Cython types do; and a self-reference, which puts it in dill's postproc list
+    # so the second encounter takes `save_global` rather than writing the class out by value and succeeding.
     "ovmod.py": textwrap.dedent(
         """
         class Sneaky:
@@ -71,8 +72,8 @@ _HOSTILE_TREE = {
     # The function dill has to save, in the shape datasets uses.
     # NESTED, and that is the whole reason this reproduces: `_save_arrowTable` defines `create_arrowTable` inside
     # itself, dill's `_locate_function` cannot find a `<locals>` qualname at module level, so it saves BY VALUE, walks
-    # the globals with `recurse=True` and reaches the module.
-    # which is why datasets 4.3.0, whose reducer skips this path, is unaffected.
+    # the globals with `recurse=True` and reaches the module. A module-level function would be saved by reference
+    # and never look at pyarrow, which is why datasets 4.3.0, whose reducer skips this path, is unaffected.
     "ovuser.py": textwrap.dedent(
         """
         import ovmod
@@ -83,7 +84,8 @@ _HOSTILE_TREE = {
             return create_arrowTable
         """
     ),
-    # The user's OWN module, in the same directory, as `pip install --target .` and a Lambda bundle produce.
+    # The user's OWN module, in the same directory, as `pip install --target .` and a Lambda bundle produce. No
+    # distribution claims it, so it keeps dill's by-value treatment and its state stays inside the fingerprint.
     "projcfg.py": "VALUE = 1\n",
     # What pip writes beside the packages it installs.
     # Two distributions so both readers are exercised: `top_level.txt`, and RECORD, the only metadata a modern wheel is

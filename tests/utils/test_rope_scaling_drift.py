@@ -451,7 +451,9 @@ def _build_longrope_rotary():
     "build", [_build_llama3_rotary, _build_longrope_rotary], ids = ["llama3", "longrope"]
 )
 def test_v5_blank_repair_roundtrip(build):
-    # Build scaled -> blank non-persistent buffers (what transformers v5 does on load) -> run the repair -> every buffer
+    # Build scaled -> blank non-persistent buffers (what transformers v5 does on
+    # load) -> run the repair -> every buffer must return to its scaled value.
+    # Family-agnostic: encodes no scaling math, so it guards any rotary that
     # keeps scaling in a buffer (issue #2405 / PR #6907).
     from unsloth.models import loader
 
