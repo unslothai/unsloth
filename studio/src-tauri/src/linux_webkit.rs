@@ -36,6 +36,7 @@ const OPEN_KERNEL_MODULE_MARKER: &str = "Open Kernel Module";
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
+const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
 const NVIDIA_WAYLAND_REASON: &str = "NVIDIA driver loaded (Wayland session)";
 const NVIDIA_APPIMAGE_GLES_REASON: &str =
     "NVIDIA driver loaded; AppImage without a usable GLES library";
@@ -49,10 +50,18 @@ const COMPOSITING_FORCED_REASON: &str = "compositing workaround requested by the
 enum RenderingWorkaround {
     ForceSharedMemory,
     /// Only for a host the probe confirmed is NVIDIA. On a patched library isNVIDIA()
-    /// returns before mode.add(SharedMemory) in 2.50.4 and 2.52.6, so FORCE_SHM alone is
-    /// never read there; FORCE_DMABUF stands that check down so selection reaches it.
-    /// Unpatched libraries ignore the variable.
+    /// returns before mode.add(SharedMemory), so FORCE_DMABUF stands that check down and
+    /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
     ForceSharedMemoryOnNvidia,
+    /// Only for an AppImage whose host probe confirmed NVIDIA on X11. Keep the existing
+    /// nonempty shared-memory transport beside turning compositing off to avoid leaking
+    /// one NVIDIA sync-file descriptor per redraw. WebKitGTK 2.50.4 disables
+    /// the accelerated-compositing preference before the backing-store path can run; the
+    /// transport remains selected as the previous safe fallback for a library that ignores
+    /// the compositing switch. On a patched library isNVIDIA() returns before
+    /// mode.add(SharedMemory), so FORCE_DMABUF stands that check down so selection reaches
+    /// FORCE_SHM. Unpatched libraries ignore the variable.
+    DisableCompositingOnNvidiaX11,
     DisableDmabuf,
     /// Not a transport at all. The others choose how buffers reach the compositor; this
     /// stops WebKit compositing on the GPU at all.
@@ -64,6 +73,9 @@ impl RenderingWorkaround {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
             Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::DisableCompositingOnNvidiaX11 => {
+                &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
+            }
             Self::DisableDmabuf => &[DISABLE_DMABUF],
             Self::DisableCompositing => &[DISABLE_COMPOSITING],
         }
@@ -82,7 +94,7 @@ enum RenderingPlan {
 /// order, and the first backend whose display opens wins. '*' expands to the built-in
 /// order, which is wayland before x11 on Linux. Membership is not selection: `x11,wayland`
 /// runs on X11 whenever an X display opens, and on NVIDIA that decides between the
-/// shared-memory switch and the empty transport set.
+/// X11 compositing fallback and the empty transport set.
 ///
 /// A display cannot be opened here, so `wayland_open` is the socket probe below standing in
 /// for GDK's own opener. A named backend that cannot open is not the selection, it is
@@ -168,6 +180,12 @@ fn rendering_plan(
         wayland_socket,
         x11_open,
     );
+    let nvidia_x11_appimage = is_appimage
+        && nvidia_driver_loaded
+        && !force_dmabuf
+        && !wayland_session
+        && gles_usable
+        && supports_force_shared_memory(webkit_version);
 
     // A freeze, not a transport failure, and none of the switches below reach it. The
     // WebKit web process stops executing about 45 seconds in and never resumes: every
@@ -193,7 +211,12 @@ fn rendering_plan(
         } else {
             COMPOSITING_REASON
         };
-        return RenderingPlan::Apply(RenderingWorkaround::DisableCompositing, reason);
+        let workaround = if requested("1") && nvidia_x11_appimage {
+            RenderingWorkaround::DisableCompositingOnNvidiaX11
+        } else {
+            RenderingWorkaround::DisableCompositing
+        };
+        return RenderingPlan::Apply(workaround, reason);
     }
 
     // The DMA-BUF transport breaks on the proprietary driver on either display server, so
@@ -204,12 +227,18 @@ fn rendering_plan(
     // here this covers hosts where that patch's GL_VENDOR probe disagrees with the module
     // probe, plus the GBM open and throwaway GL context isNVIDIA() does at startup.
     //
-    // The two switches are not interchangeable, so pick per failure mode, not per GPU:
+    // The fallbacks are not interchangeable, so pick per failure mode, not per GPU:
     //   Wayland  DISABLE_DMABUF. The failure is the explicit-sync disconnect, and
     //            FORCE_SHM routes every commit down the wl_shm path that trips it
     //            (bug 315436). It is also the switch reported to fix Error 71.
-    //   X11      FORCE_SHM. No explicit-sync protocol there, the failure is hardware
-    //            DMA-BUF allocation, and shared memory fixes it without the empty set.
+    //   X11      FORCE_SHM. The released AppImage additionally turns compositing off:
+    //            its accelerated path leaks a sync-file fd per redraw until WebKit
+    //            reaches its descriptor limit. The native 2.52.6 library on the same
+    //            host releases its temporary sync files, so keep acceleration there.
+    //            In the bundled 2.50.4 library the switch disables the web preference,
+    //            so the web process never enters accelerated compositing and the null
+    //            backing store below is unreachable. FORCE_SHM preserves the previous
+    //            safe transport as a fallback if another library ignores that switch.
     // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
     // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
     // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
@@ -217,15 +246,20 @@ fn rendering_plan(
     // X11, on the same iGPU-presenting topology the probe below over-triggers on.
     //
     // That probe is module presence, not the GPU that will render, so a PRIME laptop on
-    // its iGPU takes a workaround it does not need. Deliberate: reading the rendering GPU
-    // needs a GL context and this runs before GTK init so that none exists. Those hosts
-    // opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0.
+    // its iGPU takes a workaround it does not need. The AppImage compositing rule accepts
+    // that broader scope: the packaged runtime is fixed while a fence leak is terminal,
+    // and this path already selects the CPU-copying shared-memory transport. Deliberate:
+    // reading the rendering GPU needs a GL context and this runs before GTK init so that
+    // none exists. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0, or only
+    // restore compositing with UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
         } else if wayland_session {
             NVIDIA_WAYLAND_REASON
+        } else if is_appimage {
+            NVIDIA_APPIMAGE_X11_REASON
         } else {
             NVIDIA_REASON
         };
@@ -236,8 +270,13 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else {
+        } else if !is_appimage || requested("0") {
+            // Keep the crash-safe transport from before the automatic compositing
+            // fallback. Native WebKit releases its temporary fences on the measured
+            // host; the setting lets an AppImage operator restore that path too.
             RenderingWorkaround::ForceSharedMemoryOnNvidia
+        } else {
+            RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
         return RenderingPlan::Apply(workaround, reason);
     }
@@ -591,9 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_on_x11_drops_to_shared_memory_rather_than_the_empty_transport_set() {
-        // No explicit-sync protocol to violate here, and DISABLE_DMABUF leaves the null
-        // backing store release builds dereference (block/buzz#3654).
+    fn native_nvidia_x11_keeps_the_crash_safe_accelerated_transport() {
+        // The measured system WebKit releases its temporary sync files, so the native
+        // package retains acceleration and only avoids the empty backing-store set.
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(
@@ -604,12 +643,12 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_under_an_explicit_x11_backend_still_applies() {
+    fn nvidia_appimage_under_an_explicit_x11_backend_disables_compositing() {
         assert_eq!(
-            plan_on_nvidia(&[(GDK_BACKEND, "x11")]),
+            plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (GDK_BACKEND, "x11")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -679,10 +718,10 @@ mod tests {
     fn a_zero_force_dmabuf_value_does_not_stand_the_workaround_down() {
         // The patch tests the first byte against '0', so "0" is not a request.
         assert_eq!(
-            plan_on_nvidia(&[(FORCE_DMABUF, "0")]),
+            plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (FORCE_DMABUF, "0")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -805,6 +844,14 @@ mod tests {
     }
 
     #[test]
+    fn the_nvidia_shared_memory_plan_stands_down_the_distribution_patch() {
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemoryOnNvidia.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+        );
+    }
+
+    #[test]
     fn a_named_wayland_that_cannot_open_falls_through_to_the_next_backend() {
         // GDK tries wayland first, its opener fails with no socket to connect to, and the
         // loop continues to x11. Calling that a Wayland session hands an X11 host the
@@ -840,13 +887,18 @@ mod tests {
     }
 
     #[test]
-    fn forcing_shared_memory_also_opts_out_of_the_distro_patch() {
+    fn the_nvidia_x11_fallback_keeps_a_nonempty_transport() {
         // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
-        // FORCE_SHM on its own is never read there and the set is empty regardless.
+        // FORCE_SHM on its own is never read there and the set is empty regardless. Keep
+        // both transport variables alongside the compositing workaround so a WebKit that
+        // ignores the latter still gets the previous crash-safe transport.
         assert_eq!(
-            RenderingWorkaround::ForceSharedMemoryOnNvidia.variables(),
-            &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+            RenderingWorkaround::DisableCompositingOnNvidiaX11.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
         );
+        assert!(!RenderingWorkaround::DisableCompositingOnNvidiaX11
+            .variables()
+            .contains(&DISABLE_DMABUF));
         assert_eq!(
             RenderingWorkaround::DisableDmabuf.variables(),
             &[DISABLE_DMABUF]
@@ -855,18 +907,19 @@ mod tests {
 
     #[test]
     fn our_own_force_dmabuf_does_not_read_back_as_an_opt_out() {
-        // We set it as half of ForceSharedMemory; a relaunch must not see its own output
-        // as an operator standing the NVIDIA branch down.
+        // Older launches set it beside FORCE_SHM; a relaunch must not see its own output
+        // as an operator standing the NVIDIA branch down while migrating to the new plan.
         let claimed = [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(",");
         assert_eq!(
             plan_on_nvidia(&[
+                (APPIMAGE, "/tmp/Unsloth.AppImage"),
                 (FORCE_SHARED_MEMORY, "1"),
                 (FORCE_DMABUF, "1"),
                 (APPLIED_WORKAROUND, &claimed),
             ]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -1243,15 +1296,17 @@ mod tests {
     }
 
     #[test]
-    fn x11_never_takes_the_compositing_workaround() {
-        // The same hardware on X11 was measured healthy, and the freeze needs the Wayland
-        // path. An X11 session keeps the shared-memory switch it has today.
-        let x11: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+    fn nvidia_x11_appimage_takes_its_dedicated_compositing_fallback() {
+        // In the AppImage, repeated redraws exhaust WebKit's descriptor limit with one
+        // retained NVIDIA sync file per frame. WebKit disables the accelerated preference
+        // before entering the backing-store path; the nonempty transport remains the safe
+        // fallback for a library that ignores the compositing switch.
+        let x11: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         assert_eq!(
-            plan_on_graphics(x11, true, true, true),
+            plan_on_graphics(x11, true, false, false),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -1275,6 +1330,33 @@ mod tests {
         assert_eq!(
             plan_on_graphics(off, true, true, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+
+        let nvidia_x11_off: &[(&str, &str)] = &[
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            (DISABLE_COMPOSITING_SETTING, "0"),
+        ];
+        assert_eq!(
+            plan_on_graphics(nvidia_x11_off, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn forcing_the_nvidia_x11_appimage_workaround_keeps_its_transport_fallback() {
+        let forced: &[(&str, &str)] = &[
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            (DISABLE_COMPOSITING_SETTING, "1"),
+        ];
+        assert_eq!(
+            plan_on_graphics(forced, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                COMPOSITING_FORCED_REASON
+            )
         );
     }
 
