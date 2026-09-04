@@ -851,6 +851,12 @@ def rpc_server_binary() -> Optional[str]:
     UNSLOTH_LLAMA_CPP_PATH) is searched first, under the current name and the legacy
     ``rpc-server`` name, and a source build or a binary on PATH is the fallback for
     an older bundle.
+
+    The installer (studio/install_llama_prebuilt.py, runtime_patterns_for_choice and
+    install_from_archives) copies it into ``build/bin`` on Linux and macOS and into
+    ``build/bin/Release`` on Windows, chmod 755, with no root-level link; both
+    directories lead ``_BUNDLE_SUBDIRS``, and a test in
+    tests/studio/install/test_install_llama_prebuilt_logic.py pins that agreement.
     """
     roots = [llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"]
     for root in roots:
