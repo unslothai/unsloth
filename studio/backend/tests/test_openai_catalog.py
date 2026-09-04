@@ -553,11 +553,12 @@ def test_the_resident_repo_row_gains_the_other_on_disk_quants(monkeypatch):
     assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
 
 
-def test_only_the_reachable_copy_of_a_repo_contributes_quants(monkeypatch):
+def test_copies_that_disagree_advertise_no_quants(monkeypatch):
     # Two scan rows can share one public id (an HF-cache repo also reachable through a
-    # custom scan folder). local_servable_index claims each alias with setdefault, so
-    # only the first copy ever resolves: advertising the second copy's quants would
-    # hand out a repo:quant that 404s with variant_not_found.
+    # custom scan folder). collect_local_models orders rows by updated_at while
+    # local_servable_index walks roots in a fixed order, so neither row is reliably the
+    # one resolve_local_gguf reaches. Advertising either copy's quants would hand out a
+    # repo:quant that 404s, so the listing offers none and keeps the single `quant`.
     _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
     quant_sets = [("BF16",), ("Q4_K_M",)]
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
@@ -570,8 +571,26 @@ def test_only_the_reachable_copy_of_a_repo_contributes_quants(monkeypatch):
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
-    # The resident quant, then the first copy's. Q4_K_M belongs to the copy the
-    # resolver cannot reach through this id, so it is not offered.
+    assert "quants" not in ids["org/Foo"]
+    # The resident pin still resolves on its own, so it survives.
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+
+
+def test_copies_that_agree_still_advertise_their_quants(monkeypatch):
+    # Two rows for one id that report the same files are not ambiguous: whichever the
+    # resolver reaches serves the same quants, so the picker still gets them.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("BF16",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
 
 
@@ -606,10 +625,10 @@ def test_a_resident_quant_the_scan_cannot_see_is_not_advertised(monkeypatch):
     assert "quants" not in ids["org/Foo"]
 
 
-def test_a_case_variant_copy_does_not_advertise_its_own_quants(monkeypatch):
-    # local_servable_index lowercases every alias and claims the first with setdefault,
-    # so `Org/Foo` and `org/Foo` resolve to one copy. Both rows are still listed, as
-    # before, but only the copy the resolver reaches may name the quants to pin.
+def test_case_variant_copies_that_disagree_advertise_no_quants(monkeypatch):
+    # local_servable_index lowercases every alias, so `Org/Foo` and `org/Foo` are one
+    # entry to the resolver while both rows stay listed here. They report different
+    # files, so neither may name quants for the other's copy.
     _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
     quant_sets = [("BF16",), ("Q2_K",)]
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
@@ -622,6 +641,7 @@ def test_a_case_variant_copy_does_not_advertise_its_own_quants(monkeypatch):
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _case_variants)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
-    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
-    # Listed as before, but Q2_K only exists on the copy `org/Foo:Q2_K` never reaches.
+    # Both rows are still listed, exactly as before this field existed.
+    assert {"org/Foo", "Org/Foo"} <= set(ids)
+    assert "quants" not in ids["org/Foo"]
     assert "quants" not in ids["Org/Foo"]

@@ -25271,10 +25271,30 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Which public ids already advertise their on-disk quants, keyed the way
-    # `local_servable_index` keys its aliases: lowercased, first copy wins. Rows are
-    # still listed exactly as before; only the quant list follows the resolver.
-    quants_claimed: set[str] = set()
+    # What each public id advertises as its on-disk quants, keyed the way
+    # `local_servable_index` keys aliases: lowercased. `collect_local_models` orders
+    # rows by updated_at while that index walks roots in a fixed order, so the first
+    # row seen here is not reliably the copy `resolve_local_gguf` reaches. When two
+    # physical copies of one id disagree about what is on disk, nothing here can tell
+    # which pin would resolve, so the listing drops `quants` for that id rather than
+    # hand out a `repo:quant` that 404s. Rows themselves are listed exactly as before.
+    quants_seen: dict[str, tuple[str, ...]] = {}
+    quants_owner: dict[str, dict] = {}
+    ambiguous_quants: set[str] = set()
+
+    def _offer_quants(row: dict, base: str, found) -> None:
+        key = str(row.get("id", "")).lower()
+        if not key or key in ambiguous_quants:
+            return
+        seen = quants_seen.get(key)
+        if seen is None:
+            row["quants"] = _quant_list(base, found)
+            quants_seen[key] = tuple(found)
+            quants_owner[key] = row
+            return
+        if seen != tuple(found):
+            ambiguous_quants.add(key)
+            quants_owner.pop(key, {}).pop("quants", None)
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
@@ -25294,12 +25314,10 @@ async def _openai_catalog_objects() -> list[dict]:
         if cid in by_id:
             # Already listed: the resident row, or an earlier scan row for the same
             # public id. Name its other on-disk quants beside it so a client can pin
-            # any -- but only from the first copy to offer them. `local_servable_index`
-            # claims each alias with setdefault, so a second physical copy of one repo
-            # never resolves; advertising its quants would hand out a `repo:quant` that
-            # 404s with variant_not_found.
+            # any; `_offer_quants` withdraws them if a second copy of this id disagrees
+            # about what is on disk.
             listed = by_id[cid]
-            if quants and cid.lower() not in quants_claimed:
+            if quants and cid.lower() not in ambiguous_quants:
                 base = listed.get("quant")
                 if not base and listed.get("loaded"):
                     # A cold resolver index withholds the resident quant, because a pin
@@ -25315,8 +25333,7 @@ async def _openai_catalog_objects() -> list[dict]:
                         base = scanned
                         listed["quant"] = scanned
                 if base:
-                    listed["quants"] = _quant_list(base, quants)
-                    quants_claimed.add(cid.lower())
+                    _offer_quants(listed, base, quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25334,14 +25351,10 @@ async def _openai_catalog_objects() -> list[dict]:
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
         if is_gguf and loaded and resident_quant:
             obj["quant"] = resident_quant
-            if cid.lower() not in quants_claimed:
-                obj["quants"] = _quant_list(resident_quant, quants)
-                quants_claimed.add(cid.lower())
+            _offer_quants(obj, resident_quant, quants)
         elif quants:
             obj["quant"] = quants[0]
-            if cid.lower() not in quants_claimed:
-                obj["quants"] = list(quants)
-                quants_claimed.add(cid.lower())
+            _offer_quants(obj, quants[0], quants)
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display

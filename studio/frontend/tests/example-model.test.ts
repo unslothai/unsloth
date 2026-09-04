@@ -307,3 +307,16 @@ test("case variants of one repo are a single option", () => {
   // Residency belongs to the repo, not to one spelling of it.
   assert.equal(options[0].loaded, true);
 });
+
+// The server vouches for one spelling's quants, not necessarily the first listed.
+test("merging case variants keeps whichever row carries the quants", () => {
+  const catalog = [
+    { id: "Org/Foo", loaded: true },
+    { id: "org/Foo", loaded: false, quant: "BF16", quants: ["BF16", "Q2_K"] },
+  ];
+  const options = exampleModelOptions(catalog);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].id, "Org/Foo");
+  assert.equal(options[0].loaded, true);
+  assert.deepEqual(options[0].quants, ["BF16", "Q2_K"]);
+});

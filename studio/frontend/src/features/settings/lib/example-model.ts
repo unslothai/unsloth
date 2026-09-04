@@ -64,6 +64,12 @@ export function exampleModelOptions(
     if (existing) {
       // Residency belongs to the repo, so keep it wherever the rows disagree.
       existing.loaded = existing.loaded || m.loaded === true;
+      // The server attaches `quants` to whichever spelling it can vouch for, which
+      // need not be the first one listed. Take them from the row that carries them
+      // rather than lose the quant dropdown.
+      if (existing.quants.length === 0) {
+        existing.quants = m.quants?.length ? m.quants : m.quant ? [m.quant] : [];
+      }
       continue;
     }
     byIdentity.set(identity, {
