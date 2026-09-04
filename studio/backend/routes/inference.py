@@ -25258,8 +25258,10 @@ def _servable_catalog_rows(
     ]
 
 
-def _quant_list(first: str, quants) -> list[str]:
-    return [first, *[q for q in quants if q != first]]
+def _quant_list(first: str, *quant_sets) -> list[str]:
+    """`first`, then every other quant once, in the order the scans reported them."""
+    rest = (q for quants in quant_sets for q in quants if q != first)
+    return [first, *dict.fromkeys(rest)]
 
 
 async def _openai_catalog_objects() -> list[dict]:
@@ -25287,11 +25289,14 @@ async def _openai_catalog_objects() -> list[dict]:
         if not cid:
             continue
         if cid in by_id:
-            # The resident row already names its quant; list the other on-disk quants
-            # of the same repo beside it so a client can pin any of them.
-            resident_row = by_id[cid]
-            if resident_row.get("quant") and quants:
-                resident_row["quants"] = _quant_list(resident_row["quant"], quants)
+            # Already listed: the resident row, or an earlier scan row for the same
+            # public id. It names one quant; add the on-disk quants found here beside
+            # it, keeping the ones it already advertises, so a client can pin any.
+            listed = by_id[cid]
+            if listed.get("quant") and quants:
+                listed["quants"] = _quant_list(
+                    listed["quant"], listed.get("quants", ()), quants
+                )
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25368,6 +25373,17 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
+            # The catalog row for a loaded model is this entry plus the on-disk
+            # `quants`, so prefer it: LIST and RETRIEVE must describe one model the
+            # same way. It is cached for seconds, and a failed scan is no reason to
+            # 404 a model that is loaded, so fall back to the bare entry.
+            try:
+                for model in await _openai_catalog_objects():
+                    mid = model.get("id")
+                    if isinstance(mid, str) and mid.lower() == model_id.lower():
+                        return {**model, "loaded": True}
+            except Exception:
+                logger.debug("openai.retrieve_model.catalog_failed", exc_info = True)
             return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()

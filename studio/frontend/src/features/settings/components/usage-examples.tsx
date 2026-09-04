@@ -627,6 +627,10 @@ export function UsageExamples({
     keylessBaseEligible(base, keylessScope, keylessExposure);
   const example = useExampleModel(keylessBase && !apiKey, pickedModel);
   const { model, followed } = example;
+  // The repo the trigger names. Empty only when there is nothing to name: Radix shows
+  // the placeholder for "", so a name here also keeps the select off that branch.
+  const triggerModel =
+    example.option?.id ?? (model ? splitPinnedQuant(model).repo : "");
 
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
@@ -914,7 +918,7 @@ export function UsageExamples({
         ) : null}
         <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
           <Select
-            value={example.option?.id ?? ""}
+            value={triggerModel}
             onValueChange={handlePickModel}
             disabled={example.options.length === 0}
           >
@@ -925,12 +929,7 @@ export function UsageExamples({
               className="h-7 min-w-0 max-w-full flex-1 rounded-md px-2 font-mono text-ui-11 sm:max-w-[24rem]"
             >
               <SelectValue placeholder={t("settings.apiKeys.exampleModel")}>
-                {/* The trigger reads the pick even before its option arrives, and a
-                    path-loaded model that /v1 never lists still shows its name. */}
-                <span className="truncate">
-                  {example.option?.id ??
-                    (model ? splitPinnedQuant(model).repo : null)}
-                </span>
+                <span className="truncate">{triggerModel}</span>
               </SelectValue>
             </SelectTrigger>
             <SelectContent align="start" className="max-w-[calc(100vw-2rem)]">
@@ -1071,11 +1070,14 @@ export function UsageExamples({
             />
           </div>
         ) : null}
-        {model && !example.placeholder && !example.servable ? (
+        {model && !example.placeholder && example.blockedBy ? (
           <p className="min-w-0 border-t border-border px-3 py-2 text-ui-11 leading-snug text-amber-700 dark:text-amber-400">
-            {t("settings.apiKeys.usageModelNotLoaded", {
-              model: splitPinnedQuant(model).repo,
-            })}
+            {t(
+              example.blockedBy === "keyless"
+                ? "settings.apiKeys.usageModelNotLoadedKeyless"
+                : "settings.apiKeys.usageModelNotLoaded",
+              { model: splitPinnedQuant(model).repo },
+            )}
           </p>
         ) : null}
         <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">

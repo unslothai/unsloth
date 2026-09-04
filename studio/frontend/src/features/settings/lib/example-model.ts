@@ -3,9 +3,10 @@
 
 import type { OpenAIModel } from "../api/openai-models";
 import { sameBaseModelId } from "../components/agent-command";
+import { EXAMPLE_MODEL_REPO, EXAMPLE_MODEL_VARIANT } from "./example-model-id";
 
-// Same example the Agents tab ships; named only while nothing is downloaded.
-export const PLACEHOLDER_EXAMPLE_MODEL = "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL";
+// The same example the Agents tab ships; named only while nothing is downloaded.
+export const PLACEHOLDER_EXAMPLE_MODEL = `${EXAMPLE_MODEL_REPO}:${EXAMPLE_MODEL_VARIANT}`;
 
 export type ExampleModelOption = {
   id: string;
@@ -121,9 +122,30 @@ export type ResolvedExampleModel = {
   // False when the pick is downloaded but not resident and switching is off,
   // so the copied request would 404.
   servable: boolean;
+  // Why the request would 404, so the warning names a remedy that works. A keyless
+  // caller is refused a switch server-side, so the toggle is not one.
+  blockedBy: "autoSwitchOff" | "keyless" | null;
   // Nothing downloaded: the snippet names the placeholder instead.
   placeholder: boolean;
 };
+
+// A downloaded model only answers when it is resident, or when switching can reload
+// it. Keyless callers never get that switch, so the toggle is not their remedy.
+function servability(
+  option: ExampleModelOption,
+  keylessOnly: boolean,
+  autoSwitch: boolean,
+): { servable: boolean; blockedBy: "autoSwitchOff" | "keyless" | null } {
+  if (option.loaded) {
+    return { servable: true, blockedBy: null };
+  }
+  if (keylessOnly) {
+    return { servable: false, blockedBy: "keyless" };
+  }
+  return autoSwitch
+    ? { servable: true, blockedBy: null }
+    : { servable: false, blockedBy: "autoSwitchOff" };
+}
 
 export function resolveExampleModel(
   input: FollowedModelInput & {
@@ -148,18 +170,34 @@ export function resolveExampleModel(
         model: pinQuant(option.id, pinned),
         followed,
         option,
-        servable: option.loaded || (!keylessOnly && autoSwitch),
+        ...servability(option, keylessOnly, autoSwitch),
         placeholder: false,
       };
     }
   }
-  if (followed === null && catalog !== null && options.length === 0) {
+  if (followed === null && catalog !== null) {
+    // Nothing downloaded: name the example the Agents tab ships, so the request shape
+    // is still visible, with the note saying this server does not have it.
+    if (options.length === 0) {
+      return {
+        model: PLACEHOLDER_EXAMPLE_MODEL,
+        followed: null,
+        option: null,
+        servable: false,
+        blockedBy: null,
+        placeholder: true,
+      };
+    }
+    // Downloaded, but nothing resident and switching cannot reload it. Name the first
+    // model held here rather than nothing: the snippet is the one the user wants once
+    // it is loaded, and the warning below says why it will not run yet.
+    const first = options[0];
     return {
-      model: PLACEHOLDER_EXAMPLE_MODEL,
+      model: pinQuant(first.id, first.quants[0]),
       followed: null,
-      option: null,
-      servable: false,
-      placeholder: true,
+      option: first,
+      ...servability(first, keylessOnly, autoSwitch),
+      placeholder: false,
     };
   }
   return {
@@ -167,6 +205,7 @@ export function resolveExampleModel(
     followed,
     option: optionFor(followed),
     servable: true,
+    blockedBy: null,
     placeholder: false,
   };
 }

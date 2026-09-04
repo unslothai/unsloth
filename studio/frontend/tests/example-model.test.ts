@@ -166,3 +166,65 @@ test("the followed model keeps the store checkpoint only while the catalog backs
     null,
   );
 });
+
+// Downloaded but nothing resident is the default state after a download, and after the
+// idle unload retires a model: auto-switch is off unless the user turned it on. The
+// panel used to render neither a snippet nor a reason there.
+test("a downloaded but unloaded catalog still names a model, and says why it will not run", () => {
+  const none = CATALOG.map((m) => ({ ...m, loaded: false }));
+  const resolved = resolve({ catalog: none });
+  assert.equal(resolved.model, "unsloth/Llama-GGUF:Q8_0");
+  assert.equal(resolved.followed, null);
+  assert.equal(resolved.option?.id, "unsloth/Llama-GGUF");
+  assert.equal(resolved.servable, false);
+  assert.equal(resolved.blockedBy, "autoSwitchOff");
+  // Not the nothing-downloaded state: that note would say the server holds nothing.
+  assert.equal(resolved.placeholder, false);
+  // Switching on makes the same catalog runnable, so nothing is flagged.
+  const switched = resolve({ catalog: none, autoSwitch: true });
+  assert.equal(switched.model, "unsloth/Llama-GGUF:Q8_0");
+  assert.equal(switched.servable, true);
+  assert.equal(switched.blockedBy, null);
+});
+
+// A keyless caller is refused the switch server-side, so "turn on Switch model by
+// request" is not the remedy: the message has to name a different one.
+test("a keyless caller is blocked by the missing key, not by the switch", () => {
+  const keyless = resolve({
+    picked: "unsloth/Llama-GGUF",
+    keylessOnly: true,
+    autoSwitch: true,
+  });
+  assert.equal(keyless.servable, false);
+  assert.equal(keyless.blockedBy, "keyless");
+  // The same pick with a key only needs the switch, which is on.
+  const keyed = resolve({ picked: "unsloth/Llama-GGUF", autoSwitch: true });
+  assert.equal(keyed.servable, true);
+  assert.equal(keyed.blockedBy, null);
+  // Off, and it is the switch that is missing.
+  assert.equal(
+    resolve({ picked: "unsloth/Llama-GGUF" }).blockedBy,
+    "autoSwitchOff",
+  );
+  // A resident pick is servable however the caller authenticates.
+  assert.equal(
+    resolve({ picked: "unsloth/Qwen3-GGUF", keylessOnly: true }).blockedBy,
+    null,
+  );
+});
+
+// Nothing downloaded keeps naming the shipped example, and it comes from the one
+// module the Agents tab reads, so the two surfaces cannot drift apart.
+test("the placeholder is the shipped example model", async () => {
+  const empty = resolve({ catalog: [] });
+  assert.equal(empty.placeholder, true);
+  assert.equal(empty.model, PLACEHOLDER_EXAMPLE_MODEL);
+  assert.equal(empty.blockedBy, null);
+  const { EXAMPLE_MODEL_REPO, EXAMPLE_MODEL_VARIANT } = await import(
+    "../src/features/settings/lib/example-model-id.ts"
+  );
+  assert.equal(
+    PLACEHOLDER_EXAMPLE_MODEL,
+    `${EXAMPLE_MODEL_REPO}:${EXAMPLE_MODEL_VARIANT}`,
+  );
+});

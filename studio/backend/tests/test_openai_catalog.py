@@ -515,3 +515,76 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
+
+
+def _resident_repo_catalog(monkeypatch, *, on_disk, resident = "Q8_0"):
+    """A llama backend loaded straight from an HF repo, so the scan row for that repo
+    meets a row the loaded pass already published under the same public id."""
+
+    class _RepoLlama(_FakeLlama):
+        model_identifier = "org/Foo"
+        hf_variant = resident
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _RepoLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: True)
+
+    async def _fake_catalog():
+        return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(
+        resolver, "local_servable_model", lambda info: (True, tuple(on_disk))
+    )
+
+
+def test_the_resident_repo_row_gains_the_other_on_disk_quants(monkeypatch):
+    # The loaded pass publishes org/Foo first, so the scan row for the same repo hits
+    # the already-listed branch. Without it the resident model is the one model whose
+    # alternative quants a client cannot see.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16", "Q4_K_M"))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["loaded"] is True
+    # The quant actually serving stays first; it is what a bare id resolves to.
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
+
+
+def test_an_already_listed_row_keeps_the_quants_it_advertises(monkeypatch):
+    # Two scan rows can share one public id (an HF-cache repo also reachable through a
+    # custom scan folder). Merging must not drop quants the first row proved on disk.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("Q4_K_M", "BF16")]
+    monkeypatch.setattr(
+        resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0))
+    )
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # Every quant either copy holds, once each, resident first.
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
+
+
+def test_a_resident_model_with_no_other_quant_advertises_no_list(monkeypatch):
+    # An empty scan is not evidence of alternatives; `quant` alone must survive.
+    _resident_repo_catalog(monkeypatch, on_disk = ())
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert "quants" not in ids["org/Foo"]
+
+
+def test_retrieve_describes_a_loaded_model_exactly_like_the_listing(monkeypatch):
+    # A client that reads GET /v1/models/{id} must see the same quants the listing
+    # advertises, or it can only pin alternatives for models that are not loaded.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16", "Q4_K_M"))
+    listed = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}["org/Foo"]
+    retrieved = asyncio.run(inf.openai_retrieve_model("org/Foo", None))
+    assert retrieved["quants"] == listed["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
+    assert retrieved["quant"] == listed["quant"]
+    assert retrieved["loaded"] is True
