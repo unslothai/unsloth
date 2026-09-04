@@ -4711,6 +4711,11 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
     assert config["agents"]["defaults"]["skipBootstrap"] is True
     assert config["agents"]["defaults"]["workspace"] == "${OPENCLAW_WORKSPACE_DIR}"
+    assert config["memory"]["search"] == {
+        "provider": "openai-compatible",
+        "model": "default",
+        "remote": {"baseUrl": f"{BASE}/v1", "apiKey": "sk-unsloth-feedfacefeedface"},
+    }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.

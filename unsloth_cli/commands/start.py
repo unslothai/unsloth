@@ -4675,6 +4675,13 @@ def write_openclaw_config(
         "api": "openai-completions",
         "models": [provider_model],
     }
+    _subdict(_subdict(config, "memory"), "search").update(
+        {
+            "provider": "openai-compatible",
+            "model": "default",
+            "remote": {"baseUrl": f"{base}/v1", "apiKey": key},
+        }
+    )
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
