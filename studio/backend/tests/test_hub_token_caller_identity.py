@@ -470,6 +470,61 @@ def test_export_push_routes_resolve_the_body_token():
         assert "_export_hub_token(" in source
 
 
+def test_export_gguf_push_refuses_the_forced_anonymous_sentinel(monkeypatch):
+    from core.export.export import ExportBackend, _export_hub_push_token
+
+    assert _export_hub_push_token(False) is None
+    assert _export_hub_push_token(None) is None
+
+    monkeypatch.setattr("core.export.export._export_runtime_available", lambda: True)
+
+    class _Model:
+        save_pretrained_gguf = staticmethod(lambda *_a, **_k: None)
+        push_to_hub_gguf = staticmethod(lambda *_a, **_k: None)
+
+    backend = ExportBackend.__new__(ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+
+    success, message, output = backend.export_gguf(
+        save_directory = "",
+        push_to_hub = True,
+        repo_id = "org/model",
+        hf_token = False,
+    )
+    assert success is False
+    assert "token required" in message.lower()
+    assert output is None
+
+
+def test_export_worker_passes_false_sentinel_into_gguf_export():
+    import queue
+
+    from core.export.worker import _handle_export
+
+    seen = {}
+
+    class _Backend:
+        def export_gguf(self, **kwargs):
+            seen.update(kwargs)
+            return True, "ok", None
+
+    resp_queue = queue.SimpleQueue()
+    _handle_export(
+        _Backend(),
+        {
+            "export_type": "gguf",
+            "save_directory": "",
+            "quantization_method": "q4_k_m",
+            "push_to_hub": True,
+            "repo_id": "org/model",
+            "hf_token": False,
+        },
+        resp_queue,
+    )
+    assert seen["hf_token"] is False
+
+
 @pytest.mark.parametrize(
     "hf_token, allow_ambient, expected",
     [
