@@ -151,7 +151,8 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "modelAutoSwitch" not in src
 
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert "<ModelAutoSwitchSection />" in tab
+    # Mounted here and nowhere else; it may report its value down, but it owns it.
+    assert "<ModelAutoSwitchSection" in tab
 
 
 # The monitor moved onto its own page; Settings keeps configuration and links across.
@@ -188,8 +189,8 @@ def test_api_monitor_renders_lifecycle_rows():
 def test_auto_switch_section_sits_above_the_usage_examples():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
     # Configuration still comes ahead of the examples that depend on it.
-    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
+    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection")
+    assert tab.index("<ModelAutoSwitchSection") < tab.index("<UsageExamples")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -255,7 +256,14 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "if (isLoopbackHost(host)) return true;" in eligibility
     assert 'return scope === "inference";' in eligibility
     assert "!(useTunnel && cloudflareUrl)" in src
-    assert "useExampleModel(keylessBase && !apiKey, pickedModel)" in src
+    assert "useExampleModel(" in src
+    assert "keylessBase && !apiKey," in src
+    # The section that owns the switch reports it down, so the verdict is not left to
+    # a catalog poll that idles at a minute once a model is resident.
+    assert "autoSwitchOverride ?? autoSwitch" in src
+    assert "onEnabledChange={setAutoSwitchEnabled}" in (
+        API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
+    )
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
     assert "[cloudflareUrl, onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]

@@ -1687,6 +1687,8 @@ export const de = {
         "Es ist noch nichts heruntergeladen, daher nennt dieses Beispiel ein Modell, das dieser Server nicht hat. Laden Sie eines aus dem Hub herunter, dann nennt das Beispiel dieses.",
       usageModelNotLoaded:
         "{model} ist nicht geladen. Aktivieren Sie oben „Modell je Anfrage wechseln“ oder laden Sie es im Chat, bevor Sie dieses Beispiel ausführen.",
+      usageModelNotLoadedKeyless:
+        "{model} ist nicht geladen. Erstellen Sie einen API-Schlüssel und verwenden Sie ihn in dieser Anfrage, oder laden Sie das Modell im Chat, bevor Sie dieses Beispiel ausführen.",
       exampleModel: "Modell",
       exampleQuant: "Quantisierung",
       modelLoaded: "Geladen",

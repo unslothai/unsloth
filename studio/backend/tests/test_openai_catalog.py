@@ -553,11 +553,13 @@ def test_the_resident_repo_row_gains_the_other_on_disk_quants(monkeypatch):
     assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
 
 
-def test_an_already_listed_row_keeps_the_quants_it_advertises(monkeypatch):
+def test_only_the_reachable_copy_of_a_repo_contributes_quants(monkeypatch):
     # Two scan rows can share one public id (an HF-cache repo also reachable through a
-    # custom scan folder). Merging must not drop quants the first row proved on disk.
+    # custom scan folder). local_servable_index claims each alias with setdefault, so
+    # only the first copy ever resolves: advertising the second copy's quants would
+    # hand out a repo:quant that 404s with variant_not_found.
     _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
-    quant_sets = [("BF16",), ("Q4_K_M", "BF16")]
+    quant_sets = [("BF16",), ("Q4_K_M",)]
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
 
     async def _two_rows():
@@ -568,8 +570,9 @@ def test_an_already_listed_row_keeps_the_quants_it_advertises(monkeypatch):
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
-    # Every quant either copy holds, once each, resident first.
-    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
+    # The resident quant, then the first copy's. Q4_K_M belongs to the copy the
+    # resolver cannot reach through this id, so it is not offered.
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
 
 
 def test_a_resident_model_with_no_other_quant_advertises_no_list(monkeypatch):

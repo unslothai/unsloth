@@ -1678,6 +1678,8 @@ export const es = {
         "Todavía no hay nada descargado, así que este ejemplo indica un modelo que este servidor no tiene. Descarga uno desde el Hub y el ejemplo lo indicará.",
       usageModelNotLoaded:
         "{model} no está cargado. Activa \"Cambiar de modelo según la solicitud\" arriba, o cárgalo en Chat, antes de ejecutar este ejemplo.",
+      usageModelNotLoadedKeyless:
+        "{model} no está cargado. Crea una clave de API y úsala en esta solicitud, o carga el modelo en Chat, antes de ejecutar este ejemplo.",
       exampleModel: "Modelo",
       exampleQuant: "Cuantización",
       modelLoaded: "Cargado",

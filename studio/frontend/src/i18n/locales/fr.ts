@@ -1686,6 +1686,8 @@ export const fr = {
         "Rien n'est encore téléchargé, cet exemple indique donc un modèle que ce serveur n'a pas. Téléchargez-en un depuis le Hub et l'exemple l'indiquera.",
       usageModelNotLoaded:
         "{model} n'est pas chargé. Activez « Changer de modèle par requête » ci-dessus, ou chargez-le dans Chat, avant d'exécuter cet exemple.",
+      usageModelNotLoadedKeyless:
+        "{model} n'est pas chargé. Créez une clé API et utilisez-la dans cette requête, ou chargez le modèle dans Chat, avant d'exécuter cet exemple.",
       exampleModel: "Modèle",
       exampleQuant: "Quantification",
       modelLoaded: "Chargé",

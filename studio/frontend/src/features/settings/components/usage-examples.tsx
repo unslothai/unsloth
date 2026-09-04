@@ -410,6 +410,7 @@ type ExampleModelState = ResolvedExampleModel & {
 function useExampleModel(
   keylessOnly: boolean,
   picked: string | null,
+  autoSwitchOverride: boolean | null,
 ): ExampleModelState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -460,12 +461,16 @@ function useExampleModel(
     };
   }, [checkpoint, ggufVariant]);
 
+  // The section that owns this setting reports it directly; prefer that over the
+  // polled copy, which can be a minute stale once a model is resident.
+  const liveAutoSwitch = autoSwitchOverride ?? autoSwitch;
+
   return useMemo(() => {
     const options = exampleModelOptions(catalog);
     return {
       ...resolveExampleModel({
         catalog,
-        autoSwitch,
+        autoSwitch: liveAutoSwitch,
         keylessOnly,
         checkpoint,
         ggufVariant,
@@ -474,7 +479,7 @@ function useExampleModel(
       }),
       options,
     };
-  }, [autoSwitch, catalog, checkpoint, ggufVariant, keylessOnly, picked]);
+  }, [liveAutoSwitch, catalog, checkpoint, ggufVariant, keylessOnly, picked]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns
@@ -529,6 +534,7 @@ export function UsageExamples({
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
+  autoSwitchEnabled = null,
 }: {
   apiKey?: string | null;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
@@ -537,6 +543,8 @@ export function UsageExamples({
   keylessTools?: boolean;
   /** public tunnels and Colab never accept the dummy bearer */
   keylessExposure?: KeylessApiAccessExposure | null;
+  /** the auto-switch section's live value; null until it has answered */
+  autoSwitchEnabled?: boolean | null;
 }) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -625,7 +633,11 @@ export function UsageExamples({
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  const example = useExampleModel(keylessBase && !apiKey, pickedModel);
+  const example = useExampleModel(
+    keylessBase && !apiKey,
+    pickedModel,
+    autoSwitchEnabled,
+  );
   const { model, followed } = example;
   // The repo the trigger names. Empty only when there is nothing to name: Radix shows
   // the placeholder for "", so a name here also keeps the select off that branch.

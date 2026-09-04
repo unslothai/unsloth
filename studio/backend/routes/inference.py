@@ -25258,10 +25258,9 @@ def _servable_catalog_rows(
     ]
 
 
-def _quant_list(first: str, *quant_sets) -> list[str]:
-    """`first`, then every other quant once, in the order the scans reported them."""
-    rest = (q for quants in quant_sets for q in quants if q != first)
-    return [first, *dict.fromkeys(rest)]
+def _quant_list(first: str, quants) -> list[str]:
+    """`first`, then every other quant once, in the order the scan reported them."""
+    return [first, *dict.fromkeys(q for q in quants if q != first)]
 
 
 async def _openai_catalog_objects() -> list[dict]:
@@ -25290,11 +25289,14 @@ async def _openai_catalog_objects() -> list[dict]:
             continue
         if cid in by_id:
             # Already listed: the resident row, or an earlier scan row for the same
-            # public id. It names one quant; add the on-disk quants found here beside
-            # it, keeping the ones it already advertises, so a client can pin any.
+            # public id. Name its other on-disk quants beside it so a client can pin
+            # any -- but only from the first copy to offer them. `local_servable_index`
+            # claims each alias with setdefault, so a second physical copy of one repo
+            # never resolves; advertising its quants would hand out a `repo:quant` that
+            # 404s with variant_not_found.
             listed = by_id[cid]
-            if listed.get("quant") and quants:
-                listed["quants"] = _quant_list(listed["quant"], listed.get("quants", ()), quants)
+            if listed.get("quant") and quants and "quants" not in listed:
+                listed["quants"] = _quant_list(listed["quant"], quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:

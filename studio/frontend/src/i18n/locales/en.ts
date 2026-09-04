@@ -1594,6 +1594,8 @@ export const en = {
         "Nothing is downloaded yet, so this example names a model this server does not have. Download one from the Hub and the example will name it.",
       usageModelNotLoaded:
         "{model} is not loaded. Turn on \"Switch model by request\" above, or load it in Chat, before running this example.",
+      usageModelNotLoadedKeyless:
+        "{model} is not loaded. Create an API key and use it in this request, or load the model in Chat, before running this example.",
       exampleModel: "Model",
       exampleQuant: "Quantization",
       modelLoaded: "Loaded",
