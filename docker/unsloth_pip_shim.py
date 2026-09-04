@@ -754,15 +754,29 @@ def main():
         print("[unsloth-nb] kept baked versions, adding extras only: " + " ".join(extras_only))
     if recorded:
         try:
-            os.makedirs(os.path.dirname(MARKER), exist_ok = True)
+            parent = os.path.dirname(MARKER)
+            if parent:  # "" for a bare relative MARKER, and makedirs("") raises
+                os.makedirs(parent, exist_ok = True)
             with open(MARKER, "w") as f:
                 f.write(recorded)
+        except OSError as exc:
+            # do NOT abort: nothing has been installed or mis-forwarded, and the baked
+            # transformers still works, so hard-failing a notebook cell over an
+            # unwritable path the user cannot act on is the worse trade. But do not
+            # report success either: transformers is already out of the real arguments,
+            # so staying silent leaves the cell claiming the pin was honoured while the
+            # model cells import the baked version.
+            print(
+                f"[unsloth-nb] WARNING: could not record the requested "
+                f"transformers=={recorded} at {MARKER} ({exc}); the sidecar will NOT "
+                f"activate and the model cells will use the baked transformers.",
+                file = sys.stderr,
+            )
+        else:
             print(
                 f"[unsloth-nb] notebook requested transformers=={recorded}; will "
                 f"activate its sidecar for the model cells (base stack kept)."
             )
-        except OSError:
-            pass
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
 

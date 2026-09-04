@@ -515,6 +515,32 @@ def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch)
         shim._filter_requirements_file(str(req))
 
 
+# transformers is already out of the real arguments by the time the marker is written,
+# so a swallowed failure reported a plain success while the model cells went on
+# importing the baked version. It must warn instead: aborting would turn an unwritable
+# path the user cannot act on into a hard notebook failure, but silence is worse.
+def test_marker_write_failure_warns_and_does_not_claim_success(shim, monkeypatch, capsys):
+    def denied(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(shim.os, "makedirs", denied)
+    monkeypatch.setattr(shim.sys, "argv", ["pip", "install", "transformers==4.99.0"])
+    shim.main()
+    err = capsys.readouterr()
+    assert "WARNING" in err.err and "will NOT" in err.err
+    assert "will activate its sidecar" not in err.out
+
+
+# dirname() is "" for a bare relative MARKER and makedirs("") raises FileNotFoundError,
+# an OSError: without the guard, failing closed would turn that config into a hard abort
+def test_bare_relative_marker_still_records(shim, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(shim, "MARKER", "requested_transformers")
+    monkeypatch.setattr(shim.sys, "argv", ["pip", "install", "transformers==4.99.0"])
+    shim.main()
+    assert (tmp_path / "requested_transformers").read_text() == "4.99.0"
+
+
 def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypatch):
     req = tmp_path / "reqs.txt"
     req.write_text("snac==1.2.0\n", encoding = "utf-8")
