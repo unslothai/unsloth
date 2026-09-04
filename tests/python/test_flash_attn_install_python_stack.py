@@ -597,6 +597,8 @@ class TestEnsureFlashAttn:
         mock_install_wheel.assert_not_called()
 
     def test_windows_skips_install_without_probing(self):
+        # flash-attn is Linux-only: on Windows the installer returns before probing the torch env or resolving a
+        # wheel (no Windows wheels are published upstream).
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
@@ -622,7 +624,6 @@ class TestInstallPythonStackFlashAttnIntegration:
             nonlocal flash_attn_calls
             flash_attn_calls += 1
 
-        # flash-attn is Linux-only:
         with (
             mock.patch.object(ips, "NO_TORCH", no_torch),
             mock.patch.object(ips, "IS_MACOS", is_macos),

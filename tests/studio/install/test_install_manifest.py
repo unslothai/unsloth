@@ -433,6 +433,8 @@ def test_recorded_no_torch_reports_unknown_without_a_manifest(install_root):
 
 
 def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_root):
+    # remove_manifest() runs before every dependency pass, so a run killed during it leaves no manifest. The marker is
+    # what stops the next update reading the absent torch as a stale venv and deleting the environment it runs out of.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = True)
     assert im.recorded_no_torch(root = install_root) is True
@@ -442,14 +444,13 @@ def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_ro
 
 
 def test_manifest_key_overrides_a_stale_marker(install_root, req_root):
+    # Migrating out of no-torch must not be blocked by a marker left behind.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = False)
     assert im.recorded_no_torch(root = install_root) is False
 
 
 def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
-    # Migrating out of no-torch must not be blocked by a marker left behind.
-    # remove_manifest() runs before every dependency pass, so a run killed during it leaves no manifest.
     im.set_no_torch_marker(True, root = install_root)
     assert im.no_torch_marker_path(root = install_root).exists()
 

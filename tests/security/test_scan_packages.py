@@ -2034,10 +2034,7 @@ def test_two_reviewed_versions_may_share_a_key_with_distinct_pins(tmp_path):
 @pytest.mark.parametrize(
     "pins",
     [
-        (
-            None,
-            None,
-        ),  # the same unpinned approval, written twice
+        (None, None),  # the same unpinned approval, written twice
         ("c" * 64, "c" * 64),  # the same pin, written twice
         (None, "c" * 64),  # unpinned wins, so the pinned entry is inert
         ("c" * 64, None),  # and in either order

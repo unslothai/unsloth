@@ -1024,11 +1024,13 @@ LIVE_INCOGNITO_BRANCH = """
         pytest.param(TWO_STORED_TURNS, 2, None, id = "stored_branch"),
         # An incognito chat persists nothing, so the records would price a bare template.
         pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id = "incognito_thread_stores_nothing"),
+        # Regenerated, then switched back: the stored leaf is the retry, four turns not sent.
         pytest.param(
             RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
         ),
-        # The endpoint counts with whatever is resident, never the model asked for:
-        # Regenerated, then switched back:
+        # The endpoint counts with whatever is resident, never the model asked for: another tab
+        # loaded a different GGUF, and since this client's checkpoint never moved, the reported
+        # id is the only witness that the total came from the wrong tokenizer.
         pytest.param(
             TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
         ),
@@ -1356,6 +1358,7 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
 @pytest.mark.parametrize(
     ("saved", "expect_counts", "expect_total", "expect_completion"),
     [
+        # Exact totals for this very model: recounting would trade them for an estimate.
         (
             "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
             'modelId: "unsloth/gguf-model" }',
@@ -1364,7 +1367,6 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
             200,
         ),
         # Another model's tokenizer priced these, so they say nothing about this one (#7450).
-        # Exact totals for this very model:
         (
             '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
             1,

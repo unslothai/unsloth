@@ -129,6 +129,8 @@ def test_lockfile_auditor_blocked_versions_match_scanner():
 
 
 # ---------------------------------------------------------------------------
+# Cargo.lock audit.
+# ---------------------------------------------------------------------------
 
 _MALICIOUS_CARGO_LOCK = """\
 version = 3
@@ -394,16 +396,13 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
         )
 
 
-# Followup regressions for #5604:
-
-
-# --------------------------------------------------------------------------- Followup regression tests for #5604: -
-# unsupported lockfile versions must block in default mode (v1 downgrade would otherwise pass with rc=0 because the
-# structural walk only runs on v2/v3) - the ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` warning must be routed through
-# ``_gha_escape()`` so an attacker-controlled value cannot inject a second workflow-command line via embedded
-# ``\n::error::...`` - the audit script must be invoked BEFORE ``npm install`` in any workflow that consumes the audited
-# --------------------------------------------------------------------------- Cargo.lock audit.
-# gated on Fork 1's NPM_IOC_STRINGS additions.
+# ---------------------------------------------------------------------------
+# Followup regression tests for #5604:
+#   - unsupported lockfile versions must block in default mode (v1 downgrade would otherwise pass with rc=0 because
+#     the structural walk only runs on v2/v3)
+#   - the ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` warning must be routed through ``_gha_escape()`` so an attacker-controlled
+#     value cannot inject a second workflow-command line via embedded ``\n::error::...``
+#   - the audit script must be invoked BEFORE ``npm install`` in any workflow that consumes the audited lockfiles
 # ---------------------------------------------------------------------------
 
 

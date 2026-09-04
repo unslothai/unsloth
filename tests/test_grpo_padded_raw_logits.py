@@ -287,12 +287,12 @@ def _build_namespace(
             data.attention_mask[i : i + 1],
             torch.zeros(1, 3)
             if is_vlm
-            else None,  # pixel_values_chunk (the stub ignores it) image_grid_thw_chunk
-            None,
-            None,
-            None,
-            None,
-            None,
+            else None,  # pixel_values_chunk (the stub ignores it)
+            None,  # image_grid_thw_chunk
+            None,  # pixel_attention_mask_chunk
+            None,  # image_sizes_chunk
+            None,  # token_type_ids_chunk
+            None,  # mm_token_type_ids_chunk
         )
         for i in range(_BATCH)
     ]

@@ -2446,12 +2446,7 @@ class TestWindowsCudaAttemptCoversBlackwell:
     @pytest.mark.parametrize(
         "profile, runtime_line, max_sm, covers",
         [
-            (
-                "newer",
-                "cuda13",
-                120,
-                True,
-            ),  # native Blackwell build
+            ("newer", "cuda13", 120, True),  # native Blackwell build
             ("newer", "cuda12", 120, True),  # 12.8 toolkit app bundle reaches sm120
             ("older", "cuda12", 89, False),  # 12.4 toolkit app bundle stops at Ada
         ],

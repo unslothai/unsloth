@@ -257,6 +257,7 @@ class TestXpuTritonSwap:
         assert _run(monkeypatch, tmp_path, spec = spec, generic = generic) == []
 
     def test_a_dead_mirror_removes_nothing(self, monkeypatch, tmp_path):
+        # Warn and leave the venv working; never uninstall with nothing to install from.
         log = _run(
             monkeypatch,
             tmp_path,
@@ -267,6 +268,7 @@ class TestXpuTritonSwap:
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
     def test_a_successful_exit_with_no_wheel_removes_nothing(self, monkeypatch, tmp_path):
+        # The exit code alone is not enough: no wheel on disk means nothing to install from.
         log = _run(
             monkeypatch,
             tmp_path,
@@ -279,8 +281,6 @@ class TestXpuTritonSwap:
 
 class TestFailedSwapIsNotSurvivable:
     def test_a_failed_uninstall_changes_nothing(self, monkeypatch, tmp_path):
-        # Warn and leave the venv working; never uninstall with nothing to install from.
-        # The exit code alone is not enough:
         # A read-only or locked venv leaves generic triton registered; installing over it would let
         # a later upgrade delete the shared files again and repeat the swap every pass.
         log = _run(
@@ -358,6 +358,7 @@ class TestTheInstalledWheelIsThePin:
         assert mod.__dict__["_installed_torch_version_label"]() == "2.9.1+xpu"
 
     def test_an_explicit_pin_still_wins(self, monkeypatch, tmp_path):
+        # A pinned mirror must be used verbatim, not replaced by the default index.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
@@ -385,7 +386,6 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
     )
     def test_the_fetch_drops_index_environment(self, monkeypatch, tmp_path, var, value):
         monkeypatch.setenv(var, value)
-        # A pinned mirror must be used verbatim, not replaced by the default index.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
@@ -393,6 +393,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert var not in env
 
     def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
+        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
@@ -403,7 +404,6 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index
         # at all.
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]

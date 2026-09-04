@@ -182,6 +182,7 @@ def test_cpu_spilled_map_still_releases_its_gpu_shards(_fake_accelerate):
 
 
 def test_disk_offloaded_map_is_left_alone(_fake_accelerate):
+    # disk/meta entries are not on the model, so moving would materialize the whole checkpoint into RAM.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(device_map = {"model.embed": 0, "model.layers.9": "disk"})
     assert ns["_offload_model_for_quantize_subprocess"](model) is None
@@ -199,7 +200,6 @@ def test_all_cpu_map_is_left_alone(_fake_accelerate):
 
 
 def test_single_device_model_keeps_plain_move():
-    # Nothing on an accelerator:
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(devices = ("cuda:0",))
     token = ns["_offload_model_for_quantize_subprocess"](model)
@@ -440,9 +440,7 @@ def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate
     stock_forward = lambda *a, **k: "stock"  # noqa: E731
     fused_forward = lambda *a, **k: "unsloth-fused"  # noqa: E731
     mlp._hf_hook = object()
-    mlp._old_forward = (
-        stock_forward  # captured by accelerate at dispatch time installed by unsloth afterwards
-    )
+    mlp._old_forward = stock_forward  # captured by accelerate at dispatch time
     mlp.forward = fused_forward  # installed by unsloth afterwards
 
     snapshot = ns["_snapshot_dispatch_state"](root)

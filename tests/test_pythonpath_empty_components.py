@@ -75,7 +75,7 @@ def _stage(monkeypatch, tmp_path, pythonpath):
     "before",
     [
         os.pathsep
-        + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset PYTHONPATH=/opt/lib:$PYTHONPATH, unset
+        + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset
         "/opt/lib" + os.pathsep,  # PYTHONPATH=/opt/lib:$PYTHONPATH, unset
         "/opt/a" + os.pathsep + os.pathsep + "/opt/b",  # interior empty
         os.pathsep,  # separator only

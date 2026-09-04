@@ -193,7 +193,8 @@ def run() -> dict:
         page.wait_for_timeout(2000)
         results["idle_raf_per_2s"] = page.evaluate("window.__rafCount")
 
-        # Silent growth. A token first to open a fresh follow window, then growth as an inline style, which reaches
+        # Silent growth. A token first to open a fresh follow window, then growth as an inline style, which
+        # reaches neither observer.
         page.evaluate("window.__autoscroll.resetGrowth()")
         page.wait_for_timeout(900)
         settled = page.evaluate(

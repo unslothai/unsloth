@@ -160,6 +160,9 @@ def test_splits_within_cap_honours_the_attestation_per_split():
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
 
+# ------------------------------------------------- the copy rl.py inlines
+
+
 def _inlined_within_cap(cap):
     """Build `_unsloth_within_cap` out of the codegen string and return it.
 
@@ -223,7 +226,6 @@ if __name__ == "__main__":
 
 
 # ------------------------------------------- the generated block must still parse
-# ------------------------------------------------- the copy rl.py inlines
 
 
 def test_the_generated_max_length_block_is_valid_python():

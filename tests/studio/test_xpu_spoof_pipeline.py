@@ -239,6 +239,8 @@ def test_apply_gpu_ids_predetect_xpu_build_writes_ze_mask(spoof_xpu, monkeypatch
 
 
 def test_apply_gpu_ids_predetect_xpu_compiled_with_null_version(spoof_xpu, monkeypatch):
+    # version.xpu can be None on a working XPU build;
+    # torch.xpu._is_compiled() must be accepted as the build signal so the mask still goes to ZE_AFFINITY_MASK.
     import torch
 
     hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None)
@@ -258,8 +260,8 @@ def test_apply_gpu_ids_predetect_xpu_compiled_with_null_version(spoof_xpu, monke
 
 
 def test_apply_gpu_ids_predetect_force_on_cuda_build_writes_cvd(spoof_xpu, monkeypatch):
-    # version.xpu can be None on a working XPU build;
-    # torch.xpu._is_compiled() must be accepted as the build signal so the mask still goes to ZE_AFFINITY_MASK.
+    # UNSLOTH_FORCE_XPU=1 on a CUDA build (no XPU compiled in): detect falls back to CUDA, so the pre-detect mask
+    # must go to CUDA_VISIBLE_DEVICES, not ZE_AFFINITY_MASK.
     import torch
 
     hw, _ = spoof_xpu(force_xpu = True, ze_mask = None, cuda_visible = None)
@@ -327,6 +329,8 @@ def test_apply_gpu_ids_trusts_parent_backend_param(spoof_xpu, monkeypatch):
     monkeypatch.setattr(
         hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
     )
+    # Forced XPU + XPU build, but the parent detected CUDA (xpu had no device): backend="cuda" must route to
+    # CUDA_VISIBLE_DEVICES.
     monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
     monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
     hw.apply_gpu_ids([1], backend = "cuda")
@@ -354,7 +358,6 @@ def test_apply_gpu_ids_predetect_hidden_cuda_without_mask_prefers_xpu(spoof_xpu,
     monkeypatch.setattr(
         hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
     )
-    # Forced XPU + XPU build, but the parent detected CUDA (xpu had no device):
     monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
     monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
     hw.apply_gpu_ids([0])

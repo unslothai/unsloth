@@ -136,6 +136,8 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
         "up_proj",
         "down_proj",
     ]
+    # Representative of what get_peft_regex emits for that list under finetune_mlp_modules=False: attention-only
+    # path, no mlp component block.
     scoped_regex = (
         r"(?:.*?(?:language|text).*?"
         r"(?:self_attn|attention|attn|mixer).*?"
@@ -152,13 +154,14 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
 
 
 def test_frozen_language_full_list_does_not_discover_moe_parameters():
+    # Vision-only request (finetune_language_layers=False) with a full leaf list must not reach the language-model
+    # experts either.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
     )
 
     original_list = ["q_proj", "gate_proj", "up_proj", "down_proj"]
-    # Representative of what get_peft_regex emits for that list under finetune_mlp_modules=False:
     scoped_regex = (
         r"(?:.*?(?:vision|visual|image).*?"
         r"(?:self_attn|attention|attn|mixer).*?"

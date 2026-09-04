@@ -487,6 +487,8 @@ class TestPreTuringWheelFamily:
         assert "cu130" in _index_url(mock_pip)
 
     def test_cu126_venv_is_kept_when_the_driver_allows_nothing_newer(self):
+        # Same host, CUDA 12.6 driver: cu130 is not installable, so leave it rather than reinstall cu126 over itself
+        # on every update.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "12.6",
@@ -495,6 +497,8 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_partial_family_is_not_traded_for_another_partial_family(self):
+        # A working V100 + cu126 box gains a Blackwell card. Neither family covers both, so swapping to cu130 would
+        # kill the Volta to revive the Blackwell.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "13.0",
@@ -513,6 +517,7 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_uncovered_mix_is_not_repaired_in_a_loop(self):
+        # The cap declines, so the replacement equals the installed family.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -521,7 +526,6 @@ class TestPreTuringWheelFamily:
         mock_pip.assert_not_called()
 
     def test_mixed_host_within_cu126_range_is_repaired(self):
-        # Same host, CUDA 12.6 driver:
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -536,7 +540,6 @@ class TestPreTuringWheelFamily:
         )
 
     def test_incompatible_family_is_repaired(self):
-        # A working V100 + cu126 box gains a Blackwell card.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu130|2.11.0",
             cuda_version = "13.0",
@@ -634,9 +637,6 @@ class TestPreTuringWheelFamily:
         assert stack_mod._cuda_family_sm_range("cu128", "2.7.1")[0] == 75
         assert stack_mod._cuda_family_sm_range("cu128", "2.8.0")[0] == 70
         assert stack_mod._cuda_family_sm_range("cu128", "2.10.0")[0] == 70
-        # An untagged build still reports torch.version.cuda, so _family falls back to the runtime value and the
-        # architecture policy applies. The "family unknown, leave it alone" branch needs BOTH the tag and
-        # torch.version.cuda empty, which reads as a CPU build, so an untagged CUDA build is always classifiable.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu128|2.7.1",
             cuda_version = "13.0",
@@ -1014,6 +1014,7 @@ class TestExpectedTorchFlavorResolution:
         mock_pip.assert_not_called()
 
     def test_the_setup_scripts_index_url_is_used_when_its_leaf_matches(self):
+        # Credentials are not reconstructible from a family leaf.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://mirror.local/whl/cu124?token=secret",
             repaired = "2.10.0+cu124",
@@ -1021,6 +1022,7 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip) == "https://mirror.local/whl/cu124?token=secret"
 
     def test_an_index_url_naming_another_family_is_ignored(self):
+        # setup.ps1 hands over /cpu alongside a "rocm" tag on the AMD Windows path.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://download.pytorch.org/whl/cpu",
             repaired = "2.10.0+cu124",
@@ -1028,8 +1030,6 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip) == f"{stack_mod._PYTORCH_WHL_BASE}/cu124"
 
     def test_a_matching_family_pin_supplies_the_index(self):
-        # Credentials are not reconstructible from a family leaf.
-        # setup.ps1 hands over /cpu alongside a "rocm" tag on the AMD Windows path.
         _ok, mock_pip = _run_flavor_invariant(
             index_url = "https://mirror.local/whl/cu124",
             repaired = "2.10.0+cu124",
@@ -1296,8 +1296,6 @@ class TestWindowsOnArmKeepsTheNoTorchaudioException:
         assert _index_url(mock_pip).endswith("/cu124")
 
     def test_the_xpu_trio_drops_it_too(self):
-        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing; the healthy cu124
-        # venv underneath must not be downgraded.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.9.1+xpu",
@@ -1430,6 +1428,7 @@ class TestAnExplicitPinOutranksTheManifest:
         assert _index_url(mock_pip) == pin
 
     def test_a_rocm_pin_collapses_to_the_flavor_vocabulary(self):
+        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+rocm7.2",
             expected_env = None,
@@ -1441,6 +1440,7 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_a_cpu_pin_beats_a_gpu_manifest(self):
+        # A deliberate move to CPU must not be reverted by the previous install.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1451,6 +1451,7 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_an_unrecognised_pin_still_falls_through_to_the_manifest(self):
+        # A /simple mirror names no family; the caller's unknown-pin gate is the guard.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1461,6 +1462,7 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_the_setup_handover_still_wins_over_a_pin(self):
+        # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.10.0+cu124",
             repaired = "2.10.0+cu126",
@@ -1489,7 +1491,6 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
         mock_pip.assert_called_once()
 
     def test_a_pinned_rocm_backend_is_enforced_when_it_agrees(self):
-        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.11.0+rocm7.2",
@@ -1515,9 +1516,6 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
 
     def test_an_unknown_pin_is_still_left_alone(self):
         """Regression guard: narrowing the veto must not reopen the case it closed."""
-        # A deliberate move to CPU must not be reverted by the previous install.
-        # A /simple mirror names no family;
-        # The handover describes the run that just installed;
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,

@@ -87,8 +87,8 @@ def test_grad_enabled_forward_marks_seen_no_grad_does_not():
     _unsloth_install_pretrain_detector(m)
     with torch.no_grad():
         m(torch.zeros(1, 2))
-    assert m._unsloth_pretrain_marker["seen"] is False
-    m(torch.zeros(1, 2))
+    assert m._unsloth_pretrain_marker["seen"] is False  # no backward graph -> clean
+    m(torch.zeros(1, 2))  # grad-enabled forward poisons the cache
     assert m._unsloth_pretrain_marker["seen"] is True
 
 
@@ -107,9 +107,7 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
 
     assert any("manual forward/backward" in str(w.message) for w in caught)
     assert "hook" not in m._unsloth_pretrain_marker
-    assert (
-        m._unsloth_pretrain_marker["seen"] is False
-    )  # no backward graph -> clean grad-enabled forward poisons the
+    assert m._unsloth_pretrain_marker["seen"] is False  # evidence consumed
 
 
 def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):

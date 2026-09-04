@@ -1611,10 +1611,7 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "runtime_dirs, current",
     [
-        (
-            ["hipblaslt", "rocblas"],
-            True,
-        ),  # every target hipBLASLt has kernels for
+        (["hipblaslt", "rocblas"], True),  # every target hipBLASLt has kernels for
         (["rocblas"], True),  # gfx1030 and friends: #8364
         ([], False),  # rocblas is load-bearing, never optional
         (["hipblaslt"], False),

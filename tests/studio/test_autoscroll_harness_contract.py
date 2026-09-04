@@ -59,7 +59,8 @@ def verdict(name: str) -> str:
 
 
 def test_chat_autoscroll_asserts_the_detached_stream_actually_grew() -> None:
-    # `stillDetached` says streaming did not re-pin the reader.
+    # `stillDetached` says streaming did not re-pin the reader. It says nothing at all if the streamed tokens added
+    # no height, which the harness measures as `grewWhileDetached`.
     main = verdict("playwright_chat_autoscroll.py")
     assert 'intent["stillDetached"]' in main
     assert 'intent["grewWhileDetached"]' in main
@@ -74,6 +75,8 @@ def test_research_freeze_asserts_the_dialog_took_the_modal_layer() -> None:
 
 
 def test_research_freeze_asserts_the_stream_had_something_to_follow() -> None:
+    # An empty activity list runs no follow loop, so it clears the frame budgets by measuring nothing. `seed()`
+    # leaves activities behind, so the count has to be compared against the pre-stream baseline rather than zero.
     main = verdict("playwright_research_freeze.py")
     assert 'stream["raf_per_second"]' in main
     assert 'stream["activities"]' in main
@@ -93,7 +96,6 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
     # must read actionability, not just the counter.
     source_text = source("playwright_research_freeze.py")
     assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
-    # The stall budget is only a budget if a stall of zero fails too:
     main = verdict("playwright_research_freeze.py")
     assert 'results["report"]["click_landed"]' in main
     assert 'results["report"]["clicks_registered"]' in main
