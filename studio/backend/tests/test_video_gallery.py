@@ -503,6 +503,17 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
         assert image.size == (192, 341)
 
 
+def test_thumbnail_scales_with_pillow_before_resampling_enum():
+    """Pillow 8 satisfies Studio's dependency floor but predates Image.Resampling."""
+    from types import SimpleNamespace
+
+    legacy = SimpleNamespace(LANCZOS = 1)
+    modern = SimpleNamespace(Resampling = SimpleNamespace(LANCZOS = 2))
+
+    assert gallery._lanczos_resampling(legacy) == 1
+    assert gallery._lanczos_resampling(modern) == 2
+
+
 def test_thumbnail_rejects_unowned_and_invalid_videos():
     assert gallery.thumbnail("does-not-exist") is None
     record = gallery.save(_mp4(), _meta())

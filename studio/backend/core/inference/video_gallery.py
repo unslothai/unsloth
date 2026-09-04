@@ -32,6 +32,11 @@ _job_lock = threading.Lock()
 _THUMBNAIL_WIDTH = 192
 
 
+def _lanczos_resampling(image_module: Any) -> Any:
+    """Return the Lanczos filter across Pillow's pre- and post-9.1 APIs."""
+    return getattr(image_module, "Resampling", image_module).LANCZOS
+
+
 def gallery_dir() -> Path:
     return ensure_dir(studio_root() / "videos")
 
@@ -212,7 +217,7 @@ def _thumbnail_webp(path: Path) -> bytes:
                 scale = _THUMBNAIL_WIDTH / image.width
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-                    Image.Resampling.LANCZOS,
+                    _lanczos_resampling(Image),
                 )
             buf = io.BytesIO()
             image.save(buf, format = "WEBP", quality = 85, method = 4)
