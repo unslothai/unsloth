@@ -140,6 +140,23 @@ _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # these rebuild baked deps; the kept target still installs once they are dropped
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
 # dropped with their value; eager would upgrade every dep of a kept target
+# Hidden ALIASES of flags already listed above. pip's --help prints only the
+# canonical spelling, so no amount of help-scraping can find these; the selfcheck now
+# introspects pip's own option table instead, which is where they came from.
+# --python-preference is a uv GLOBAL that appears in neither `uv --help` nor
+# `uv help`, and uv still accepts it.
+_ALIAS_VALUE_FLAGS = {
+    "--default-timeout",
+    "--local-log",
+    "--log-file",
+    "--pypi-url",
+    "--source",
+    "--source-dir",
+    "--source-directory",
+    "--python-preference",
+}
+_VALUE_FLAGS |= _ALIAS_VALUE_FLAGS
+
 _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 
 # these ARE the install target, with no package on the command line: without them the
@@ -621,20 +638,61 @@ def _protected_constraints_file():
 
 
 def _selfcheck_value_flags():
-    """Assert every value-taking flag the REAL pip/uv document is classified, else the
-    scanner misreads its VALUE as an install target. Run at image build time."""
+    """Assert every value-taking flag the REAL pip/uv accept is classified, else the
+    scanner misreads a flag's VALUE as an install target and forwards the install
+    unfiltered. Run at image build time.
+
+    pip is INTROSPECTED, not scraped. Its --help prints one spelling per option, so
+    seven hidden aliases (--default-timeout among them) were invisible to the old
+    scrape while the check still reported OK -- a false success guarding the guard.
+    optparse knows all of them.
+
+    uv is a binary with no such table, so it is scraped at all three levels rather
+    than just `uv pip install`, and the globals it accepts but documents nowhere are
+    probed directly. A level we cannot inspect is a FAILURE, never a pass.
+    """
     import subprocess
 
     known = _VALUE_FLAGS | _DROP_VALUE_FLAGS
     missing = {}
-    for label, cmd in (
-        ("pip", [REAL["pip"], "install", "--help"]),
-        ("uv", [REAL["uv"], "pip", "install", "--help"]),
+
+    probe = (
+        "from pip._internal.commands import create_command\n"
+        "v=set()\n"
+        "for o in create_command('install').parser.option_list_all:\n"
+        "    if o.takes_value(): v.update(o._long_opts); v.update(o._short_opts)\n"
+        "print('\\n'.join(sorted(v)))\n"
+    )
+    try:
+        out = subprocess.run(
+            [os.path.join(os.path.dirname(REAL["pip"]), "python"), "-c", probe],
+            capture_output = True,
+            text = True,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            raise OSError(out.stderr.strip()[:200] or "no output")
+        gap = {f for f in out.stdout.split() if f.startswith("-")} - known
+        if gap:
+            missing["pip"] = sorted(gap)
+    except OSError as exc:
+        print(
+            f"[unsloth-nb] could not introspect pip's option table ({exc}); refusing to "
+            "certify the value-flag list from --help alone, which cannot see aliases.",
+            file = sys.stderr,
+        )
+        sys.exit(1)
+
+    seen_uv = False
+    for cmd in (
+        [REAL["uv"], "--help"],
+        [REAL["uv"], "pip", "--help"],
+        [REAL["uv"], "pip", "install", "--help"],
     ):
         try:
             out = subprocess.run(cmd, capture_output = True, text = True).stdout
         except OSError:
             continue
+        seen_uv = True
         flags = set()
         for m in re.finditer(r"^\s+(-\w)?,?\s*(--[\w-]+)[= ]<", out, re.M):
             if m.group(1):
@@ -644,7 +702,28 @@ def _selfcheck_value_flags():
             flags.add(m.group(1))
         gap = flags - known
         if gap:
-            missing[label] = sorted(gap)
+            missing.setdefault("uv", []).extend(sorted(gap))
+    if not seen_uv:
+        print("[unsloth-nb] could not run uv to check its flags", file = sys.stderr)
+        sys.exit(1)
+
+    # uv globals that are accepted but documented nowhere: verify each still takes a
+    # value, so the list rots loudly instead of silently.
+    for flag in sorted(_ALIAS_VALUE_FLAGS):
+        if flag == "--python-preference":
+            r = subprocess.run(
+                [REAL["uv"], flag, "system", "pip", "install", "--help"],
+                capture_output = True,
+                text = True,
+            )
+            if r.returncode != 0:
+                print(
+                    f"[unsloth-nb] uv no longer accepts `{flag} <value>`; the entry in "
+                    "_ALIAS_VALUE_FLAGS is stale and may now swallow an install target.",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+
     if missing:
         print(f"[unsloth-nb] value flags missing from _VALUE_FLAGS: {missing}", file = sys.stderr)
         sys.exit(1)

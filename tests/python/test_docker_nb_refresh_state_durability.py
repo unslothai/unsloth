@@ -68,6 +68,7 @@ def _run(
     *,
     cap_kib: int | None = None,
     refresh: bool,
+    keep_removed: bool = False,
 ):
     def _cap():
         import resource
@@ -86,6 +87,8 @@ def _run(
         UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
         UNSLOTH_KEEP_COLAB_INTRO = "1",
     )
+    if keep_removed:
+        env["UNSLOTH_KEEP_REMOVED_NOTEBOOKS"] = "1"
     if refresh:
         # run the refresh inline; the real one detaches and discards its output
         env["UNSLOTH_NB_REFRESH_CHILD"] = "1"
@@ -216,3 +219,227 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
         assert (dest / name).read_text(
             encoding = "utf-8"
         ) == "USER EDIT", f"{name} was overwritten while the disk was full"
+
+
+# ---------------------------------------------------------------------------
+# The refresh child reads $STATE too, and IT is the copy that runs by default.
+# The guard added for the section 1b reader did not cover it, and the test that
+# was supposed to prove it passed only because its helper sets
+# UNSLOTH_SKIP_NOTEBOOK_REFRESH=1. These deliberately do not.
+# ---------------------------------------------------------------------------
+def _json_upstream(tmp_path: Path, count: int) -> Path:
+    """Valid notebook JSON, so the body-aware comparison can report SAME and the
+    `unchanged` branch is reachable. With one-byte files it never is, which is why
+    the rollback below had no coverage."""
+    import json
+
+    up = tmp_path / "up"
+    up.mkdir()
+    body = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": ["print(1)\n"],
+                    "metadata": {},
+                    "outputs": [],
+                    "execution_count": None,
+                }
+            ],
+            "metadata": {},
+            "nbformat": 4,
+            "nbformat_minor": 5,
+        }
+    )
+    for i in range(1, count + 1):
+        (up / f"nb{i:09d}.ipynb").write_text(body, encoding = "utf-8")
+    env = dict(os.environ, GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null")
+    subprocess.run(["git", "init", "-q", "."], cwd = up, check = True, env = env)
+    subprocess.run(["git", "add", "-A"], cwd = up, check = True, env = env)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"],
+        cwd = up,
+        check = True,
+        env = env,
+    )
+    return up
+
+
+@needs_git
+def test_the_refresh_child_never_republishes_an_unreadable_state_as_empty(tmp_path: Path):
+    """No UNSLOTH_SKIP_NOTEBOOK_REFRESH here: that flag is what hid this."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+    before = _recorded(dest)
+    assert len(before) == NOTEBOOKS
+
+    state = dest / ".unsloth_sync_state"
+    state.chmod(0o000)
+    try:
+        run = _run(tpl, dest, up, refresh = True)
+    finally:
+        state.chmod(0o644)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert state.stat().st_size > 0, (
+        "the refresh child published an EMPTY state over a valid one; every notebook "
+        "it described is now read as a user edit and frozen\n" + run.stdout
+    )
+    assert _recorded(dest) == before, run.stdout
+    assert "0 updated" not in run.stdout, (
+        "the refresh ran with an empty LAST, which is the defect itself\n" + run.stdout
+    )
+
+
+@needs_git
+def test_a_failed_record_on_an_unchanged_notebook_rolls_it_back(tmp_path: Path):
+    """drop_unrecordable's removal, which nothing exercised before.
+
+    Its other call sites either hand it a user-edited file (hash gate declines) or a
+    missing one (early return), so the suite could call it seven times and roll back
+    zero. The `unchanged` branch is the reachable one that must actually remove.
+    """
+    tpl, dest = _template(tmp_path), tmp_path / "dest"
+    up = _json_upstream(tmp_path, NOTEBOOKS)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+    assert len(_published(dest)) == NOTEBOOKS
+
+    _commit_upstream_change(up)
+    run = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
+    assert "could not be written" in run.stdout, run.stdout + run.stderr
+    assert "kept (only header/footer changed upstream)" in run.stdout, run.stdout
+
+    survivors = _published(dest)
+    rolled_back = NOTEBOOKS - len([n for n in survivors if n.startswith("nb")])
+    assert rolled_back > 0, (
+        "no unchanged notebook was rolled back, so drop_unrecordable's removal is "
+        "still unexercised\n" + run.stdout
+    )
+    # and the retry has to restore them
+    second = _run(tpl, dest, up, refresh = True)
+    assert len(_published(dest)) == NOTEBOOKS + 1, second.stdout
+
+
+@needs_git
+def test_keeping_a_removed_notebook_keeps_its_record_too(tmp_path: Path):
+    """UNSLOTH_KEEP_REMOVED_NOTEBOOKS kept the FILE and dropped its RECORD, so the
+    next refresh read it as a user edit -- and turning the option back off never
+    recovered it, because by then it is no longer in the state."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+    victim = f"nb{1:09d}.ipynb"
+    assert victim in _recorded(dest)
+
+    (up / victim).unlink()
+    env = dict(os.environ, GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null")
+    subprocess.run(["git", "add", "-A"], cwd = up, check = True, env = env)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "del"],
+        cwd = up,
+        check = True,
+        env = env,
+    )
+
+    run = _run(tpl, dest, up, refresh = True, keep_removed = True)
+    assert (dest / victim).exists(), "the opt-out did not keep the file: " + run.stdout
+    assert victim in _recorded(dest), (
+        "the file was kept but its record was dropped, so the next refresh reads a "
+        "notebook the user never touched as a user edit\n" + run.stdout
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 1b and the populate retry, both driven with the refresh switched off so
+# only the parent's own state writers are in play.
+# ---------------------------------------------------------------------------
+def _big_template(tmp_path: Path, count: int) -> Path:
+    tpl = tmp_path / "tpl"
+    tpl.mkdir()
+    for i in range(1, count + 1):
+        (tpl / f"nb{i:09d}.ipynb").write_text("N", encoding = "utf-8")
+    (tpl / ".unsloth_template_commit").write_text("a" * 40 + "\n", encoding = "utf-8")
+    return tpl
+
+
+@needs_git
+def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
+    """Section 1b restores notebooks that are missing, then rewrites the state. When
+    that rewrite is abandoned the old state is kept, and it describes the tree as it
+    was BEFORE the restores -- so the restored files have to go back too. Leaving them
+    means the next refresh sees baked content where the state holds post-refresh
+    hashes and reads every one as a user edit."""
+    tpl, dest, up = _big_template(tmp_path, NOTEBOOKS), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    before = _recorded(dest)
+    assert len(before) == NOTEBOOKS
+
+    # the LAST 50, so they straddle the point where the appends start failing;
+    # victims processed before it are all restored no matter what the guard does
+    victims = [f"nb{i:09d}.ipynb" for i in range(NOTEBOOKS - 49, NOTEBOOKS + 1)]
+    for name in victims:
+        (dest / name).unlink()
+
+    run = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = False)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "could not be rewritten" in run.stdout, (
+        "the cap did not bite in section 1b; this test proves nothing\n" + run.stdout
+    )
+
+    assert _recorded(dest) == before, "the old state must be kept intact\n" + run.stdout
+    still_there = [n for n in victims if (dest / n).exists()]
+    assert not still_there, (
+        f"{len(still_there)} notebook(s) were restored while the state that describes "
+        f"them was abandoned, so the next refresh reads them as user edits: "
+        f"{still_there[:5]}"
+    )
+
+    # and it must STOP restoring once the rewrite is known to be doomed, rather than
+    # keep touching the tree and rely on the undo to clean up after it
+    restored = (
+        int(run.stdout.split("restored ")[1].split(" ")[0]) if "restored " in run.stdout else 0
+    )
+    assert restored < len(victims), (
+        f"section 1b restored all {restored} notebooks after deciding the state could "
+        f"not be written; the guard is evaluated once instead of per iteration"
+    )
+
+
+@needs_git
+def test_a_lost_merge_record_does_not_publish_the_short_state(tmp_path: Path):
+    """The merge loop is the only source of records for notebooks that exist upstream
+    but not in the baked template. Nothing can re-derive them, so a lost one must
+    abandon the staged state rather than publish it and merely withhold the marker.
+    A failed COPY is different and still publishes, because the next boot re-walks the
+    template."""
+    tpl, dest, up = _big_template(tmp_path, NOTEBOOKS), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+
+    # notebooks the refresh had added: present in $DEST and in the state, absent from
+    # the baked template, so only the merge loop can carry their records forward
+    state = dest / ".unsloth_sync_state"
+    extra = [f"up_only_{i:04d}.ipynb" for i in range(100)]
+    import hashlib
+
+    with state.open("a", encoding = "utf-8") as f:
+        for name in extra:
+            (dest / name).write_text("U", encoding = "utf-8")
+            f.write(hashlib.sha256(b"U").hexdigest() + "  " + name + "\n")
+    (dest / ".unsloth_sync_partial").write_text("", encoding = "utf-8")
+
+    run = _run(tpl, dest, up, cap_kib = CAP_KIB + 2, refresh = False)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    survived = _recorded(dest)
+    lost = [n for n in extra if n not in survived]
+    assert not lost, (
+        f"{len(lost)} upstream-only record(s) were dropped and the short state was "
+        f"published anyway; nothing can re-derive them: {lost[:5]}\n" + run.stdout
+    )

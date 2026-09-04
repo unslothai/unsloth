@@ -1260,3 +1260,74 @@ def test_a_byte_order_mark_does_not_hide_the_first_pin(shim, monkeypatch, tmp_pa
         "the BOM'd requirements file was forwarded verbatim, so its transformers pin "
         "reached the resolver instead of being recorded for the sidecar"
     )
+
+
+# _is_protected drops a package only when it is REALLY installed. The Dockerfile lets
+# the torchcodec bake and the non-amd64 vLLM bake fail on purpose, so without that
+# check a recovery `pip install vllm` prints "kept baked versions, skipped: vllm" over
+# an image that has no vLLM and the GRPO fast_inference path stays broken.
+#
+# Nothing exercised it, and not merely by omission: the shared `shim` fixture pins
+# _installed_names to _BakedImage, "an image where every bake succeeded", which is
+# exactly the case where the check cannot fire. These override it, because the whole
+# point of the check is the image where a bake DID fail.
+def test_a_baked_name_that_is_not_installed_is_still_forwarded(shim, monkeypatch):
+    assert "vllm" in shim._KEEP, "this test is meaningless if vllm is not protected"
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    monkeypatch.setattr(shim, "_installed_names", lambda: {"torch"})
+    ran = _full_argv(shim, ["pip", "install", "vllm"])
+    assert ran is not None, "the install was swallowed as 'already baked' on an image with no vLLM"
+    assert "vllm" in ran, ran
+
+
+def test_a_baked_name_that_IS_installed_is_still_dropped(shim, monkeypatch):
+    """The other half, so the test above cannot be satisfied by never protecting."""
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"), ("vllm", "0.11.0"))
+    monkeypatch.setattr(shim, "_installed_names", lambda: {"torch", "vllm"})
+    ran = _full_argv(shim, ["pip", "install", "vllm"])
+    assert ran is None or "vllm" not in ran, ran
+
+
+# A value-taking flag the scanner does not know is read as an install TARGET, so the
+# real target is never examined: the install forwards with the protected package kept
+# and no --constraint at all. The `=` form is unaffected, which is why this hides.
+# pip's --help prints one spelling per option, so seven hidden ALIASES were invisible
+# to a help scrape; --python-preference is a uv global documented in no help output.
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pip", "--default-timeout", "100", "install", "torch"],
+        ["pip", "--log-file", "/tmp/x.log", "install", "torch"],
+        ["pip", "--source-dir", "/tmp/s", "install", "torch"],
+        ["uv", "--python-preference", "system", "pip", "install", "torch"],
+    ],
+    ids = ["default-timeout", "log-file", "source-dir", "uv-python-preference"],
+)
+def test_a_separated_alias_value_is_not_read_as_a_target(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    ran = _full_argv(shim, argv)
+    assert (
+        ran is None or "torch" not in ran
+    ), f"the baked torch was forwarded for replacement: {ran}"
+
+
+def test_an_alias_value_does_not_hide_uv_pip_sync(shim, monkeypatch):
+    """The sync refusal is found by the same positional walk, so a mis-parsed global
+    hid it too."""
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    with pytest.raises(SystemExit) as exc:
+        _full_argv(shim, ["uv", "--python-preference", "system", "pip", "sync", "r.txt"])
+    assert "refusing" in str(exc.value), exc.value
+
+
+def test_the_value_flag_selfcheck_cannot_certify_what_it_cannot_inspect(shim):
+    """It used to scrape `--help` only, which structurally cannot see an alias, and
+    still printed OK. A selfcheck that can pass while blind is worse than none."""
+    src = SHIM_PATH.read_text(encoding = "utf-8")
+    body = src[src.index("def _selfcheck_value_flags():") :]
+    body = body[: body.index("\ndef ", 10)]
+    assert "option_list_all" in body, "pip must be introspected, not scraped"
+    assert (
+        "refusing to" in body and "sys.exit(1)" in body
+    ), "failing to introspect pip must be a FAILURE, never a silent pass"
+    assert '[REAL["uv"], "--help"]' in body, "uv globals must be checked too"

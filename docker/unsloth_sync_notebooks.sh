@@ -190,6 +190,18 @@ trap 'finalize; lock_release' EXIT
 
 lock_acquire
 
+# Undo what section 1b restored when its state rewrite is abandoned. The old $STATE
+# is kept in that case and describes the tree as it was BEFORE these files came back,
+# so leaving them on disk would contradict it.
+undo_restores() {
+    [ "${#RESTORED_PATHS[@]}" -gt 0 ] || return 0
+    for _p in "${RESTORED_PATHS[@]}"; do
+        rm -f "$_p" 2>/dev/null || true
+    done
+    RESTORED_PATHS=()
+}
+
+
 record_state() {
     : > "$STATE.tmp" 2>/dev/null || return 0
     ( cd "$DEST" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
@@ -217,6 +229,11 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     # marker is stamped anyway because no copy failed.
     rm -f "$STATE.tmp" 2>/dev/null || true
     populate_failed=0
+    # Set only when the merge loop below loses a record. Those are the sole records for
+    # notebooks that exist upstream but not in the baked template, so nothing can
+    # re-derive them; a failed COPY, by contrast, is re-walked from the template on the
+    # next boot, which is why that case still publishes.
+    merge_lost=0
     stage_ok=1
     if ! : > "$STATE.tmp" 2>/dev/null; then
         # Still unstageable, so $DEST itself is the problem. Nothing has been copied
@@ -262,6 +279,14 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     # file" branch, and the upstream-only ones are never visited at all. Keeping only
     # this loop's records hands all of them to the user permanently, while the commit
     # marker below is stamped anyway, so it looks converged.
+    # -r, not just -f. Without set -e a failed redirect below simply skips the loop,
+    # so an unreadable $STATE silently contributes NO preserved records and the merged
+    # state is published without them. These are the only records for notebooks that
+    # exist upstream but not in the baked template, and nothing can re-derive them.
+    if [ "$stage_ok" = 1 ] && [ -f "$STATE" ] && [ ! -r "$STATE" ]; then
+        echo "[unsloth-nb] the sync state in $DEST is unreadable; leaving it alone rather than republishing it without the records it holds"
+        stage_ok=0
+    fi
     if [ "$stage_ok" = 1 ] && [ -f "$STATE" ]; then
         declare -A POPULATED=()
         while IFS= read -r line; do
@@ -275,11 +300,22 @@ if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
             # same reason as the copy loop: a dropped record here hands a notebook the
             # refresh already manages to the user permanently
             printf '%s\n' "$line" >> "$STATE.tmp" \
-                || populate_failed=$((populate_failed + 1))
+                || { populate_failed=$((populate_failed + 1)); merge_lost=1; }
         done < "$STATE"
         unset POPULATED
     fi
-    [ "$stage_ok" = 1 ] && { mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"; }
+    # Only publish a COMPLETE state. Section 1b already states this rule and follows
+    # it; this sibling published the short one and merely withheld the marker, which is
+    # not equivalent here: the merge loop above is the only source of records for
+    # notebooks that exist upstream but not in the baked template, and unlike the
+    # refresh child there is no rollback to compensate. Discarding is recoverable
+    # instead -- the old state keeps those records, and with no old state at all the
+    # next boot re-runs this populate from the template.
+    if [ "$stage_ok" = 1 ] && [ "$merge_lost" -eq 0 ]; then
+        mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
+    else
+        rm -f "$STATE.tmp" 2>/dev/null || true
+    fi
     if [ "$stage_ok" != 1 ]; then
         : > "$PARTIAL" 2>/dev/null || true
         rm -f "$SYNCED" 2>/dev/null || true
@@ -311,6 +347,10 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     # good. Here the old $STATE is still valid, so abandon the rewrite rather than
     # publish a truncated one.
     rs_ok=1
+    # Everything this loop puts back, so a doomed rewrite can be undone. These files
+    # were ABSENT before the loop ran, so removing them restores the exact prior state
+    # rather than discarding anything a user has.
+    RESTORED_PATHS=()
     rm -f "$RS_TMP" 2>/dev/null || true
     if ! : > "$RS_TMP" 2>/dev/null; then
         rs_ok=0
@@ -324,6 +364,11 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         rs_ok=0
     fi
     [ "$rs_ok" = 1 ] && while IFS= read -r line; do
+        # re-tested INSIDE the loop, like the populate loop's `stage_ok || continue`.
+        # Evaluating it once let a failed append keep restoring files the state would
+        # never record, leaving them at BAKED content while the kept state holds
+        # post-refresh hashes: the next refresh then reads every one as a user edit.
+        [ "$rs_ok" = 1 ] || continue
         h="${line%%  *}"; rel="${line#*  }"
         if [ -n "$rel" ] && [ "$rel" != "$line" ] \
            && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
@@ -331,6 +376,7 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
             if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
                 # cp -a preserves the TEMPLATE's root:root 0644; hand it to the host user.
                 own_like_dir "$DEST/$rel" "$(dirname "$DEST/$rel")"
+                RESTORED_PATHS+=("$DEST/$rel")
                 new_h="$(hash_of "$DEST/$rel")"
                 printf '%s  %s\n' "$new_h" "$rel" >> "$RS_TMP" || rs_ok=0
                 restored=$((restored + 1))
@@ -351,11 +397,13 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         mv "$RS_TMP" "$STATE" 2>/dev/null || {
             echo "[unsloth-nb] the sync state could not be published in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
             rm -f "$RS_TMP"
+            undo_restores
             rm -f "$SYNCED" 2>/dev/null || true
         }
     else
         echo "[unsloth-nb] the sync state could not be rewritten in $DEST; keeping the previous state and dropping the sync marker so the next start retries"
         rm -f "$RS_TMP"
+        undo_restores
         rm -f "$SYNCED" 2>/dev/null || true
     fi
     # Only when one actually went backwards: dropping the marker on every restore
@@ -393,6 +441,18 @@ remote="$(timeout "$TIMEOUT" git ls-remote "$REMOTE" HEAD 2>/dev/null | cut -f1)
 TMP="$(mktemp -d)"
 if ! timeout "$TIMEOUT" git clone -q --depth 1 "$REMOTE" "$TMP" 2>/dev/null; then
     rm -rf "$TMP"; exit 0             # network died mid-way: keep what we have
+fi
+
+# The refresh child reads the state the same way, and this is the copy that runs in
+# the default configuration. Without set -e the redirect below just fails, LAST stays
+# empty, every notebook is counted `kept` rather than recorded, and TMPSTATE publishes
+# EMPTY over a valid state with failed still 0, so the marker is stamped. Section 1b's
+# own recovery drops $SYNCED, which guarantees this child does not exit early and
+# walks straight into it.
+if [ -f "$STATE" ] && [ ! -r "$STATE" ]; then
+    echo "[unsloth-nb] the sync state in $DEST is unreadable; skipping the refresh rather than republishing it empty"
+    rm -rf "$TMP"
+    exit 0
 fi
 
 declare -A LAST
@@ -537,7 +597,7 @@ done < <(find "$TMP" -type f -print0)
 # removed, so an edited notebook stays; it merely stops being managed, which it had
 # already stopped being.
 removed=0
-if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ]; then
+if [ "${#LAST[@]}" -gt 0 ]; then
     # A case-only rename upstream looks like a deletion here, because the clone is on
     # a case-sensitive filesystem while $DEST may be a macOS or Windows bind mount
     # where the old path resolves to the file just published.
@@ -554,6 +614,15 @@ if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ];
         [ -f "$dst" ] || continue
         [ -n "${LAST[$rel]}" ] || continue
         [ "$(hash_of "$dst")" = "${LAST[$rel]}" ] || continue
+        if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" = "1" ]; then
+            # Keep the record WITH the file, exactly as UNSLOTH_KEEP_DELETED_NOTEBOOKS
+            # does above. Skipping the whole block dropped the record of a file it had
+            # deliberately kept, so the next refresh read it as a user edit -- and
+            # turning the option back off never recovered it, because by then it is no
+            # longer in LAST.
+            record_tmpstate "${LAST[$rel]}" "$rel" || drop_unrecordable "$rel"
+            continue
+        fi
         if rm -f "$dst" 2>/dev/null; then
             removed=$((removed + 1))
             # one level, and never $DEST itself: `rmdir -p` would climb out of it
