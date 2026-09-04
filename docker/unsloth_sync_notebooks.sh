@@ -401,6 +401,16 @@ if ! : > "$TMPSTATE" 2>/dev/null; then
     exit 0
 fi
 updated=0; kept=0; unchanged=0; failed=0
+# Every append to the staged state must be checked. Losing a record here (ENOSPC,
+# quota) while `failed` stays 0 publishes a truncated state AND advances the marker,
+# which is exactly the wedge described at the publish step below: the next boot exits
+# on remote == last, and once upstream moves, every notebook whose hash we dropped
+# reads as user-edited and is kept forever. Counting it as a failure reuses the retry
+# path the copy failures already take. The three sites that already increment `failed`
+# are left alone: their gate fires regardless of whether the append landed.
+record_tmpstate() {
+    printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE" || failed=$((failed + 1))
+}
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
     case "$rel" in .git|.git/*) continue ;; esac
@@ -412,18 +422,18 @@ while IFS= read -r -d '' f; do
             continue
         fi
         if [ -n "$rec" ] && [ "$(hash_of "$dst")" != "$rec" ]; then
-            printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
+            record_tmpstate "$rec" "$rel"
             kept=$((kept + 1))
             continue
         fi
         if [ -n "$rec" ] && middle_unchanged "$dst" "$f"; then
             # a changed package spec is NOT cosmetic and falls through below
-            printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
+            record_tmpstate "$rec" "$rel"
             unchanged=$((unchanged + 1))
             continue
         fi
     elif [ -n "${LAST[$rel]:-}" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" = "1" ]; then
-        printf '%s  %s\n' "${LAST[$rel]}" "$rel" >> "$TMPSTATE"
+        record_tmpstate "${LAST[$rel]}" "$rel"
         kept=$((kept + 1))
         continue
     fi
@@ -437,7 +447,7 @@ while IFS= read -r -d '' f; do
         staged="$(hash_of "$new")"
         if [ -e "$dst" ] && [ "$(hash_of "$dst")" != "${LAST[$rel]:-}" ]; then
             rm -f "$new"
-            printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+            record_tmpstate "${LAST[$rel]:-}" "$rel"
             kept=$((kept + 1))
             continue
         fi
@@ -445,7 +455,7 @@ while IFS= read -r -d '' f; do
         # a single-FILE bind mount cannot be renamed over (EBUSY)
         if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp_keep_meta "$f" "$dst"; }; then
             # $staged, not hash_of "$dst": both branches write the bytes of "$f"
-            printf '%s  %s\n' "$staged" "$rel" >> "$TMPSTATE"
+            record_tmpstate "$staged" "$rel"
             updated=$((updated + 1))
         else
             # carry the PREVIOUS record forward, or the next refresh reads $dst as

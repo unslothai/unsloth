@@ -659,18 +659,30 @@ def _install_index(tool, argv):
     `--constraint` appended, which neither accepts, and `uv tool install transformers`
     was filtered down to nothing and reported ok, installing NO tool at all.
 
-    So for uv the nearest preceding non-option token has to be `pip`. Scanning back
-    over options keeps `uv pip --quiet install` and `uv --directory X pip install`
-    working."""
+    So match the command path POSITIONALLY: `install` for pip, `pip install` for uv.
+    Finding it needs option VALUES skipped, not just options -- `uv pip --directory
+    /tmp install torch` is valid (uv lists --directory under Global options), and
+    treating `/tmp` as the subcommand loses the command entirely, which is the worst
+    outcome available here: the install runs unfiltered and unconstrained, free to
+    replace the baked torch/CUDA stack. _VALUE_FLAGS is the same set the tail scanner
+    uses and _selfcheck_value_flags() holds it to the real CLIs at build time."""
+    expect = ["install"] if tool == "pip" else ["pip", "install"]
+    seen = 0
+    skip = False
     for i, tok in enumerate(argv):
-        if tok != "install":
+        if skip:
+            skip = False
             continue
-        if tool == "pip":
+        if tok.startswith("-"):
+            # `--flag=value` carries its own value; a bare one eats the next token
+            if "=" not in tok and tok in _VALUE_FLAGS:
+                skip = True
+            continue
+        if tok != expect[seen]:
+            return None
+        seen += 1
+        if seen == len(expect):
             return i
-        for j in range(i - 1, -1, -1):
-            if not argv[j].startswith("-"):
-                return i if argv[j] == "pip" else None
-        return None
     return None
 
 

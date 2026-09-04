@@ -403,3 +403,77 @@ def test_the_retry_after_a_failed_append_converges(tmp_path: Path):
     assert len(_state(dest)) == 15, _state(dest)
     assert (dest / ".unsloth_sync_commit").exists(), run.stdout
     assert not (dest / ".unsloth_sync_partial").exists()
+
+
+# CLASS GUARD, not another instance test. An unchecked append to a staged state file
+# has now been found four separate times in this script: the populate copy loop, the
+# populate merge block, the refresh restore loop (RS_TMP) and the refresh publish loop
+# (TMPSTATE). Each time the record was lost while the failure counter stayed 0, so a
+# truncated state was published AND the commit marker advanced, which strands every
+# notebook whose hash was dropped. Rather than wait for the fifth, require every append
+# to a staged state file to be accounted for.
+_STAGED_STATE_TARGETS = ('>> "$STATE.tmp"', '>> "$TMPSTATE"', '>> "$RS_TMP"')
+
+# an append is accounted for if it handles its own failure, or if the very next lines
+# count one; `record_tmpstate` is the shared helper that does the former
+_ACCOUNTED = (
+    "|| populate_failed=",
+    "|| failed=",
+    "|| rs_ok=0",
+    "populate_failed=$((populate_failed + 1))",
+    "failed=$((failed + 1))",
+    "rs_ok=0",
+)
+
+
+def _record_state_body(lines):
+    """Line range of record_state(), which is EXEMPT below because it is dead code:
+    it has no caller anywhere in the tree, so its unchecked append cannot fire. The
+    companion test asserts it stays uncalled, because the moment it gains one this
+    exemption is wrong."""
+    start = next(i for i, l in enumerate(lines) if l.startswith("record_state() {"))
+    end = next(i for i in range(start, len(lines)) if lines[i] == "}")
+    return range(start, end + 1)
+
+
+def test_every_staged_state_append_is_checked():
+    lines = SYNC.read_text(encoding = "utf-8").splitlines()
+    exempt = _record_state_body(lines)
+    unchecked = []
+    for i, line in enumerate(lines):
+        if i in exempt:
+            continue
+        if not any(t in line for t in _STAGED_STATE_TARGETS):
+            continue
+        window = " ".join(lines[i : i + 3])
+        if not any(marker in window for marker in _ACCOUNTED):
+            unchecked.append((i + 1, line.strip()))
+    assert not unchecked, (
+        "these appends to a staged state file neither handle their own failure nor "
+        "have one counted immediately after, so a lost record would still publish a "
+        "truncated state and advance the commit marker:\n"
+        + "\n".join(f"  line {n}: {t}" for n, t in unchecked)
+    )
+
+
+def test_the_marker_advance_is_gated_on_the_failure_counters():
+    """The guard above is only worth anything while the counters still hold the
+    marker back."""
+    body = SYNC.read_text(encoding = "utf-8")
+    assert '[ "$failed" -eq 0 ] && [ "$published" -eq 1 ]' in body
+    assert '[ "$populate_failed" -eq 0 ]' in body
+
+
+def test_record_state_is_still_uncalled():
+    """The exemption above depends on it. A call site makes its unchecked append live,
+    and it has a second problem waiting: its loop is a PIPELINE, so a failure counter
+    set inside would not survive the subshell."""
+    body = SYNC.read_text(encoding = "utf-8")
+    calls = [
+        ln.strip()
+        for ln in body.splitlines()
+        if "record_state" in ln
+        and not ln.startswith("record_state() {")
+        and not ln.lstrip().startswith("#")
+    ]
+    assert not calls, f"record_state gained a caller; the exemption is now unsound: {calls}"

@@ -188,8 +188,10 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
     ), "the staged hash must be taken BEFORE the rename that publishes it"
     publish = block.index('mv -f "$new" "$dst"')
     tail = block[publish:]
+    # the append goes through record_tmpstate now, which checks the write; what this
+    # test guards is unchanged, that the value recorded is $staged and not a re-read
     assert re.search(
-        r"printf '%s  %s\\n' \"\$staged\" \"\$rel\"", tail
+        r"(printf '%s  %s\\n'|record_tmpstate) \"\$staged\" \"\$rel\"", tail
     ), "the state line must record the staged hash, not a re-read of $dst"
     assert not re.search(r"printf '%s  %s\\n' \"\$\(hash_of \"\$dst\"\)\"", tail), (
         "re-reading $dst after the rename adopts whatever save landed in that "

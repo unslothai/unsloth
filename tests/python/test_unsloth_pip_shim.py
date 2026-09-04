@@ -1146,3 +1146,36 @@ def test_a_protected_target_under_uv_tool_install_is_not_swallowed(shim, monkeyp
     ran = _full_argv(shim, ["uv", "tool", "install", "transformers"])
     assert ran is not None, "the tool install was swallowed and reported ok"
     assert ran[-1] == "transformers", ran
+
+
+# uv accepts its global options between `pip` and `install`, e.g.
+# `uv pip --directory /tmp install torch==9.9`. Locating the subcommand by stepping
+# back over anything starting with "-" stopped at the VALUE (/tmp) and gave up, so the
+# install ran with no filtering and no protected constraints -- free to replace the
+# baked torch/CUDA stack. Missing the command is far worse than over-matching it.
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["uv", "pip", "--directory", "/tmp", "install", "snac"],
+        ["uv", "pip", "--python", "/usr/bin/python3", "install", "snac"],
+        ["uv", "pip", "--cache-dir", "/c", "--color", "never", "install", "snac"],
+        ["uv", "pip", "--directory=/tmp", "install", "snac"],
+    ],
+    ids = ["directory", "python", "two-value-opts", "equals-form"],
+)
+def test_value_taking_options_before_install_do_not_lose_the_command(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"), ("torch", "2.11.0"))
+    ran = _full_argv(shim, argv)
+    assert ran is not None, f"{' '.join(argv)} was not recognised as an install"
+    assert "--constraint" in ran, "the baked stack was left unprotected for a real uv pip install"
+
+
+def test_a_protected_pin_behind_a_value_option_is_still_held(shim, monkeypatch):
+    """The consequence that matters: `torch==9.9` must never reach the real tool.
+
+    Losing the command let it through verbatim; recognising it means torch is a
+    protected target, so the run is filtered down to nothing instead.
+    """
+    _fake_distributions(monkeypatch, ("torch", "2.11.0"))
+    ran = _full_argv(shim, ["uv", "pip", "--directory", "/tmp", "install", "torch==9.9"])
+    assert ran is None or "torch==9.9" not in ran, f"the baked torch was replaceable: {ran}"
