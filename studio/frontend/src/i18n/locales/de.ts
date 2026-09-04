@@ -2278,7 +2278,7 @@ export const de = {
         "Die Trainingseinstellungen haben sich während der Überprüfung geändert. Prüfen Sie sie und starten Sie das Training erneut.",
       validation: {
         s3MultimodalUnsupported:
-          "S3-Datensätze werden für Vision- oder Audio-Training noch nicht unterstützt.",
+          "S3-Datensätze werden für Vision-Training noch nicht unterstützt.",
         s3BucketRequired: "Geben Sie zuerst den Namen eines S3-Buckets ein.",
         s3CredentialsRequired:
           "Geben Sie S3-Zugriffsschlüssel an oder aktivieren Sie die IAM-Rolle.",
