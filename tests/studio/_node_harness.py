@@ -41,10 +41,9 @@ def read(path: Path) -> str:
 def require_code_anchor(marker: str, role: str) -> None:
     """Refuse a comment as a slice anchor.
 
-    A comment is prose about the code, not the code, so it can be reworded or dropped
-    without a line of behaviour moving. #10114 trimmed comments across studio/frontend
-    and took 93 tests here down with it, none of which were about anything it changed.
-    Anchor on the declaration or statement the comment sits above instead.
+    Comments are prose, so rewording one moves no behaviour but still breaks the slice:
+    #10114 trimmed studio/frontend comments and failed 93 tests here over nothing it
+    changed. Anchor on the declaration the comment sits above instead.
     """
     if marker.lstrip().startswith(("//", "/*")):
         raise AssertionError(

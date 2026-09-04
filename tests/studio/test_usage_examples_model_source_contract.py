@@ -15,8 +15,7 @@ API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
 KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
 KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
-# The declaration below the hook, so the slice ends where the hook does. Not the comment
-# above it: prose moves without the code moving.
+# Ends the hook slice on the declaration below it, not a comment: prose can move alone.
 AFTER_HOOK = "function canUseLocalAgentDetection(base: string): boolean {"
 
 
