@@ -141,6 +141,124 @@ def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
     assert _needs_pass() is False
 
 
+@pytest.mark.parametrize("rocm_ver", [(6, 0), (6, 1), (6, 2), (6, 3)])
+def test_automatic_generic_torch_uses_the_bnb_compatibility_floor(monkeypatch, rocm_ver):
+    """Fresh automatic generic installs floor old host ROCm tags to rocm6.4."""
+    _host(monkeypatch, torch = ("2.6.0+cpu", ""), gfx = ("gfx1100",), rocm_ver = rocm_ver)
+    installs = _repair_installs(monkeypatch)
+    assert installs == ["https://download.pytorch.org/whl/rocm6.4"]
+
+
+@pytest.mark.parametrize(
+    "rocm_ver, expected",
+    [
+        ((6, 4), "rocm6.4"),
+        ((7, 0), "rocm7.0"),
+        ((7, 1), "rocm7.1"),
+        ((7, 2), "rocm7.2"),
+    ],
+)
+def test_automatic_generic_torch_keeps_newer_published_families(monkeypatch, rocm_ver, expected):
+    _host(monkeypatch, torch = ("2.6.0+cpu", ""), gfx = ("gfx1100",), rocm_ver = rocm_ver)
+    installs = _repair_installs(monkeypatch)
+    assert installs == [f"https://download.pytorch.org/whl/{expected}"]
+
+
+@pytest.mark.parametrize("rocm_ver", [(6, 0), (6, 1), (6, 2), (6, 3)])
+def test_stale_automatic_generic_rocm_torch_escapes_the_update_fast_path(monkeypatch, rocm_ver):
+    _host(
+        monkeypatch,
+        torch = (f"2.6.0+rocm{rocm_ver[0]}.{rocm_ver[1]}", f"{rocm_ver[0]}.{rocm_ver[1]}"),
+        gfx = ("gfx1100",),
+        rocm_ver = rocm_ver,
+    )
+    assert _needs_pass() is True
+    installs = _repair_installs(monkeypatch)
+    assert installs == ["https://download.pytorch.org/whl/rocm6.4"]
+
+
+@pytest.mark.parametrize(
+    "rocm_ver, installed_tag",
+    [((6, 4), "6.3"), ((7, 0), "6.1")],
+)
+def test_old_generic_tag_is_repaired_even_when_host_selects_newer_rocm(
+    monkeypatch, rocm_ver, installed_tag
+):
+    _host(
+        monkeypatch,
+        torch = (f"2.6.0+rocm{installed_tag}", installed_tag),
+        gfx = ("gfx1100",),
+        rocm_ver = rocm_ver,
+    )
+    assert _needs_pass() is True
+
+
+@pytest.mark.parametrize(
+    "rocm_ver, installed",
+    [
+        ((6, 4), "2.6.0+rocm6.4"),
+        ((7, 0), "2.9.0+rocm7.0"),
+        ((7, 1), "2.10.0+rocm7.1"),
+        ((7, 2), "2.11.0+rocm7.2"),
+    ],
+)
+def test_compatible_automatic_generic_rocm_torch_keeps_the_fast_path(
+    monkeypatch, rocm_ver, installed
+):
+    _host(
+        monkeypatch,
+        torch = (installed, installed.split("+rocm", 1)[-1]),
+        gfx = ("gfx1100",),
+        rocm_ver = rocm_ver,
+    )
+    assert _needs_pass() is False
+    installs = _repair_installs(monkeypatch)
+    assert installs == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.1"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.1"},
+    ],
+)
+def test_explicit_rocm6_1_pins_remain_authoritative(monkeypatch, env):
+    _host(
+        monkeypatch,
+        torch = ("2.6.0+cpu", ""),
+        gfx = ("gfx1100",),
+        rocm_ver = (6, 1),
+        env = env,
+    )
+    installs = _repair_installs(monkeypatch)
+    assert installs == ["https://download.pytorch.org/whl/rocm6.1"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm6.1"},
+        {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.1"},
+    ],
+)
+def test_explicit_rocm6_1_build_is_not_marked_stale(monkeypatch, env):
+    _host(
+        monkeypatch,
+        torch = ("2.6.0+rocm6.1", "6.1"),
+        gfx = ("gfx1100",),
+        rocm_ver = (6, 1),
+        env = env,
+    )
+    assert _needs_pass() is False
+
+
+def test_gfx906_legacy_torch_routing_is_not_floored_to_generic_bnb_rocm6_4(monkeypatch):
+    _host(monkeypatch, torch = ("2.6.0+cpu", ""), gfx = ("gfx906",), rocm_ver = (6, 4))
+    installs = _repair_installs(monkeypatch)
+    assert installs == ["https://download.pytorch.org/whl/rocm6.3"]
+
+
 @pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
 def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch, gfx):
     """rocm6.4 does not carry gfx1150/gfx1151 (AMD dates support to 7.1), and

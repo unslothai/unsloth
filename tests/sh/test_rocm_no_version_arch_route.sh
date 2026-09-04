@@ -66,6 +66,9 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_ROCM_BNB_GENERIC_FLOOR_TAG=/p' "$INSTALL_SH"
+    sed -n '/^_rocm_bnb_compatible_generic_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/proc/driver/nvidia|$_FAKE_PROC_NV_DIR|g" \
@@ -73,7 +76,7 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
   > "$_FUNC_FILE"
 
 for _fn in _rocm_sdk_install_hint _rocm_tag_from_hipconfig _rocm_tag_from_rpm \
-           _detect_rocm_version_tag _amd_arch_index_family_for_gfx get_torch_index_url; do
+           _detect_rocm_version_tag _rocm_bnb_compatible_generic_tag _amd_arch_index_family_for_gfx get_torch_index_url; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "  FAIL: install.sh no longer defines $_fn() at column 0"
         exit 1

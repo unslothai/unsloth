@@ -1160,7 +1160,7 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 3))
     def test_rocm_63_selects_correct_tag(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
-        """ROCm 6.3 should select rocm6.3 tag."""
+        """Automatic generic ROCm 6.3 installs use the bitsandbytes-compatible floor."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = "\n"
@@ -1168,7 +1168,7 @@ class TestEnsureRocmTorch:
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         torch_call = mock_pip.call_args_list[0]
-        assert "rocm6.3" in str(torch_call)
+        assert "rocm6.4" in str(torch_call)
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -2240,6 +2240,54 @@ class TestRocmTorchIndex:
         )
         assert tag == "rocm6.4"
 
+    @pytest.mark.parametrize(
+        "ver, published, automatic",
+        [
+            ((6, 0), "rocm6.0", "rocm6.4"),
+            ((6, 1), "rocm6.1", "rocm6.4"),
+            ((6, 2), "rocm6.2", "rocm6.4"),
+            ((6, 3), "rocm6.3", "rocm6.4"),
+            ((6, 4), "rocm6.4", "rocm6.4"),
+            ((7, 0), "rocm7.0", "rocm7.0"),
+            ((7, 1), "rocm7.1", "rocm7.1"),
+            ((7, 2), "rocm7.2", "rocm7.2"),
+        ],
+    )
+    def test_automatic_generic_tag_adds_only_the_bnb_floor(self, ver, published, automatic):
+        assert stack_mod._generic_pytorch_rocm_tag(ver) == published
+        assert stack_mod._automatic_generic_pytorch_rocm_tag(ver) == automatic
+
+    def test_shell_and_python_automatic_floor_are_in_parity(self):
+        """The install.sh helper must floor exactly the same old generic tags as Python."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        constant = re.search(r"^_ROCM_BNB_GENERIC_FLOOR_TAG=.*$", source, re.M)
+        helper = _extract_sh_function_body(source, "_rocm_bnb_compatible_generic_tag")
+        assert constant and helper
+        shell = shutil.which("sh")
+        if not shell:
+            pytest.skip("POSIX shell needed for resolver parity")
+        tags = tuple(_ROCM_TORCH_INDEX.values())
+        script = (
+            "set -eu\n"
+            + constant.group(0)
+            + "\n"
+            + helper
+            + "\n"
+            + "for tag in "
+            + " ".join(tags)
+            + "; do _rocm_bnb_compatible_generic_tag \"$tag\"; done\n"
+        )
+        result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+        assert result.returncode == 0, result.stderr
+        shell_tags = result.stdout.splitlines()
+        python_tags = [
+            stack_mod._automatic_generic_pytorch_rocm_tag(ver)
+            for ver, tag in _ROCM_TORCH_INDEX.items()
+            if tag in tags
+        ]
+        # The dict is ordered newest-first, as is the shell input above.
+        assert shell_tags == python_tags
+
 
 # TEST: hardware.py -- IS_ROCM flag and detect_hardware
 
@@ -2720,7 +2768,8 @@ class TestInstallShStructure:
         """ROCm 7.2 should pass through directly; 7.3+ falls back to rocm7.2."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        assert 'echo "$_base/rocm7.2"' in source  # fallback for unknown future versions
+        assert "_rocm_selected_tag=rocm7.2" in source  # fallback for unknown future versions
+        assert "_rocm_bnb_compatible_generic_tag" in source
         assert "rocm6.*" in source
         assert "rocm7.0" in source
         assert "rocm7.1" in source
@@ -3111,6 +3160,8 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        bnb_floor_constant = re.search(r"^_ROCM_BNB_GENERIC_FLOOR_TAG=.*$", source, re.M)
+        bnb_floor_fn = _extract_sh_function_body(source, "_rocm_bnb_compatible_generic_tag")
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -3135,7 +3186,7 @@ class TestInstallShStructure:
                 "_detect_rocm_version_tag",
             )
         ]
-        assert fn and probe_fn and family_fn and arch_fns
+        assert fn and probe_fn and family_fn and arch_fns and bnb_floor_constant and bnb_floor_fn
         assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
@@ -3173,6 +3224,10 @@ class TestInstallShStructure:
                 + arch_fns
                 + "\n"
                 + "\n".join(version_fns)
+                + "\n"
+                + bnb_floor_constant.group(0)
+                + "\n"
+                + bnb_floor_fn
                 + "\n"
                 + fn
                 + "\n"
