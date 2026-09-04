@@ -500,8 +500,8 @@ def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch,
     reason = "POSIX directory symlinks and Unix sockets are required",
 )
 def test_linux_runtime_scan_follows_symlinked_root(monkeypatch, tmp_path):
-    target = tmp_path / "runtime-target"
-    target.mkdir()
+    short_root = tempfile.mkdtemp(prefix = "us-runtime-", dir = "/tmp")
+    target = Path(short_root)
     runtime_link = tmp_path / "runtime-link"
     runtime_link.symlink_to(target, target_is_directory = True)
     workdir = tmp_path / "work"
@@ -510,11 +510,13 @@ def test_linux_runtime_scan_follows_symlinked_root(monkeypatch, tmp_path):
     server.bind(str(target / "host.sock"))
     monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
     monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: False)
     try:
         with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
             os_sandbox._validate_runtime_paths((str(runtime_link),), str(workdir))
     finally:
         server.close()
+        shutil.rmtree(short_root, ignore_errors = True)
 
 
 @pytest.mark.parametrize("detector_returncode", [0, 1, 2])
@@ -597,21 +599,25 @@ def test_workdir_validation_rejects_fifo(tmp_path):
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason = "pathname Unix sockets are unavailable")
 def test_workdir_validation_rejects_unix_socket(tmp_path):
-    workdir = tmp_path / "work"
-    workdir.mkdir()
-    server = socket.socket(socket.AF_UNIX)
-    try:
-        server.bind(str(workdir / "host.sock"))
-        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
-            os_sandbox._validate_workdir(str(workdir))
-    finally:
-        server.close()
+    with tempfile.TemporaryDirectory(prefix = "us-wd-", dir = "/tmp") as short_root:
+        workdir = Path(short_root) / "work"
+        workdir.mkdir()
+        server = socket.socket(socket.AF_UNIX)
+        try:
+            server.bind(str(workdir / "host.sock"))
+            with pytest.raises(
+                os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"
+            ):
+                os_sandbox._validate_workdir(str(workdir))
+        finally:
+            server.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX directory permissions are required")
 @pytest.mark.parametrize("hidden_kind", ["fifo", "unix-socket", "external-hardlink"])
 def test_workdir_validation_fails_closed_on_unreadable_subtree(tmp_path, hidden_kind):
-    workdir = tmp_path / "work"
+    short_root = tempfile.mkdtemp(prefix = "us-hidden-", dir = "/tmp")
+    workdir = Path(short_root) / "work"
     hidden = workdir / "hidden"
     hidden.mkdir(parents = True)
     server = None
@@ -642,6 +648,7 @@ def test_workdir_validation_fails_closed_on_unreadable_subtree(tmp_path, hidden_
         hidden.chmod(0o700)
         if server is not None:
             server.close()
+        shutil.rmtree(short_root, ignore_errors = True)
 
 
 def test_macos_backend_is_fail_closed_until_detached_descendants_are_owned(tmp_path):

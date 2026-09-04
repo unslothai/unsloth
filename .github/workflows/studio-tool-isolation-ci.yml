@@ -34,9 +34,9 @@ env:
 
 jobs:
   linux-bubblewrap:
-    name: Linux Bubblewrap live qualification
+    name: Native Linux capability and fail-closed behavior
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,37 +44,27 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Verify preinstalled Bubblewrap and install test dependencies
+      - name: Install probe dependency
         run: |
-          command -v bwrap
-          bwrap --version
-          python -m pip install --upgrade pip
-          python -m pip install -r studio/backend/requirements/studio.txt
-          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
-          python -m pip install 'transformers>=4.51,<5.5'
-      - name: Require a native Linux qualified backend
+          python -m pip install structlog
+      - name: Qualify when available, otherwise prove explicit unavailability
         working-directory: studio/backend
         run: |
           python - <<'PY'
+          import shutil
           from core.inference.os_sandbox import capability_snapshot
           capability = capability_snapshot(force=True)
           print(capability)
           assert capability.environment == "native_linux", capability
-          assert capability.qualified, capability
-          assert capability.protection_state == "protected", capability
+          if shutil.which("bwrap"):
+              assert capability.qualified, capability
+              assert capability.protection_state == "protected", capability
+          else:
+              assert not capability.qualified, capability
+              assert capability.protection_state == "unavailable", capability
+              assert "not installed" in capability.reason, capability
+              print("NATIVE_LINUX_UNVERIFIED: hosted runner has no root-controlled Bubblewrap")
           PY
-      - name: Focused backend and live enforcement tests
-        working-directory: studio/backend
-        run: |
-          python -m pytest -q -s --tb=short \
-            tests/test_os_sandbox.py \
-            tests/test_tool_isolation_api.py \
-            tests/test_full_access_tool_prompt.py \
-            tests/test_tool_output_streaming.py \
-            tests/test_studio_tool_loop.py \
-            tests/test_safetensors_tool_loop.py \
-            tests/test_tool_loop_controller.py
 
   limited-hosts:
     name: ${{ matrix.label }} Limited fail-closed behavior
@@ -112,24 +102,31 @@ jobs:
           -k "not qualified_native_capability"
 
   nested-container:
-    name: Nested container Bubblewrap probe
+    name: Container Bubblewrap live qualification and tool paths
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    container:
+      image: ubuntu:24.04
+      options: --privileged
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Exercise the live probe inside a fresh outer container
+      - name: Install Bubblewrap and test dependencies in the outer container
         run: |
-          docker run --rm --privileged \
-            -v "$PWD:/repo:ro" \
-            -w /repo/studio/backend \
-            ubuntu:22.04 \
-            bash -ceu '
-              apt-get update
-              apt-get install -y bubblewrap python3 python3-pip
-              python3 -m pip install structlog
-              PYTHONPATH=. python3 - <<"PY"
+          apt-get update
+          apt-get install -y bubblewrap python3 python3-pip python3-venv
+          python3 -m venv /opt/tool-isolation-venv
+          echo "/opt/tool-isolation-venv/bin" >> "$GITHUB_PATH"
+          /opt/tool-isolation-venv/bin/python -m pip install --upgrade pip
+          /opt/tool-isolation-venv/bin/python -m pip install -r studio/backend/requirements/studio.txt
+          /opt/tool-isolation-venv/bin/python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
+          /opt/tool-isolation-venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          /opt/tool-isolation-venv/bin/python -m pip install 'transformers>=4.51,<5.5'
+      - name: Require a container-qualified Preview backend
+        working-directory: studio/backend
+        run: |
+          python - <<'PY'
           from core.inference.os_sandbox import capability_snapshot
           capability = capability_snapshot(force=True)
           print(capability)
@@ -137,7 +134,17 @@ jobs:
           assert capability.qualified, capability
           assert capability.protection_state == "preview", capability
           PY
-            '
+      - name: Focused backend and live enforcement tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_os_sandbox.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
 
   frontend:
     name: Frontend consent and execution-record UX

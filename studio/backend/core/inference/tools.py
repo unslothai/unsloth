@@ -7193,12 +7193,12 @@ def _limited_preexec() -> None:
         resource_id = getattr(_resource, resource_name, None)
         if resource_id is None:
             raise RuntimeError(f"{resource_name} is unavailable")
-        _soft, inherited_hard = _resource.getrlimit(resource_id)
-        target = (
-            requested
-            if inherited_hard == _resource.RLIM_INFINITY
-            else min(requested, inherited_hard)
-        )
+        inherited_soft, inherited_hard = _resource.getrlimit(resource_id)
+        bounds = [requested]
+        for inherited in (inherited_soft, inherited_hard):
+            if inherited != _resource.RLIM_INFINITY:
+                bounds.append(inherited)
+        target = min(bounds)
         if target <= 0:
             raise RuntimeError(f"{resource_name} cannot be established")
         _resource.setrlimit(resource_id, (target, target))

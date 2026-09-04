@@ -449,7 +449,7 @@ def _validate_runtime_paths(
                 )
 
     find = "/usr/bin/find"
-    if scan_roots and _trusted_linux_executable(find):
+    if sys.platform == "linux" and scan_roots and _trusted_linux_executable(find):
         # Follow a symlink used as a scan root, but never links encountered below it.
         find_command = [find, "-H", *scan_roots]
         find_command.append("-xdev" if sys.platform == "linux" else "-x")
