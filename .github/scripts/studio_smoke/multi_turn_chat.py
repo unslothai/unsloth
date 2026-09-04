@@ -5,8 +5,13 @@
 
 Two properties at once. The conversation is built so that turns 2 and 4 are only
 answerable from the earlier turns, which exercises the history wiring; and the whole
-conversation is run twice at temperature 0.0 with a fixed seed, which is the only check
-anywhere that greedy decoding is reproducible.
+conversation is run twice at temperature 0.0 against a slot with speculative decoding
+off, which is the only check anywhere that greedy decoding is reproducible.
+
+The seed is sent but does no sampling work: at temperature 0 llama.cpp collapses to
+argmax and never reaches an RNG. What it does do is make the Studio send
+cache_prompt=False, which is one of the two things the comparison below needs. The
+other is the load pin that assert_reproducible_backend() checks.
 
 This lived inline in three workflows, and being three copies is what let one of them
 stop checking. On 2026-05-22 an unrelated event-loop fix (#5669) relaxed the Linux copy
@@ -21,9 +26,11 @@ between the three callers: each boots its server on its own port.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
+import urllib.request
 
 SEED = 3407
 MAX_TOKENS = 80
@@ -66,6 +73,63 @@ def _server() -> tuple[str, str]:
     workflow boots its server on its own port. Read here rather than at import, so the
     checking half of this file can be exercised without a server or the SDKs."""
     return os.environ["BASE_URL"], os.environ["TOKEN"]  # a JWT is accepted as Bearer
+
+
+def _read_backend_status() -> dict:
+    """What the server says it loaded. Split out so the assertion below is reachable
+    from a test without standing a server up, the same reason _server() exists."""
+    base, token = _server()
+    request = urllib.request.Request(
+        f"{base}/api/inference/status", headers = {"Authorization": f"Bearer {token}"}
+    )
+    with urllib.request.urlopen(request, timeout = 30) as response:
+        return json.load(response)
+
+
+def assert_reproducible_backend() -> None:
+    """Refuse to assert determinism against a server that cannot provide it.
+
+    llama-server's own README says it, about cache_prompt: "the logits are not
+    guaranteed to be bit-for-bit identical for different batch" sizes. Two things in
+    the launch the Studio derives change the batch between one replay and the next,
+    and both are per-LOAD settings, so the three workflows pin them and this checks
+    the pin took.
+
+    Speculative decoding is the one that actually bites. A non-MTP GGUF like
+    gemma-3-270m-it takes the `--spec-default` branch, which llama.cpp's arg parser
+    turns into n-gram-mod drafting, and the server logs prove it is live:
+
+        slot print_timing: id 3 | task 100 | draft acceptance = 0.46875
+            (30 accepted / 64 generated), mean len = 31.00
+
+    The draft pool is built from text the server has already seen, so the FIRST turn-1
+    request after a load drafts nothing and decodes one token at a time, while every
+    later one verifies a ~32-token draft in a single batch. Same tokens, different
+    arithmetic. That is not a near-tie a retry rides out: `check(runner(), runner())`
+    means attempt 1 always compares the one cold replay against a warm one, and the
+    divergences it produces are nested prefixes of each other, which is what a 270M
+    model near-tied on whether to stop looks like, not a broken sampler.
+
+    --parallel > 1 is the second: it also brings --kv-unified, one shared KV pool
+    whose occupancy is another input to the batch.
+
+    Checked, not assumed. A load that quietly dropped the pin would leave this
+    printing OK for a server it never pinned, which is the same shape of hole #5669
+    left on the Linux leg for three months.
+    """
+    status = _read_backend_status()
+    speculative, slots = status.get("speculative_type"), status.get("parallel_slots")
+    assert speculative in ("off", "none"), (
+        f"this probe needs speculative decoding off and the server reports "
+        f'{speculative!r}. Load with "speculative_type": "off": a drafted batch '
+        f"replacing sequential decode is not bit-identical, so the greedy output "
+        f"below would not be reproducible however many times it is retried."
+    )
+    assert slots == 1, (
+        f"this probe needs one decode slot and the server reports "
+        f'parallel_slots={slots!r}. Load with "n_parallel": 1: more slots bring '
+        f"--kv-unified, whose shared-pool occupancy is another input to the batch."
+    )
 
 
 def run_openai() -> list[str]:
@@ -168,6 +232,9 @@ def check(label: str, first: list[str], second: list[str]) -> None:
 
 
 def main() -> int:
+    # Before any generation: a divergence below is only evidence of a fault if the
+    # server was in a configuration that could have avoided one.
+    assert_reproducible_backend()
     for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
         # Only a replay disagreement is retried, and only here. Two replays are not two
         # identical requests: each turn is built from the reply before it, and the second

@@ -65,45 +65,46 @@ class TestStructuralTorchConstraint:
     _sh = _read(_INSTALL_SH)
 
     def test_default_assignment_exists(self):
-        assert 'TORCH_CONSTRAINT="torch>=2.4,<2.11.0"' in self._sh
+        """The default range composes the per-file ceiling variable, so the
+        supported line (torch 2.11 today) is bumped in one place."""
+        assert '_TORCH_CEILING="2.12.0"' in self._sh
+        assert 'TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"' in self._sh
 
     def test_tightened_assignment_exists(self):
-        assert 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' in self._sh
+        assert 'TORCH_CONSTRAINT="torch>=2.6,<${_TORCH_CEILING}"' in self._sh
 
-    def test_cuda_constraint_widened_to_2_12(self):
-        """A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x
-        land torch 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC);
-        without it cu128/cu130 resolves torch 2.10.x."""
-        assert 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' in self._sh
-
-    def test_cuda_case_widens_via_index_leaf(self):
-        """The cu* branch of the _torch_index_leaf case sets the widened
-        constraint (parallel to rocm7.2), anchored on the leaf."""
-        m = re.search(
-            r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
-            self._sh,
-        )
-        assert m is not None, "CUDA (cu*) TORCH_CONSTRAINT widening case not found"
+    def test_companion_ceilings_composed(self):
+        """Companions bound to the same window via their own ceiling vars."""
+        assert '_TORCHVISION_CEILING="0.27.0"' in self._sh
+        assert '_TORCHAUDIO_CEILING="2.12.0"' in self._sh
+        assert 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"' in self._sh
+        assert 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"' in self._sh
 
     def test_variable_used_in_pip_install(self):
         """$TORCH_CONSTRAINT must appear in a uv pip install line."""
         assert '"$TORCH_CONSTRAINT"' in self._sh
 
     def test_hardcoded_torch_constraint_only_on_assignments(self):
-        """The hard-coded torch>=2.4,<2.11.0 string must only appear on
-        TORCH_CONSTRAINT= assignment lines, never on a pip/uv install line
-        (those must reference $TORCH_CONSTRAINT). Two assignments are expected:
-        the default, and the gfx906 (MI50) reroute that restores the default
-        <2.11 window after the rocm7.2 floor bump raised it to 2.11."""
-        hits = [ln for ln in self._sh.splitlines() if '"torch>=2.4,<2.11.0"' in ln]
-        assert hits, "default constraint literal missing from install.sh"
-        for ln in hits:
-            assert (
-                "TORCH_CONSTRAINT=" in ln
-            ), f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
-            assert (
-                "pip install" not in ln
-            ), f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
+        """The default range is composed from the ceiling vars, so the supported
+        line is bumped in one place. A hard-coded range may still appear on a
+        curated per-index TORCH_CONSTRAINT= override -- the gfx906 (MI50) reroute
+        caps below 2.11 because the rocm6.3 index tops out at torch 2.9.x -- but
+        never on a pip/uv install line (those must reference $TORCH_CONSTRAINT)."""
+        for literal in ('"torch>=2.4,<2.11.0"', '"torch>=2.4,<2.12.0"'):
+            for ln in self._sh.splitlines():
+                if literal not in ln:
+                    continue
+                assert (
+                    "TORCH_CONSTRAINT=" in ln
+                ), f"{literal} hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
+                assert (
+                    "pip install" not in ln
+                ), f"{literal} hardcoded on a pip install line: {ln.strip()!r}"
+
+    def test_gfx906_reroute_caps_below_211(self):
+        """The gfx906 / MI50 reroute must keep its literal sub-2.11 cap: the
+        rocm6.3 index it routes to serves no torch 2.11 wheel."""
+        assert self._sh.count('TORCH_CONSTRAINT="torch>=2.4,<2.11.0"') == 1
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
@@ -133,7 +134,7 @@ class TestStructuralInstallPs1Unchanged:
         assert "$TorchConstraint" not in self._ps1
 
     def test_hardcoded_torch_constraint_present(self):
-        assert '"torch>=2.4,<2.11.0"' in self._ps1
+        assert '"torch>=2.4,<2.12.0"' in self._ps1
 
 
 class TestInstallPs1UvDefaultIndex:
