@@ -25,7 +25,7 @@ export type AudioGenerationPresentation = {
 };
 
 /** Project request-lifetime phases into truthful UI copy. Audio generation has no
- * browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+ *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
 ): AudioGenerationPresentation | null {
@@ -191,9 +191,9 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper
- * uses one short key for distinct Transformers and whisper.cpp downloads, so engine
- * provenance must survive this boundary. */
+/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper uses one
+ *  short key for distinct Transformers and whisper.cpp downloads, so engine provenance must
+ *  survive this boundary. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -218,9 +218,8 @@ export function sttDownloadedArtifacts(
   return artifacts;
 }
 
-/** Catalog contracts win; uncurated ASR rows route from the inventory task in picker
- * metadata. Unknown and TTS-tagged community repos keep the main-slot path for
- * load-time capability validation. */
+/** Catalog contracts win; uncurated ASR rows route from the inventory task in picker metadata.
+ *  Unknown and TTS-tagged community repos keep the main-slot path for load-time validation. */
 export function resolveAudioPickTask(
   catalogTask: AudioPickTask,
   pipelineTag?: string | null,
@@ -231,8 +230,8 @@ export function resolveAudioPickTask(
   );
 }
 
-/** Generation can be cancelled as part of a mode transition. Model lifecycle
- * and transcription operations must settle before their controls disappear. */
+/** Generation can be cancelled as part of a mode transition. Model lifecycle and transcription
+ *  operations must settle before their controls disappear. */
 export function canTransitionAudioMode(
   busy: AudioBusy,
   generationPhase: AudioGenerationPhase = busy === "generating"
@@ -244,9 +243,9 @@ export function canTransitionAudioMode(
   );
 }
 
-/** A managed TTS completion owns auto-load only while the same staging generation is
- * selected in Speak. Downloads continue globally after ownership changes, but their
- * completion must not mutate the main slot. */
+/** A managed TTS completion owns auto-load only while the same staging generation is selected
+ *  in Speak. Downloads continue globally after ownership changes, but their completion must
+ *  not mutate the main slot. */
 export function stagedTtsLoadIsOwned(
   pendingGeneration: number | null,
   currentGeneration: number,
@@ -259,8 +258,8 @@ export function stagedTtsLoadIsOwned(
   );
 }
 
-/** Cached rows sometimes know only the quant label; remote staging always
- * supplies the exact filename. Both are valid backend GGUF selectors. */
+/** Cached rows sometimes know only the quant label; remote staging always supplies the exact
+ *  filename. Both are valid backend GGUF selectors. */
 export function exactGgufLoadSelector(
   meta: Pick<ModelSelectorChangeMeta, "ggufFilename" | "ggufVariant">,
 ): string | null {
@@ -298,8 +297,8 @@ export function isGgufTtsTarget({
 
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
-/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;
- * other Mac picks still need GGUF or a family GGUF sibling. */
+/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX; other Mac
+ *  picks still need GGUF or a family GGUF sibling. */
 export function macTtsPickAction({
   isMac,
   isGguf,
@@ -324,9 +323,8 @@ export interface AutoGgufVariant {
   partial?: boolean;
 }
 
-/** Prefer a complete cached quant, then the repo's declared default, then the first
- * exact file: instant Mac fallback when a runnable sibling is present, deterministic
- * otherwise. */
+/** Prefer a complete cached quant, then the repo's declared default, then the first exact file:
+ *  instant Mac fallback when a runnable sibling is present, deterministic otherwise. */
 export function selectAutoGgufVariant<T extends AutoGgufVariant>(
   variants: readonly T[],
   defaultVariant: string | null | undefined,
@@ -360,13 +358,10 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** Fold a freshly fetched first page into the list already on screen.
- *
- * The page is authoritative for the newest `page.length` clips and any scrollback below
- * it is kept; replacing outright collapsed a paginated History on every delete and
- * generate, and reselected a different clip. `removedId` drops a clip this client just
- * deleted, which the page can no longer report. `hasMore` is the page's own report of
- * whether the server holds anything older. */
+/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
+ *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
+ *  collapsed a paginated History on every delete and reselected a different clip.
+ *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
@@ -376,19 +371,18 @@ export function mergeGalleryPage<T extends { id: string }>(
   const inPage = new Set(page.map((clip) => clip.id));
   // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
   if (page.length === 0) return { clips: [], stitched: false };
-  // A complete first page IS everything the server holds, so there is no scrollback to
-  // keep: a cached clip below it was deleted by another client or pruned by the size cap,
-  // and stitching it back rendered a row that could never be played again.
+  // A complete first page IS everything the server holds, so there is no scrollback to keep: a
+  // cached clip below it was deleted by another client or pruned by the size cap, and
+  // stitching it back rendered a row that could never be played again.
   if (hasMore === false) return { clips: [...page], stitched: false };
-  // The page is authoritative over the window it covers, so a cached clip inside that
-  // window and absent from the page was deleted by another client and must go. Only what
-  // sits BELOW the page's oldest entry is scrollback. Keying on the position of that
-  // entry, since a clip record carries no cursor of its own.
+  // The page is authoritative over the window it covers, so a cached clip inside that window and
+  // absent from the page was deleted by another client and must go. Only what sits BELOW the
+  // page's oldest entry is scrollback, keyed on that entry's position.
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // Without that boundary the cache cannot prove where safe scrollback begins: an external archive
-  // can shift one unseen row into the page while every earlier row still overlaps.
+  // Without that boundary the cache cannot prove where safe scrollback begins: an external
+  // archive can shift one unseen row into the page while every earlier row still overlaps.
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
@@ -399,8 +393,7 @@ export function mergeGalleryPage<T extends { id: string }>(
   return { clips: [...page, ...tail], stitched: tail.length > 0 };
 }
 
-/** Match the gallery record returned by this generation, never another
- * client's concurrently persisted clip. */
+/** Match the gallery record returned by this generation, never another client's concurrently persisted clip. */
 export function persistedClipForGeneration<T extends { id: string }>(
   clipId: string | null | undefined,
   refreshed: readonly T[],
@@ -434,10 +427,10 @@ type SttResidencyStatus = SttEngineResidency & {
   mtmd?: SttEngineResidency;
 };
 
-/** Resolve the resident model from the engine-aware status shape. The legacy top-level
- * fields mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a
- * model that is actually ready. While the selected engine is pending, do not let an
- * older model on another engine steal the selector. */
+/** Resolve the resident model from the engine-aware status shape. The legacy top-level fields
+ *  mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a model that
+ *  is actually ready. While the selected engine is pending, an older model on another engine
+ *  must not steal the selector. */
 export function resolveSttLoadedModel(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
@@ -453,19 +446,17 @@ export interface SttResidency {
   engine: SttEngine;
 }
 
-/** Resolve model and owning engine together; equal Whisper short keys do not
- * identify which runtime is resident. */
+/** Resolve model and owning engine together; equal Whisper short keys do not identify which runtime is resident. */
 export function resolveSttResidency(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
   preserveSelected: boolean,
 ): SttResidency | null {
-  // A whisper.cpp pick on a host without whisper-server is deliberately served, and
-  // loaded, through Transformers, so its residency lives in that block. Same fallback
-  // sttEngineStatusFor applies; the engine reported stays the selected one, because that
-  // is what the user picked and what the backend routes. Without this the refresh that
-  // completes the load found nothing (it runs while preserveSelected is true) and the
-  // Transcribe controls stayed disabled until the page was left and revisited.
+  // A whisper.cpp pick on a host without whisper-server is deliberately served through
+  // Transformers, so its residency lives in that block. The engine reported stays the selected
+  // one, since that is what the user picked and what the backend routes; the same
+  // sttEngineStatusFor fallback applies. Without this the refresh completing the load found
+  // nothing, since it runs while preserveSelected is true, and Transcribe stayed disabled.
   const selectedStatus =
     selectedEngine === "transformers" ||
     (selectedEngine === "gguf" && status.gguf?.available === false)
@@ -492,8 +483,8 @@ export function resolveSttResidency(
   return null;
 }
 
-/** Reconcile the picker selection with the sidecar's authoritative status.
- * Preserve a selection only while its load/download is genuinely pending. */
+/** Reconcile the picker selection with the sidecar's authoritative status. Preserve a selection
+ *  only while its load/download is genuinely pending. */
 export function reconcileSttSelection({
   selectedRepo,
   loadedModel,
@@ -526,8 +517,8 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** Permission prompts cannot be aborted, so freshness is checked immediately
- * after getUserMedia resolves and stale streams are stopped before recording. */
+/** Permission prompts cannot be aborted, so freshness is checked immediately after
+ *  getUserMedia resolves and stale streams are stopped before recording. */
 export function micStreamRequestIsCurrent(
   requestGeneration: number,
   currentGeneration: number,

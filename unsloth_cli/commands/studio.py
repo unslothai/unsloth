@@ -338,9 +338,32 @@ def _display_host_for_bind(run_mod, host: str) -> str:
     return run_mod._display_host_for_bind(host)
 
 
+def _network_share_host_for_bind(run_mod, host: str) -> str:
+    """Return the LAN-facing host, with a fallback for older backends."""
+    resolver = getattr(run_mod, "_network_share_host_for_bind", None)
+    if resolver is None:
+        return _display_host_for_bind(run_mod, host)
+    return resolver(host)
+
+
 def _loopback_bind_host_for(host: str) -> str:
     from unsloth_cli._tool_policy import wildcard_loopback_host
     return wildcard_loopback_host(host) or "127.0.0.1"
+
+
+def _is_wildcard_bind(host: str) -> bool:
+    from unsloth_cli._tool_policy import is_wildcard_host
+    return is_wildcard_host(host)
+
+
+def _openable_host_for_bind(run_mod, host: str) -> str:
+    """The host for a URL we tell the user to open: the LAN address when one
+    resolves, else loopback. A wildcard bind with no LAN address (WSL NAT,
+    loopback-only) must never be printed as-is; no browser can open it."""
+    share_host = _network_share_host_for_bind(run_mod, host)
+    if _is_wildcard_bind(share_host):
+        return _loopback_bind_host_for(host)
+    return share_host
 
 
 def _require_bind_host(host: str) -> None:
@@ -2133,8 +2156,8 @@ def studio_default(
         run_server = run_mod.run_server
 
         if not silent:
-            display_host = _display_host_for_bind(run_mod, host)
-            typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+            launch_host = _openable_host_for_bind(run_mod, host)
+            typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
 
         run_kwargs = dict(
             host = host,
@@ -2926,8 +2949,10 @@ def run(
     context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
+    # Keep the public host for reachability, but print a LAN or loopback URL.
     display_host = _display_host_for_bind(run_mod, host)
-    base_url = f"http://{_url_host(display_host)}:{actual_port}"
+    base_host = _openable_host_for_bind(run_mod, host)
+    base_url = f"http://{_url_host(base_host)}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (wildcard or --secure).
     _cf_url = getattr(app.state, "cloudflare_url", None)

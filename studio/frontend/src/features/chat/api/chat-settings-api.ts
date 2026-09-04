@@ -120,9 +120,9 @@ function parseErrorText(status: number, body: unknown): string {
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    // Typed, not a bare Error: the settings queue has to tell a server that is
-    // down (keep the patch) from a server that refuses this body (drop the
-    // offending fields), and that decision needs the status and the detail.
+    // Typed, not a bare Error: the settings queue has to tell a server that is down (keep the patch)
+    // from a server that refuses this body (drop the offending fields), and that decision needs the
+    // status and the detail.
     throw new ChatSettingsRequestError(
       parseErrorText(response.status, body),
       response.status,
@@ -149,13 +149,11 @@ export async function saveChatSettingsPatch(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body,
-    // keepalive lets the PUT survive a tab close from the page-hidden flush,
-    // but only under the Fetch standard's 64 KiB budget for in-flight keepalive
-    // bodies. Over it the request fails immediately in every engine (measured in
-    // Chromium, Firefox and WebKit), and researchWebsitePolicy alone can carry
-    // 2000 domains of 253 characters. Sending without keepalive is a chance
-    // rather than a certain failure, and on the visibilitychange flush -- where
-    // the page is only hidden, not closing -- it simply succeeds.
+    // keepalive lets the PUT survive a tab close from the page-hidden flush, but only under the Fetch
+    // standard's 64 KiB budget for in-flight keepalive bodies. Over it the request fails immediately
+    // in every engine, and researchWebsitePolicy alone can carry 2000 domains of 253 characters.
+    // Sending without keepalive is a chance rather than a certain failure, and on the
+    // visibilitychange flush, where the page is only hidden, it simply succeeds.
     keepalive: options.keepalive ? isUnderKeepaliveBudget(body) : undefined,
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
