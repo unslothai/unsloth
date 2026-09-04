@@ -71,10 +71,12 @@ export function exampleModelOptions(
         existing.residentQuant = m.quant ?? null;
       }
       // The server attaches `quants` to whichever spelling it can vouch for, which
-      // need not be the first one listed. Take them from the row that carries them
-      // rather than lose the quant dropdown.
-      if (existing.quants.length === 0) {
-        existing.quants = m.quants?.length ? m.quants : m.quant ? [m.quant] : [];
+      // need not be the first one listed, so take the list from the row that carries
+      // it. Only the plural field: when two copies of one id disagree the server
+      // withholds `quants` and keeps the singular `quant`, and promoting that here
+      // would offer a pin from an arbitrary copy -- the very thing it withheld.
+      if (existing.quants.length === 0 && m.quants?.length) {
+        existing.quants = m.quants;
       }
       continue;
     }

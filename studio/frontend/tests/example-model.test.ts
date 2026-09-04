@@ -365,3 +365,22 @@ test("a quant that differs only in case is the resident one", () => {
   // The spelling the server gave is the one pinned, so the request names a real file.
   assert.equal(resolved.model, "unsloth/Qwen3-GGUF:q4_k_m");
 });
+
+// When two copies of one id disagree the server withholds `quants` and keeps `quant`.
+// Merging must respect that: promoting the singular field would re-offer the pin the
+// server just refused to vouch for.
+test("merging never promotes a singular quant the server withheld", () => {
+  const catalog = [
+    { id: "Org/Foo", loaded: true, quant: "BF16" },
+    { id: "org/Foo", loaded: false, quant: "Q2_K" },
+  ];
+  const options = exampleModelOptions(catalog);
+  assert.equal(options.length, 1);
+  assert.deepEqual(options[0].quants, ["BF16"]);
+  // A row that does carry the plural field is still adopted.
+  const vouched = exampleModelOptions([
+    { id: "Org/Foo", loaded: true },
+    { id: "org/Foo", loaded: false, quant: "BF16", quants: ["BF16", "Q2_K"] },
+  ]);
+  assert.deepEqual(vouched[0].quants, ["BF16", "Q2_K"]);
+});
