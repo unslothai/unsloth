@@ -1752,6 +1752,9 @@ def _has_usable_nvidia_gpu() -> bool:
     timeout, driver initialisation race). If either probe confirms an
     NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
 
+    On Windows nvidia-smi.exe is often off PATH, so also probe the fixed driver
+    locations install.ps1 / setup.ps1 use, else NVIDIA+AMD hosts get ROCm wheels.
+
     CUDA_VISIBLE_DEVICES set to "" or "-1" hides every NVIDIA device (mixed
     AMD+NVIDIA hosts steering work to the AMD card); neither probe honours
     that env var, so check it first and report the GPU as not usable. Unset
@@ -1760,8 +1763,8 @@ def _has_usable_nvidia_gpu() -> bool:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
-    exe = shutil.which("nvidia-smi")
-    if exe:
+
+    def _lists_a_gpu(exe: str) -> bool:
         try:
             result = subprocess.run(
                 [exe, "-L"],
@@ -1772,10 +1775,38 @@ def _has_usable_nvidia_gpu() -> bool:
                 errors = "replace",
                 timeout = 10,
             )
-            if result.returncode == 0 and "GPU " in result.stdout:
-                return True
         except Exception:
-            pass
+            return False
+        return result.returncode == 0 and "GPU " in result.stdout
+
+    # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
+    # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
+    # on the GPU check failing, not on the PATH lookup missing.
+    candidates = []
+    _path_exe = shutil.which("nvidia-smi")
+    if _path_exe:
+        candidates.append(_path_exe)
+    if IS_WINDOWS:
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
+    for _candidate in candidates:
+        if _candidate != _path_exe and not os.path.isfile(_candidate):
+            continue
+        if _lists_a_gpu(_candidate):
+            return True
     # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
         try:
