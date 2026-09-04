@@ -87,6 +87,49 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
     assert clock.now < TIMEOUT * 2, "a quiet wait must end near the timeout, not run on"
 
 
+def test_max_wait_caps_a_chatty_wait(waiting_orchestrator) -> None:
+    """Cleanup must fail fast even though the worker is still printing.
+
+    The log gate the worker opens for an export is never closed again, so teardown chatter reaches
+    a wait whose short budget exists precisely to give up quickly.
+    """
+    orch, clock, script = waiting_orchestrator
+    script.extend(
+        [
+            {"type": "log", "stream": "stdout", "line": f"freeing buffer {n}", "ts": 0.0}
+            for n in range(50)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match = "gave up after"):
+        orch._wait_response("cleanup_done", timeout = TIMEOUT, max_wait = TIMEOUT)
+
+    assert clock.now < TIMEOUT * 2, "the cap must hold regardless of how much the worker prints"
+    assert script, "the wait must give up with the worker still talking, not drain the script"
+
+
+def test_cleanup_passes_a_hard_cap(monkeypatch) -> None:
+    """The cap belongs to the cleanup call site, not just to _wait_response."""
+    from core.export import orchestrator as orchestrator_module
+
+    seen: list = []
+    orch = orchestrator_module.ExportOrchestrator()
+    monkeypatch.setattr(orch, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orch, "_send_cmd", lambda cmd: None)
+    monkeypatch.setattr(orch, "_shutdown_subprocess", lambda *a, **k: True)
+    monkeypatch.setattr(
+        orch,
+        "_wait_response",
+        lambda expected_type, timeout = None, max_wait = None: (
+            seen.append((timeout, max_wait)) or {"success": True}
+        ),
+    )
+
+    cap = orchestrator_module._CLEANUP_TIMEOUT
+    assert orch.cleanup_memory() is True
+    assert seen == [(cap, cap)], seen
+
+
 def test_a_multi_quant_export_is_allowed_to_stay_silent_for_the_whole_batch(monkeypatch) -> None:
     """The silence budget scales with quant count, because the batch reports nothing while it runs.
 
