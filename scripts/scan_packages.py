@@ -578,9 +578,7 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
     except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
         return content
 
-    spans: list[
-        tuple[int, int, int, int]
-    ] = []  # (srow, scol, erow, ecol)
+    spans: list[tuple[int, int, int, int]] = []  # (srow, scol, erow, ecol)
     prev_significant = tokenize.NEWLINE  # start-of-file behaves like a new line
     n = len(toks)
     for i, tok in enumerate(toks):
@@ -1187,9 +1185,7 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     a string -- including a triple-quoted string spanning several lines, which a
     per-line regex cannot blank."""
     out: list[str] = []
-    in_triple: str | None = (
-        None  # active ''' or \"\"\" delimiter, or None
-    )
+    in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None
     in_string: str | None = None  # active ' or " continued via a trailing backslash
     for line in lines:
         buf: list[str] = []

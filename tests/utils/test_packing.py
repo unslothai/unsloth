@@ -228,7 +228,9 @@ def test_varlen_from_position_ids():
     cu, seq_idx = packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 0, 0, 1, 2]]))
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
-    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None  # single sequence
+    assert (
+        packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
+    )  # single sequence
     assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None  # first != 0
     # normal 2-row batch
     assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
@@ -1174,6 +1176,7 @@ def test_packing_sdpa(tmp_path):
 
 
 # --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
+
 
 # fmt: off
 # Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" -> "def _prepare_dataset").
