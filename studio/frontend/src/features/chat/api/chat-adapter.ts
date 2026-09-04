@@ -567,6 +567,8 @@ function stringifyTemplateValue(value: unknown): string {
   }
 }
 
+export { promptUsesHighPrecisionTimeVariables } from "./prompt-time-variables.ts";
+
 function resolveSystemPromptVariables(
   prompt: string,
   customVariablesRaw: string,
