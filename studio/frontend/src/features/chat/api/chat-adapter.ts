@@ -190,9 +190,13 @@ import {
 } from "../tool-output-scope";
 import type { ModelType, ThreadRecord } from "../types";
 import {
+  attachAuthoritativeExecutionRecord,
+  discardAuthoritativeExecutionRecord,
   isMultimodalResponse,
-  parseToolExecutionRecord,
+  parseBackendExecutionRecord,
+  stripUntrustedExecutionMetadata,
   TOOL_EXECUTION_RECORD_ARG_KEY,
+  toolExecutionRecordFromCard,
 } from "../types/api";
 import type {
   CpuFallbackReason,
@@ -204,7 +208,6 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
-  ToolExecutionRecord,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1094,15 +1097,33 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const replayArgs =
-    tc.args && typeof tc.args === "object" && !Array.isArray(tc.args)
-      ? Object.fromEntries(
-          Object.entries(tc.args as Record<string, unknown>).filter(
-            ([key]) => key !== TOOL_EXECUTION_RECORD_ARG_KEY,
-          ),
+  const replayArgs = stripUntrustedExecutionMetadata(tc.args);
+  let replayArgsText = tc.argsText;
+  if (typeof replayArgsText === "string") {
+    try {
+      const parsed = JSON.parse(replayArgsText) as unknown;
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        Object.hasOwn(
+          parsed as Record<string, unknown>,
+          TOOL_EXECUTION_RECORD_ARG_KEY,
         )
-      : tc.args;
-  const argumentsStr = toolCallReplayArguments(tc.argsText, replayArgs);
+      ) {
+        // Preserve exact JSON lexemes for ordinary arguments while removing
+        // the reserved key from provider-authored replay text.
+        replayArgsText = mergedToolCallArgumentsText(
+          replayArgsText,
+          replayArgs,
+          [TOOL_EXECUTION_RECORD_ARG_KEY],
+        );
+      }
+    } catch {
+      // toolCallReplayArguments already rejects malformed replay text.
+    }
+  }
+  const argumentsStr = toolCallReplayArguments(replayArgsText, replayArgs);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -5700,6 +5721,9 @@ export function createOpenAIStreamAdapter(
       const mintStreamedCardId = (deltaIndex: number | undefined): string =>
         mintStreamedToolCallId(toolCallParts, deltaIndex, reservedToolCallIds);
       const paintStreamedCard = (partId: string): void => {
+        // Provider/model cards are provisional. A provider can reuse a prior
+        // call id, so clear any process-local launch record before it paints.
+        discardAuthoritativeExecutionRecord(partId);
         reservedToolCallIds.add(partId);
         bindStreamedToolCallCard(toolPartIdByBackendId, partId);
       };
@@ -5710,6 +5734,7 @@ export function createOpenAIStreamAdapter(
       // A dropped card gives its id back: the backend never reserved it, so
       // holding it makes the next round's mint skip a number it then reuses.
       const releaseStreamedCard = (partId: string): void => {
+        discardAuthoritativeExecutionRecord(partId);
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
         // A card that took a late id answers to a run-unique part id, so the id
@@ -5811,7 +5836,9 @@ export function createOpenAIStreamAdapter(
           const isLast = n === extraSegments.length - 1;
           let segmentArgs: ToolCallMessagePart["args"] = {};
           try {
-            segmentArgs = JSON.parse(segment) as ToolCallMessagePart["args"];
+            segmentArgs = stripUntrustedExecutionMetadata(
+              JSON.parse(segment),
+            ) as ToolCallMessagePart["args"];
           } catch {
             segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
           }
@@ -7022,7 +7049,9 @@ export function createOpenAIStreamAdapter(
                       ] as PositionedToolCallPart;
                       toolCallParts[idx] = {
                         ...existing,
-                        args: partial.args as ToolCallMessagePart["args"],
+                        args: stripUntrustedExecutionMetadata(
+                          partial.args,
+                        ) as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
                       // A preview: it repeats per argument delta and
@@ -7077,15 +7106,25 @@ export function createOpenAIStreamAdapter(
                   const staleKey = scopedToolOutputKey(id);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
-                  const toolArgs = (toolEvent.arguments ??
-                    {}) as ToolCallMessagePart["args"];
+                  const untrustedToolArgs = toolEvent.arguments ?? {};
+                  const hadReservedMetadata =
+                    untrustedToolArgs !== null &&
+                    typeof untrustedToolArgs === "object" &&
+                    !Array.isArray(untrustedToolArgs) &&
+                    Object.hasOwn(
+                      untrustedToolArgs as Record<string, unknown>,
+                      TOOL_EXECUTION_RECORD_ARG_KEY,
+                    );
+                  const toolArgs = stripUntrustedExecutionMetadata(
+                    untrustedToolArgs,
+                  ) as ToolCallMessagePart["args"];
                   const toolArgsText = toolCallArgumentsText(
-                    toolEvent.arguments_text,
+                    hadReservedMetadata ? undefined : toolEvent.arguments_text,
                     toolArgs,
                   );
                   const executionRecord =
                     toolEvent.execution_state === "started"
-                      ? parseToolExecutionRecord(toolEvent.execution_record)
+                      ? parseBackendExecutionRecord(toolEvent.execution_record)
                       : null;
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
@@ -7094,51 +7133,36 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    const existingExecutionRecord =
-                      existing.args && typeof existing.args === "object"
-                        ? parseToolExecutionRecord(
-                            (existing.args as Record<string, unknown>)[
-                              TOOL_EXECUTION_RECORD_ARG_KEY
-                            ],
-                          )
-                        : null;
-                    const cardExecutionRecord =
-                      executionRecord ?? existingExecutionRecord;
-                    toolCallParts[idx] = {
-                      ...existing,
-                      toolName: toolEvent.tool_name as string,
-                      argsText: toolArgsText,
-                      args: {
-                        ...toolArgs,
-                        ...(cardExecutionRecord
-                          ? {
-                              [TOOL_EXECUTION_RECORD_ARG_KEY]:
-                                cardExecutionRecord,
-                            }
-                          : {}),
-                      } as ToolCallMessagePart["args"],
-                      provenance: mergeToolProvenance(
-                        existing.provenance,
-                        toolProvenance,
-                      ),
-                    };
+                    toolCallParts[idx] = attachAuthoritativeExecutionRecord(
+                      {
+                        ...existing,
+                        toolName: toolEvent.tool_name as string,
+                        argsText: toolArgsText,
+                        args: toolArgs,
+                        provenance: mergeToolProvenance(
+                          existing.provenance,
+                          toolProvenance,
+                        ),
+                      },
+                      executionRecord,
+                    );
                   } else {
-                    toolCallParts.push({
-                      type: "tool-call" as const,
-                      toolCallId: id,
-                      toolName: toolEvent.tool_name as string,
-                      argsText: toolArgsText,
-                      args: {
-                        ...toolArgs,
-                        ...(executionRecord
-                          ? {
-                              [TOOL_EXECUTION_RECORD_ARG_KEY]: executionRecord,
-                            }
-                          : {}),
-                      } as ToolCallMessagePart["args"],
-                      textCursor: cumulativeText.length,
-                      ...(toolProvenance ? { provenance: toolProvenance } : {}),
-                    } as PositionedToolCallPart);
+                    toolCallParts.push(
+                      attachAuthoritativeExecutionRecord(
+                        {
+                          type: "tool-call" as const,
+                          toolCallId: id,
+                          toolName: toolEvent.tool_name as string,
+                          argsText: toolArgsText,
+                          args: toolArgs,
+                          textCursor: cumulativeText.length,
+                          ...(toolProvenance
+                            ? { provenance: toolProvenance }
+                            : {}),
+                        } as PositionedToolCallPart,
+                        executionRecord,
+                      ),
+                    );
                   }
                   if (awaitingConfirmation) {
                     useChatRuntimeStore
@@ -7210,7 +7234,6 @@ export function createOpenAIStreamAdapter(
                           images: string[];
                           sessionId: string;
                           files?: SandboxFile[];
-                          execution_record?: ToolExecutionRecord;
                         }
                       | McpImageToolResult
                       | SearchImagesToolResult
@@ -7222,9 +7245,15 @@ export function createOpenAIStreamAdapter(
                           background?: string;
                           prompt?: string;
                         };
-                    const executionRecord = parseToolExecutionRecord(
-                      toolEvent.execution_record,
-                    );
+                    const completionExecutionRecord =
+                      toolEvent.execution_state === "completed"
+                        ? parseBackendExecutionRecord(
+                            toolEvent.execution_record,
+                          )
+                        : null;
+                    const executionRecord =
+                      completionExecutionRecord ??
+                      toolExecutionRecordFromCard(id);
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     // A valid MCP image envelope wins; an invalid marker falls
                     // through so a sandbox __IMAGES__ suffix still renders and
@@ -7278,9 +7307,6 @@ export function createOpenAIStreamAdapter(
                           images,
                           sessionId,
                           files: createdFiles,
-                          ...(executionRecord
-                            ? { execution_record: executionRecord }
-                            : {}),
                         };
                       } catch {
                         parsedResult = rawResult;
@@ -7302,42 +7328,26 @@ export function createOpenAIStreamAdapter(
                         images: [],
                         sessionId: sandboxSessionId || "_default",
                         files: createdFiles,
-                        ...(executionRecord
-                          ? { execution_record: executionRecord }
-                          : {}),
                       };
                     } else if (webImages.length > 0) {
                       parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
                     }
-                    if (
-                      executionRecord &&
-                      SANDBOX_FILE_TOOLS.has(
-                        toolCallParts[idx].toolName ?? "",
-                      ) &&
-                      (typeof parsedResult !== "object" ||
-                        parsedResult === null ||
-                        !("execution_record" in parsedResult))
-                    ) {
-                      parsedResult = {
-                        text: rawResult,
-                        images: [],
-                        sessionId: sandboxSessionId || "_default",
-                        files: createdFiles,
-                        execution_record: executionRecord,
-                      };
-                    }
                     // Merge tool_end args first, then Gemini native_part.
                     const nextArgs =
                       toolEvent.arguments &&
                       typeof toolEvent.arguments === "object"
-                        ? (toolEvent.arguments as ToolCallMessagePart["args"])
+                        ? (stripUntrustedExecutionMetadata(
+                            toolEvent.arguments,
+                          ) as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs: ToolCallMessagePart["args"] = {
-                      ...(toolCallParts[idx].args ?? {}),
+                    const mergedArgs = stripUntrustedExecutionMetadata({
+                      ...(stripUntrustedExecutionMetadata(
+                        toolCallParts[idx].args,
+                      ) as ToolCallMessagePart["args"]),
                       ...(nextArgs ?? {}),
-                    } as ToolCallMessagePart["args"];
+                    }) as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
                     // Merge tool_end native_part into args.google so the
@@ -7418,20 +7428,23 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    toolCallParts[idx] = {
-                      ...existing,
-                      args: mergedArgs,
-                      argsText: mergedToolCallArgumentsText(
-                        existing.argsText,
-                        mergedArgs,
-                        overwrittenArgumentKeys,
-                      ),
-                      result: parsedResult,
-                      provenance: mergeToolProvenance(
-                        existing.provenance,
-                        toolProvenance,
-                      ),
-                    };
+                    toolCallParts[idx] = attachAuthoritativeExecutionRecord(
+                      {
+                        ...existing,
+                        args: mergedArgs,
+                        argsText: mergedToolCallArgumentsText(
+                          existing.argsText,
+                          mergedArgs,
+                          overwrittenArgumentKeys,
+                        ),
+                        result: parsedResult,
+                        provenance: mergeToolProvenance(
+                          existing.provenance,
+                          toolProvenance,
+                        ),
+                      },
+                      executionRecord,
+                    );
                   }
                 }
                 yield {
@@ -7762,8 +7775,8 @@ export function createOpenAIStreamAdapter(
                       existing.args ?? {};
                     if (slotText) {
                       try {
-                        parsedArgs = JSON.parse(
-                          slotText,
+                        parsedArgs = stripUntrustedExecutionMetadata(
+                          JSON.parse(slotText),
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {
@@ -7861,6 +7874,7 @@ export function createOpenAIStreamAdapter(
                       stablePartId ||
                       mintStreamedCardId(idx ?? toolCallParts.length);
                     if (!stablePartId) paintStreamedCard(callId);
+                    else discardAuthoritativeExecutionRecord(callId);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
@@ -7907,8 +7921,8 @@ export function createOpenAIStreamAdapter(
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
                       try {
-                        parsedArgs = JSON.parse(
-                          argsText,
+                        parsedArgs = stripUntrustedExecutionMetadata(
+                          JSON.parse(argsText),
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {

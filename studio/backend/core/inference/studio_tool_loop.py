@@ -69,6 +69,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    sanitize_untrusted_tool_arguments,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -191,8 +192,7 @@ def _carries_image_sentinel(result: str) -> bool:
 
 def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     """The part of a hosted tool's arguments worth showing the model."""
-    if not isinstance(arguments, dict):
-        return {}
+    arguments = sanitize_untrusted_tool_arguments(arguments)
     return {
         key: value
         for key, value in arguments.items()

@@ -6,9 +6,12 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  attachAuthoritativeExecutionRecord,
+  parseBackendExecutionRecord,
+  stripUntrustedExecutionMetadata,
+  stripUntrustedExecutionMetadataFromContent,
   TOOL_EXECUTION_RECORD_ARG_KEY,
   type ToolExecutionRecord,
-  parseToolExecutionRecord,
   toolExecutionRecordFromCard,
   toolExecutionRecordLabel,
 } from "../src/features/chat/types/api.ts";
@@ -28,16 +31,64 @@ const record = (
   ...overrides,
 });
 
-test("execution records are validated before a card trusts them", () => {
-  assert.deepEqual(parseToolExecutionRecord(record()), record());
+test("only backend-event parsing can establish an authoritative card record", () => {
+  const raw = record();
+  const card = { toolCallId: "record-validation" };
+  const unchanged = attachAuthoritativeExecutionRecord(card, raw);
+  assert.notEqual(unchanged, card);
+  assert.ok(!("executionRecord" in unchanged));
+  assert.equal(toolExecutionRecordFromCard(card.toolCallId), null);
+
+  const parsed = parseBackendExecutionRecord(raw);
+  assert.deepEqual(parsed, raw);
+  const attached = attachAuthoritativeExecutionRecord(card, parsed);
+  assert.deepEqual(attached.executionRecord, raw);
+  assert.deepEqual(toolExecutionRecordFromCard(card.toolCallId), raw);
   assert.equal(
-    parseToolExecutionRecord({ ...record(), retained_safeguards: [null] }),
+    parseBackendExecutionRecord({ ...record(), retained_safeguards: [null] }),
     null,
   );
   assert.equal(
-    parseToolExecutionRecord({ ...record(), effective_mode: "automatic" }),
+    parseBackendExecutionRecord({ ...record(), effective_mode: "automatic" }),
     null,
   );
+});
+
+test("argument and restored-content sanitizers are non-mutating", () => {
+  const args = {
+    code: "print('ok')",
+    nested: { kept: true },
+    [TOOL_EXECUTION_RECORD_ARG_KEY]: record(),
+  };
+  const sanitized = stripUntrustedExecutionMetadata(args) as Record<
+    string,
+    unknown
+  >;
+  assert.deepEqual(sanitized, { code: "print('ok')", nested: args.nested });
+  assert.notEqual(sanitized, args);
+  assert.equal(sanitized.nested, args.nested);
+  assert.ok(TOOL_EXECUTION_RECORD_ARG_KEY in args);
+
+  const content = [
+    {
+      type: "tool-call",
+      toolCallId: "legacy-spoof",
+      args,
+      result: { text: "done", execution_record: record() },
+      artifact: { executionRecord: record(), kept: true },
+      executionRecord: record(),
+    },
+  ];
+  const restored = stripUntrustedExecutionMetadataFromContent(content) as Array<
+    Record<string, unknown>
+  >;
+  assert.ok(
+    !(TOOL_EXECUTION_RECORD_ARG_KEY in (restored[0].args as object)),
+  );
+  assert.deepEqual(restored[0].result, { text: "done" });
+  assert.deepEqual(restored[0].artifact, { kept: true });
+  assert.ok(!("executionRecord" in restored[0]));
+  assert.ok(TOOL_EXECUTION_RECORD_ARG_KEY in args);
 });
 
 test("cards use exact labels from the backend execution record", () => {
@@ -81,22 +132,65 @@ test("cards use exact labels from the backend execution record", () => {
   assert.equal(toolExecutionRecordLabel(null), null);
 });
 
-test("the completed record wins over running-card metadata", () => {
+test("backend completion replaces start while JSON replay needs backend provenance", () => {
   const started = record({ probe_generation: "started" });
   const completed = record({ probe_generation: "completed" });
+  const card = { toolCallId: "completion-order" };
+  attachAuthoritativeExecutionRecord(
+    card,
+    parseBackendExecutionRecord(started),
+  );
   assert.equal(
-    toolExecutionRecordFromCard(
-      { [TOOL_EXECUTION_RECORD_ARG_KEY]: started },
-      { execution_record: completed },
-    )?.probe_generation,
+    toolExecutionRecordFromCard(card.toolCallId)?.probe_generation,
+    "started",
+  );
+  attachAuthoritativeExecutionRecord(
+    card,
+    parseBackendExecutionRecord(completed),
+  );
+  assert.equal(
+    toolExecutionRecordFromCard(card.toolCallId)?.probe_generation,
     "completed",
   );
-  assert.deepEqual(
-    toolExecutionRecordFromCard(
-      { [TOOL_EXECUTION_RECORD_ARG_KEY]: started },
-      undefined,
-    ),
-    started,
+
+  const restored = JSON.parse(JSON.stringify(completed)) as ToolExecutionRecord;
+  const replayCard = { toolCallId: "json-replay" };
+  attachAuthoritativeExecutionRecord(replayCard, restored);
+  assert.equal(toolExecutionRecordFromCard(replayCard.toolCallId), null);
+  attachAuthoritativeExecutionRecord(
+    replayCard,
+    parseBackendExecutionRecord(restored),
+  );
+  assert.equal(
+    toolExecutionRecordLabel(toolExecutionRecordFromCard(replayCard.toolCallId)),
+    "Protected · Bubblewrap",
+  );
+});
+
+test("invalid backend events cannot create or erase an earlier valid record", () => {
+  const invalidStartCard = { toolCallId: "invalid-start" };
+  attachAuthoritativeExecutionRecord(
+    invalidStartCard,
+    parseBackendExecutionRecord({ ...record(), backend: null }),
+  );
+  assert.equal(toolExecutionRecordFromCard(invalidStartCard.toolCallId), null);
+
+  const startedCard = { toolCallId: "invalid-completion" };
+  const started = parseBackendExecutionRecord(
+    record({ probe_generation: "valid-start" }),
+  );
+  attachAuthoritativeExecutionRecord(startedCard, started);
+  const invalidCompletion = parseBackendExecutionRecord({
+    ...record(),
+    retained_safeguards: [false],
+  });
+  attachAuthoritativeExecutionRecord(
+    startedCard,
+    invalidCompletion ?? toolExecutionRecordFromCard(startedCard.toolCallId),
+  );
+  assert.equal(
+    toolExecutionRecordFromCard(startedCard.toolCallId)?.probe_generation,
+    "valid-start",
   );
 });
 
@@ -109,6 +203,10 @@ const runtimeStore = readFileSync(
     "../src/features/chat/stores/chat-runtime-store.ts",
     import.meta.url,
   ),
+  "utf8",
+);
+const runtimeProvider = readFileSync(
+  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
   "utf8",
 );
 
@@ -163,20 +261,34 @@ test("auth-session changes discard Limited grants and rotate their page binding"
   assert.match(runtimeStore, /state\.toolExecutionMode === "limited"/);
 });
 
-test("only the started event paints a running record and tool_end persists it", () => {
+test("only backend started and completion events can update a card label", () => {
   assert.match(
     adapter,
-    /toolEvent\.execution_state === "started"\s*\? parseToolExecutionRecord\(toolEvent\.execution_record\)/,
+    /toolEvent\.execution_state === "started"\s*\? parseBackendExecutionRecord\(toolEvent\.execution_record\)/,
   );
   assert.match(
     adapter,
-    /\[TOOL_EXECUTION_RECORD_ARG_KEY\]:\s*cardExecutionRecord/,
+    /toolEvent\.execution_state === "completed"\s*\? parseBackendExecutionRecord/,
   );
-  assert.match(adapter, /execution_record: executionRecord/);
+  assert.match(adapter, /attachAuthoritativeExecutionRecord\(/);
+  assert.match(adapter, /discardAuthoritativeExecutionRecord\(partId\)/);
   assert.match(
     adapter,
-    /key !== TOOL_EXECUTION_RECORD_ARG_KEY/,
-    "card-only metadata must not become model-visible tool arguments",
+    /completionExecutionRecord \?\?\s*toolExecutionRecordFromCard\(id\)/,
+  );
+  assert.doesNotMatch(adapter, /parseToolExecutionRecord/);
+  assert.doesNotMatch(adapter, /execution_record: executionRecord/);
+  assert.match(
+    adapter,
+    /stripUntrustedExecutionMetadata\(\s*toolEvent\.arguments/,
+    "tool event arguments must be sanitized before merging",
+  );
+  assert.match(runtimeProvider, /stripUntrustedExecutionMetadataFromContent/);
+  assert.match(runtimeProvider, /discardAuthoritativeExecutionRecord/);
+  assert.match(
+    adapter,
+    /replayArgsText = mergedToolCallArgumentsText\([\s\S]*TOOL_EXECUTION_RECORD_ARG_KEY/,
+    "reserved metadata must also be removed from exact provider replay text",
   );
 });
 
@@ -186,7 +298,7 @@ for (const component of ["tool-ui-python.tsx", "tool-ui-terminal.tsx"]) {
       new URL(`../src/components/assistant-ui/${component}`, import.meta.url),
       "utf8",
     );
-    assert.match(source, /toolExecutionRecordFromCard\(args, result\)/);
+    assert.match(source, /toolExecutionRecordFromCard\(toolCallId\)/);
     assert.match(source, /data-slot="tool-execution-protection"/);
   });
 }

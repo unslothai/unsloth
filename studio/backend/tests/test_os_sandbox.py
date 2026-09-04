@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import math
 import os
+import shlex
 import shutil
 import socket
 import statistics
@@ -369,6 +370,62 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     assert prepared.env["TMPDIR"] == "/tmp"
 
 
+def test_prepare_revalidates_runtime_roots_before_mounts(monkeypatch, tmp_path):
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    validation_calls = []
+
+    def validate(paths, checked_workdir, **kwargs):
+        validation_calls.append((tuple(paths), checked_workdir, kwargs))
+        if tuple(paths) == (str(runtime),):
+            raise os_sandbox.SandboxUnavailableError("unsafe runtime sentinel")
+
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", validate)
+    mount_construction = Mock(side_effect = AssertionError("mount construction started"))
+    monkeypatch.setattr(os_sandbox, "_nested_exposed_mounts", mount_construction)
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unsafe runtime sentinel"):
+        backend.prepare(_spec(workdir))
+
+    assert validation_calls[-1][0] == (str(runtime),)
+    assert validation_calls[-1][1] == os.path.realpath(workdir)
+    mount_construction.assert_not_called()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not hasattr(socket, "AF_UNIX"),
+    reason = "Linux pathname Unix sockets are required",
+)
+def test_unsafe_runtime_socket_never_reaches_bwrap_argv(monkeypatch, tmp_path):
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(runtime / "host.sock"))
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    mount_construction = Mock(side_effect = AssertionError("unsafe root reached mount construction"))
+    monkeypatch.setattr(os_sandbox, "_nested_exposed_mounts", mount_construction)
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+    try:
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
+            backend.prepare(_spec(workdir))
+    finally:
+        server.close()
+    mount_construction.assert_not_called()
+
+
 def test_linux_nested_mount_beneath_exposed_root_is_masked(monkeypatch, tmp_path):
     workdir = tmp_path / "session"
     workdir.mkdir()
@@ -557,7 +614,7 @@ def test_linux_system_roots_are_scanned_for_host_ipc(monkeypatch, tmp_path):
         Mock(return_value = subprocess.CompletedProcess([], 0, stdout = str(sentinel), stderr = "")),
     )
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
         os_sandbox._validate_runtime_paths((str(root),), str(workdir), include_system_roots = True)
 
 
@@ -590,7 +647,84 @@ def test_linux_system_root_scan_does_not_prune_searchable_directory(monkeypatch,
     command = run.call_args.args[0]
     assert "-readable" not in command
     assert command.count("-executable") == 1
-    assert not any(left == "-type" and right == "s" for left, right in zip(command, command[1:]))
+    assert any(left == "-type" and right == "s" for left, right in zip(command, command[1:]))
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not hasattr(socket, "AF_UNIX"),
+    reason = "the trusted /usr/bin/find fast path is Linux-specific",
+)
+def test_find_fast_path_rejects_bound_runtime_unix_socket(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(runtime / "host.sock"))
+    real_run = subprocess.run
+    commands: list[tuple[str, ...]] = []
+
+    def recording_run(command, **kwargs):
+        commands.append(tuple(command))
+        return real_run(command, **kwargs)
+
+    assert os_sandbox._trusted_linux_executable("/usr/bin/find")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox.subprocess, "run", recording_run)
+    try:
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
+            os_sandbox._validate_runtime_paths((str(runtime),), str(workdir))
+    finally:
+        server.close()
+
+    assert commands and commands[0][0] == "/usr/bin/find"
+    assert ("-type", "s") in tuple(zip(commands[0], commands[0][1:]))
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(socket, "AF_UNIX"),
+    reason = "pathname Unix sockets are required",
+)
+def test_python_fallback_rejects_bound_runtime_unix_socket(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(runtime / "host.sock"))
+    run = Mock(side_effect = AssertionError("the untrusted find binary must not run"))
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: False)
+    monkeypatch.setattr(os_sandbox.subprocess, "run", run)
+    try:
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
+            os_sandbox._validate_runtime_paths((str(runtime),), str(workdir))
+    finally:
+        server.close()
+    run.assert_not_called()
+
+
+def test_trusted_find_failure_fails_closed_without_fallback(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: True)
+    monkeypatch.setattr(
+        os_sandbox.subprocess,
+        "run",
+        Mock(side_effect = subprocess.TimeoutExpired("/usr/bin/find", 8)),
+    )
+    monkeypatch.setattr(
+        os_sandbox.os,
+        "walk",
+        Mock(side_effect = AssertionError("trusted-scanner failure must not use the fallback")),
+    )
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "cannot scan"):
+        os_sandbox._validate_runtime_paths((str(runtime),), str(workdir))
 
 
 @pytest.mark.skipif(
@@ -610,7 +744,7 @@ def test_linux_runtime_scan_follows_symlinked_root(monkeypatch, tmp_path):
     monkeypatch.setattr(os_sandbox, "_linux_mount_points", lambda: ())
     monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: False)
     try:
-        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Unix socket"):
             os_sandbox._validate_runtime_paths((str(runtime_link),), str(workdir))
     finally:
         server.close()
@@ -691,7 +825,7 @@ def test_workdir_validation_rejects_fifo(tmp_path):
     workdir.mkdir()
     os.mkfifo(workdir / "host.fifo")
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "FIFOs"):
         os_sandbox._validate_workdir(str(workdir))
 
 
@@ -703,7 +837,7 @@ def test_workdir_validation_rejects_unix_socket(tmp_path):
         server = socket.socket(socket.AF_UNIX)
         try:
             server.bind(str(workdir / "host.sock"))
-            with pytest.raises(os_sandbox.SandboxUnavailableError, match = "socket, FIFO, or device"):
+            with pytest.raises(os_sandbox.SandboxUnavailableError, match = "FIFOs"):
                 os_sandbox._validate_workdir(str(workdir))
         finally:
             server.close()
@@ -795,13 +929,24 @@ def _invoke_tool(
     kind: str,
     *,
     disable_sandbox: bool = False,
+    payload_sentinel: Path | None = None,
     **kwargs,
 ) -> str:
     if kind == "python":
+        code = "print('ok')"
+        if payload_sentinel is not None:
+            code = f"from pathlib import Path; Path({str(payload_sentinel)!r}).write_text('ran')"
         return inference_tools._python_exec(
-            "print('ok')", disable_sandbox = disable_sandbox, **kwargs
+            code, disable_sandbox = disable_sandbox, **kwargs
         )
-    return inference_tools._bash_exec("printf ok", disable_sandbox = disable_sandbox, **kwargs)
+    command = "printf ok"
+    if payload_sentinel is not None:
+        command = (
+            f'type nul > "{payload_sentinel}"'
+            if os.name == "nt"
+            else f"printf ran > {shlex.quote(str(payload_sentinel))}"
+        )
+    return inference_tools._bash_exec(command, disable_sandbox = disable_sandbox, **kwargs)
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
@@ -872,7 +1017,7 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
-def test_failed_prepare_blocks_before_popen(kind, monkeypatch, tmp_path):
+def test_required_runtime_validation_failure_never_spawns(kind, monkeypatch, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     _patch_tool_harness(monkeypatch, workdir)
@@ -884,11 +1029,64 @@ def test_failed_prepare_blocks_before_popen(kind, monkeypatch, tmp_path):
         Mock(side_effect = os_sandbox.SandboxUnavailableError("native sandbox unavailable")),
     )
 
-    result = _invoke_tool(kind)
+    sentinel = tmp_path / "payload-ran"
+    records = []
+    result = _invoke_tool(
+        kind,
+        launch_record_callback = records.append,
+        payload_sentinel = sentinel,
+    )
 
     assert result.startswith("Execution error:")
     assert "native sandbox unavailable" in result
     popen.assert_not_called()
+    assert records == []
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_popen_failure_emits_no_execution_record(kind, monkeypatch, tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    _patch_tool_harness(monkeypatch, workdir)
+    prepared = os_sandbox.PreparedSandboxLaunch(
+        argv = ("qualified-native-sandbox", "opaque-inner-command"),
+        workdir = str(workdir),
+        env = {"MODE": "prepared"},
+        preexec_fn = None,
+        backend = "test-native",
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = "os_isolation_required",
+            effective_mode = "os_isolation_required",
+            environment = "native_linux",
+            backend = "test-native",
+            profile_id = "test-v1",
+            probe_generation = "generation",
+            os_isolation = True,
+            retained_safeguards = ("os_isolation",),
+        ),
+    )
+    prepared.cleanup = Mock()
+    monkeypatch.setattr(inference_tools, "prepare_tool_launch", lambda _spec: prepared)
+    monkeypatch.setattr(
+        inference_tools.subprocess,
+        "Popen",
+        Mock(side_effect = OSError("launcher failed before payload")),
+    )
+    sentinel = tmp_path / "payload-ran"
+    records = []
+
+    result = _invoke_tool(
+        kind,
+        launch_record_callback = records.append,
+        payload_sentinel = sentinel,
+    )
+
+    assert result.startswith("Execution error:")
+    assert "launcher failed before payload" in result
+    assert records == []
+    assert not sentinel.exists()
+    prepared.cleanup.assert_called_once()
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
@@ -1285,27 +1483,79 @@ print('NETWORK_BOUNDARY_OK')
     assert "NETWORK_BOUNDARY_OK" in completed.stdout
 
 
-def test_live_private_unix_socket_and_resource_sharer_work(qualified_native_capability, tmp_path):
+def test_private_tmp_unix_socket_round_trip(qualified_native_capability, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     code = """
 import os, socket
-from multiprocessing.resource_sharer import DupFd, stop
 
 path = os.path.join(os.environ['TMPDIR'], 'private.sock')
 server = socket.socket(socket.AF_UNIX)
 client = socket.socket(socket.AF_UNIX)
+accepted = None
 try:
     server.bind(path)
     server.listen(1)
     client.connect(path)
     accepted, _ = server.accept()
-    accepted.sendall(b'ok')
-    assert client.recv(2) == b'ok'
-    accepted.close()
+    client.sendall(b'client-to-server')
+    assert accepted.recv(16) == b'client-to-server'
+    accepted.sendall(b'server-to-client')
+    assert client.recv(16) == b'server-to-client'
 finally:
+    if accepted is not None:
+        accepted.close()
     client.close()
     server.close()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+assert not os.path.exists(path)
+print('PRIVATE_UNIX_ROUND_TRIP_OK')
+"""
+    completed = _run_native(workdir, code)
+    _assert_native_ok(completed)
+    assert "PRIVATE_UNIX_ROUND_TRIP_OK" in completed.stdout
+
+
+def test_private_socket_cleanup_after_assertion_failure(qualified_native_capability, tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    code = """
+import os, socket
+
+path = os.path.join(os.environ['TMPDIR'], 'failure.sock')
+server = socket.socket(socket.AF_UNIX)
+try:
+    try:
+        server.bind(path)
+        raise AssertionError('deliberate probe failure')
+    finally:
+        server.close()
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+except AssertionError:
+    pass
+assert not os.path.exists(path)
+print('PRIVATE_UNIX_FAILURE_CLEANUP_OK')
+"""
+    completed = _run_native(workdir, code)
+    _assert_native_ok(completed)
+    assert "PRIVATE_UNIX_FAILURE_CLEANUP_OK" in completed.stdout
+
+
+def test_multiprocessing_resource_sharer_remains_supported(
+    qualified_native_capability, tmp_path
+):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    code = """
+import os
+from multiprocessing.resource_sharer import DupFd, stop
+
 read_fd, write_fd = os.pipe()
 shared_fd = DupFd(read_fd).detach()
 os.write(write_fd, b'R')
@@ -1313,15 +1563,15 @@ assert os.read(shared_fd, 1) == b'R'
 for fd in (read_fd, write_fd, shared_fd):
     os.close(fd)
 stop()
-print('PRIVATE_UNIX_AND_RESOURCE_SHARER_OK')
+print('RESOURCE_SHARER_OK')
 """
     completed = _run_native(workdir, code)
     _assert_native_ok(completed)
-    assert "PRIVATE_UNIX_AND_RESOURCE_SHARER_OK" in completed.stdout
+    assert "RESOURCE_SHARER_OK" in completed.stdout
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "PyTorch is unavailable")
-def test_live_pytorch_tensor_transfer_uses_private_resource_sharing(
+def test_pytorch_tensor_sharing_remains_supported(
     qualified_native_capability, tmp_path
 ):
     workdir = tmp_path / "work"

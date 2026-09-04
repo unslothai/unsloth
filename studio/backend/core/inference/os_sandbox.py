@@ -27,6 +27,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _SCAN_ENTRY_LIMIT = 100_000
+_REJECTED_RUNTIME_ENTRY_TYPES = "Unix sockets, FIFOs, block devices, or character devices"
 _PROBE_TIMEOUT_SECONDS = 8
 _PROBE_TOKEN = "UNSLOTH_OS_SANDBOX_PROBE_OK"
 _PROBE_UDP_TOKEN = b"UNSLOTH_OS_SANDBOX_UDP_PROBE"
@@ -444,7 +445,13 @@ def _validate_runtime_paths(
     include_system_roots: bool = False,
     allow_nested_mounts: bool = False,
 ) -> None:
-    """User-managed runtimes may be read-only, but must not carry host IPC into the jail."""
+    """User-managed runtimes may be read-only, but must not carry host IPC into the jail.
+
+    Preparation calls this immediately before constructing the bind list. A
+    trusted same-UID host process can still mutate a bind source afterward;
+    read-only binds are not immutable snapshots, and that race is outside the
+    trusted-local threat boundary.
+    """
     scan_roots: list[str] = []
     for root in paths:
         if _contained(root, workdir):
@@ -502,6 +509,9 @@ def _validate_runtime_paths(
             [
                 "(",
                 "-type",
+                "s",
+                "-o",
+                "-type",
                 "p",
                 "-o",
                 "-type",
@@ -531,7 +541,7 @@ def _validate_runtime_paths(
             )
         if result.stdout.strip():
             raise SandboxUnavailableError(
-                "an interpreter/runtime path contains a socket, FIFO, or device node: "
+                f"an interpreter/runtime path contains {_REJECTED_RUNTIME_ENTRY_TYPES}: "
                 f"{result.stdout.strip().splitlines()[0]}"
             )
         return
@@ -565,7 +575,7 @@ def _validate_runtime_paths(
                         dirs.remove(name)
                 elif not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                     raise SandboxUnavailableError(
-                        f"runtime path contains a socket, FIFO, or device node: {path}"
+                        f"runtime path contains {_REJECTED_RUNTIME_ENTRY_TYPES}: {path}"
                     )
 
 
@@ -883,11 +893,20 @@ class LinuxBubblewrapBackend:
         workdir = _validate_workdir(spec.workdir)
         _validate_linux_workdir_environment(workdir)
         runtime_paths = _runtime_read_paths()
+        system_roots = tuple(
+            path for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES) if os.path.exists(path)
+        )
+        _validate_runtime_paths(
+            system_roots,
+            workdir,
+            include_system_roots = True,
+            allow_nested_mounts = True,
+        )
         _validate_runtime_paths(runtime_paths, workdir, allow_nested_mounts = True)
         exposed_roots = tuple(
             path
-            for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *runtime_paths)
-            if os.path.exists(path) and not _contained(path, workdir)
+            for path in (*system_roots, *runtime_paths)
+            if not _contained(path, workdir)
         )
         nested_mounts: list[tuple[_LinuxMount, bool]] = []
         for mount in _nested_exposed_mounts(exposed_roots):
@@ -1636,15 +1655,26 @@ finally:
 path = os.path.join(os.environ['TMPDIR'], 'private.sock')
 server = socket.socket(socket.AF_UNIX)
 client = socket.socket(socket.AF_UNIX)
+accepted = None
 try:
     server.bind(path)
     server.listen(1)
     client.connect(path)
     accepted, _ = server.accept()
-    accepted.close()
+    client.sendall(b'client-to-server')
+    assert accepted.recv(16) == b'client-to-server'
+    accepted.sendall(b'server-to-client')
+    assert client.recv(16) == b'server-to-client'
 finally:
+    if accepted is not None:
+        accepted.close()
     client.close()
     server.close()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+assert not os.path.exists(path)
 print('{_PROBE_TOKEN}')
 """
 

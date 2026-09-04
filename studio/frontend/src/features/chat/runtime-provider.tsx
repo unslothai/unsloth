@@ -101,7 +101,11 @@ import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
-import type { OpenAIChatChunk } from "./types/api";
+import {
+  discardAuthoritativeExecutionRecord,
+  stripUntrustedExecutionMetadataFromContent,
+  type OpenAIChatChunk,
+} from "./types/api";
 import {
   budgetImpliesTruncation,
   restoredAssistantStatus,
@@ -764,7 +768,11 @@ function cloneContent(
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
+  if (!Array.isArray(content)) return [];
+  const cloned = JSON.parse(JSON.stringify(content)) as unknown;
+  return stripUntrustedExecutionMetadataFromContent(
+    cloned,
+  ) as ThreadMessage["content"];
 }
 
 function cloneAttachments(
@@ -781,6 +789,13 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     Array.isArray(m.content) && m.content.length > 0
       ? cloneContent(m.content)
       : [{ type: "text" as const, text: "" }];
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part.type === "tool-call") {
+        discardAuthoritativeExecutionRecord(part.toolCallId);
+      }
+    }
+  }
 
   if (m.role === "user") {
     return {

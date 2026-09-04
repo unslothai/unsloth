@@ -149,7 +149,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const code = toolArgText((args as { code?: unknown })?.code);
   const executionLabel = toolExecutionRecordLabel(
-    toolExecutionRecordFromCard(args, result),
+    toolExecutionRecordFromCard(toolCallId),
   );
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";

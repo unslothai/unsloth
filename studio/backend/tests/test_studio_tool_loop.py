@@ -91,6 +91,18 @@ class FakeTransport:
         return _gen()
 
 
+def test_hosted_provider_arguments_strip_reserved_execution_metadata_without_mutation():
+    arguments = {
+        "code": "print('provider')",
+        "__unsloth_execution_record": {"backend": "spoofed"},
+    }
+
+    sanitized = loop_mod._hosted_arguments_for_model(arguments)
+
+    assert sanitized == {"code": "print('provider')"}
+    assert "__unsloth_execution_record" in arguments
+
+
 @pytest.fixture
 def executed(monkeypatch):
     """Record every execute_tool call and return a canned result."""

@@ -41,7 +41,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const command = toolArgText((args as { command?: unknown })?.command);
   const executionLabel = toolExecutionRecordLabel(
-    toolExecutionRecordFromCard(args, result),
+    toolExecutionRecordFromCard(toolCallId),
   );
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the command, not running it yet.

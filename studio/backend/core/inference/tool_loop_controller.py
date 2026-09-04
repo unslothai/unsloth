@@ -36,6 +36,18 @@ _CANONICAL_HEAL_ARG = {
 # Where a bare string lands when the tool it was sent to has no argument that could hold it. Read by `execute_tool`,
 # which answers with what actually went wrong instead of letting the tool report a missing key it was never given.
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
+TOOL_EXECUTION_RECORD_ARG_KEY = "__unsloth_execution_record"
+
+
+def sanitize_untrusted_tool_arguments(arguments: Any) -> dict[str, Any]:
+    """Copy model/provider arguments without backend-owned card metadata."""
+    if not isinstance(arguments, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key != TOOL_EXECUTION_RECORD_ARG_KEY
+    }
 
 
 # Anything that ends a JSON token. A tail free of all of them never finished arriving.
@@ -244,7 +256,9 @@ class ToolCallDecision:
         fragment = self.unparsed_fragment
         # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
         # the model's own text under a name that means something rather than an internal sentinel.
-        arguments = {"raw": fragment} if fragment is not None else self.arguments
+        arguments = sanitize_untrusted_tool_arguments(
+            {"raw": fragment} if fragment is not None else self.arguments
+        )
         return {
             "tool_name": self.tool_name,
             "tool_call_id": self.card_id,
@@ -272,7 +286,9 @@ class ToolCallDecision:
                 # that overflowed the window.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
-                else canonical_arguments_text(self.arguments),
+                else canonical_arguments_text(
+                    sanitize_untrusted_tool_arguments(self.arguments)
+                ),
             },
         }
         if self.tool_call_id:
@@ -299,6 +315,7 @@ class ToolCallCompletion:
             "provenance": self.decision.provenance,
         }
         if self.execution_record is not None:
+            payload["execution_state"] = "completed"
             payload["execution_record"] = self.execution_record
         return payload
 
@@ -1014,7 +1031,8 @@ class ToolLoopController:
             tool_name = tool_name,
             tool_schemas = self._tools,
         )
-        key = canonical_tool_call_key(tool_name, coerced.arguments)
+        arguments = sanitize_untrusted_tool_arguments(coerced.arguments)
+        key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
@@ -1040,12 +1058,12 @@ class ToolLoopController:
         return ToolCallDecision(
             action = action,
             tool_name = tool_name,
-            arguments = coerced.arguments,
+            arguments = arguments,
             tool_call_id = str(tool_call.get("id") or ""),
             card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
-            status_text = status_for_tool(tool_name, coerced.arguments),
+            status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
         )
 

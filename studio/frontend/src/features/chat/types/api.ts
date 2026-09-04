@@ -617,11 +617,25 @@ export interface ToolExecutionRecord {
   limitations?: string[];
 }
 
-/** Internal card metadata. It is stripped from replayed tool arguments. */
+/** Reserved backend metadata. Model/provider arguments must never retain it. */
 export const TOOL_EXECUTION_RECORD_ARG_KEY =
   "__unsloth_execution_record" as const;
 
-export function parseToolExecutionRecord(
+const BACKEND_EXECUTION_RECORD = Symbol("unsloth.backend-execution-record");
+type BackendExecutionRecord = ToolExecutionRecord & {
+  [BACKEND_EXECUTION_RECORD]: true;
+};
+
+const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
+
+export function stripUntrustedExecutionMetadata(args: unknown): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  const sanitized = { ...(args as Record<string, unknown>) };
+  delete sanitized[TOOL_EXECUTION_RECORD_ARG_KEY];
+  return sanitized;
+}
+
+function parseExecutionRecordShape(
   value: unknown,
 ): ToolExecutionRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -662,22 +676,91 @@ export function parseToolExecutionRecord(
   };
 }
 
-export function toolExecutionRecordFromCard(
-  args: unknown,
-  result: unknown,
+/** Parse and brand a record received on a backend-owned tool event. */
+export function parseBackendExecutionRecord(
+  value: unknown,
 ): ToolExecutionRecord | null {
-  const resultRecord =
-    result && typeof result === "object" && !Array.isArray(result)
-      ? (result as Record<string, unknown>).execution_record
-      : null;
-  const argsRecord =
-    args && typeof args === "object" && !Array.isArray(args)
-      ? (args as Record<string, unknown>)[TOOL_EXECUTION_RECORD_ARG_KEY]
-      : null;
+  const record = parseExecutionRecordShape(value);
+  if (!record) return null;
+  Object.defineProperty(record, BACKEND_EXECUTION_RECORD, {
+    value: true,
+    enumerable: false,
+  });
+  return record;
+}
+
+function isBackendExecutionRecord(
+  record: ToolExecutionRecord | null,
+): record is BackendExecutionRecord {
   return (
-    parseToolExecutionRecord(resultRecord) ??
-    parseToolExecutionRecord(argsRecord)
+    record !== null &&
+    (record as BackendExecutionRecord)[BACKEND_EXECUTION_RECORD] === true
   );
+}
+
+export type ToolCardState = {
+  toolCallId: string;
+  executionRecord?: ToolExecutionRecord;
+};
+
+/** Attach only a record created by parseBackendExecutionRecord. */
+export function attachAuthoritativeExecutionRecord<T extends ToolCardState>(
+  card: T,
+  record: ToolExecutionRecord | null,
+): T & ToolCardState {
+  const { executionRecord: _untrustedExecutionRecord, ...ordinaryCard } = card;
+  if (isBackendExecutionRecord(record)) {
+    authoritativeExecutionRecords.set(card.toolCallId, record);
+    return { ...ordinaryCard, executionRecord: record } as T & ToolCardState;
+  }
+  authoritativeExecutionRecords.delete(card.toolCallId);
+  return ordinaryCard as T & ToolCardState;
+}
+
+/** Read the process-local backend record associated with this live card. */
+export function toolExecutionRecordFromCard(
+  toolCallId: string,
+): ToolExecutionRecord | null {
+  return authoritativeExecutionRecords.get(toolCallId) ?? null;
+}
+
+export function discardAuthoritativeExecutionRecord(toolCallId: string): void {
+  authoritativeExecutionRecords.delete(toolCallId);
+}
+
+function stripUntrustedRecordEnvelope(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const sanitized = { ...(value as Record<string, unknown>) };
+  delete sanitized.executionRecord;
+  delete sanitized.execution_record;
+  return sanitized;
+}
+
+/** Stored/imported message content has no backend-event provenance. */
+export function stripUntrustedExecutionMetadataFromContent(
+  content: unknown,
+): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map((part) => {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      Array.isArray(part) ||
+      (part as Record<string, unknown>).type !== "tool-call"
+    ) {
+      return part;
+    }
+    const sanitized = { ...(part as Record<string, unknown>) };
+    sanitized.args = stripUntrustedExecutionMetadata(sanitized.args);
+    if ("result" in sanitized) {
+      sanitized.result = stripUntrustedRecordEnvelope(sanitized.result);
+    }
+    if ("artifact" in sanitized) {
+      sanitized.artifact = stripUntrustedRecordEnvelope(sanitized.artifact);
+    }
+    delete sanitized.executionRecord;
+    return sanitized;
+  });
 }
 
 /** A card label derived only from the backend's launch-time record. */
