@@ -907,12 +907,19 @@ export function ModelsPage() {
 
   const filteredDiscoverRows = useMemo(() => {
     if (isDatasetMode) return discoverRows;
+    // Why (#9456): the iconless likes gate exists to keep the general feed
+    // clean, but an owner-scoped channel ("Latest Unsloth Models") is curated
+    // content — its owner's newest models routinely sit under the threshold and
+    // match no provider stem, so the gate emptied the whole channel.
+    const channelOwner = activeChannel?.owner?.toLowerCase() ?? null
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Feed shows logo'd models, plus iconless ones above the likes threshold.
+        // Feed shows logo'd models, plus iconless ones above the likes threshold;
+        // a channel's own owner is always shown.
         (!isFeedMode ||
+          (channelOwner !== null && row.owner.toLowerCase() === channelOwner) ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         matchesFormat(
