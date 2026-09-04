@@ -4,6 +4,7 @@
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
+  providerModelSupportsThinking,
 } from "./external-providers";
 
 /**
@@ -1051,7 +1052,7 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 }
 
 export interface ExternalReasoningResolveOptions {
-  /** vLLM or Ollama connection flagged as a reasoning model in provider config. */
+  /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
@@ -1061,11 +1062,14 @@ export interface ExternalReasoningResolveOptions {
 // https://docs.ollama.com/api/openai-compatibility
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// Neither vLLM nor Ollama has a per-model reasoning signal on OpenAI-compat, so
-// the connection toggle pins it. Ollama errors a thinking request at a model
-// that cannot think, so the ladder only appears on a flagged connection (#9649).
-function resolveConnectionLevelReasoning(
+// vLLM has no per-model reasoning signal on OpenAI-compat, so the connection
+// toggle pins it. Ollama does: its native /api/tags names a "thinking"
+// capability per model, learned into the shared capability map when the catalog
+// is fetched. Ollama errors a thinking request at a model that cannot think, so
+// the ladder only appears once that model is known to reason (#9649).
+function resolveProviderReasoning(
   normalizedProvider: string,
+  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
@@ -1074,7 +1078,10 @@ function resolveConnectionLevelReasoning(
       supportsReasoningOff: true,
     });
   }
-  if (normalizedProvider === "ollama" && options?.isReasoningProvider) {
+  if (
+    normalizedProvider === "ollama" &&
+    providerModelSupportsThinking(normalizedProvider, modelId) === true
+  ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1093,14 +1100,18 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  const normalizedModel = modelId?.trim().toLowerCase() ?? "";
+  // The capability map is keyed by the id the catalog reported, so the lookup
+  // gets the trimmed id rather than the case-folded one used for matching.
+  const catalogModel = modelId?.trim() ?? "";
+  const normalizedModel = catalogModel.toLowerCase();
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
-  const connectionLevel = resolveConnectionLevelReasoning(
+  const providerLevel = resolveProviderReasoning(
     normalizedProvider,
+    catalogModel,
     options,
   );
-  if (connectionLevel) {
-    return connectionLevel;
+  if (providerLevel) {
+    return providerLevel;
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
