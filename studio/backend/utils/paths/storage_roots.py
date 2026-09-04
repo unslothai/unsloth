@@ -138,9 +138,27 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     `*/studio` spelling. Any OTHER direct child of a marked root is a separate
     installation, so inheriting there would hand it the first install's
     UNSLOTH_HOME, and with it that install's node, llama.cpp and whisper.cpp.
-    Case-folded where the filesystem is: the installer writes `studio`, but the
-    user typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory and
-    resolve() does not correct the spelling.
+
+    A leaf spelled otherwise can still BE <parent>/studio, because a
+    case-insensitive filesystem opens the `studio` the installer wrote for a user
+    who typed `Studio` into UNSLOTH_STUDIO_HOME, and resolve() does not correct
+    the spelling. Asked of the FILESYSTEM, not of the platform: macOS is
+    case-insensitive by default but not by rule, and a case-sensitive APFS volume
+    is exactly what an external disk carrying a portable install tends to be
+    formatted as. There `studio` and `Studio` are two directories, and a
+    platform-wide fold hands a separate normal install at <master>/Studio the
+    nested portable sibling's master root and managed runtimes. samefile is the
+    st_dev/st_ino pair, which is the same question `[ x -ef y ]` asks for
+    install.sh's and setup.sh's copies of this rule.
+
+    The cheap name test stays in front so the common case costs no stat and a
+    differently-named child is still never adopted. DECLINES when the probe
+    cannot run -- no <parent>/studio, or an unreadable parent -- because a missing
+    sibling on a case-sensitive volume means the marker names a directory that is
+    not this one, and because the alternative is adopting another install's
+    runtimes on a guess. A genuine nested portable root loses nothing it needs:
+    install.sh leaves it a .unsloth-master-root record inside itself, which
+    _in_root_master_root reads and which outranks this lookup.
 
     The name is necessary and not sufficient: a marker beside a FLAT install is
     that install's own, and `studio` is a name a separate install placed under it
@@ -150,9 +168,12 @@ def _inherits_parent_portable_marker(root: Path) -> bool:
     name = root.name
     if name == STUDIO_CHILD_DIRNAME:
         return True
-    if os.name == "nt" or sys.platform == "darwin":
-        return name.lower() == STUDIO_CHILD_DIRNAME
-    return False
+    if name.lower() != STUDIO_CHILD_DIRNAME:
+        return False
+    try:
+        return root.samefile(root.parent / STUDIO_CHILD_DIRNAME)
+    except (OSError, ValueError):
+        return False
 
 
 # Reported once per directory rather than once per call: the parent lookup runs

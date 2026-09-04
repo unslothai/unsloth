@@ -246,26 +246,55 @@ def main() -> int:
         check("explicit UNSLOTH_HOME wins for the sibling", str(master), r["master"])
         check("explicit UNSLOTH_HOME is kept", str(master), r["exported_home"])
 
-        print("\n[9] `Studio` is the same directory where the filesystem says so")
+        print("\n[9] `Studio` is the same directory where the FILESYSTEM says so")
         # The installer writes `studio`, but a user typing UNSLOTH_STUDIO_HOME by
-        # hand on macOS or Windows can spell it `Studio` and open the very same
-        # directory; resolve() hands the spelling straight through. Rejecting it
-        # would break a real nested install, so the fold must agree with
-        # storage_roots._inherits_parent_portable_marker.
+        # hand can spell it `Studio` and, on a case-insensitive volume, open the
+        # very same directory; resolve() hands the spelling straight through.
+        # Rejecting it would break a real nested install.
+        #
+        # The rule used to fold whenever sys.platform was darwin (or os.name nt).
+        # macOS is case-insensitive by DEFAULT, not by rule, and a case-sensitive
+        # APFS volume is exactly what an external disk carrying a portable install
+        # tends to be formatted as. There <master>/studio and <master>/Studio are
+        # two separate installs, and the fold handed the second one the first's
+        # master root -- which THIS process is the one that exports. So the
+        # question asked is whether the two paths identify the same directory
+        # (Path.samefile, the st_dev/st_ino pair `[ x -ef y ]` compares for the
+        # two shell copies), and every case below runs under BOTH platforms and
+        # must give the SAME answer.
+        #
+        # A case-insensitive volume cannot be created on the CI host, so `studio`
+        # is made a symlink to the real `Studio`. That gives the two spellings the
+        # one property the predicate tests -- same st_dev/st_ino -- without
+        # claiming to simulate case-insensitive name lookup in general, which the
+        # predicate never relies on because it only ever probes the literal name
+        # `studio`.
         cased = tmp / "cased"
         (cased / "Studio" / "unsloth_studio" / "bin").mkdir(parents = True)
+        (cased / "studio").symlink_to("Studio")
         (cased / MARKER).write_text(f"{cased}\n")
-        r = _run({"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "darwin"}, home, FOLD_PROBE)
-        check("darwin: Studio inherits the parent marker", str(cased), r["master"])
-        check("darwin: Studio reads as installer-managed", True, r["managed"])
-        r = _run({"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE)
-        check("linux: Studio is a distinct directory, so no inherit", None, r["master"])
-        # Lowercase must not depend on the fold, or the fold becomes the whole rule.
-        r = _run({"_STUDIO_HOME": str(master / "studio"), "_PLATFORM": "linux"}, home, FOLD_PROBE)
-        check("linux: lowercase studio still inherits", str(master), r["master"])
-        # And the fold must not turn every child into a match on macOS.
-        r = _run({"_STUDIO_HOME": str(sibling), "_PLATFORM": "darwin"}, home, FOLD_PROBE)
-        check("darwin: a sibling is still not adopted", None, r["master"])
+        # Two REAL directories under one marked root: split/studio is the genuine
+        # nested portable install, split/Studio a separate normal one.
+        split = tmp / "split"
+        (split / "studio" / "unsloth_studio" / "bin").mkdir(parents = True)
+        (split / "Studio" / "unsloth_studio" / "bin").mkdir(parents = True)
+        (split / MARKER).write_text(f"{split}\n")
+        for plat in ("darwin", "linux"):
+            r = _run({"_STUDIO_HOME": str(cased / "Studio"), "_PLATFORM": plat}, home, FOLD_PROBE)
+            check(f"{plat}: one directory, two spellings, inherits", str(cased), r["master"])
+            check(f"{plat}: ...and reads as installer-managed", True, r["managed"])
+            r = _run({"_STUDIO_HOME": str(split / "Studio"), "_PLATFORM": plat}, home, FOLD_PROBE)
+            check(f"{plat}: two directories, the cased one does not", None, r["master"])
+            # ...and the nested portable install beside it keeps working, so the
+            # rule cannot collapse into "never portable".
+            r = _run({"_STUDIO_HOME": str(split / "studio"), "_PLATFORM": plat}, home, FOLD_PROBE)
+            check(f"{plat}: two directories, the nested one still does", str(split), r["master"])
+            # Lowercase must not depend on the fold, or the fold is the whole rule.
+            r = _run({"_STUDIO_HOME": str(master / "studio"), "_PLATFORM": plat}, home, FOLD_PROBE)
+            check(f"{plat}: lowercase studio still inherits", str(master), r["master"])
+            # And the fold must not turn every child into a match.
+            r = _run({"_STUDIO_HOME": str(sibling), "_PLATFORM": plat}, home, FOLD_PROBE)
+            check(f"{plat}: a sibling is still not adopted", None, r["master"])
 
     print()
     if FAILS:

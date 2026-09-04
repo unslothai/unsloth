@@ -1011,19 +1011,75 @@ _setup_portable_mode() {
     # any other child of a marked root is an unrelated tree whose own update would
     # then skip the WebView cache clear. Same rule as install.sh's
     # _clear_stale_portable_marker and storage_roots._inherits_parent_portable_marker.
-    # Folded on macOS, where the default filesystem is case-insensitive: the
-    # installer writes `studio`, but a user typing `Studio` into UNSLOTH_STUDIO_HOME
-    # names the same directory and `cd -P` keeps their spelling.
-    _spm_leaf="$STUDIO_HOME"
-    if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
-        _spm_leaf=$(printf '%s' "$STUDIO_HOME" | tr '[:upper:]' '[:lower:]')
+    # Lexical parent, not "$STUDIO_HOME/..", and no dirname: BSD dirname has no
+    # `--`. Two of the ownership tests below are `grep -qxF` against a path
+    # install.sh WROTE, and install.sh derives it as ${...%/*} from a `pwd -P`
+    # root -- so a `..` component here makes the literal comparison miss every
+    # time and takes the whole exclusion silently inert. Strip whatever the leaf
+    # is spelled rather than a literal `/studio`, which would derive the wrong
+    # parent for a differently-cased leaf.
+    _spm_leafname="${STUDIO_HOME##*/}"
+    _spm_parent="${STUDIO_HOME%/*}"
+    [ -n "$_spm_parent" ] || _spm_parent="/"
+    if [ "$_spm_leafname" != studio ]; then
+        # A leaf spelled otherwise can still BE <parent>/studio: on a
+        # case-insensitive filesystem the installer writes `studio` while a user
+        # typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory, and
+        # `cd -P` keeps their spelling. Asked of the FILESYSTEM rather than of
+        # `uname`: macOS is case-insensitive by default but not by rule, and a
+        # case-sensitive APFS volume -- which is what a portable install on an
+        # external disk is often formatted as -- has `studio` and `Studio` as two
+        # separate installs. `-ef` is the st_dev/st_ino comparison used below, and
+        # needs neither `readlink -f` nor `realpath`, neither of which is on the
+        # BSD side. The name test stays in front so the common case costs no stat
+        # and a differently-named child is never adopted. Both probes DECLINE on
+        # failure, which here means clearing the WebView caches: doing that to a
+        # portable install costs a re-download of nothing, whereas skipping it
+        # leaves the desktop serving the previous frontend.
+        case "$(printf '%s' "$_spm_leafname" | tr '[:upper:]' '[:lower:]')" in
+            (studio) ;;
+            (*) return 1 ;;
+        esac
+        [ -d "$_spm_parent/studio" ] || return 1
+        [ "$STUDIO_HOME" -ef "$_spm_parent/studio" ] 2>/dev/null || return 1
     fi
-    case "$_spm_leaf" in
-        */studio)
-            if [ -f "$STUDIO_HOME/../.unsloth-portable-root" ]; then return 0; fi
-            ;;
-    esac
-    return 1
+    if [ ! -f "$_spm_parent/.unsloth-portable-root" ]; then return 1; fi
+    # ...and the marker has to be the MASTER root's, not a flat install's own. A
+    # flat portable install occupying <root> keeps its venv directly at
+    # <root>/unsloth_studio and its marker at <root>, and a separate normal install
+    # pointed at <root>/studio through UNSLOTH_STUDIO_HOME is then a different tree
+    # that would read the flat neighbour's marker and skip its own WebView clear --
+    # leaving the desktop app serving the previous frontend after `unsloth studio
+    # update`. The legitimate nested case is the mirror image: its venv is at
+    # <root>/studio/unsloth_studio and there is nothing at <root>/unsloth_studio.
+    #
+    # Told apart by the one question that separates them: does the parent own a
+    # venv DIRECTLY? Same four ownership tests, same order, as install.sh's
+    # _resolve_studio_destinations and _clear_stale_portable_marker, and as
+    # storage_roots._flat_venv_is_owned. The two sentinels outside the venv have to
+    # NAME it rather than merely exist: `unsloth` is an ordinary word, and a bare
+    # bin/unsloth beside a bare unsloth_studio is somebody's own pair as often as
+    # ours. Deliberately WITHOUT that selector's already-nested exclusion -- a
+    # nested child under the flat parent is exactly the shape this case has, so
+    # excluding on it would answer "not flat" for the wrong reason.
+    # Inline, not a helper, so this block still runs when lifted out on its own.
+    _spmp_flat_venv="$_spm_parent/unsloth_studio"
+    if [ -d "$_spmp_flat_venv" ]; then
+        _spmp_flat_exe=$(printf '%s' "$_spmp_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if [ -f "$_spmp_flat_venv/.unsloth-studio-owned" ]; then
+            return 1
+        elif grep -qxF "UNSLOTH_EXE='$_spmp_flat_exe'" \
+                "$_spm_parent/share/studio.conf" 2>/dev/null; then
+            return 1
+        elif [ -L "$_spm_parent/bin/unsloth" ] \
+             && [ "$_spm_parent/bin/unsloth" -ef "$_spmp_flat_venv/bin/unsloth" ] 2>/dev/null; then
+            return 1
+        elif grep -qxF "exec '$_spmp_flat_exe' \"\$@\"" \
+                "$_spm_parent/bin/unsloth" 2>/dev/null; then
+            return 1
+        fi
+    fi
+    return 0
 }
 if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then
     _clear_webview_caches

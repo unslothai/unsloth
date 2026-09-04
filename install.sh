@@ -1151,28 +1151,47 @@ _clear_stale_portable_marker() {
     fi
     # Nested layout: <root>/studio is the one spelling under which a parent marker
     # names THIS install. Any other child of a portable root is a different tree,
-    # and its marker is not ours to delete. Folded on macOS, where the default
-    # filesystem is case-insensitive and getcwd hands back the spelling that was
-    # typed rather than the one on disk, so UNSLOTH_STUDIO_HOME=<root>/Studio
-    # reaches the `studio` the installer wrote and arrives here spelled `Studio`.
-    # Both readers of the parent marker fold there already
-    # (storage_roots._inherits_parent_portable_marker, setup.sh's
-    # _setup_portable_mode), so an exact match would leave behind a marker they
-    # both still honour and the reinstall would come back up portable. Not folded
-    # on Linux, where `studio` and `Studio` are two different directories.
-    _spm_leaf="$STUDIO_HOME"
-    if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
-        _spm_leaf=$(printf '%s' "$STUDIO_HOME" | tr '[:upper:]' '[:lower:]')
-    fi
-    case "$_spm_leaf" in
-        */studio) ;;
-        *) return 0 ;;
-    esac
-    # No dirname: the leaf is already matched, and BSD dirname has no `--`. Strip
-    # whatever that leaf is spelled rather than the literal `/studio`, which would
-    # leave a folded `Studio` on the path and derive the wrong parent.
+    # and its marker is not ours to delete.
+    #
+    # No dirname: BSD dirname has no `--`. Strip whatever the leaf is spelled
+    # rather than the literal `/studio`, which would derive the wrong parent for a
+    # differently-cased leaf.
+    _spm_leafname="${STUDIO_HOME##*/}"
     _spm_parent="${STUDIO_HOME%/*}"
     [ -n "$_spm_parent" ] || _spm_parent="/"
+    if [ "$_spm_leafname" != studio ]; then
+        # A leaf spelled otherwise can still BE <parent>/studio: on a
+        # case-insensitive filesystem getcwd hands back the spelling that was
+        # typed rather than the one on disk, so UNSLOTH_STUDIO_HOME=<root>/Studio
+        # opens the `studio` the installer wrote and arrives here spelled
+        # `Studio`. An exact match would leave behind a marker both readers still
+        # honour (storage_roots._inherits_parent_portable_marker, setup.sh's
+        # _setup_portable_mode) and the reinstall would come back up portable.
+        #
+        # Asked of the FILESYSTEM, not of `uname`. macOS is case-insensitive by
+        # default but not by rule, and a case-sensitive APFS volume is exactly
+        # what a portable install on an external disk tends to be formatted as.
+        # There `studio` and `Studio` are two directories, so a platform-wide fold
+        # would delete a nested portable sibling's marker during a normal
+        # reinstall of the neighbour. `-ef` is the st_dev/st_ino comparison the
+        # ownership tests below already use, and it needs neither `readlink -f`
+        # nor `realpath`, neither of which is on the BSD side.
+        #
+        # The cheap name test stays in front of it so the common case costs no
+        # stat at all and so a differently-named child is still never adopted.
+        # Both probes DECLINE on failure: a missing <parent>/studio, or a `[`
+        # without -ef, leaves the marker in place. That is the safe direction --
+        # the readers run the same predicate and decline with it, so the install
+        # degrades to a plain one instead of one tree deleting the record another
+        # is still read through, and a genuine nested portable root keeps its own
+        # .unsloth-master-root record, which outranks the parent marker anyway.
+        case "$(printf '%s' "$_spm_leafname" | tr '[:upper:]' '[:lower:]')" in
+            (studio) ;;
+            (*) return 0 ;;
+        esac
+        [ -d "$_spm_parent/studio" ] || return 0
+        [ "$STUDIO_HOME" -ef "$_spm_parent/studio" ] 2>/dev/null || return 0
+    fi
     # ...and the parent has to be THIS install's master root, not merely a directory
     # with a `studio` child. The leaf test above matches a NAME, and a name is not
     # ownership. <parent> can be a FLAT portable install in its own right -- its venv
