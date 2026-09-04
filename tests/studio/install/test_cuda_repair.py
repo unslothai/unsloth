@@ -2162,9 +2162,12 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
         block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        # The interpreter's arch, not the machine's: wheel availability is a property of
+        # the venv, and an emulated x64 venv on an ARM64 box can install win_amd64 torchaudio.
         assert (
-            "_is_windows_arm64()" in block
+            "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"
+        assert "_is_windows_arm64()" not in block, "the machine predicate would drop torchaudio from x64 venvs"
         assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
 
     def test_x64_windows_still_asks_for_all_three(self):

@@ -258,7 +258,14 @@ function Install-UnslothStudio {
     function Get-HostMachineArch {
         $osArch = ""
         try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
-        $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
+        # The machine-scope value first, read from the registry, because every per-process
+        # signal follows the process: under x64 emulation on ARM64 Windows the process copy
+        # of PROCESSOR_ARCHITECTURE says AMD64, PROCESSOR_ARCHITEW6432 is unset (it is a
+        # WOW64-only variable), and .NET Framework's OSArchitecture reports X64. An x64
+        # terminal, which VS Code's often is, would otherwise answer x86_64 for an ARM64 box.
+        $machineArch = ""
+        try { $machineArch = [string][Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine") } catch { $machineArch = "" }
+        $signals = @($machineArch, [string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
         foreach ($s in $signals) {
             if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
         }

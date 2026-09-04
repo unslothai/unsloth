@@ -1466,7 +1466,14 @@ function Ensure-BuildToolsForLlamaSourceBuild {
 function Get-HostMachineArch {
     $osArch = ""
     try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { }
-    foreach ($s in @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)) {
+    # The machine-scope value first, read from the registry: under x64 emulation on ARM64
+    # Windows the process copy of PROCESSOR_ARCHITECTURE says AMD64, PROCESSOR_ARCHITEW6432
+    # is unset (a WOW64-only variable), and .NET Framework's OSArchitecture reports X64.
+    # Mirrors install.ps1; this is what Test-WinArm64Venv's short-circuit keys on, and an
+    # x64 terminal must not turn that into a cu130 "repair" of a native cu134 venv.
+    $machineArch = ""
+    try { $machineArch = [string][Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine") } catch { }
+    foreach ($s in @($machineArch, [string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)) {
         if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
     }
     return "other"
@@ -4469,7 +4476,11 @@ $UvPinnedAssets = @{
 function Get-UvHostArch {
     $osArch = ""
     try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
-    $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
+    # Same machine-scope signal Get-HostMachineArch leads with, so the uv this picks on an
+    # update matches the one install.ps1 chose, whatever terminal either ran from.
+    $machineArch = ""
+    try { $machineArch = [string][Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine") } catch { $machineArch = "" }
+    $signals = @($machineArch, [string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
     foreach ($s in $signals) {
         if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
     }

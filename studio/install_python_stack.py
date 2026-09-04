@@ -65,15 +65,38 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
 )
 
 
+def _machine_arch_from_registry() -> str:
+    """The machine-scope PROCESSOR_ARCHITECTURE, which an emulated process cannot
+    misreport. Every per-process signal follows the process: under x64 emulation on
+    ARM64 Windows the process copy says AMD64, PROCESSOR_ARCHITEW6432 is unset (it is a
+    WOW64-only variable), and platform.machine() says AMD64 too. Empty when unreadable
+    or off Windows."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ) as key:
+            return str(winreg.QueryValueEx(key, "PROCESSOR_ARCHITECTURE")[0] or "")
+    except Exception:
+        return ""
+
+
 def _is_windows_arm64() -> bool:
-    """Windows on ARM, machine arch rather than process arch: platform.machine() reports
-    AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly
-    that case. Mirrors Get-HostMachineArch in install.ps1 / setup.ps1."""
+    """Windows on ARM, machine arch rather than process arch. The registry value leads
+    because the per-process signals all say AMD64 under an emulated x64 Python; they stay
+    as fallbacks for a native interpreter. Mirrors Get-HostMachineArch in install.ps1 /
+    setup.ps1. Wheel availability is an interpreter question, not a machine one: see
+    ``_is_win_arm64_interpreter``."""
     if not IS_WINDOWS:
         return False
     return any(
         (value or "").strip().lower() in {"arm64", "aarch64"}
         for value in (
+            _machine_arch_from_registry(),
             os.environ.get("PROCESSOR_ARCHITEW6432"),
             os.environ.get("PROCESSOR_ARCHITECTURE"),
             platform.machine(),
@@ -4049,9 +4072,11 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
     # torchaudio exists for win_arm64 only on NVIDIA's GA out-of-tree channel; install.ps1
-    # reports which way the index it chose went ($WinArm64NoAudio in setup.ps1).
+    # reports which way the index it chose went ($WinArm64NoAudio in setup.ps1). Keyed on
+    # the interpreter, not the machine: an emulated x64 venv on an ARM64 box installs
+    # win_amd64 wheels, and download.pytorch.org publishes torchaudio for those.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
-    if _is_windows_arm64() and not _windows_arm64_has_torchaudio():
+    if _is_win_arm64_interpreter() and not _windows_arm64_has_torchaudio():
         _trio = [_torch_pkg, _vision_pkg]
     _label_before = str(installed_version)
     # --force-reinstall, not install.ps1's uv-only --reinstall-package: pip_install falls
@@ -4367,9 +4392,10 @@ def _ensure_rocm_torch() -> None:
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
             # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists
-            # there, so asking for one makes the trio unresolvable.
+            # there, so asking for one makes the trio unresolvable. The interpreter's
+            # arch decides which wheels exist, so that is what this keys on.
             _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
-            if _is_windows_arm64():
+            if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
             # Nonfatal: a transient AMD-index failure must not abort the install.
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
