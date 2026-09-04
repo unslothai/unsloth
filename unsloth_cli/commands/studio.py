@@ -512,6 +512,20 @@ def _portable_root_env(master: Path) -> dict[str, str]:
 
     Derived from the root, then overlaid with <root>/share/studio.conf when the
     installer wrote one, so this list cannot drift from install.sh.
+
+    The conf is read as bytes and decoded with filesystem semantics, for the
+    reason _in_root_master_root spells out: install.sh writes these values from
+    the resolved root verbatim and a POSIX path is a byte string, so a root
+    carrying a byte that is not valid UTF-8 came back through errors="replace"
+    as U+FFFD -- which is not an unusable value but a DIFFERENT and perfectly
+    creatable one (the single byte re-encodes to the three bytes of U+FFFD), so
+    an activated-venv update would point UV_CACHE_DIR and PIP_CACHE_DIR at a
+    sibling of the root and write outside it. os.fsdecode is also what the
+    master-root record next door uses, so the two readers agree on what a
+    recorded path says. On Windows it decodes UTF-8 with surrogatepass, which is
+    right here too: only install.sh writes this file, NTFS paths are UTF-16, and
+    a conf that is not valid UTF-8 there was not written by us -- it raises,
+    caught below, and the derived values stand rather than a mangled overlay.
     """
     derived = {
         "UNSLOTH_PORTABLE": "1",
@@ -531,8 +545,9 @@ def _portable_root_env(master: Path) -> dict[str, str]:
         "PIP_CACHE_DIR": str(master / "cache" / "pip"),
     }
     try:
-        conf = (master / "share" / "studio.conf").read_text(encoding = "utf-8", errors = "replace")
-    except OSError:
+        with (master / "share" / "studio.conf").open("rb") as handle:
+            conf = os.fsdecode(handle.read())
+    except (OSError, ValueError):
         return derived
     for line in conf.splitlines():
         matched = _PORTABLE_CONF_EXPORT.match(line)
