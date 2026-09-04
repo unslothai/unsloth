@@ -131,7 +131,7 @@ import {
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
-import { restorableSize, snapDim } from "./image-size";
+import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
   type ControlNetSpecInput,
@@ -2016,12 +2016,18 @@ export function ImagesPage({
     // The control image isn't persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
+    // The Recipe popover goes on showing the recorded size, so a restore that had to move it says
+    // so rather than leaving the two silently disagreeing.
+    const rescaled =
+      restored.width !== image.width || restored.height !== image.height
+        ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}–${MAX_DIM} range.` }
+        : undefined;
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
     const conditioned = CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
     if (conditioned) {
-      toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`);
+      toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
-      toast.success("Settings restored to inputs");
+      toast.success("Settings restored to inputs", rescaled);
     }
   }, [setWorkflow]);
 

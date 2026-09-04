@@ -75,20 +75,35 @@ test("a degenerate record still produces a usable size", () => {
   }
 });
 
-test("restoreSettings puts the record through restorableSize", () => {
+const restoreSettingsBody = () => {
   const source = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
   const start = source.indexOf("const restoreSettings = useCallback(");
   assert.ok(start > 0, "restoreSettings not found");
-  const body = source.slice(start, source.indexOf("}, [", start));
-  assert.match(body, /restorableSize\(image\.width, image\.height, image\.workflow\)/);
+  return source.slice(start, source.indexOf("}, [", start));
+};
+
+test("restoreSettings puts the record through restorableSize", () => {
+  const body = restoreSettingsBody();
+  assert.match(
+    body,
+    /restorableSize\(image\.width, image\.height, image\.workflow\)/,
+  );
   assert.doesNotMatch(
     body,
     /setWidth\(image\.width\)|setHeight\(image\.height\)/,
     "the raw recorded size must not reach the form",
   );
+});
+
+test("a restore that had to move the size says so", () => {
+  // The Recipe popover goes on showing the recorded size, so a silent scale leaves the two
+  // disagreeing with nothing to explain it.
+  const body = restoreSettingsBody();
+  assert.match(body, /restored\.width !== image\.width/);
+  assert.match(body, /Size scaled to \$\{restored\.width\}/);
 });
 
 // Transform bounds the upload by the requested size instead of taking it literally, so the
@@ -108,7 +123,10 @@ const transform = (
       ? [w, h]
       : (() => {
           const s = Math.min(bw / w, bh / h);
-          return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
+          return [
+            Math.max(1, Math.round(w * s)),
+            Math.max(1, Math.round(h * s)),
+          ];
         })();
   return [
     Math.max(16, Math.round(fw / 16) * 16),
@@ -116,12 +134,12 @@ const transform = (
   ];
 };
 
-test("restoring a Transform record reproduces it exactly as well as main did", () => {
-  // Not an absolute round-trip assertion: Transform is already not perfectly self-reproducing on
-  // main, because _snap_to_multiple rounds a side and the tightened box changes the next run
-  // (3000x500 at 2048 records 2048x336 and re-runs to 2016x336, with or without this change).
-  // What this change owes is that it never reproduces WORSE than main, while making the recipe
-  // savable -- so main is the baseline, not an ideal.
+test("restoring a Transform record reproduces it as exactly as an unscaled restore would", () => {
+  // The baseline is the unscaled restore: the raw record in the form, each side snapped by
+  // Generate on its own. Not an absolute round-trip assertion, because Transform is not perfectly
+  // self-reproducing either way -- _snap_to_multiple rounds a side and the tightened box changes
+  // the next run (3000x500 at 2048 records 2048x336 and re-runs to 2016x336, scaled or not). What
+  // the scale owes is that it never reproduces WORSE while making the recipe savable.
   for (const source of [
     [1920, 400],
     [1920, 320],
@@ -130,14 +148,13 @@ test("restoring a Transform record reproduces it exactly as well as main did", (
   ] as Array<[number, number]>) {
     for (const requested of [512, 768, 1024, 2048]) {
       const recorded = transform(source, requested, requested);
-      // main puts the raw record in the form; Generate then snaps each side on its own.
-      const onMain = transform(
+      const unscaled = transform(
         source,
         snapDim(recorded[0]),
         snapDim(recorded[1]),
       );
       const restored = restorableSize(recorded[0], recorded[1], "img2img");
-      const onThisBranch = transform(
+      const reRun = transform(
         source,
         snapDim(restored.width),
         snapDim(restored.height),
@@ -147,11 +164,11 @@ test("restoring a Transform record reproduces it exactly as well as main did", (
         `${recorded[0]}x${recorded[1]} restored to ${restored.width}x${restored.height}`,
       );
       assert.deepEqual(
-        onThisBranch,
-        onMain,
+        reRun,
+        unscaled,
         `source ${source[0]}x${source[1]} at ${requested}: recorded ${recorded[0]}x${recorded[1]}, ` +
-          `restored ${restored.width}x${restored.height}, re-ran to ${onThisBranch[0]}x${onThisBranch[1]} ` +
-          `where main re-ran to ${onMain[0]}x${onMain[1]}`,
+          `restored ${restored.width}x${restored.height}, re-ran to ${reRun[0]}x${reRun[1]} ` +
+          `where an unscaled restore re-ran to ${unscaled[0]}x${unscaled[1]}`,
       );
     }
   }
@@ -166,13 +183,26 @@ test("scaling a Transform record as a pair would NOT reproduce it", () => {
   const asPair = restorableSize(1024, 208, "edit");
   assert.deepEqual(asTransform, { width: 1024, height: 256 });
   assert.deepEqual(asPair, { width: 1264, height: 256 });
-  assert.deepEqual(transform([1920, 400], asTransform.width, asTransform.height), recorded);
-  assert.notDeepEqual(transform([1920, 400], asPair.width, asPair.height), recorded);
+  assert.deepEqual(
+    transform([1920, 400], asTransform.width, asTransform.height),
+    recorded,
+  );
+  assert.notDeepEqual(
+    transform([1920, 400], asPair.width, asPair.height),
+    recorded,
+  );
 });
 
 test("every other workflow still keeps the recipe's shape", () => {
   // The headline case: an Edit of a phone photo must not come back square.
-  for (const workflow of [null, undefined, "edit", "inpaint", "upscale", "reference"]) {
+  for (const workflow of [
+    null,
+    undefined,
+    "edit",
+    "inpaint",
+    "upscale",
+    "reference",
+  ]) {
     const restored = restorableSize(4032, 3024, workflow);
     assert.deepEqual(
       restored,
@@ -181,10 +211,19 @@ test("every other workflow still keeps the recipe's shape", () => {
     );
   }
   // Per-side clamping, which img2img wants, would square this one up.
-  assert.deepEqual(restorableSize(4032, 3024, "img2img"), { width: 2048, height: 2048 });
+  assert.deepEqual(restorableSize(4032, 3024, "img2img"), {
+    width: 2048,
+    height: 2048,
+  });
 });
 
 test("a Transform record already inside the schema is untouched", () => {
-  assert.deepEqual(restorableSize(1024, 512, "img2img"), { width: 1024, height: 512 });
-  assert.deepEqual(restorableSize(2048, 256, "img2img"), { width: 2048, height: 256 });
+  assert.deepEqual(restorableSize(1024, 512, "img2img"), {
+    width: 1024,
+    height: 512,
+  });
+  assert.deepEqual(restorableSize(2048, 256, "img2img"), {
+    width: 2048,
+    height: 256,
+  });
 });
