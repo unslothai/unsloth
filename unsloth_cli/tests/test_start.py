@@ -8760,7 +8760,9 @@ def test_openclaw_memory_search_falls_back_to_default_without_the_settings_route
     assert config["memory"]["search"]["provider"] == "openai-compatible"
 
 
-def test_openclaw_memory_search_clears_a_stale_external_fallback(fake_studio, tmp_path, monkeypatch):
+def test_openclaw_memory_search_clears_a_stale_external_fallback(
+    fake_studio, tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config_path.parent.mkdir(parents = True)
