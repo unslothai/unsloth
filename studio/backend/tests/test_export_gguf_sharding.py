@@ -102,7 +102,7 @@ def test_worker_passes_shard_size_to_backend():
     assert queue.items[-1]["success"] is True
 
 
-def test_backend_forwards_shard_size_to_local_and_hub_exports(tmp_path, monkeypatch):
+def test_backend_forwards_shard_size_to_the_local_export_it_then_uploads(tmp_path, monkeypatch):
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(
         "test_export_gguf_shard_backend",
@@ -127,21 +127,32 @@ def test_backend_forwards_shard_size_to_local_and_hub_exports(tmp_path, monkeypa
             shard.write_bytes(b"GGUF")
             return {"gguf_files": [str(shard)]}
 
-        def push_to_hub_gguf(
-            self,
-            repo_id,
-            tokenizer,
-            quantization_method,
-            token,
-            private,
-            gguf_shard_size = None,
-        ):
-            seen["hub"] = {
-                "repo_id": repo_id,
-                "private": private,
-                "gguf_shard_size": gguf_shard_size,
-            }
+        def push_to_hub_gguf(self, *args, **kwargs):
+            seen["hub"] = kwargs
 
+    class _RepoUrl(str):
+        repo_id = "owner/model"
+
+    class _HfApi:
+        def __init__(self, token = None):
+            seen["token"] = token
+
+        def create_repo(self, repo_id, private = False, exist_ok = False):
+            seen["repo"] = {"repo_id": repo_id, "private": private}
+            return _RepoUrl("https://huggingface.co/owner/model")
+
+        def upload_folder(self, folder_path, repo_id, repo_type, ignore_patterns = None):
+            seen["upload"] = folder_path
+
+    class _ModelCard:
+        def __init__(self, content):
+            pass
+
+        def push_to_hub(self, repo_id, token = None, commit_message = None):
+            pass
+
+    monkeypatch.setattr(export_module, "HfApi", _HfApi)
+    monkeypatch.setattr(export_module, "ModelCard", _ModelCard)
     monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
     backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
     backend.current_model = Model()
@@ -161,7 +172,9 @@ def test_backend_forwards_shard_size_to_local_and_hub_exports(tmp_path, monkeypa
     assert success is True, message
     assert output_path == str(save_directory.resolve())
     assert seen["local"] == "512MB"
-    assert seen["hub"] == {"repo_id": "owner/model", "private": True, "gguf_shard_size": "512MB"}
+    assert "hub" not in seen
+    assert seen["upload"] == output_path
+    assert seen["repo"] == {"repo_id": "owner/model", "private": True}
 
 
 def test_backend_rejects_old_exporter_only_when_option_is_set(tmp_path, monkeypatch):

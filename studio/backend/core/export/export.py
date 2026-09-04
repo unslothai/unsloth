@@ -413,6 +413,26 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 """
 
 
+GGUF_MODEL_CARD = """---
+tags:
+- gguf
+- llama.cpp
+- unsloth
+---
+
+# {name} : GGUF
+
+This model was converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+
+**Example usage**:
+- For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `llama-mtmd-cli -hf {repo_id} --jinja`
+
+## Available model files:
+{files}
+"""
+
+
 class ExportBackend:
     """Handles model export operations"""
 
@@ -1116,7 +1136,7 @@ class ExportBackend:
         shard_hooks = []
         if save_directory:
             shard_hooks.append(self.current_model.save_pretrained_gguf)
-        if push_to_hub:
+        elif push_to_hub:
             shard_hooks.append(self.current_model.push_to_hub_gguf)
         if gguf_shard_size is not None and not all(
             _gguf_shard_export_supported(hook) for hook in shard_hooks
@@ -1294,15 +1314,38 @@ class ExportBackend:
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
-                self.current_model.push_to_hub_gguf(
-                    repo_id,
-                    self.current_tokenizer,
-                    quantization_method = quant_method,
-                    token = hf_token,
-                    private = private,
-                    **imatrix_kw,
-                    **shard_kw,
-                )
+                if output_path and Path(output_path).is_dir():
+                    # push_to_hub_gguf re-runs the whole merge + convert + quantize into the
+                    # system temp directory; these files are already built.
+                    hf_api = HfApi(token = hf_token)
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    ModelCard(
+                        GGUF_MODEL_CARD.format(
+                            name = repo_id.split("/")[-1],
+                            repo_id = repo_id,
+                            files = "\n".join(
+                                f"- `{os.path.basename(f)}`" for f in final_ggufs
+                            ),
+                        )
+                    ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    hf_api.upload_folder(
+                        folder_path = output_path,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                        # Studio-local discovery data, and it can carry a local base-model path.
+                        ignore_patterns = ["export_metadata.json"],
+                    )
+                else:
+                    self.current_model.push_to_hub_gguf(
+                        repo_id,
+                        self.current_tokenizer,
+                        quantization_method = quant_method,
+                        token = hf_token,
+                        private = private,
+                        **imatrix_kw,
+                        **shard_kw,
+                    )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
             return (
