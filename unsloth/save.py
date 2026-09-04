@@ -3041,7 +3041,9 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
         print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
-def push_to_ollama(tokenizer, base_model_name, gguf_location, username: str, model_name: str, tag: str):
+def push_to_ollama(
+    tokenizer, base_model_name, gguf_location, username: str, model_name: str, tag: str
+):
     model_file = create_ollama_modelfile(
         tokenizer = tokenizer,
         base_model_name = base_model_name,
