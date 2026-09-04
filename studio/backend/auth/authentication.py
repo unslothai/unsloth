@@ -400,6 +400,20 @@ def require_ui_session_for_local_commands(via_api_key: bool) -> None:
         )
 
 
+async def authenticated_with_sk_unsloth_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True only when the caller presented an sk-unsloth API key bearer.
+
+    Keyless local CLI callers and UI session JWTs both return False. Use this where
+    programmatic API keys must be restricted but keyless enumeration of local assets
+    should keep working -- ``authenticated_via_api_key`` also counts keyless callers.
+    """
+    if is_keyless(credentials):
+        return False
+    return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+
+
 async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
     """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
 
