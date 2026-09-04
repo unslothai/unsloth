@@ -176,3 +176,112 @@ def test_indentation_churn_inside_the_cell_is_still_cosmetic(sig, tmp_path: Path
         [("code", _UPSTREAM_HEAD), ("code", "print(1)\n")],
         [("code", churned), ("code", "print(1)\n")],
     ), "comment/blank/inner-spacing/tab churn at the same depth must stay SAME"
+
+
+# Classification was a substring search over the WHOLE cell text, and normalization
+# then flattened the whole cell. Four shipped notebooks (the NeMo-Gym family) route a
+# 200-line executable Python cell through it because a prose comment says
+# `uv pip install`, and the flattening was already collapsing YAML indentation inside
+# a string literal there.
+
+_NEMO_STYLE = (
+    "# Inside the .venv guard this cell used to carry, `uv pip install` was run here.\n"
+    "import subprocess\n"
+    "with open(cfg, 'w') as _f:\n"
+    "    _f.write(\n"
+    '        "instruction_following:\\n"\n'
+    '        "  resources_servers:\\n"\n'
+    '        "      entrypoint: app.py\\n"\n'
+    "    )\n"
+)
+
+
+def test_a_comment_mentioning_an_install_does_not_make_it_an_install_cell(sig):
+    cell = {"cell_type": "code", "source": [_NEMO_STYLE]}
+    assert not sig._is_install_code(cell), (
+        "a 200-line Python cell was flattened because a comment named uv pip install"
+    )
+
+
+def test_yaml_nesting_inside_a_string_literal_is_not_cosmetic(sig, tmp_path: Path):
+    renested = _NEMO_STYLE.replace('"      entrypoint', '"    entrypoint')
+    assert renested != _NEMO_STYLE
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", _NEMO_STYLE), ("code", "print(1)\n")],
+        [("code", renested), ("code", "print(1)\n")],
+    ), "re-nesting a generated YAML key changes what the notebook writes"
+
+
+def test_a_string_literal_beside_a_real_install_is_still_compared(sig, tmp_path: Path):
+    """The reviewer's case: the cell really does install, so it is an install cell,
+    but the code around the install must not be flattened with it."""
+    before = _INSTALL + 'script = "echo # pip install foo"\n'
+    after = _INSTALL + 'script = "echo # pip install bar"\n'
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", before), ("code", "print(1)\n")],
+        [("code", after), ("code", "print(1)\n")],
+    ), "a `#` inside a string is data, not a comment"
+
+
+def test_whitespace_inside_a_string_is_data_too(sig, tmp_path: Path):
+    assert not _same(
+        sig,
+        tmp_path,
+        [("code", _INSTALL + 'cfg = "a  b"\n'), ("code", "print(1)\n")],
+        [("code", _INSTALL + 'cfg = "a    b"\n'), ("code", "print(1)\n")],
+    )
+
+
+def test_a_shell_cell_still_has_every_line_treated_as_a_command(sig, tmp_path: Path):
+    """`%%bash` makes the whole cell shell, so the marker needs no `!` prefix there."""
+    cell = {"cell_type": "code", "source": ["%%bash\npip install unsloth\n"]}
+    assert sig._is_install_code(cell)
+    churned = "%%bash\npip install  unsloth\n# comment\n"
+    assert _same(
+        sig,
+        tmp_path,
+        [("code", "%%bash\npip install unsloth\n"), ("code", "print(1)\n")],
+        [("code", churned), ("code", "print(1)\n")],
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "!pip install unsloth\n",
+        "  !pip install unsloth\n",
+        "%pip install unsloth\n",
+        "%uv pip install unsloth\n",
+        "!uv pip install unsloth\n",
+        "!apt-get install -y ffmpeg\n",
+    ],
+)
+def test_every_real_invocation_still_counts_as_an_install_cell(sig, line):
+    assert sig._is_install_code({"cell_type": "code", "source": [line]}), line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# pip install unsloth\n",
+        'note = "pip install unsloth"\n',
+        "print('run pip install unsloth first')\n",
+        "subprocess.run(['bash', '-c', 'uv pip install foo'])\n",
+    ],
+)
+def test_a_mention_is_not_an_invocation(sig, line):
+    assert not sig._is_install_code({"cell_type": "code", "source": [line]}), line
+
+
+def test_pip3_is_deliberately_absent_from_the_markers(sig):
+    """`!pip3 install` matches no marker, and that predates this change. It is the safe
+    direction: an unrecognised install cell is compared byte for byte, so upstream
+    comment churn costs one extra refresh instead of hiding a spec change. Adding
+    "pip3 install" here would start eliding those cells, so it needs its own decision
+    rather than being tidied in."""
+    assert not any("pip3 install" == m for m in sig._INSTALL_MARKERS)
+    assert not sig._is_install_code({"cell_type": "code", "source": ["!pip3 install x\n"]})

@@ -39,14 +39,37 @@ _INSTALL_MARKERS = (
 )
 
 
+_MAGIC_INSTALL = ("%pip", "%uv", "%conda")
+
+
+def _is_shell_cell(text):
+    """A `%%bash` / `%%sh` cell magic makes every line of the cell a shell command."""
+    for line in text.split("\n"):
+        s = line.strip()
+        if s:
+            return s.startswith(("%%bash", "%%sh", "%%script"))
+    return False
+
+
+def _is_install_line(line, shell):
+    """A real install invocation rather than a mention of one: `!`, a `%pip`-family
+    magic, or any line of a shell cell. On an ordinary Python line the same words are
+    prose or data, and treating the cell as an install cell on that basis put four
+    shipped notebooks through the flattening below over a comment (see
+    tests/python/test_docker_nb_install_cell_sig.py)."""
+    low = line.lower()
+    if not any(m in low for m in _INSTALL_MARKERS):
+        return False
+    s = low.lstrip()
+    return shell or s.startswith("!") or s.startswith(_MAGIC_INSTALL)
+
+
 def _is_install_code(cell):
     if cell.get("cell_type") != "code":
         return False
     t = _text(cell)
-    low = t.lower()
-    if any(m in low for m in _INSTALL_MARKERS):
-        return True
-    return False
+    shell = _is_shell_cell(t)
+    return any(_is_install_line(line, shell) for line in t.split("\n"))
 
 
 def _is_boilerplate_md(cell):
@@ -65,9 +88,27 @@ def _normalize_install(text):
     """Drop the cosmetic half of an install cell, keep what it installs. Its package
     specs are functional and the image keys its transformers sidecar off them, so
     skipping the whole cell hid an upstream fix forever: SAME keeps the old file AND
-    re-records its old hash."""
+    re-records its old hash.
+
+    Only the install COMMANDS are flattened. Three quarters of the install cells in
+    unslothai/notebooks carry ordinary Python or shell around the install, and
+    flattening that as well made a `#` or a run of spaces inside a string literal
+    cosmetic. A non-install line therefore keeps its bytes, unless it is blank or a
+    whole-line comment, or it contains no quote and no `#` at all and so has nowhere
+    for whitespace to be data."""
+    shell = _is_shell_cell(text)
     lines = []
-    for line in _COMMENT_RE.sub("", text).split("\n"):
+    for raw in text.split("\n"):
+        if _is_install_line(raw, shell):
+            line = _COMMENT_RE.sub("", raw)
+        else:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if any(ch in raw for ch in ('"', "'", "#")):
+                lines.append(raw)
+                continue
+            line = raw
         body = " ".join(line.split())
         if not body:
             continue
