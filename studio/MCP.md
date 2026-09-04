@@ -32,3 +32,18 @@ Bearer token for both HTTP and WebSocket connections. Keep it on localhost
 unless the deployment has an authenticated reverse proxy. The MCP endpoint is
 intentionally opt-in because tools can consume GPU memory, write model
 artifacts, and stop active work.
+## Web search provider: Parallel Search MCP (opt-in)
+
+Studio's built-in `web_search` uses DuckDuckGo by default. You can switch it to
+Parallel's free Search MCP instead: Settings > Chat > Web search > Search
+provider > Parallel.
+
+- Endpoint: `https://search.parallel.ai/mcp` (Streamable HTTP, no account or key needed).
+- Optional Bearer key: add a Parallel API key from `https://platform.parallel.ai`
+  in the same settings section for higher rate limits. It is stored trimmed,
+  never logged, and only sent as an `Authorization` header to Parallel.
+- On any Parallel failure the search falls back to DuckDuckGo, so a chat never
+  loses web search because of the provider switch.
+
+Manual alternative: add it as a regular MCP server (address above, no headers)
+and call its `web_search` / `web_fetch` tools directly.

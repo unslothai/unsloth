@@ -1425,6 +1425,16 @@ export const en = {
         images: "Show images from web search",
         imagesDescription:
           "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Unsloth, so the browser never contacts image hosts.",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",
