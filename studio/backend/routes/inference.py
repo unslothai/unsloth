@@ -25750,8 +25750,11 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     value = body.get("input")
     if isinstance(value, str):
         items = [value]
-    elif tokens_ok and isinstance(value, list) and value and all(
-        isinstance(token, int) for token in value
+    elif (
+        tokens_ok
+        and isinstance(value, list)
+        and value
+        and all(isinstance(token, int) for token in value)
     ):
         items = [value]
     elif isinstance(value, (list, tuple)):
@@ -25794,6 +25797,7 @@ def _embeddings_texts(body: dict) -> list[str]:
 
 def _public_embedding_name(model_name: str) -> str:
     from utils.paths import is_local_path
+
     if not is_local_path(model_name):
         return model_name
     import hashlib
