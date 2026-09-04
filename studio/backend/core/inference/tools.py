@@ -11742,7 +11742,11 @@ def _fetch_budget_exceeded(deadline, cancel_event):
     return None
 
 
-def _fetch_hop_timeout(timeout, deadline, attempts_left = 1):
+def _fetch_hop_timeout(
+    timeout,
+    deadline,
+    attempts_left = 1,
+):
     """Per-operation socket timeout: the lesser of the caller's per-op timeout
     and the time left on the deadline, so one slow hop cannot overrun the whole
     budget. ``attempts_left`` divides that remaining time when more than one

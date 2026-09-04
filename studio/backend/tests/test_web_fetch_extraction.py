@@ -802,7 +802,11 @@ def test_a_blackholed_first_address_leaves_the_working_one_a_usable_budget(monke
             return body
 
     class _BlackholeOpener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             attempts.append((req.full_url, timeout))
             if "[" in req.full_url:
                 time.sleep(timeout)
