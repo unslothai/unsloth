@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STRIP_PATH = REPO_ROOT / "docker" / "unsloth_nb_strip_colab.py"
 
 INTRO = (
-    "To run this, press \"*Runtime*\" and press \"*Run all*\" on a **free** "
+    'To run this, press "*Runtime*" and press "*Run all*" on a **free** '
     "Tesla T4 Google Colab instance!\n"
 )
 # json.dumps escapes the quotes in INTRO, so the raw sentence never appears in the file
@@ -185,9 +185,7 @@ def test_the_state_write_is_fsynced_before_the_rename(strip, tmp_path, monkeypat
     real_replace = os.replace
 
     monkeypatch.setattr(os, "fsync", lambda fd: order.append("fsync") or real_fsync(fd))
-    monkeypatch.setattr(
-        os, "replace", lambda a, b: order.append("replace") or real_replace(a, b)
-    )
+    monkeypatch.setattr(os, "replace", lambda a, b: order.append("replace") or real_replace(a, b))
 
     target = tmp_path / "state"
     assert strip._write_state(str(target), ["a  b"]) is True
