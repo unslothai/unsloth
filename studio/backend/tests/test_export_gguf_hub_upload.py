@@ -51,10 +51,7 @@ def _hub_doubles(calls, seen):
             root = Path(folder_path)
             paths = [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
-                paths = [
-                    p for p in paths
-                    if any(fnmatch(p, pattern) for pattern in allow_patterns)
-                ]
+                paths = [p for p in paths if any(fnmatch(p, pattern) for pattern in allow_patterns)]
             for pattern in ignore_patterns or ():
                 paths = [p for p in paths if not fnmatch(p, pattern)]
             seen["uploaded"] = sorted(paths)
