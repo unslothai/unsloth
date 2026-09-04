@@ -18,6 +18,11 @@ SENTINEL = "__MCP_IMAGES__:"
 # is trusted on, on the replay side as well as the live one.
 MCP_TOOL_PREFIX = "mcp__"
 IMAGE_TURN_TEXT = "Images returned by the tool call above:"
+# The same pictures where the turn cannot sit beside the result that produced them.
+# The local client-tool passthrough flattens every content part to text before the
+# markers are rebuilt, so they come back as one block rather than at the positions
+# they were taken from, and "above" would name whatever turn happens to precede it.
+DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conversation:"
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
@@ -179,22 +184,29 @@ def png_payloads(images: Sequence[dict]) -> list[str]:
     return [url.split(",", 1)[1] for url in _decoded_urls(images)]
 
 
-def _turn_text(shown: int, total: int) -> str:
+def _turn_text(shown: int, total: int, lead: str = IMAGE_TURN_TEXT) -> str:
     # The tool result's own note counts every image it returned, so a turn that
     # carries fewer has to say so rather than let the model wait for the rest.
     if total > shown:
-        return f"{IMAGE_TURN_TEXT} (first {shown} of {total})"
-    return IMAGE_TURN_TEXT
+        return f"{lead} (first {shown} of {total})"
+    return lead
 
 
-def placeholder_turn(count: int, total: "int | None" = None) -> dict:
+def placeholder_turn(
+    count: int,
+    total: "int | None" = None,
+    lead: str = IMAGE_TURN_TEXT,
+) -> dict:
     """The user turn a local processor renders: ``{"type": "image"}`` markers the
     template turns into image tokens, with the pixels passed alongside."""
     return {
         "role": "user",
         "content": [
             *({"type": "image"} for _ in range(count)),
-            {"type": "text", "text": _turn_text(count, count if total is None else total)},
+            {
+                "type": "text",
+                "text": _turn_text(count, count if total is None else total, lead),
+            },
         ],
     }
 
@@ -224,12 +236,16 @@ def _drop_oldest_image_parts(
     excess: int,
     part_type: str,
     only: "list | None" = None,
+    skip: int = 0,
 ) -> None:
     """Drop the *excess* oldest image parts, and any turn they emptied.
 
     With *only*, a list of the exact part objects promotion created, nothing else
     is touched: a caller that attaches more than the cap keeps every one of its own
     images, which admission has already charged for.
+
+    *skip* is the same protection where the parts are bare markers that carry no
+    identity: the first *skip* of them are the caller's and are passed over.
     """
     owned = {id(part) for part in only} if only is not None else None
     drained = []
@@ -242,13 +258,15 @@ def _drop_oldest_image_parts(
         kept = []
         for part in content:
             if (
-                excess > 0
-                and isinstance(part, dict)
+                isinstance(part, dict)
                 and part.get("type") == part_type
                 and (owned is None or id(part) in owned)
             ):
-                excess -= 1
-                continue
+                if skip > 0:
+                    skip -= 1
+                elif excess > 0:
+                    excess -= 1
+                    continue
             kept.append(part)
         if len(kept) == len(content):
             continue
@@ -271,15 +289,24 @@ def trim_image_turns(
     conversation: list,
     payloads: list,
     limit: int = MAX_TOTAL_MODEL_IMAGES,
+    protected: int = 0,
 ) -> None:
     """Keep the newest *limit* pictures: a loop that keeps calling an image tool
     otherwise re-sends every one it has seen. Markers and their own pixels go
-    together, or the processor counts image tokens it was given none for."""
-    excess = len(payloads) - limit
+    together, or the processor counts image tokens it was given none for.
+
+    *protected* is the count of leading payloads the caller attached. Bare markers
+    carry no identity the way promoted ``image_url`` parts do, so the sink's own
+    order is what says which are the caller's: they seed it before the loop runs.
+    Like the ``only`` scoping on the ``image_url`` cap, they are neither counted
+    against the limit nor deleted by it -- this cap is about what a tool loop
+    re-sends, and evicting the picture the question was asked about answers a
+    different question."""
+    excess = len(payloads) - protected - limit
     if excess <= 0:
         return
-    del payloads[:excess]
-    _drop_oldest_image_parts(conversation, excess, "image")
+    del payloads[protected : protected + excess]
+    _drop_oldest_image_parts(conversation, excess, "image", skip = protected)
 
 
 def trim_image_url_turns(
@@ -367,6 +394,7 @@ def insert_placeholder_turn(
     index: int,
     count: int,
     total: "int | None" = None,
+    lead: str = IMAGE_TURN_TEXT,
 ) -> None:
     """A marker-only user turn placed *before* ``index``.
 
@@ -376,20 +404,33 @@ def insert_placeholder_turn(
     not after it.
     """
     if count > 0:
-        conversation.insert(index, placeholder_turn(count, total))
+        conversation.insert(index, placeholder_turn(count, total, lead))
 
 
 def append_placeholder_turn(
     conversation: list,
     count: int,
     total: "int | None" = None,
+    lead: str = IMAGE_TURN_TEXT,
+    annotate_merge: bool = False,
 ) -> None:
-    """The marker-only form of the above, for backends taking pixels alongside."""
+    """The marker-only form of the above, for backends taking pixels alongside.
+
+    *annotate_merge* carries the note into the merge as well. The live loop merges
+    into a deferred no-op nudge, which is synthetic and needs none. The passthrough
+    merges into the user's real latest question, where bare markers read as pictures
+    the USER attached to it -- so the model answers about ones nobody sent.
+    """
     markers = [{"type": "image"} for _ in range(count)]
     if not markers:
         return
-    if not _merge_into_trailing_user_turn(conversation, markers):
-        conversation.append(placeholder_turn(count, total))
+    merged = list(markers)
+    if annotate_merge:
+        merged.append(
+            {"type": "text", "text": _turn_text(count, count if total is None else total, lead)}
+        )
+    if not _merge_into_trailing_user_turn(conversation, merged):
+        conversation.append(placeholder_turn(count, total, lead))
 
 
 def top_up_image_markers(

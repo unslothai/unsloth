@@ -565,6 +565,10 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    # What the caller attached, seeded into the sink before the loop ran. The MCP cap
+    # is about what the loop itself re-sends, so these are held out of it: trimming
+    # from the front would drop the picture the question was asked about.
+    caller_images = len(images_sink) if images_sink is not None else 0
     # The branch this request is on, before the loop appends anything. A GGUF-compacted
     # thread keeps its archive across a switch to safetensors, so search_conversation is
     # advertised here too and needs the same filtering: the stored rows are the whole
@@ -1509,7 +1513,7 @@ def run_safetensors_tool_loop(
                 append_placeholder_turn(
                     conversation, len(encoded), sum(len(r) for r in batch_mcp_images)
                 )
-                trim_image_turns(conversation, images_sink)
+                trim_image_turns(conversation, images_sink, protected = caller_images)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
