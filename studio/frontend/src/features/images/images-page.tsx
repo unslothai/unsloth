@@ -172,16 +172,16 @@ import {
   type TrainFamilyOption,
 } from "./train/train-base-selector";
 
-// Curated models come from the shared catalog: one canonical group per model with its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor.
-// Host-dependent, so it is built per render rather than once at module load: a host that can
-// only run the native engine is not offered the pipeline rows it would be refused at load.
+// Curated models come from the shared catalog, one group per model with its artifacts as data and
+// the load kind per artifact from loadSpecFor. Built per render, since a host that can only run
+// the native engine is not offered pipeline rows.
 function useImageModels(host: HostClass): ModelOption[] {
   return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
 }
 
-// Workflow tabs. `requires` is the backend workflow id (status.workflows) the loaded model must support; null = always available.
-// The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
-// Keys are the backend's own workflow strings; txt2img is absent because it restores completely.
+// Workflow tabs. `requires` is the backend workflow id the model must support; null = always.
+// Each conditioned workflow names the images it consumed for the restore toast, since a
+// recipe keeps the scalar settings but not the uploads. txt2img restores completely.
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -191,7 +191,8 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   controlnet: "the control image",
 };
 
-// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks the W:H proportion; the sliders set the size.
+// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks W:H; the
+// sliders set the size.
 const ASPECT_RATIOS: Record<string, [number, number]> = {
   "1:1": [1, 1],
   "3:2": [3, 2],
@@ -217,7 +218,7 @@ const CONTROL_TYPE_LABELS: Record<string, string> = {
   pose: "Pose (map)",
 };
 
-// Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
+// Z-Image accepts 256-2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
 // Convenient drag range for the Runs slider; the number box accepts higher typed values on purpose.
@@ -308,8 +309,7 @@ function DimensionSelect({
   );
 }
 
-// Hidden until the row is hovered or focused, so a quiet control stays quiet.
-// The ratio key (compared long:short, so it survives orientation) matching width/height, plus whether portrait.
+// Hidden until the row is hovered or focused. The ratio key is compared long:short, so it survives orientation.
 function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
   const target = Math.max(width, height) / Math.min(width, height);
   const found = Object.entries(ASPECT_RATIOS).find(
@@ -318,8 +318,9 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
   return { key: found ? found[0] : "custom", portrait: height > width };
 }
 
-// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. Object URLs are revoked only on delete.
-// Blob budget for cached PNGs: 192 MB is ~100-200 images, far more than a viewport holds. On-screen and open images are never evicted.
+// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly; object
+// URLs are revoked only on delete. The 192 MB blob budget never evicts a visible image.
+// 192 MB is ~100-200 images, far more than a viewport holds.
 const IMAGE_BLOB_BUDGET_BYTES = 192 * 1024 * 1024;
 
 const galleryCache: {
@@ -328,7 +329,7 @@ const galleryCache: {
   selectedId: string | null;
   quant: string | null;
   srcById: BlobUrlCache;
-  // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch (and leak the duplicate object URL).
+  // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch and leak a duplicate object URL.
   inflight: Set<string>;
   // Ids deleted while their PNG was still downloading: a fetch landing afterwards must throw its blob away.
   deleted: Set<string>;
@@ -345,11 +346,12 @@ const galleryCache: {
 // Images loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
-// Passes a window resync may make before giving up. Each extra pass only happens when pagination
-// moved while it was fetching, which cannot repeat indefinitely without the user scrolling along.
+// Passes a window resync may make before giving up: each extra pass only happens when
+// pagination moved while it was fetching.
 const RESYNC_MAX_ATTEMPTS = 3;
 
-// Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
+// Export filename. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
+// For example Unsloth_20260624-143005_123.png.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
 function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
@@ -363,7 +365,8 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
   return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
+// PNG saves the stored bytes verbatim, keeping the embedded recipe; JPEG / WebP re-encode
+// client-side, JPEG flattened onto white.
 async function reencodeImage(
   src: string,
   format: Exclude<ImageExportFormat, "png">,
@@ -391,8 +394,8 @@ async function reencodeImage(
     throw new Error(`could not encode ${format}`);
   }
   if (blob.type !== `image/${format}`) {
-    // WebKit can silently return PNG bytes when an encoder is unavailable.
-    // Treat that as a failed conversion so the caller uses a matching .png name.
+    // WebKit can silently return PNG bytes when an encoder is unavailable, so treat that as a
+    // failed conversion and use a matching .png name.
     throw new Error(`${format} encoding is unavailable`);
   }
   return blob;
@@ -421,8 +424,8 @@ async function downloadImage(
     if (outputBlob) {
       await downloadFile(outputBlob, filename, outputBlob.type);
     } else if (isTauri) {
-      // WebKit can display the cached object URL but fail to fetch it again with
-      // "Load failed". Re-fetch the authenticated original for the native save.
+      // WebKit can display the cached object URL but fail to fetch it again, so re-fetch the
+      // authenticated original for the native save.
       const originalBlob = await fetchGalleryBlob(image.url);
       await downloadFile(originalBlob, filename, originalBlob.type);
     } else {
@@ -447,7 +450,7 @@ function formatTimestamp(epochSeconds: number): string {
 
 // Bar label for an in-flight generation: step count plus an ETA once known.
 function genStepLabel(p: DiffusionGenerateProgress): string {
-  // Text encoding (and warmup) happens before the first scheduler tick, so step 0 means "working, not denoising yet".
+  // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
@@ -459,7 +462,9 @@ const SETTLE_POLL_MS = 1000;
 const SETTLE_MAX_MS = 6 * 60 * 60 * 1000; // hard cap; a native-CPU batch can run for hours
 const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the backend gone
 
-/** Wait out a generation that outlived its POST. Idle progress alone is ambiguous, so success needs evidence (progress seen active, or a gallery record that was not there when the POST went out); otherwise report a failed submission. Throws past SETTLE_MAX_MS, or if the backend stays unreachable, so a wedged generation surfaces. */
+/** Wait out a generation that outlived its POST. Idle progress alone is ambiguous, so success
+ *  needs evidence: progress seen active, or a gallery record that is new since the POST.
+ *  Throws past SETTLE_MAX_MS or if the backend stays unreachable, so a wedge surfaces. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
@@ -482,7 +487,8 @@ async function settleLostGeneration(
     }
     if (!idle) continue;
     if (sawActive) return;
-    // Idle on the very first look: the run may already have finished or never started. A gallery record we had not seen is the proof.
+    // Idle on the very first look: the run may have finished or never started, so a gallery
+    // record we had not seen is the proof.
     try {
       const sawNew = await hasUnknownRecord(
         baseline,
@@ -500,11 +506,12 @@ async function settleLostGeneration(
     }
     throw new Error("The image generation request did not reach the server.");
   }
-  // Out of budget with the run still active: returning here would report success and start the next run against a busy backend.
+  // Out of budget with the run still active: returning would report success and start the next
+  // run against a busy backend.
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
-// The chat tab model-load toast styling, reused verbatim so the diffusion load toast is visually identical.
+// The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
 const LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
   content: "gap-0.5 flex-1 min-w-0",
@@ -512,9 +519,10 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-// Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside the GGUF, so the total exceeds the quant size.
+// Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside
+// the GGUF, so the total exceeds the quant size.
 function loadToastDescription(p: DiffusionLoadProgress) {
-  // "Downloading" only when bytes actually remain: a cached model (or the pre-estimate window) must not claim a download.
+  // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
   const title = downloading
     ? "Downloading model requirements…"
@@ -542,10 +550,9 @@ function loadToastDescription(p: DiffusionLoadProgress) {
   );
 }
 
-// Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update in place.
-// `onCancel` adds chat's Cancel action, the one control that reaches a load already in flight: the model
-// selector's eject is hidden for exactly the span a first load runs (nothing is resident, so it has no
-// selection to eject), which left a multi-gigabyte pull with no way out.
+// Toast args mirroring chat; `id` updates in place. `onCancel` adds chat's Cancel, the one
+// control that reaches a load in flight: the selector's eject is hidden for exactly the
+// span a first load runs, which left a multi-gigabyte pull with no way out.
 function loadToastArgs(
   p: DiffusionLoadProgress,
   id?: string | number,
@@ -601,7 +608,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Unsloth (export/chat settings).
+// Matches the field-label style used across Unsloth.
 function Field({
   label,
   hint,
@@ -624,9 +631,9 @@ function Field({
   );
 }
 
-// The badge for one Advanced control. "Auto: X" when the backend decided it; "FP8 -> OFF" in a
-// warning tone when an EXPLICIT request was declined -- that case used to render nothing at all
-// while the dropdown kept showing the request, so a Q4_K_M GGUF could advertise FP8 it never ran.
+// The badge for one Advanced control: "Auto: X" when the backend decided, "FP8 -> OFF" in a
+// warning tone when an EXPLICIT request was declined. That case used to render nothing while the
+// dropdown still showed the request, so a Q4_K_M GGUF could advertise FP8 it never ran.
 function ResolvedBadge({
   status,
   controlKey,
@@ -671,7 +678,7 @@ function AdvancedSelect({
   hint?: ReactNode;
   // An optional inline badge next to the label (e.g. the "Auto: X" resolved-value pill).
   badge?: ReactNode;
-  // A short always-visible description under the row, for controls whose label alone is not enough.
+  // A short always-visible description under the row.
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
@@ -703,8 +710,8 @@ function AdvancedSelect({
   );
 }
 
-// A brush-based mask editor for inpainting: the source image with a paintable overlay, exporting a grayscale PNG mask at
-// the image's NATIVE resolution (white = repaint). `brushPct` sizes the brush as a fraction of the shorter side.
+// Brush-based mask editor for inpainting, exporting a grayscale PNG mask at NATIVE resolution
+// (white = repaint). `brushPct` sizes the brush against the shorter side.
 function MaskCanvas({
   image,
   brushPct,
@@ -853,7 +860,8 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 // Which sides to grow when outpainting.
 type ExtendSides = { left: boolean; right: boolean; top: boolean; bottom: boolean };
 
-// Redraw an image/canvas at (w, h). Clamps an outpaint source to a size the browser can back and the backend can decode.
+// Redraw an image/canvas at (w, h). Clamps an outpaint source to a size the browser can back
+// and the backend can decode.
 function scaleToCanvas(source: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
   const dst = document.createElement("canvas");
   dst.width = w;
@@ -864,16 +872,16 @@ function scaleToCanvas(source: CanvasImageSource, w: number, h: number): HTMLCan
   return dst;
 }
 
-// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the canvas by `pct` per dimension on the
-// selected sides, edge-bleed the original pixels in, and mask the new bands white with a small overlap so the seam blends.
+// Build the (image, mask) pair for outpaint on the inpaint backend: grow the canvas per
+// dimension on the selected sides, edge-bleed the original in, and mask the new bands white.
 async function buildOutpaint(
   src: string,
   sides: ExtendSides,
   pct: number,
 ): Promise<{ image: string; mask: string }> {
   const source = await loadImage(src);
-  // Scale the SOURCE so the grown canvas fits MAX_SIDE before allocating: growing all four sides by 100% multiplies the area
-  // by 9, and a canvas past the browser limit silently no-ops every drawImage. Also keeps both allocations under a gigabyte.
+  // Scale the SOURCE so the grown canvas fits MAX_SIDE before allocating: growing all four
+  // sides by 100% multiplies the area by 9, and an oversized canvas no-ops every drawImage.
   const MAX_SIDE = 4096;
   const grow = (a: boolean, b: boolean) => 1 + (a ? pct / 100 : 0) + (b ? pct / 100 : 0);
   const fit = Math.min(
@@ -927,7 +935,7 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
-  // The pre-scale sizes the canvases to fit MAX_SIDE, but per-side rounding can overshoot past the backend's 4096px limit; trim the slack.
+  // The pre-scale fits MAX_SIDE, but per-side rounding can overshoot the backend's 4096px limit; trim the slack.
   const longest = Math.max(nw, nh);
   if (longest > MAX_SIDE) {
     const scale = MAX_SIDE / longest;
@@ -1005,22 +1013,20 @@ function RecipePopover({
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
           ) : null}
           {image.model ? <RecipeRow label="Model" value={image.model} /> : null}
-          {/* The load-time build, so the recipe still names the pipeline once the model is unloaded: the repo id alone does not say which quant ran or whether an adapter was baked in. */}
+          {/* The load-time build, so the recipe still names the pipeline once the model is unloaded: the
+              repo id alone does not say which quant ran. */}
           {image.gguf_filename ? <RecipeRow label="File" value={image.gguf_filename} mono /> : null}
           {image.transformer_quant ? (
             <RecipeRow label="Quant" value={image.transformer_quant} />
           ) : null}
-          {/* The ENGAGED text-encoder precision and memory placement: the encoder is often the
-              largest resident component and its cast changes the conditioning, and the memory mode
-              decides whether the torchao encoder modes could run at all. */}
+          {/* The ENGAGED text-encoder precision and memory placement: the encoder is often the largest
+              resident component, and the memory mode decides whether torchao modes could run at all. */}
           {image.text_encoder_quant ? (
             <RecipeRow label="TE quant" value={image.text_encoder_quant} />
           ) : null}
-          {/* Either field is placement information. The native engine reports no memory_mode at
-              all (it has no torchao path to choose one for) while still recording an active
-              offload, so gating on memory_mode hid the offload on exactly the configuration
-              this row was extended for. Absent memory_mode stays absent: substituting "auto"
-              there would claim the memory planner picked a mode on a path that never ran it. */}
+          {/* Either field is placement information. The native engine reports no memory_mode while still
+              recording an active offload, so gating on it hid the offload on exactly the configuration
+              this row was extended for. Absent stays absent: "auto" would claim a planner that never ran. */}
           {image.memory_mode ||
           (image.offload_policy && image.offload_policy !== "none") ? (
             <RecipeRow
@@ -1060,13 +1066,9 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
   );
 }
 
-/**
- * What the LOADED model is actually running, read from status (never from the request): the
- * transformer and text-encoder precision, the memory mode with its resolved offload behaviour, and
- * the attention backend. The Advanced selects above say what was ASKED for; this says what
- * happened, and any control whose request was declined carries its reason in the badge tooltip.
- * Without it a successful load said nothing at all about the precision it ran at.
- */
+/** What the LOADED model is actually running, read from status and never from the request:
+ *  transformer and text-encoder precision, memory mode with its offload behaviour, and the
+ *  attention backend. The Advanced selects say what was ASKED for; this says what happened. */
 function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
@@ -1112,9 +1114,9 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         value={
           status.attention_backend
             ? formatResolvedValue("attention_backend", status.attention_backend)
-            : // The sd.cpp engine reports no backend because it has none of ours: its attention
-              // is chosen by native flags, not by the diffusers/PyTorch dispatcher, so calling it
-              // "Native SDPA" is wrong on the default CPU image path.
+            // The sd.cpp engine reports no backend because its attention comes from native flags
+            // rather than the diffusers dispatcher, so "Native SDPA" is wrong on the CPU image path.
+            :
               isNativeEngineStatus(status)
               ? "sd.cpp built-in"
               : "Native SDPA"
@@ -1124,12 +1126,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   );
 }
 
-/**
- * Report a failed load. A refused precision is a long actionable sentence ("Choose Auto ... or
- * Off ..."), so it becomes a toast description under a short title rather than one unreadable
- * line. Nothing is left half-loaded either way: the backend refuses before it starts the load, or
- * has already torn the partial build down by the time it reports the error.
- */
+/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
+ *  toast description under a short title. Nothing is left half-loaded either way. */
 function reportLoadFailure(message: string | null | undefined, fallback: string): void {
   const text = (message || "").trim();
   if (text && isPrecisionRefusal(text)) {
@@ -1141,8 +1139,8 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
-// What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
-// label and the generation recipe move together at pick time, so they have to roll back together too.
+// What a pick optimistically replaced, so a load that never takes can put it all back. The
+// quant label and the recipe move together at pick time, so they roll back together.
 type PickRevert = {
   prev: string | null;
   steps: number;
@@ -1154,7 +1152,8 @@ type PickRevert = {
   appliedGuidance?: number;
 };
 
-// The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
+// The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged
+// download pins one at pick time.
 type LoadAdvanced = Pick<
   DiffusionLoadRequest,
   | "cpu_offload"
@@ -1191,7 +1190,8 @@ export function ImagesPage({
     onScroll: onSettingsScroll,
     className: settingsFadeClass,
   } = useScrollFades();
-  // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks orientation, so Flip keeps the lock.
+  // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks
+  // orientation, so Flip keeps the lock.
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
   const [aspect, setAspect] = useState("1:1");
@@ -1199,16 +1199,15 @@ export function ImagesPage({
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
-  // Whether the user has taken the recipe since the pick that is still waiting for its status: a
-  // preset selected while the model downloaded is newer than that pick, so its rollback is not the
-  // one to restore.
+  // Whether the user has taken the recipe since the pick still waiting for its status: a preset
+  // selected while the model downloaded is newer than that pick.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
     // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
-    // preset selected after the pick owns these fields even where it matches what the pick applied.
+    // preset selected after the pick owns these fields.
     if (!pickRecipeSuperseded.current?.()) {
       setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
       setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
@@ -1217,8 +1216,8 @@ export function ImagesPage({
     r.releaseRecipeClaim?.();
     r.releaseRecipeClaim = undefined;
   }, []);
-  // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
-  // it. Without this the Default preset would read as "modified" for the whole download.
+  // The recipe a pick optimistically claimed until status confirms it or a failed load reverts
+  // it; without this the Default preset reads as "modified" for the whole download.
   const [pendingModelDefaults, setPendingModelDefaults] = useState<{
     steps: number;
     guidance: number;
@@ -1227,8 +1226,8 @@ export function ImagesPage({
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
   const [count, setCount] = useState(1);
-  // Active workflow tab: "create" = text-to-image, "transform" = img2img, "inpaint" = mask-guided redraw. More tabs slot in here.
-  // Workflow and page mode live in a store so the sidebar's Images submenu can drive them.
+  // Active workflow tab: create = text-to-image, transform = img2img, inpaint = mask-guided
+  // redraw. Workflow and page mode live in a store so the sidebar submenu can drive them.
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const setWorkflow = useImageWorkflowStore((s) => s.setWorkflow);
   const supported = useImageWorkflowStore((s) => s.supported);
@@ -1236,7 +1235,8 @@ export function ImagesPage({
   // Transform (img2img) / Inpaint inputs: the source image as a data URL, and the denoise strength.
   const [initImage, setInitImage] = useState<string | null>(null);
   const [strength, setStrength] = useState(0.6);
-  // Inpaint mask (grayscale PNG data URL, white = repaint), brush size as a percent of the shorter side, and a clear key.
+  // Inpaint mask (grayscale PNG data URL, white = repaint), brush size as a percent of the
+  // shorter side, and a clear key.
   const [maskImage, setMaskImage] = useState<string | null>(null);
   const [brushPct, setBrushPct] = useState(8);
   const [maskResetKey, setMaskResetKey] = useState(0);
@@ -1251,7 +1251,7 @@ export function ImagesPage({
   // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
-  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one, combined by the model.
+  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
@@ -1268,16 +1268,17 @@ export function ImagesPage({
   // ControlNet for the next generation: model id, control image, how to derive the map, and the strength.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
-  // Free-form: a union ControlNet advertises depth/pose alongside "canny"; the picker is built from its own control_types.
+  // Free-form: a union ControlNet advertises depth/pose alongside "canny", so the picker is
+  // built from its own control_types.
   const [controlType, setControlType] = useState<string>("passthrough");
   const [controlStrength, setControlStrength] = useState(0.7);
   const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
-  // Advanced options live in a right-docked panel, closed by default; one fixed top-bar toggle opens it.
-  // Sits inline under Seed; the open state is remembered across visits.
+  // Advanced options live in a right-docked panel, closed by default; the open state is remembered across visits.
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
-  // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing them while loaded shows "Reapply".
+  // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
+  // while loaded shows "Reapply".
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
@@ -1286,11 +1287,9 @@ export function ImagesPage({
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
-  // Persisted, unlike the selects around it: those are reseeded from the loaded build, and the
-  // status carries the device a pipeline is on but not which card, so a refresh would reset this
-  // one to Auto while the model stayed put and the next Reapply would move it to the default GPU.
-  // A stored id is only a hint; the send path below still drops one whose card is no longer there.
+  // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
+  // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
+  // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
   const [selectedGpu, setSelectedGpu] = usePersistedChoice(
     "unsloth_image_gpu_choice",
     "auto",
@@ -1298,22 +1297,24 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
-  // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
+  // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
-  // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
+  // Repo id whose defaults were already seeded from a discovered resident model, so we seed
+  // once and never clobber a manual edit.
   const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
-  // {done, total} while a multi-run generation is in flight (null = idle); the total is just `count`.
+  // {done, total} while a multi-run generation is in flight (null = idle).
   const [genDone, setGenDone] = useState<number | null>(null);
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
+  // visibilitychange handler active while a generation poll runs: background tabs clamp
+  // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
@@ -1326,7 +1327,7 @@ export function ImagesPage({
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
-  // Guards a "load more" so a fast scroll can't fire several at once.
+  // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
   // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view.
   const stripRef = useRef<HTMLDivElement | null>(null);
@@ -1334,49 +1335,44 @@ export function ImagesPage({
   const visibleIds = useRef<Set<string>>(new Set());
   // False once the page truly unmounts. Tab switches keep it mounted, so a batch keeps generating off-tab.
   const isMounted = useRef(true);
-  // Set by Stop for the duration of one handleGenerate call. The backend cancel only reaches the
-  // denoise that is running RIGHT NOW, so a multi-run request (count > 1) would start its next run
-  // straight after; this breaks the loop as well. Cleared when the run settles.
+  // Set by Stop for one handleGenerate call: the backend cancel only reaches the denoise running
+  // RIGHT NOW, so a count > 1 request would start its next run straight after.
   const cancelRequested = useRef(false);
-  // True only once the backend has answered {cancelled: true}, i.e. it really stopped a running
-  // denoise. Anything else -- a POST that never landed, or a {cancelled: false} because the run
-  // was already past its last cancellation check -- means the run was NOT stopped, so an error it
-  // raises afterwards is a real failure and not the user's own Stop coming back.
+  // True only once the backend answered {cancelled: true}. Anything else means the run was NOT
+  // stopped, so an error it raises afterwards is a real failure.
+  // Anything else -- a POST that never landed, or {cancelled: false} because the run was already past
+  // its last cancellation check -- means it was NOT stopped.
   const cancelAcked = useRef(false);
   // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
   const runToken = useRef(0);
-  // The run token owning the Stop currently on the wire, or null. Without it each extra click
-  // posts again, and a late duplicate can land after the run settled and stop whichever
-  // generation is running by then. Held as a token rather than a flag because the clear is
-  // asynchronous: a slow cancel from the PREVIOUS run must neither swallow this run's Stop nor,
-  // when it finally settles, release this run's guard.
+  // The run token owning the Stop on the wire, or null: without it each extra click posts again
+  // and a late duplicate stops whichever generation is running by then. A token, not a flag,
+  // because the clear is asynchronous.
   const cancelInFlight = useRef<number | null>(null);
-  // Aborts the Stop still on the wire, if any. A pending cancel outlives its run when it is
-  // waiting on a 401 refresh-and-replay, and the replay would then target whatever is generating
-  // by the time it lands. Dropping it as the next run starts is what keeps that from happening.
+  // Aborts the Stop still on the wire: a pending cancel outlives its run while waiting on a 401
+  // refresh-and-replay, and the replay would target whatever is generating by then.
   const cancelAbort = useRef<AbortController | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The persistent load toast's id, so each poll updates it in place (chat-style).
+  // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
-  // The quant to restore if the optimistic swap fails: a same-repo change sets `quant` immediately for picker feedback, but a
-  // load failing AFTER starting leaves the old pipeline. `{ prev }` distinguishes "revert to null" from "nothing pending".
-  // A pick also applies its own step/guidance recipe, so the rollback carries those too: a cancelled Turbo pick
-  // otherwise leaves a 4-step, guidance-0 recipe applied to the non-distilled model that is still resident.
+  // The quant to restore if the optimistic swap fails; `{ prev }` distinguishes "revert to
+  // null" from "nothing pending". A pick also applies its step/guidance recipe, so the
+  // rollback carries that too, or a cancelled Turbo pick leaves a 4-step recipe behind.
   const quantRevert = useRef<PickRevert | null>(null);
-  // Which quantRevert entry the live staged download belongs to. Staging does not set `busy`, so a second pick can overwrite
-  // quantRevert while the first plan is still resolving; without this the dying first job reverts the newer pick's label.
+  // Which quantRevert entry the live staged download belongs to: staging does not set `busy`, so
+  // a second pick can overwrite quantRevert while the first plan resolves.
   const stagedQuantRevert = useRef<PickRevert | null>(null);
   // Bumped per Hub pick, so a plan that resolves after a newer pick can tell it has been superseded.
   const pickSeq = useRef(0);
-  // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
-  // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
+  // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites
+  // lastLoad.current at load start. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
   // A trained adapter awaiting deployment: applied once the base is loaded and LoRA-capable for its family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
-  // Which pick owns the page: resolving and staging are requests that do not set `busy`, so a pick can land on an awaiting
-  // one. Lazy state, not a ref: a ref cannot be written during render.
+  // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
+  // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
   const imagePresetParams = useMemo<ImageGenerationPresetParams>(
@@ -1407,8 +1403,8 @@ export function ImagesPage({
   }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
-    // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
-    // the user generates against a setting the collapsed field is hiding.
+    // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
+    // user generates against a setting the collapsed field is hiding.
     if (params.negativePrompt) setNegativeOpen(true);
     setWidth(params.width);
     setHeight(params.height);
@@ -1437,8 +1433,8 @@ export function ImagesPage({
         revert.commitRecipeClaim = claim.commit;
         revert.releaseRecipeClaim = claim.release;
       }
-      // Baselined per pick, including a pick that inherits an earlier one's rollback: the question
-      // is whether the user takes the form after THIS pick, not after the one it replaced.
+      // Baselined per pick, including one that inherits an earlier pick's rollback: the question is
+      // whether the user takes the form after THIS pick.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId);
@@ -1458,46 +1454,37 @@ export function ImagesPage({
     loadToastId.current = null;
   }, []);
 
-  // The load toast is built by handleLoad and the progress poll, both of which are defined above
-  // handleCancelLoad (it needs handleUnload, which needs them). Route the action through a ref so
-  // the toast keeps a stable onClick instead of dragging the whole load graph into its deps.
+  // The load toast is built by handleLoad and the progress poll, both defined above
+  // handleCancelLoad, so the action goes through a ref to keep a stable onClick.
   const cancelLoadRef = useRef<() => void>(() => {});
   const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
-  // Bumped by every cancel / eject (see dropResidentState). Requests that were already awaiting a
-  // response when the cancel landed compare against it and discard their own result.
+  // Bumped by every cancel / eject (see dropResidentState): requests already awaiting a response
+  // compare against it and discard their own result.
   const cancelSeq = useRef(0);
-  // Bumped by every load start. The compensating unload below carries no identity, so it must not
-  // fire once a newer load owns the page -- it would tear that one down instead.
+  // Bumped by every load start. The compensating unload below carries no identity, so it must
+  // not fire once a newer load owns the page.
   const loadSeq = useRef(0);
-  // The load currently in flight, if any, as a promise that settles only once handleLoad has run
-  // to the end -- including the compensating unload it may issue. A cancel that lands before the
-  // backend has registered the load has to wait for all of it: begin_load REFUSES a second load
-  // while one is live ("a load is already in progress"), so a model picked in that window would be
-  // rejected while the cancelled one kept going, and the compensating unload names no load, so one
-  // still in flight would tear down whatever the user picked next. Holding busy shuts both.
+  // The load in flight, as a promise that settles only once handleLoad has run to the end,
+  // compensating unload included. begin_load REFUSES a second load while one is live, so a
+  // model picked in that window would be rejected while the cancelled one kept going.
   const pendingStart = useRef<Promise<unknown> | null>(null);
 
   // Set by restoreLoadTracking: handleLoad's compensating unload failed, so the load it was
-  // cancelling is STILL running and its toast and poll are back up. handleUnload reads it to
-  // report that the eject stopped nothing, rather than claiming success over a live load.
+  // cancelling is STILL running. handleUnload reads it to report that the eject did nothing.
   const loadTrackingRestored = useRef(false);
 
-  // Client-side state that only means anything while a model is resident: the
-  // in-flight replacement load's tracking, and the Reapply target. Shared with
-  // the indicator eject, which frees the runtime without going through the
-  // page's own Unload.
+  // Client-side state that only means anything while a model is resident: the replacement
+  // load's tracking and the Reapply target. Shared with the indicator eject.
   const dropResidentState = useCallback(() => {
-    // Cancel, not release: a resolving pick or a staged download would load
-    // back what was just ejected. In here rather than only in handleUnload, so
-    // an eject driven from the loaded models card is covered by it too.
+    // Cancel, not release: a resolving pick or a staged download would load back what was just
+    // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
     pickGuard.cancel();
-    // Everything already in flight is now stale. Clearing the timer below stops the NEXT poll
-    // tick, but not a poll or a start request currently awaiting its response, and those still
-    // apply terminal state when they land. The counter is what they compare against.
+    // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
+    // request awaiting its response, and those still apply terminal state; the counter is what
+    // they compare against.
     cancelSeq.current += 1;
-    // A deploy that was cancelled must not resurface: this ref outlives the load and is applied
-    // to whatever LoRA-capable model becomes resident next, which would silently mix a discarded
-    // adapter into an unrelated model's output.
+    // A cancelled deploy must not resurface: this ref outlives the load and would silently mix a
+    // discarded adapter into an unrelated model's output.
     pendingDeploy.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
@@ -1506,10 +1493,8 @@ export function ImagesPage({
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
     setCanReapply(false);
-    // Stopping the poll above also stops its "the load was cancelled or evicted" branch, which is
-    // what hands back a pick that never became resident. Do it here, exactly as that branch would:
-    // an unreleased recipe claim leaves hydration parked behind a load that is never coming, and a
-    // rollback left behind is one a later pick would inherit in place of its own.
+    // Stopping the poll also stops its "cancelled or evicted" branch, which is what hands back a
+    // pick that never became resident, so do it here exactly as that branch would.
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
@@ -1524,15 +1509,15 @@ export function ImagesPage({
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Refresh the LoRA picker when the loaded family changes: a LoRA is family-specific, so a real SWAP invalidates the selection. Not on
-  // first load or unload (a restore can precede the load), so track the family in a ref. Picks are not filtered against the catalog (free-text ids).
+  // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
+  // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
     if (!loraCapable) {
-      // Options are gone with the model, but keep the selection: it may have just been restored while the model reloads.
+      // Options are gone with the model, but keep the selection: it may have just been restored.
       setAvailableLoras([]);
       return;
     }
@@ -1561,8 +1546,8 @@ export function ImagesPage({
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        // Clear only the OPTIONS on a failed catalog refresh: this free-text picker holds selections valid without being in the
-        // catalog, so a transient failure must not wipe them. Stale cross-family picks are cleared by the family-swap check above.
+        // Clear only the OPTIONS on a failed catalog refresh: this free-text picker holds selections
+        // that are valid without being in the catalog.
         if (!cancelled) setAvailableLoras([]);
       });
     return () => {
@@ -1570,8 +1555,8 @@ export function ImagesPage({
     };
   }, [loraCapable, status?.family, loraRefreshKey]);
 
-  // A torchao int8/fp8 build takes adapters ONLY at load time. Switching artifact within one family keeps the selection while
-  // the new load did not bake it, so drop it once per resident build and say why, rather than 400 on the next Generate.
+  // A torchao int8/fp8 build takes adapters ONLY at load time, so drop the selection once per
+  // resident build and say why, rather than 400 on the next Generate.
   const residentBuildKey = `${status?.repo_id ?? ""}|${String(
     status?.resolved?.transformer_quant?.value ?? "",
   )}`;
@@ -1589,7 +1574,7 @@ export function ImagesPage({
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
-  // Refresh the ControlNet options when the loaded family changes, and clear a stale selection the new model cannot use.
+  // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
   useEffect(() => {
     if (!controlnetCapable) {
@@ -1613,7 +1598,7 @@ export function ImagesPage({
     };
   }, [controlnetCapable, status?.family]);
 
-  // The control types offered for the selected ControlNet: a union model advertises several, a plain model its own.
+  // The control types offered for the selected ControlNet: a union model advertises several.
   const controlTypeOptions = useMemo(() => {
     const cn = availableControlNets.find((c) => c.id === controlnetId);
     const types = cn?.control_types?.length ? cn.control_types : ["passthrough", "canny"];
@@ -1662,23 +1647,22 @@ export function ImagesPage({
     }
   }, []);
 
-  // Bumped by every LOCAL change to the strip (pin, archive, delete, merged generation). A resync
-  // started before one holds a snapshot the listing cannot reconcile with what the user just did.
+  // Bumped by every LOCAL change to the strip. A resync started before one holds a snapshot the
+  // listing cannot reconcile with what the user just did.
   const stripEpoch = useRef(0);
-  // Bumped by the window growing from the server (a load, an appended page). Not a conflict: the
-  // resync just sized itself against a smaller window, so it refetches.
+  // Bumped by the window growing from the server. Not a conflict: the resync merely sized itself
+  // against a smaller window, so it refetches.
   const pageEpoch = useRef(0);
-  // Only the newest resync may apply: two restores in a row would otherwise let the older snapshot
-  // land last and drop what the newer one showed.
+  // Only the newest resync may apply: two restores in a row would otherwise let the older snapshot land last.
   const resyncSeq = useRef(0);
-  // Shelf mutations in flight. The epoch is an EDGE, so a page starting after the bump and landing
-  // before the row is dropped sees it hold still. A page is only trusted while this is zero.
+  // Shelf mutations in flight. The epoch is an EDGE, so a page starting after the bump and
+  // landing before the row is dropped sees it hold still.
   const pendingShelfMutations = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
       // Fenced: this page renders from the module cache while the load runs, so its tiles are
-      // actionable, and a pre-pin snapshot would undo the action with nothing to correct it.
+      // actionable and a pre-pin snapshot would undo the action.
       const page = await fetchWhileStable(
         () => stripEpoch.current,
         () => getGallery(0, PAGE_SIZE),
@@ -1694,7 +1678,7 @@ export function ImagesPage({
         page.images.forEach((image) => void ensureSrc(image));
       }
     } catch {
-      // Best-effort: a failed gallery load shouldn't block the page.
+      // Best-effort: a failed gallery load should not block the page.
     }
   }, [ensureSrc]);
 
@@ -1703,8 +1687,8 @@ export function ImagesPage({
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      // Guarded on all three counters: an archive landing anywhere across this GET shortens the
-      // shelf, and the record that shifts over the page boundary is returned by no page at all.
+      // Guarded on all three counters: an archive landing across this GET shortens the shelf, and
+      // the record that shifts over the page boundary is returned by no page at all.
       const result = await fetchNextPage(
         () => galleryCache.images.length,
         () => stripEpoch.current,
@@ -1732,8 +1716,8 @@ export function ImagesPage({
     }
   }, [ensureSrc]);
 
-  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page closes, so fetching every
-  // record up front grew memory without bound. Fetch a tile as it nears the strip edge instead, re-run per page. Mirrors Video.
+  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page
+  // closes, so fetch a tile as it nears the strip edge instead. Mirrors Video.
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
@@ -1753,7 +1737,8 @@ export function ImagesPage({
           if (image) void ensureSrc(image);
         }
       },
-      // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the sideways margin fetches a few tiles early.
+      // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the
+      // sideways margin fetches a few tiles early.
       { root, rootMargin: "0px 600px" },
     );
     for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
@@ -1768,9 +1753,8 @@ export function ImagesPage({
     })();
   }, [selected, ensureSrc]);
 
-  // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
-  // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
-  // archived image keeps both, since the archived view shows the same thumbnail.
+  // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so
+  // the object URL is revoked and any in-flight fetch discards. An archived image keeps both.
   const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
     if (discardBlob) {
       galleryCache.srcById.delete(id); // revokes the URL with the entry
@@ -1783,8 +1767,8 @@ export function ImagesPage({
     }
     visibleIds.current.delete(id);
     stripEpoch.current += 1;
-    // Read the list from the cache (kept in sync with state every render) rather than nesting a
-    // setSelectedId inside a setImages updater, which would run a side effect during dispatch.
+    // Read the list from the cache rather than nesting a setSelectedId inside a setImages
+    // updater, which would run a side effect during dispatch.
     const at = galleryCache.images.findIndex((i) => i.id === id);
     const next = removeGalleryItem(galleryCache.images, id);
     galleryCache.images = next;
@@ -1795,7 +1779,7 @@ export function ImagesPage({
   const handleDelete = useCallback(
     async (id: string) => {
       // Held for the whole round trip: the server shortens the shelf when it processes this, and a
-      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      // page read inside that window sees the shortened list at a consistent offset.
       stripEpoch.current += 1;
       pendingShelfMutations.current += 1;
       try {
@@ -1811,28 +1795,21 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  /**
-   * Refetch the loaded window from offset 0.
-   *
-   * Unpinning can drop an image past the end of the loaded window and promote a previously
-   * unloaded one into it. The local reorder cannot know about the promoted image, and the next
-   * loadMore still pages from the unchanged length, so that image would be skipped entirely until
-   * a reload. Re-reading the window is the only way to see it.
-   */
+  /** Refetch the loaded window from offset 0. Unpinning can drop an image past the end of the
+   *  window and promote an unloaded one into it, which the local reorder cannot know about. */
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        // Sized against the live window, so a page appended while this ran is covered rather than
-        // cut back off the bottom of the strip when the snapshot lands.
+        // Sized against the live window, so a page appended while this ran is covered rather than cut
+        // off the bottom of the strip.
         const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
         const collected: GalleryImage[] = [];
         let more = false;
         while (collected.length < wanted) {
-          // The REMAINDER, not a whole page: a window of 51 (a page plus one new generation) would
-          // otherwise ask for 100 and grow the strip to match, reading 49 recipes off disk and
-          // rendering their tiles for a one-row shortfall.
+          // The REMAINDER, not a whole page: a window of 51 would otherwise ask for 100 and read 49
+          // recipes off disk for a one-row shortfall.
           const page = await getGallery(
             collected.length,
             Math.min(PAGE_SIZE, wanted - collected.length),
@@ -1841,12 +1818,12 @@ export function ImagesPage({
           more = page.has_more;
           if (!page.has_more || page.images.length === 0) break;
         }
-        // Checked here, not by the caller: by the time this returns the window is already applied,
-        // so a stale snapshot has to be dropped before it overwrites a newer local change.
+        // Checked here, not by the caller: by the time this returns the window is already applied, so
+        // a stale snapshot has to be dropped first.
         if (stillFresh && !stillFresh()) return;
         if (resyncSeq.current !== ticket) return;
-        // Pagination moved under this pass. That is only server data, so cover it with another
-        // pass instead of giving up: giving up is what left an unpin's promoted image missing.
+        // Pagination moved under this pass. That is only server data, so cover it with another pass
+        // instead of giving up, which is what left an unpin's promoted image missing.
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -1861,17 +1838,16 @@ export function ImagesPage({
     [ensureSrc],
   );
 
-  // This page stays mounted across route changes, so a restore from the Settings archive would
-  // otherwise not reach the strip until a full reload. Resync the window that is actually loaded:
-  // loadGallery would cut it back to the first page and throw away everything scrolled to.
+  // This page stays mounted across route changes, so an archive restore would not reach the
+  // strip until a reload. Resync the loaded window: loadGallery would cut it to page one.
   useEffect(
     () =>
       subscribeGalleryChanged("images", () => {
-        // Bumped FIRST: a restore changes the shelf, so reads already in flight must be discarded.
-        // Capturing without advancing let them pass their own checks and land on the new window.
+        // Bumped FIRST: a restore changes the shelf, so reads already in flight must be discarded, or
+        // they pass their own checks and land on the new window.
         stripEpoch.current += 1;
-        // Fenced like the unpin resync: a generation or a new page landing while this GET runs
-        // would otherwise be overwritten by a snapshot taken before it.
+        // Fenced like the unpin resync: a generation or a new page landing while this GET runs would
+        // be overwritten by a snapshot taken before it.
         const epoch = stripEpoch.current;
         void resyncWindow(
           galleryCache.images.length,
@@ -1881,20 +1857,19 @@ export function ImagesPage({
     [loadGallery, resyncWindow],
   );
 
-  // The pin state each id was last CLICKED into, so a failing request can tell whether it is still
-  // the current intent. Without it, a slow first click failing after a later click succeeded would
-  // roll the strip back onto the state the user has since moved off.
+  // The pin state each id was last CLICKED into, so a failing request can tell whether it is
+  // still the current intent; without it a slow failure rolls back a later success.
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
   const handleTogglePin = useCallback(
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.images.length;
-      // The pinned order as it stands BEFORE the click, so a failed unpin can put the image back
-      // where it was instead of at the front of the pins.
+      // The pinned order BEFORE the click, so a failed unpin can put the image back where it was
+      // instead of at the front.
       const orderBefore = pinnedOrder(galleryCache.images);
-      // A per-attempt token, not the target boolean: pin, unpin, pin stores true twice, so the FIRST
-      // attempt's failure would roll back the THIRD attempt's pin and leave the two disagreeing.
+      // A per-attempt token, not the target boolean: pin, unpin, pin stores true twice, so the first
+      // attempt's failure would roll back the third attempt's pin.
       const attempt = (pinSeq.current += 1);
       pinAttempt.current.set(id, attempt);
       stripEpoch.current += 1;
@@ -1906,21 +1881,19 @@ export function ImagesPage({
         return next;
       });
       try {
-        // One queue for the whole gallery, not one per image. The server stamps `pinned_at` when
-        // it runs the PATCH and orders pins by that stamp, so two requests in flight together can
-        // be stamped in either order and the strip disagrees with the next load. Issuing them one
-        // at a time makes the stamps follow the clicks.
+        // One queue for the whole gallery: the server stamps `pinned_at` when it runs the PATCH, so
+        // two requests in flight can be stamped in either order. One at a time follows the clicks.
         await serializeById("image-pin", () => setGalleryImageFlags(id, { pinned }));
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to pin image");
-        // Put the old order back rather than leave the strip lying about server state, but only
-        // while this is still what the user last asked for.
+        // Put the old order back rather than leave the strip lying about server state, but only while
+        // this is still what the user last asked for.
         if (pinAttempt.current.get(id) === attempt) {
           pinAttempt.current.delete(id);
           stripEpoch.current += 1;
           setImages((prev) => {
-            // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
-            // old position among the pins, which applyPin cannot do (it means "freshly pinned").
+            // A failed pin goes back to unpinned; a failed unpin has to be restored to its old position
+            // among the pins, which applyPin cannot do.
             const next = pinned
               ? applyPin(prev, id, false)
               : restorePinOrder(prev, id, orderBefore);
@@ -1932,12 +1905,10 @@ export function ImagesPage({
       }
       if (pinAttempt.current.get(id) !== attempt) return; // superseded by a later click
       pinAttempt.current.delete(id);
-      // Pinning keeps the same set in the window (it only moves an already-loaded image to the
-      // front), so only unpinning can open a gap.
+      // Pinning keeps the same set in the window, so only unpinning can open a gap.
       if (!pinned && loadedCount > 0) {
         try {
-          // Fenced: a pin clicked while this GET is in flight would otherwise be overwritten by a
-          // snapshot taken before it, leaving the strip unpinned while the server is pinned.
+          // Fenced: a pin clicked while this GET is in flight would be overwritten by a snapshot taken before it.
           await resyncWindow(loadedCount, () => stripEpoch.current === epoch);
         } catch {
           // Best-effort: the strip is still usable, just possibly short one image until a reload.
@@ -1949,8 +1920,8 @@ export function ImagesPage({
 
   const handleArchive = useCallback(
     async (id: string) => {
-      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
-      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      // Held for the whole round trip: the server shortens the shelf when it processes this, so a
+      // page read inside that window still sees a consistent offset.
       stripEpoch.current += 1;
       pendingShelfMutations.current += 1;
       try {
@@ -1982,13 +1953,14 @@ export function ImagesPage({
   // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
-    // Negative prompt only applies when guidance>0; don't restore a hidden value.
+    // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
     setGuidance(image.guidance);
-    // Restore from the BASE batch seed, not this image's derived seed, or replaying with batch_size would advance again.
+    // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
+    // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
     setWidth(image.width);
     setHeight(image.height);
@@ -1997,8 +1969,8 @@ export function ImagesPage({
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
-    // Restore selected LoRA adapters from the recipe ("id:weight"); split on the LAST colon so an id containing ':' survives.
-    // A recipe with no LoRAs clears the selection, so the restore reproduces the image faithfully.
+    // Restore LoRA adapters from the recipe ("id:weight"), splitting on the LAST colon so an id
+    // containing ':' survives. A recipe with no LoRAs clears the selection.
     const restoredLoras: LoraSpecInput[] = [];
     for (const entry of image.loras ?? []) {
       const idx = entry.lastIndexOf(":");
@@ -2014,12 +1986,13 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    // None of the conditioning images are persisted, so a restore must clear the Transform / Inpaint / Edit uploads and return to Create.
+    // None of the conditioning images are persisted, so a restore must clear the Transform /
+    // Inpaint / Edit uploads and return to Create.
     setWorkflow("create");
     setInitImage(null);
     setMaskImage(null);
     setReferenceImages([]);
-    // The control image isn't persisted, so clear any stale ControlNet selection.
+    // The control image is not persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
@@ -2057,10 +2030,8 @@ export function ImagesPage({
     setPortrait((p) => !p);
   };
 
-  // A status read started before an eject can answer after the one that
-  // followed it, and this page has no periodic poll to correct it: the controls
-  // would go on offering to generate against a runtime that is already free.
-  // So every read takes a ticket and only the newest may write.
+  // A status read started before an eject can answer after the one that followed it, and this
+  // page has no periodic poll to correct it, so only the newest ticket may write.
   const statusTicket = useRef(0);
   const setStatusIfNewest = useCallback(
     (ticket: number, next: DiffusionStatus) => {
@@ -2074,12 +2045,12 @@ export function ImagesPage({
     try {
       setStatusIfNewest(ticket, await getDiffusionStatus());
     } catch {
-      // Status is best-effort; a failed poll shouldn't surface an error toast.
+      // Status is best-effort; a failed poll should not surface an error toast.
     }
   }, [setStatusIfNewest]);
 
-  // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page stays mounted across tab
-  // switches, so a batch keeps generating off-tab. The mount-time refresh and cleanup live in the load-resume effect below.
+  // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page
+  // stays mounted across tab switches, so a batch keeps generating off-tab.
   useEffect(() => {
     isMounted.current = true;
     return () => {
@@ -2116,25 +2087,15 @@ export function ImagesPage({
     };
   }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
-  // Ejected from the loaded models indicator, which does not run handleUnload:
-  // without this the controls keep offering to generate on a freed runtime, and
-  // Reapply still points at the model that was just ejected. The runtime is
-  // already free, so this is handleUnload without the unload call.
+  // Ejected from the loaded models indicator, which does not run handleUnload: without this the
+  // controls keep offering to generate on a freed runtime. So: handleUnload minus the unload.
   useEffect(
     () =>
       subscribeModelEjected("image", () => {
         dropResidentState();
-        // That eject cancelled the replacement load, and its progress poll is
-        // the only thing that clears `busy` -- which dropResidentState has just
-        // stopped. Leaving it set locks the page: the picker ignores every
-        // choice while busy, and Unload is not offered once the status read
-        // comes back empty, so only an app reload recovered. Narrowed to
-        // "loading" so a generation in flight is left alone, as handleUnload's
-        // own finally does.
-        // ...but not while a load start is still in flight. begin_load refuses a second load
-        // while one is registered, so a model picked in that window is rejected while the load
-        // this eject was meant to cancel carries on, and handleLoad's compensating unload names
-        // no load. Hold busy until the whole path settles, exactly as handleCancelLoad does.
+        // That eject cancelled the replacement load, and its progress poll is the only thing that
+        // clears `busy`, which dropResidentState just stopped; leaving it set locks the page.
+        // Narrowed to "loading" so a generation is left alone, and held until the start settles.
         const pending = pendingStart.current;
         if (pending) {
           setBusy((prev) => (prev === "loading" ? "unloading" : prev));
@@ -2150,14 +2111,15 @@ export function ImagesPage({
     [refreshStatus, dropResidentState],
   );
 
-  // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so returning would pop them back open.
+  // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so
+  // returning would pop them back open.
   useEffect(() => {
     if (active) return;
     setSelectorOpen(false);
     setAspectOpen(false);
   }, [active]);
 
-  // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place each tick.
+  // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
     const seq = cancelSeq.current;
@@ -2169,10 +2131,8 @@ export function ImagesPage({
         const ticket = ++statusTicket.current;
         const loaded = await getDiffusionStatus();
         if (seq !== cancelSeq.current) {
-          // Cancelled while this read was in flight, so it describes a pipeline being torn down.
-          // Drop it and refresh NOTHING: the unload's own response is authoritative and already
-          // holds the newest ticket, and a status read issued from here would take a newer one
-          // still and could re-report the model mid-teardown.
+          // Cancelled while this read was in flight, so it describes a pipeline being torn down. Drop
+          // it and refresh NOTHING: the unload's own response is authoritative.
           return;
         }
         setStatusIfNewest(ticket, loaded);
@@ -2191,7 +2151,8 @@ export function ImagesPage({
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
-        // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
+        // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the
+        // optimistic quant label back.
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
@@ -2207,7 +2168,8 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
-        // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this loop spins forever.
+        // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
+        // loop spins forever.
         dismissLoadToast();
         setBusy(null);
         // Same optimistic-quant rollback as the error path: the swap did not take.
@@ -2215,7 +2177,7 @@ export function ImagesPage({
           revertPick(quantRevert.current);
           quantRevert.current = null;
         }
-        // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
+        // Restore the Reapply target too, so it never lingers on the failed pick.
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
           setCanReapply(lastLoadRevert.current.prev != null);
@@ -2238,9 +2200,8 @@ export function ImagesPage({
   }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
-  // unload failed, so the poll and the toast were stopped for nothing. refreshStatus cannot do
-  // this -- a first load is not resident yet, so status has nothing to report -- and without it a
-  // multi-gigabyte load continues with no progress and no way to cancel it a second time.
+  // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
+  // this, since a first load is not resident yet.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
@@ -2249,8 +2210,8 @@ export function ImagesPage({
     void pollLoadProgress();
   }, [pollLoadProgress, cancelLoadFromToast]);
 
-  // Re-enter the per-step poll for a generation already in flight that this page did not start, instead of a stale idle view.
-  // generate-progress carries no terminal record, so refresh the gallery on completion to merge any image saved after mount.
+  // Re-enter the per-step poll for a generation in flight that this page did not start.
+  // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
     if (genVisibilityListener.current)
@@ -2333,8 +2294,8 @@ export function ImagesPage({
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
 
-  // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
-  // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
+  // Seed the sliders from a resident model's recipe when the page finds one it did not load,
+  // else a resident flux.1-dev generates garbage at 9 steps. Guarded by a per-repo ref.
   const residentSeeded = useRef(false);
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
@@ -2342,35 +2303,29 @@ export function ImagesPage({
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
-    // Wire Reapply to the resident model too, so an advanced-option reload works without
-    // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
-    // carries no checkpoint filename, so leave the target null for those and the button hidden.
-    // Set before the recipe decision below: whether Reapply has a target is a separate question
-    // from whether the model's defaults should seed the form.
+    // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
+    // alone; a resident GGUF carries no checkpoint filename, so the target stays null and the
+    // button hidden. Set before the recipe decision below, which is a separate question.
     if (status?.model_kind === "pipeline") {
       lastLoad.current = { repoId, kind: "pipeline" };
     }
-    // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
-    // the first seed. Later resident changes still seed, as picking a model always has.
+    // A stored recipe is the user's own choice, so it outranks the resident model's defaults on the first seed.
     if (!residentSeeded.current) {
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    // Status is the authority for a resident model, so this is not a pick's optimistic claim.
+    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF
+    // resident has no family substring. Status is the authority for a resident model.
     const d = defaultsFor(status?.base_repo ?? repoId);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
   }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
-  // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
-  // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
-  // which is the input-side half of P1-2: the Precision dropdown must never go on advertising a
-  // scheme the loaded model is not running. Keyed on the LOAD-TIME half of the resolved record, so
-  // a user edit made after the load survives until the next load replaces it -- the backend
-  // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
-  // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
+  // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
+  // engaged and Precision never advertises a scheme the model is not running. Keyed on the
+  // LOAD-TIME half of the record: the backend rewrites the speed/attention entries at
+  // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
@@ -2419,7 +2374,7 @@ export function ImagesPage({
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         loras: baked.length > 0 ? baked : undefined,
-        // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
+        // Dropped when the chosen card is gone, so a stale pick loads automatically instead of 400ing.
         gpu_ids:
           selectedGpu !== "auto" &&
           gpuChoices.some((d) => String(d.index) === selectedGpu)
@@ -2448,15 +2403,14 @@ export function ImagesPage({
         kind: "gguf" | "single_file" | "pipeline";
         filename?: string;
       },
-      // The Advanced values this load must use, when pinned earlier: a staged download plans its file set at pick time and loads
-      // minutes later, so reading live state here could run a load the staged files do not cover.
+      // The Advanced values this load must use when pinned earlier: a staged download plans its file
+      // set at pick time and loads minutes later, so live state could outrun the staged files.
       pinned?: LoadAdvanced,
     ): Promise<boolean> => {
-      // Cancel any prior poll loop so two can't run at once.
+      // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
-      // unload that can reach the backend first, find no load registered, and succeed without
-      // stopping anything.
+      // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
@@ -2465,8 +2419,7 @@ export function ImagesPage({
         settleLoad = resolve;
       });
       pendingStart.current = inFlight;
-      // Every exit below goes through this: it settles the promise a cancel is waiting on and
-      // releases the ref, so the page cannot stay busy on a load that has already finished.
+      // Every exit below goes through this: it settles the promise a cancel is waiting on and releases the ref.
       const settle = (started: boolean): boolean => {
         settleLoad();
         if (pendingStart.current === inFlight) pendingStart.current = null;
@@ -2477,11 +2430,11 @@ export function ImagesPage({
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
-      // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load
-      // that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
+      // Remember what was loaded so "Reapply" can reload it. Snapshot the prior target first: a load
+      // that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
-      // A torchao int8/fp8 transformer (what the default GGUF fast path picks on a capable GPU) takes adapters only at LOAD time, and
-      // /images/generate then rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit, which apply at generation time.
+      // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
+      // rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit.
       const advanced = pinned ?? currentLoadAdvanced(repoId);
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
@@ -2491,8 +2444,8 @@ export function ImagesPage({
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
       try {
-        // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id;
-        // forward the saved HF token for gated bases. A pipeline load carries no filename; the "auto" sentinels map to omitted.
+        // Returns immediately; the load runs in the background and we poll. The backend infers the
+        // family and base repo from the id, and the saved HF token covers gated bases.
         const startRequest = loadDiffusionModel({
           model_path: repoId,
           model_kind: opts.kind,
@@ -2500,10 +2453,9 @@ export function ImagesPage({
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          // GGUF picks only: the dense fast path replaces a GGUF transformer, every other kind runs
-          // the precision its checkpoint carries. The Precision control is hidden for those kinds,
-          // but the state persists across picks, so a stale scheme would reach a load that can only
-          // decline it -- and the backend now refuses a request it cannot honor.
+          // GGUF picks only: the dense fast path replaces a GGUF transformer, and every other kind runs
+          // its checkpoint's own precision. The control is hidden there but the state persists across
+          // picks, so a stale scheme would reach a load that can only decline it.
           transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
@@ -2523,19 +2475,15 @@ export function ImagesPage({
         return settle(false);
       }
       if (startSeq !== cancelSeq.current) {
-        // Cancelled during the start request. The unload it sent may have landed before this load
-        // registered, in which case it stopped nothing and the model is loading right now with no
-        // toast and no Cancel button. The load exists on the backend as of this line, so unload
-        // once more -- that one cannot miss it. Unless a NEWER load has since taken the page:
-        // this unload names nothing, so firing it then would cancel that load instead of this
-        // one, and the newer start has already superseded this load's token on the backend.
+        // Cancelled during the start request: the unload it sent may have landed before this load
+        // registered, leaving it running with no toast and no Cancel. The load exists as of this
+        // line, so unload once more, unless a NEWER load has taken the page.
         if (startLoad === loadSeq.current) {
           try {
             await unloadDiffusionModel();
           } catch {
-            // This request is the ONLY one that can still stop the load the first unload missed,
-            // so a failure here is not best-effort: the load is running, untracked. Put the
-            // tracking back exactly as a failed cancel does, so it stays visible and cancellable.
+            // This request is the ONLY one that can still stop the load the first unload missed, so a
+            // failure here is not best-effort: put the tracking back exactly as a failed cancel does.
             restoreLoadTracking();
             return settle(false);
           }
@@ -2549,34 +2497,33 @@ export function ImagesPage({
     [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast],
   );
 
-  // Set (or clear) the Transform/Inpaint source image; always drop any painted mask, which is sized to the previous source.
+  // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
+  // sized to the previous source.
   const handleInitChange = useCallback((dataUrl: string | null) => {
     setInitImage(dataUrl);
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
 
-  // Downloads go through the Hub download manager like every other model, so the load finds a warm cache. In a ref so the callback is not a render dep.
+  // Downloads go through the Hub download manager like every other model, so the load finds a
+  // warm cache. In a ref, so the callback is not a render dep.
   const pendingStagedLoad = useRef<{
     repoId: string;
     opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
-    // The Advanced values the plan was built from. Staging does not set `busy`, so the user can change precision or LoRAs while
-    // the download runs; without this the completed load would use the new values against the old file set.
+    // The Advanced values the plan was built from: staging does not set `busy`, so the user can
+    // change precision or LoRAs while the download runs.
     advanced: LoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
-  // Set when a staged download finished while this page was hidden: both diffusion pages stay mounted and a load evicts
-  // whatever holds the GPU. The pick is not dropped; it fires when this page comes back.
+  // Set when a staged download finished while this page was hidden: both diffusion pages stay
+  // mounted and a load evicts whatever holds the GPU. The pick fires on return.
   const stagedLoadDeferred = useRef(false);
   // Both deferred paths run the load minutes after the pick was reported started, so both need
-  // the same rollback: onReady when the page is active, and the effect below when the download
-  // finished off-tab. The deferred load can still be REFUSED, by a training run or another load
-  // claiming the slot while the download ran. Staging started no load, so nothing polls and the
-  // poll's own rollback never runs; without this the selector keeps advertising a quant that was
-  // never loaded. `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  // the same rollback: a deferred load can still be REFUSED, and staging polls nothing.
+  // `owned` is read BEFORE the call, so a newer pick's label is left alone.
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
@@ -2604,14 +2551,12 @@ export function ImagesPage({
       if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
-      // The selected model is only an intent until every dependency is ready. A cancelled
-      // companion must not leave that intent behind for a late completion/deferred effect to load.
+      // The selected model is only an intent until every dependency is ready: a cancelled companion
+      // must not leave that intent behind for a late completion to load.
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
-      // Staging starts no load, so nothing polls and the poll's own rollback never runs: the
-      // optimistic label has to come back here or the selector keeps describing the resident
-      // model with a quant that was never loaded (and the gallery cache persists it). Only for
-      // the pick that staged THIS job: a newer pick owns the label from the moment it is made.
+      // Staging starts no load, so the optimistic label must come back here or the selector keeps
+      // describing the resident model with a quant that never loaded. Only for this job's pick.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
         quantRevert.current = null;
@@ -2627,9 +2572,8 @@ export function ImagesPage({
     if (pending) runStagedLoad(pending);
   }, [active, runStagedLoad]);
 
-  // Ask for a cache-aware plan for every Hub pick. The picker only knows whether the selected
-  // checkpoint is cached; image models can still need a separate text encoder/VAE repository.
-  // Returns true when the pick was accepted either way.
+  // Ask for a cache-aware plan on every Hub pick: the picker knows only whether the checkpoint
+  // is cached, and image models can need a separate text encoder/VAE repo. True = accepted.
   const requestDownloadPlan = useCallback(
     (
       repoId: string,
@@ -2640,19 +2584,20 @@ export function ImagesPage({
         model_path: repoId,
         gguf_filename: opts.filename,
         model_kind: opts.kind,
-        // The same token and Advanced values handleLoad sends, so the plan describes the load that will actually run. Without the
-        // token a gated base plans no companion entry; without the memory/quant controls it stages shards the load never opens.
+        // The same token and Advanced values handleLoad sends, so the plan describes the load that
+        // will run: without the token a gated base plans no companion, and without the controls it
+        // stages shards the load never opens.
         hf_token: hfApiToken(getHfToken()),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
         memory_mode: advanced.memory_mode,
-        // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
-        // planned a quantized file set and staged too little. Same list handleLoad bakes.
+        // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the
+        // dense build path, and omitting it staged too little.
         loras: advanced.loras,
-        // The plan route preflights precision and sizes the file set against the card the load
-        // will use, so a selection the load carries has to reach the plan as well.
+        // The plan route preflights precision and sizes the file set against the card the load will
+        // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
       }),
     [],
@@ -2665,14 +2610,14 @@ export function ImagesPage({
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
-      // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
-      // plan is still in flight. Plans then resolve in response order, not pick order: without
-      // this the older one restages over the newer queue, or loads the model the user left.
-      // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
+      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight,
+      // and plans resolve in response order rather than pick order. Bumped before the non-hub
+      // return too, so a local pick invalidates an in-flight hub plan.
+      // Plans resolve in response order, not pick order. Bumped before the non-hub return too: a local
+      // pick must invalidate an in-flight hub plan.
       const pick = ++pickSeq.current;
-      // The previous pick's staged intent dies with it. A pick that stages nothing (fully cached,
-      // local, no plan) never calls stage(), so the hook's queue keeps running the older job and
-      // its onReady would load the model the user moved away from, evicting this one.
+      // The previous pick's staged intent dies with it: a pick that stages nothing never calls
+      // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
@@ -2681,10 +2626,11 @@ export function ImagesPage({
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
-      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
+      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
+      // job must not revert it.
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
-      // load if the refusal itself threw, which is the one outcome that must not happen.
+      // load if the refusal itself threw.
       let incompatible: string | null = null;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
@@ -2705,15 +2651,11 @@ export function ImagesPage({
               files: e.files,
               bytes: e.bytes,
               ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without
-              // guessing: filenames cannot tell the two apart once a checkpoint ships as
-              // .safetensors like its companions do. Repo identity alone is not enough, because a
-              // checkpoint that shares its repo with the companions and is already cached leaves an
-              // entry of companion files only. A pipeline pick has no one file: the repo IS it.
-              // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
-              // so its entry no longer carries the id we picked and the id test below reads the
-              // whole selected model as companion assets. `??`, not `||`: a planner that says false
-              // is answering, and the fallback exists only for a backend too old to send the key.
+              // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
+              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint
+              // shares its repo with cached companions. The backend's answer wins, since a gated pipeline
+              // is staged from an ungated MIRROR. Nullish coalescing, not `or`: a planner
+              // answering false is still an answer.
               checkpoint:
                 e.checkpoint ??
                 (opts.filename
@@ -2756,8 +2698,8 @@ export function ImagesPage({
     [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
   );
 
-  // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend
-  // rejects a gguf load with no filename and a pipeline load of a GGUF repo, so name the file from the listing first.
+  // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
+  // and a pipeline load of a GGUF repo, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
     async (
       repoId: string,
@@ -2804,9 +2746,9 @@ export function ImagesPage({
     if (!active) pickGuard.release();
   }, [active, pickGuard]);
 
-  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
-  // This route's own match, never `strict: false`: that resolves to the ROOT match, whose search is whatever route is live, and
-  // /hub names its selection with the same param. `active` cannot fence that off, since it lags the matches by a render.
+  // A diffusion model picked from the chat picker arrives as ?model= on this route. This route's
+  // own match, never `strict: false`: that resolves to the ROOT match, whose search is
+  // whatever route is live, and /hub names its selection with the same param.
   const routeSearch = useSearch({ from: "/images", shouldThrow: false });
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
@@ -2815,14 +2757,14 @@ export function ImagesPage({
     if (!active) return;
     if (!imagePresets.hydrated) return;
     const wanted = routeSearch?.model;
-    // Key on the model AND the quant, and release the marker once the query is gone: this page stays mounted, so a marker that
-    // outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
+    // Key on the model AND the quant, and release the marker once the query is gone: this page
+    // stays mounted, so a marker outliving the query made re-picking the same file a dead click.
     if (!wanted) {
       handledRouteModel.current = null;
       return;
     }
-    // `quant` is used verbatim as a filename; a label there (a hand-built link, an older producer) is resolved instead.
-    // The two fields, not the object: `routeSearch` is rebuilt every render, so it would churn the deps.
+    // `quant` is used verbatim as a filename, so a label there is resolved instead. The two
+    // fields, not the object: `routeSearch` is rebuilt every render.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
     const routedFilename = routedGgufFilename(routed);
     const routedLabel = routedGgufLabel(routed);
@@ -2832,8 +2774,8 @@ export function ImagesPage({
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
     const token = pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
-    // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it instead of routing it as a
-    // filename.
+    // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
+    // rather than routing it as a filename.
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
@@ -2853,7 +2795,7 @@ export function ImagesPage({
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
-    // the model-specific Default recipe, and a load that never becomes resident rolls both back.
+    // the Default recipe, and a load that never becomes resident rolls both back.
     const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
     quantRevert.current = revert;
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
@@ -2885,13 +2827,10 @@ export function ImagesPage({
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
   }, [handleLoad]);
 
-  // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
-  // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
-  // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
-  // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
-  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
-  // nothing will load and nothing else will restore the label. Hand the resident state back here or
-  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  // Every pick supersedes the one before it, whichever route it takes: a staged download
+  // outlives its pick, and the direct-local branches call handleLoad rather than loadOrStage,
+  // so clearing only inside loadOrStage left the old job free to load the abandoned model. A
+  // pick rejected after beginPick() has already retired its predecessor, so restore here.
   const abandonPick = useCallback(() => {
     if (quantRevert.current) {
       revertPick(quantRevert.current);
@@ -2912,18 +2851,15 @@ export function ImagesPage({
       // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
       if (busy !== null) return;
       beginPick();
-      // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
-      // sets `busy`, so any pick can land on an awaiting one.
+      // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
+      // branch, since staging never sets `busy`.
       const token = pickGuard.claim();
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
-      // Carried forward when one is already pending: a superseded staged pick left its
-      // optimistic quant and recipe in state, so snapshotting now would record THAT and
-      // restore a model which never loaded. The live entry already holds the resident one.
-        // Registers its own rollback like every other branch. Leaving the previous pick's entry in
-        // place would let that older staged download, on cancelling, revert to state from before it
-        // -- over a selection this pick already replaced -- and leave this one with no rollback.
+      // Carried forward when one is already pending: a superseded staged pick left its optimistic
+      // quant and recipe in state, so snapshotting now would record THAT and restore a model that
+      // never loaded. Leaving the old entry would also let that download revert this pick.
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
@@ -2941,8 +2877,8 @@ export function ImagesPage({
           });
         return;
       }
-      // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
-      // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
+      // GGUF quant pick from the variant expander. Optimistic for instant feedback, but reverted if
+      // the load fails to START or later in the poll: the old pipeline stays loaded either way.
       if (meta.ggufVariant && meta.ggufFilename) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
@@ -2969,8 +2905,8 @@ export function ImagesPage({
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo id or local directory, not a file. The listing names its .gguf and the label picks between siblings; a
-          // local pick passes its directory so the listing reads that path, not a hub repo.
+          // A repo id or local directory, not a file: the listing names its .gguf and the label picks
+          // between siblings, and a local pick passes its directory so the listing reads that path.
           void loadGgufRepoPick(
             id,
             meta.ggufVariant ?? null,
@@ -2979,8 +2915,8 @@ export function ImagesPage({
           );
           return;
         }
-        // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
-        // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
+        // A direct pick carries no curated variant label, so surface the filename or the selector
+        // keeps advertising the old quant. Optimistic, reverted if the load never starts.
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
@@ -2993,8 +2929,8 @@ export function ImagesPage({
         });
         return;
       }
-      // A direct local single-file .safetensors pick must load via from_single_file: the pipeline route rejects a bare file, and
-      // only after evicting the resident model. Split into (parent dir, basename) like the local GGUF branch above.
+      // A direct local single-file .safetensors pick must load via from_single_file: the pipeline
+      // route rejects a bare file, and only after evicting the resident model.
       if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
@@ -3012,8 +2948,8 @@ export function ImagesPage({
         });
         return;
       }
-      // A GGUF repo with no filename: these used to fall through to the pipeline branch below, which the backend rejects
-      // for a single-file GGUF repo.
+      // A GGUF repo with no filename: these used to fall through to the pipeline branch below, which
+      // the backend rejects for a single-file GGUF repo.
       if (spec?.kind === "gguf" || meta.ggufVariant) {
         // An artifact that names its file short-circuits the listing; otherwise the label is the hint.
         void loadGgufRepoPick(
@@ -3056,7 +2992,8 @@ export function ImagesPage({
     ],
   );
 
-  // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.
+  // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and
+  // queue the adapter for the LoRA discovery effect.
   const handleDeployAdapter = useCallback(
     (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
       if (busy !== null) {
@@ -3094,21 +3031,19 @@ export function ImagesPage({
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
   const handleUnload = useCallback(async (): Promise<boolean> => {
-    // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
+    // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too
+    // or the toast leaks forever.
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
-      // Hold the page until any load start still in flight has run to its END, compensating
-      // unload and all. The selector's eject routes straight here, so without the fence an eject
-      // landing before the start registered returned success and cleared busy: the user picks
-      // another model, the backend refuses it ("a load is already in progress") because the older
-      // start won the race, and that older handler -- seeing the newer loadSeq -- skips its
-      // compensating unload and returns without restarting its poll, leaving a multi-gigabyte
-      // load running with no toast and no cancel control. Same fence handleCancelLoad and the
-      // external-eject listener take.
+      // Hold the page until any load start still in flight has run to its END, compensating unload
+      // and all. Without the fence an eject landing before the start registered returned success
+      // and cleared busy, so the next pick was refused while the older load carried on.
+      // That older handler, seeing the newer loadSeq, skips its compensating unload and returns without
+      // restarting its poll, leaving a multi-gigabyte load running with no toast and no cancel control.
       const pending = pendingStart.current;
       if (pending) {
         try {
@@ -3117,38 +3052,35 @@ export function ImagesPage({
           // Its own handler reports the failure; this only waits for the window to close.
         }
       }
-      // The wait above can end with the tracking RESTORED: handleLoad's compensating unload
-      // failed, so the load is still running. This eject stopped nothing, so do not report
-      // success -- the caller would toast "stopped loading" over a live load.
+      // The wait above can end with the tracking RESTORED: handleLoad's compensating unload failed,
+      // so the load is still running and this eject stopped nothing.
       return !loadTrackingRestored.current;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
       void refreshStatus();
       return false;
     } finally {
-      // Not an unconditional clear. A restore during the wait above put the page back to
-      // "loading" deliberately; wiping it hides the toast's Cancel and the "Cancel load"
-      // button and re-enables the picker over a load that is still running.
+      // Not an unconditional clear: a restore during the wait put the page back to "loading"
+      // deliberately, and wiping it hides the Cancel controls over a load still running.
       setBusy((prev) => (prev === "unloading" ? null : prev));
     }
   }, [refreshStatus, dropResidentState]);
 
-  // Cancelling a load IS the unload: it sets the running load's cancel event, bumps the load token so the
-  // worker can never commit, and drops the load marker. What it leaves behind is only cache: bytes already
-  // fetched stay in the HF cache, so loading the same model again resumes instead of restarting, and no
-  // half-built pipeline survives (the worker's commit is token-gated and unload clears the GPU state).
+  // Cancelling a load IS the unload: it sets the load's cancel event, bumps the load token so
+  // the worker can never commit, and drops the load marker. What it leaves is only cache, so
+  // loading the same model again resumes instead of restarting.
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
     if (await handleUnload()) {
-      // handleUnload holds the page for the whole pending-start path before it returns, so by
-      // here the window the backend's "a load is already in progress" refusal lives in is shut.
+      // handleUnload holds the page for the whole pending-start path, so by here the window for the
+      // backend's "a load is already in progress" refusal is shut.
       toast.info("Stopped loading the model", {
         description: "Anything already downloaded stays cached, so loading it again resumes.",
       });
       return;
     }
-    // Already restored inside handleUnload (its own compensating-unload failure), so the toast
-    // and the poll are up: a second restore would raise a duplicate toast and a second poll loop.
+    // Already restored inside handleUnload, so the toast and poll are up: a second restore would
+    // raise a duplicate toast and a second poll loop.
     if (!wasLoading || loadTrackingRestored.current) return;
     // The unload failed, so the load is still running and its tracking was torn down for nothing.
     restoreLoadTracking();
@@ -3194,7 +3126,8 @@ export function ImagesPage({
       return;
     }
 
-    // Resolve the conditioning image/mask/strength up front. Extend is built here by padding + masking, then sent through inpaint.
+    // Resolve the conditioning image/mask/strength up front. Extend is built here by padding and
+    // masking, then sent through inpaint.
     let condInit: string | undefined;
     let condMask: string | undefined;
     let condStrength: number | undefined;
@@ -3214,12 +3147,14 @@ export function ImagesPage({
         condMask = built.mask;
         condStrength = 1; // the new border is blank canvas: redraw it fully
       } else if (isUpscale) {
-        // Hires fix: the backend enlarges the source and re-denoises at this low strength, gaining detail without changing content.
+        // Hires fix: the backend enlarges the source and re-denoises at this low strength, gaining
+        // detail without changing content.
         condInit = initImage ?? undefined;
         condUpscale = upscaleFactor;
         condStrength = upscaleStrength;
       } else if (isReference) {
-        // FLUX.2 reference conditioning: send the primary + extra references. A fresh image is generated at the slider size.
+        // FLUX.2 reference conditioning: send the primary plus extra references. A fresh image is
+        // generated at the slider size.
         condInit = initImage ?? undefined;
         const extras = referenceImages.filter(Boolean);
         if (extras.length) condRefImages = extras;
@@ -3244,16 +3179,16 @@ export function ImagesPage({
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
 
-    // Snap custom dims to the model's grid so a half-typed value can't 422.
+    // Snap custom dims to the model's grid so a half-typed value cannot 422.
     const w = snapDim(width);
     const h = snapDim(height);
 
-    // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input (the box can yield NaN).
+    // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
 
-    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch offsets are added, 422ing a later
-    // run AFTER earlier images generated. Fail before any GPU work; subtraction keeps the comparison exact.
+    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch
+    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work.
     if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
@@ -3265,17 +3200,15 @@ export function ImagesPage({
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
     cancelAcked.current = false;
-    // Per-run, like the two above. A cancel POST still outstanding from the PREVIOUS run (a 401
-    // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
-    // run's own Stop entirely.
+    // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
+    // leave the guard set and swallow this run's own Stop.
     cancelInFlight.current = null;
-    // Any Stop still pending belongs to the run that just ended, so it must not reach the server
-    // now that a new one is starting.
+    // Any Stop still pending belongs to the run that just ended, so it must not reach the server now.
     cancelAbort.current?.abort();
     cancelAbort.current = null;
     runToken.current += 1;
-    // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
-    // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
+    // Poll the backend's per-step progress across the whole run. A named poll body also serves the
+    // visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
     const pollGenerateOnce = async () => {
       if (pollInFlight) return;
@@ -3301,14 +3234,13 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-    // Every gallery id this page has seen, captured BEFORE the first POST and grown as the run produces records:
-    // settleLostGeneration proves a lost POST landed by finding a record outside this set, so it must not be rebuilt in the catch.
+    // Every gallery id this page has seen, captured BEFORE the first POST and grown as records
+    // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
-        // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
-        // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
-        // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.
+        // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
+        // cancel only reaches the denoise in flight, so a count > 1 request would run on.
         if (
           !shouldContinueGenerating({
             mounted: isMounted.current,
@@ -3316,13 +3248,9 @@ export function ImagesPage({
           })
         )
           break;
-        // Frozen BEFORE the POST goes out, because both halves of it have to describe the same
-        // moment. `knownIds` is from before the request, so deriving the window half in the catch
-        // mixes the two: scrolling while the request is in flight pages in historical unpinned
-        // records, and a window that was all pinned (which refuses to judge) then looks like one
-        // that can, with the newest historical row reading as proof the generation landed.
-        // Sharing the `knownIds` set is deliberate: it only ever grows, and a larger set can only
-        // make the probe more conservative.
+        // Frozen BEFORE the POST, because both halves must describe the same moment: `knownIds` is
+        // from before the request, so deriving the window half in the catch mixes the two and the
+        // newest historical row could read as proof the generation landed.
         const probeBaseline = newRecordProbeBaseline(
           galleryCache.images,
           galleryCache.hasMore,
@@ -3338,17 +3266,19 @@ export function ImagesPage({
             height: h,
             steps,
             guidance,
-            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset would regenerate batch-mates.
+            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
+            // would regenerate batch-mates.
             seed: baseSeed + i * batchSize,
             batch_size: batchSize,
-            // Transform/Inpaint/Extend send the source image (+ mask) and a strength. The backend derives output size from the image.
+            // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
+            // derives output size from the image.
             init_image: condInit,
             mask_image: condMask,
             strength: condStrength,
             upscale: condUpscale,
             reference_images: condRefImages,
-            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only adapters that applied.
-            // Gate on loraCapable: a restore can leave adapters in state while the loaded model does not support LoRA.
+            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
+            // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
               if (!loraCapable) return undefined;
               const active = loras
@@ -3368,26 +3298,26 @@ export function ImagesPage({
                 : undefined,
           });
         } catch (err) {
-          // The POST response was lost while the backend kept generating (the secure-mode tunnel caps the response near 100s).
-          // Retrying would duplicate the work, so wait the run out and read its images off the gallery.
+          // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
+          // the response near 100s). Retrying would duplicate the work, so wait the run out.
           if (!(err instanceof GenerateResponseLostError)) throw err;
-          // A record outside the baseline proves the request reached the backend. Taken per
-          // attempt, so it reflects what the client could see when THIS post went out.
+          // A record outside the baseline proves the request reached the backend. Taken per attempt, so
+          // it reflects what the client could see when THIS post went out.
           await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
-          // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
+          // loadGallery refreshes the module cache synchronously, so this run's records are folded in
+          // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
           setGenDone(i + 1);
           continue;
         }
         if (!isMounted.current) break;
         // Merge this run's records and load their blobs. Sorted, not prepended: a new image is
-        // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
-        // ahead of pins until the next reload.
+        // unpinned, so the server puts it after the pinned group.
         stripEpoch.current += 1;
-        // Deduplicated: a resync in flight can fetch the saved record first, and prepending it
-        // again duplicates a React key and inflates the next page's offset, skipping a record.
+        // Deduplicated: a resync in flight can fetch the saved record first, and prepending it again
+        // duplicates a React key and inflates the next page's offset.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
@@ -3396,12 +3326,9 @@ export function ImagesPage({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Image generation failed";
-      // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
-      // so do not toast it. Same treatment the video page gives its Cancel.
-      // Only a Stop the backend confirmed it acted on explains an error away. If the POST never
-      // landed, or the backend answered {cancelled: false} because the run was already past its
-      // last cancellation check while the route was still persisting, the generation was not
-      // stopped, so whatever it raised is a real failure rather than "the user stopped it".
+      // The user's own Stop comes back as the backend's cancelled sentinel (409), so it is not
+      // toasted. Only a Stop the backend confirmed explains an error away: a POST that never
+      // landed, or {cancelled: false}, means whatever it raised is a real failure.
       if (
         shouldReportGenerateError({
           message: msg,
@@ -3417,12 +3344,10 @@ export function ImagesPage({
         genVisibilityListener.current = null;
       }
       cancelRequested.current = false;
-      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes
-      // back. A generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free
-      // run and supports_lora flips false), and a cancelled native run can leave no model at all:
-      // when the native cancel is not reflected within its grace window, sd-server is stopped
-      // outright. Re-enabling Generate first would offer a button that 409s against a backend with
-      // nothing loaded. Cheap status GET, so the wait is not felt.
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes back:
+      // a generation can change server-side status and a cancelled native run can leave no model
+      // at all, so re-enabling first would offer a button that 409s.
+      // Speed=Auto compiles on the 3rd LoRA-free run and supports_lora flips false.
       if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
@@ -3431,12 +3356,11 @@ export function ImagesPage({
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
-  // races the run that is already finishing, then ask the backend to break out of the sampler.
+  // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
-    // second POST would target whatever is active when IT arrives, which after the stopped run
-    // settles can be a generation the user started since.
+    // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
     if (cancelInFlight.current === token) return;
     cancelInFlight.current = token;
@@ -3446,17 +3370,14 @@ export function ImagesPage({
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
     } catch {
-      // An abort means the next run dropped this one on purpose; it belongs to a generation that
-      // is already over, so there is nothing to report. Otherwise the request never landed, the
-      // denoise in flight keeps running, and the click cannot be treated as handled: say so, and
-      // stop it explaining away an error the run raises later.
+      // An abort means the next run dropped this one on purpose, so there is nothing to report.
+      // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
-      // Only if they are still ours: a slow cancel from an earlier run must not release the guard
-      // a later run set, or a duplicate click gets through and can land on a generation after it.
+      // Only if they are still ours: a slow cancel from an earlier run must not release the guard a later run set.
       if (cancelInFlight.current === token) cancelInFlight.current = null;
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
@@ -3506,7 +3427,8 @@ export function ImagesPage({
           ["max", "Max"],
         ]}
       />
-      {/* The dense transformer_quant fast path only engages on the GGUF kind, so gate the control to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
+      {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
+          GGUF (or nothing loaded) and otherwise say why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
           label="Precision"
@@ -3597,7 +3519,8 @@ export function ImagesPage({
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
+      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
+          user-initiated load; GGUF/single_file residents hide the button. */}
       {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -3618,11 +3541,11 @@ export function ImagesPage({
   );
 
   return (
-    // The chat-style layout gives this page no outer top inset, so clear the custom
-    // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
+    // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
+    // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      {/* Keep the tabs centered over the preview region at every width. The model rail
-          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
+          space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
@@ -3709,13 +3632,14 @@ export function ImagesPage({
           </div>
         </div>
       </div>
-      {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
+      {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops. */}
       {pageMode === "train" ? (
         <DiffusionTrainPanel
           active={active && pageMode === "train"}
           loadedFamily={status?.family ?? null}
           loadedBaseRepo={
-            // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF load repo_id is a checkpoint path, not a trainable base.
+            // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF load repo_id is a
+            // checkpoint path, not a trainable base.
             status?.base_repo ?? status?.repo_id ?? null
           }
           onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
@@ -3727,9 +3651,8 @@ export function ImagesPage({
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Settings column + preview canvas. Structural borders stay edge-to-edge;
-         spacing belongs inside each pane. The same 50rem page-container breakpoint
-         drives this body and the header above, regardless of sidebar width. */
+      /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
+         The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
@@ -3742,8 +3665,7 @@ export function ImagesPage({
             )}
           >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
-            {/* Icon rides the heading; the line below runs the full width.
-                Same shape on the Video page, so the two stay level. */}
+            {/* Icon rides the heading; the line below runs the full width. Same shape on the Video page. */}
             <div className="mb-2 flex items-start justify-between gap-3">
               <div className="min-w-0 grid gap-1.5">
                 <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
@@ -3898,8 +3820,8 @@ export function ImagesPage({
                           aria-pressed={on}
                           onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
                           className={cn(
-                            // No border in either mode: the fill alone marks the state. A ring
-                            // would not survive mouse focus anyway (index.css blanks it).
+                            // No border in either mode: the fill alone marks the state, and a ring would not survive
+                            // mouse focus anyway.
                             "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
@@ -3962,7 +3884,8 @@ export function ImagesPage({
                       <ImageDropzone
                         value={img}
                         onChange={(v) =>
-                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit; empty slots are dropped at send time.
+                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit;
+                          // empty slots are dropped at send time.
                           setReferenceImages((prev) =>
                             prev.map((p, j) => (j === i ? (v ?? "") : p)),
                           )
@@ -4023,7 +3946,7 @@ export function ImagesPage({
               onOpenChange={setNegativeOpen}
               hint="What to steer the image away from. Only used when guidance is above 0."
             />
-            {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a Hugging Face repo id or pick a discovered adapter; each carries a 0-2 weight. */}
+            {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
                 label="LoRAs"
@@ -4041,11 +3964,9 @@ export function ImagesPage({
                   )}
                   {loras.map((sel, i) => (
                     <div
-                      // Key on the index, not sel.id: sel.id is the value of the editable repo-id
-                      // Input below, so keying on it changes the key on the first character typed,
-                      // which remounts the row and drops input focus. The list is index-addressed
-                      // (every mutation matches j === i) and rows are removed explicitly, so the
-                      // index is stable for as long as the row lives.
+                      // Key on the index, not sel.id: sel.id is the editable repo-id Input's value, so keying on it
+                      // remounts the row and drops focus on the first character typed. The list is
+                      // index-addressed and rows are removed explicitly.
                       key={i}
                       className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                     >
@@ -4110,7 +4031,7 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {/* ControlNet: shown when the model supports it, one is discoverable, and the txt2img workflow is active (v1 conditions txt2img only). */}
+            {/* ControlNet: shown when the model supports it, one is discoverable, and txt2img is active. */}
             {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (
               <Field
                 label="ControlNet"
@@ -4213,8 +4134,8 @@ export function ImagesPage({
             <Field
               label="Resolution"
               hint={
-                // Image-conditioned workflows size from the source, so "this is the output size"
-                // is wrong there: Transform caps the source by this box, the rest ignore it.
+                // Image-conditioned workflows size from the source, so "this is the output size" is wrong
+                // there: Transform caps the source by this box, the rest ignore it.
                 workflow === "transform"
                   ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
                   : workflow === "inpaint" ||
@@ -4305,9 +4226,8 @@ export function ImagesPage({
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
             {busy === "generating" ? (
-              /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
-                 (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
-                 same handler, so one control stops all of them. */
+              /* Replaces Generate while a run is in flight. Every workflow funnels through the same
+                 handler, so one control stops all of them. */
               <Button
                 className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
@@ -4337,7 +4257,8 @@ export function ImagesPage({
                   alt={selected.prompt}
                   className="max-h-full max-w-full object-contain shadow-sm"
                 />
-                {/* Actions grouped in one glass toolbar so they stay legible over any image. Size/seed live in the Recipe popover. */}
+                {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
+                    live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
@@ -4379,7 +4300,7 @@ export function ImagesPage({
                 </div>
               </>
             ) : selected ? (
-              // The selected record's blob is still loading — spin in place.
+              // The selected record's blob is still loading; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>
@@ -4433,15 +4354,16 @@ export function ImagesPage({
                 if (el.scrollWidth - el.scrollLeft - el.clientWidth < 400) void loadMore();
               }}
             >
-              {/* In-progress generation: a placeholder tile at the front so past images stay visible and browsable while the new one renders. */}
+              {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
+                  the new one renders. */}
               {busy === "generating" && (
                 <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
-              {/* The tile is a wrapper, not a button: the actions menu has to be the select
-                  button's SIBLING, since a button inside a button is invalid and would swallow
-                  its own clicks. data-image-id rides the wrapper so the observer still sees it. */}
+              {/* The tile is a wrapper, not a button: the actions menu must be the select button's SIBLING,
+                  since a button inside a button is invalid. data-image-id rides the wrapper so the
+                  observer still sees it. */}
               {images.map((image) => (
                 <div
                   key={image.id}
@@ -4464,7 +4386,7 @@ export function ImagesPage({
                         <Spinner className="size-4 text-muted-foreground" />
                       </span>
                     )}
-                    {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
+                    {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
                     {image.id === selected?.id && (
                       <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
                     )}

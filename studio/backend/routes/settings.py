@@ -861,6 +861,8 @@ class ModelOverridesResponse(BaseModel):
     # casefold is not toLowerCase, and an ambiguous fold matches nothing on purpose.
     resolved: Optional[dict] = None
     resolved_key: Optional[str] = None
+    # What an explicit remove cleared; empty for a save.
+    removed_keys: list[str] = []
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -1589,7 +1591,13 @@ def _fill_target_id(target_id: str) -> str:
     return target_id
 
 
-# One override write at a time. A save stores its target key and then reads the map back
+# One override write at a time. A save stores its target key and then reads the map back to retire the other spelling of
+# the same cached repo, and a remove clears up to four keys, each its own transaction: atomic on their own, but not as a
+# sequence. This route is a plain `def`, so FastAPI runs it in a threadpool, and two clients saving one quant under both
+# spellings (the repo id the picker sends and the snapshot path an upgraded install still holds) could each write before
+# either cleanup ran and then retire the other's row, leaving no override at all from two saves that both returned 200.
+# Serialize the whole handler instead: overrides are written by a settings edit, never on a hot path, and the server
+# runs one process.
 _override_write_lock = threading.Lock()
 
 
@@ -1717,6 +1725,7 @@ def update_openai_auto_switch_override(
                     if _kept_tuning[name] is None:
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
+        removed_keys: list[str] = []
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1724,18 +1733,17 @@ def update_openai_auto_switch_override(
             target_ids = resolve_model_override_keys(payload.model_id) or [
                 payload.model_id,
             ]
-            for target_id in target_ids:
-                set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+            removed_keys.extend(target_ids)
             # A standalone .gguf is keyed by its bare path now, but a load also reads the
             # filename-derived <path>:LABEL an upgraded install holds, which would outlive this.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
-                set_model_override(
-                    legacy_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
-            # The mirror image of the carry-over above: a save under repo:QUANT copies
+                removed_keys.append(legacy_id)
+            # The mirror image of the carry-over above: a save under repo:QUANT copies the flags off a legacy bare
+            # `repo` entry and leaves it in place, and the loader falls back to it when the qualified key misses, so
+            # clearing only the qualified key hands the same flags straight back and the forget does nothing. Nothing in
+            # the UI can reach that bare entry. Only once it is nobody else's fallback, though: it backs every quant
+            # with no entry of its own, so forgetting Q4 must not strip Q8.
             bare_id = _bare_model_id(payload.model_id)
             if (
                 bare_id
@@ -1745,15 +1753,14 @@ def update_openai_auto_switch_override(
                     target_ids,
                 )
             ):
-                set_model_override(
-                    bare_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
+                removed_keys.append(bare_id)
             # And the other spelling of a cached repo: the loader reads the load path before
             # the advertised id, so clearing only the id leaves the path entry still applying.
             for alias_id in cached_repo_alias_keys(payload.model_id):
-                set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
+                if alias_id not in removed_keys:
+                    removed_keys.append(alias_id)
+            for removed_id in removed_keys:
+                set_model_override(removed_id, llama_extra_args = [], max_seq_length = None)
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
@@ -1808,7 +1815,7 @@ def update_openai_auto_switch_override(
             event = "settings.update_model_override_failed",
             log = logger,
         ) from exc
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
 
 
 class EmbeddingModelPayload(BaseModel):
@@ -2651,7 +2658,8 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Offline: subdir probes would hit the network and hang; the offline gate walks
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the whole cached snapshot, so no
+        # load-subdir hints are needed.
         if local_only_load:
             load_subdirs = ()
         else:

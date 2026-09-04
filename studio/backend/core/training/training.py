@@ -795,11 +795,12 @@ class _MLXTrainerAdapter:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
-        # Signature must match UnslothTrainer: the MLX worker loads its own data and derives the row bound
-        # from its config, so the two bound arguments are accepted and deliberately not forwarded.
+        # Signature must match UnslothTrainer. The MLX worker gets the token from _model_config, loads its
+        # own data, and derives the row bound, so these arguments are accepted and not forwarded here.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
@@ -1597,7 +1598,7 @@ class TrainingBackend:
                 logger.warning("Training subprocess already running")
                 return False
 
-        # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
+        # Join prior pump thread, refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
