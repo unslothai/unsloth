@@ -39,10 +39,13 @@ def llama_cpp():
     except Exception as exc:  # missing optional studio dep on a bare checkout
         pytest.skip(f"llama_cpp not importable here: {exc}")
     finally:
-        # Do not leave studio/backend on sys.path:
+        # Do not leave studio/backend on sys.path: it shadows generic top-level names (utils, state, models, hub,
+        # auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
-    # The dedupe comparators consult the Metal device, so on a Mac (and on the paravirtual macos runners) they would
+    # The dedupe comparators consult the Metal device, so on a Mac (and on the macos runners, which are paravirtual)
+    # they would normalize the request to the CPU pin and stop it matching these fixtures. A private copy, so pinning
+    # cannot leak into the app.
     module._metal_device_is_paravirtual = lambda: False
     return module
 
@@ -62,11 +65,7 @@ def _body(name: str) -> str:
     ("mode", "layers", "expected"),
     [
         ("manual", 8, 8),
-        (
-            "manual",
-            0,
-            0,
-        ),  # CPU-only is a real request, not "unset" Auto slider defers to the runner Unsloth mode
+        ("manual", 0, 0),  # CPU-only is a real request, not "unset"
         ("manual", -1, None),  # Auto slider defers to the runner
         ("auto", 8, None),  # Unsloth mode ignores a stale layer count
         ("auto", -1, None),
@@ -194,13 +193,7 @@ def _in_target_state(llama_cpp, b, *, mode, layers):
 @pytest.mark.parametrize(
     ("recorded", "requested_ngl", "mode", "layers", "expected"),
     [
-        (
-            -1,
-            None,
-            "auto",
-            -1,
-            True,
-        ),  # auto -> auto inert manual preference must not loop a real split must reload
+        (-1, None, "auto", -1, True),  # auto -> auto
         (-1, None, "manual", -1, True),  # inert manual preference must not loop
         (-1, None, "manual", 8, False),  # a real split must reload
         (8, 8, "manual", 8, True),  # same split dedupes
@@ -336,12 +329,7 @@ def test_training_guard_mirrors_shim_support():
 @pytest.mark.parametrize(
     ("required", "ngl", "n_layers", "expected"),
     [
-        (
-            15.0,
-            10,
-            30,
-            5.0,
-        ),  # a third of the layers -> a third of the footprint all layers -> unchanged over-ask
+        (15.0, 10, 30, 5.0),  # a third of the layers -> a third of the footprint
         (15.0, 30, 30, 15.0),  # all layers -> unchanged
         (15.0, 99, 30, 15.0),  # over-ask clamps to all layers
         (15.0, 10, None, 15.0),  # unknown layer count stays conservative
@@ -374,9 +362,7 @@ def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     """manual/20 against an old shim launched with the default and deduped on the
     ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
     b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
-    assert (
-        _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True
-    )  # shim still old zoo upgraded in this
+    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True  # shim still old
     b.diffusion_split_supported = lambda: True  # zoo upgraded in this session
     assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is False  # now applies
     b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)

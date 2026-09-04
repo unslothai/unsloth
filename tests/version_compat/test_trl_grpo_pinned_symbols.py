@@ -185,6 +185,7 @@ def test_trl_experimental_openenv_gated(tag: str):
     )
 
 
+# trl.generation.vllm_generation: gated import for the fast_inference server mode (rl_replacements.py:1846-1848).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_generation_vllm_generation_gated(tag: str):
     """VLLMGeneration + its _init_vllm/sync_weights/generate methods must
@@ -243,6 +244,7 @@ def test_trl_is_conversational_export(tag: str):
         pytest.skip(f"{tag}: trl.is_conversational not exported (legacy TRL)")
 
 
+# 2-4. trl.trainer.sft_trainer surface used by unsloth tokenizer utils + tests.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_sft_trainer_module_internals(tag: str):
     """sft_trainer symbols for the `from trl.trainer.sft_trainer import *` at tokenizer_utils.py:1538."""
@@ -257,8 +259,8 @@ def test_trl_sft_trainer_module_internals(tag: str):
         pass
 
 
-# Coverage extension (added 2026-05):
-# trl.is_conversational - soft import in unsloth-zoo dataset_utils.
+# 5-6. trl.trainer.dpo_trainer + MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES, patched by
+#      unsloth-zoo/temporary_patches/misc.py:1376-1379.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_dpo_trainer_module_exists(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
@@ -334,8 +336,8 @@ def test_trl_import_utils_available_pattern(tag: str):
     )
 
 
-# trl.experimental.openenv.utils generators - one of the two function names must exist
-# (rl_replacements.py:1775-1781 getattr()s for one).
+# 10. trl.experimental.openenv.utils generators - one of the two function names must exist
+#     (rl_replacements.py:1775-1781 getattr()s for one).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_openenv_utils_generators(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/utils.py")
@@ -350,7 +352,8 @@ def test_trl_openenv_utils_generators(tag: str):
     )
 
 
-# trl.import_utils `_*_available` cache pattern - import_fixes.py:508-516 clears these cached booleans so vllm-ascend
+# 11-16. GRPOTrainer required method names. rl_replacements.py dispatches on function_name == "...";
+#        a renamed method silently skips the patch.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_trainer_required_methods(tag: str):
     """GRPOTrainer methods unsloth rewrites against; drift silently skips
@@ -397,8 +400,7 @@ def test_trl_grpo_source_inference_mode_unwrap(tag: str):
     )
 
 
-# 11-16.
-# rl_replacements.py dispatches on function_name == "...";
+# 17. KTOTrainer.get_batch_logps + the literal raise-message rewriter.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_kto_get_batch_logps_signature(tag: str):
     """KTO log-prob computation must stay patchable. Older TRL exposed
@@ -439,10 +441,8 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
     )
 
 
-# 18.
-
-
-# Source-string contracts on grpo_trainer.py.
+# 18. SFTTrainer + the `dict_args.pop("push_to_hub_token")` shim. transformers 5.0 removed the kwarg; if TRL stops
+#     emitting the bare pop, our patch no-ops AND TRL itself crashes on transformers 5.0.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_sft_trainer_class(tag: str):
     """SFTTrainer must exist. The push_to_hub_token pop literal is checked
@@ -473,6 +473,8 @@ def test_trl_dpo_trainer_methods(tag: str):
         _ = _present
 
 
+# 22-23. grpo_trainer must have in scope the helpers unsloth's rewriters reference (profiling_context,
+#        maybe_apply_chat_template, truncate_with_protected_tokens), defined or imported from trl.*.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_internal_helpers_in_scope(tag: str):
     """Chat-template kwargs must propagate via legacy
@@ -492,9 +494,6 @@ def test_trl_grpo_internal_helpers_in_scope(tag: str):
     )
 
 
-# 18. SFTTrainer + the `dict_args.pop("push_to_hub_token")` shim. transformers
-#     5.0 removed the kwarg; if TRL stops emitting the bare pop, our patch
-#     no-ops AND TRL itself crashes on transformers 5.0.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_truncate_with_protected_tokens_optional(tag: str):
     """Informational: track truncate_with_protected_tokens (shipped TRL
@@ -506,10 +505,11 @@ def test_trl_truncate_with_protected_tokens_optional(tag: str):
     _ = has_it  # informational; pass either way.
 
 
-# 24-27.
-
-
-# 19-21. DPOTrainer methods unsloth-zoo's rl_replacements rewrites.
+# 24-27. TRL >= 1.7.0 GRPO source contracts. Unlike the has_def existence checks above, these pin the exact source
+# strings unsloth/models/rl.py and rl_replacements.py transform for TRL >= 1.7.0 (the window PR #6904 fixes).
+# The 1.7.0 break was invisible to the existence checks because the methods still existed -- only their internal
+# structure / return arity changed. If TRL restructures one of these, the transform silently no-ops (or the generated
+# trainer breaks), so failing here on `main` gives a few-day lead.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_peft_ref_adapter_block_contract(tag: str):
     """rl.py (trl>=1.4.0) strips TRL's PEFT ref-adapter init with a re.DOTALL
@@ -539,9 +539,6 @@ def test_trl_grpo_peft_ref_adapter_block_contract(tag: str):
     )
 
 
-# 22-23.
-# grpo_trainer must have in scope the helpers unsloth's rewriters reference (profiling_context,
-# maybe_apply_chat_template, truncate_with_protected_tokens), defined or imported from trl.*.
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_quantized_model_cast_contract(tag: str):
     """rl.py (trl>=1.7.0) neutralizes TRL's hardcoded QLoRA bf16 cast
@@ -574,9 +571,6 @@ def test_trl_grpo_aux_loss_enabled_contract(tag: str):
     )
 
 
-# 24-27.
-# Unlike the has_def existence checks above, these pin the exact source strings unsloth/models/rl.py and
-# rl_replacements.py transform for TRL >= 1.7.0 (the window PR #6904 fixes).
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_per_token_logps_aux_arity_contract(tag: str):
     """TRL 1.7.0 added `compute_aux_loss` to

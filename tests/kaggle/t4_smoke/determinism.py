@@ -233,7 +233,8 @@ def compare_metrics(
                 continue
             va, vb = float(ea[field]), float(eb[field])
             # NaN is legitimate and REPRODUCIBLE here: under fp16 the gradient scaler logs a NaN grad_norm on every
-            # overflowing step and skips it, and which step overflows is deterministic.
+            # overflowing step and skips it, and which step overflows is deterministic. abs(a - b) would flag each of
+            # those as a difference since NaN != NaN.
             na, nb = va != va, vb != vb
             if na or nb:
                 if na != nb and result["identical"]:
@@ -243,6 +244,8 @@ def compare_metrics(
             # Equal is equal: subtracting is unsafe once a value can be infinite.
             # An fp16 overflow logs as NaN OR as inf (clip_grad_norm_ over an inf gradient returns inf), and abs(inf -
             # inf) is NaN, != 0.0, so two runs overflowing on the same step read as differing with max_abs_diff 0.0.
+            # One-sided and oppositely signed infinities still fall through to the subtraction and come out as
+            # differences.
             if va == vb:
                 continue
             diff = abs(va - vb)

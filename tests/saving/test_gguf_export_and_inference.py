@@ -26,7 +26,9 @@ import torch
 
 from unsloth import FastLanguageModel
 
-# Downloads two checkpoints, merges them and shells out to llama.cpp.
+# Downloads two checkpoints, merges them and shells out to llama.cpp. The skipif already keeps it off a GPU-less
+# runner; `gpu` is what keeps it out of a default `pytest tests/` on a machine that HAS a GPU. CI runs it under
+# `-m gpu`.
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
@@ -151,7 +153,8 @@ def exported_gguf(tmp_path_factory):
         processing_class = tokenizer,
         train_dataset = dataset,
         args = SFTConfig(
-            # max_length is left unset:
+            # max_length is left unset: newer TRL enables padding-free training (without packing) by default,
+            # where SFTConfig(max_length=...) raises because length is not enforced.
             max_length = None,
             dataset_text_field = "text",
             per_device_train_batch_size = 4,

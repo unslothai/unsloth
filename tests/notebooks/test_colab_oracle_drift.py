@@ -146,7 +146,7 @@ def test_workflow_diffs_before_it_refreshes():
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
 
-        # Match the invocations, not the prose:
+        # Match the invocations, not the prose: both steps are described in comments that name the other subcommand.
         def _at(sub):
             m = re.search(rf"notebook_validator\.py {sub}\b", body)
             return m.start() if m else -1
@@ -215,7 +215,8 @@ def test_cron_lint_survives_a_strict_drift_failure():
         blk = body[at:]
         end = blk.find("\n      - name:", 1)
         blk = blk[:end] if end != -1 else blk
-        # Match the directive on a line of its own:
+        # Match the directive on a line of its own: the step's own comment explains `if: always()` in prose, and a
+        # substring test would happily pass on that after the directive itself had been deleted.
         assert re.search(
             r"^\s*if: always\(\)\s*$", blk, re.M
         ), f"{step} would be skipped when strict drift fires"

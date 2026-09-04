@@ -61,6 +61,7 @@ _MAX_COLLECT_DEPTH = 25
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "build", "dist"}
 
 # Calls that can only be a deliberate fatal fault, keyed by the trailing attribute.
+# `arg0` is a required literal first argument, `owners` a set of acceptable receivers.
 # `abort` needs the receiver check: Playwright's `route.abort()` and a thread's `.abort()` are ordinary calls that share
 # the name and crash nothing.
 _CRASH_CALLS = {
@@ -92,8 +93,11 @@ _FATAL_SIGNAL_RE = re.compile(r"\b(?:" + "|".join(_FATAL_SIGNALS) + r")\b")
 _PR_SET_DUMPABLE = 4
 
 # Raw-text prefilter, so only files that could match are parsed (32 of ~1050, ~1.5s against ~9s).
+# Deliberately looser than `_CRASH_MARKERS`: it only decides what to parse, so it should over-match and leave
+# precision to the AST checks. Matching `string_at(0)` exactly once skipped `string_at( 0)` before it was ever parsed.
 _PREFILTER = ("string_at(", "abort(", "_sigsegv(") + _SIGNAL_DIRECTED
-# An aliased import carries none of the shapes above:
+# An aliased import carries none of the shapes above: `from os import abort as die` then `die()` has no "abort("
+# anywhere. The import spelling is the one text such a file must contain, so match that too.
 _PREFILTER += ("import abort", "import string_at", "import raise_signal", "import kill")
 
 
@@ -323,8 +327,9 @@ def _snippets(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             out.append(node.value)
         elif isinstance(node, ast.JoinedStr):
-            # An f-string reaches the child as a script like any other.
-            # os.abort();
+            # An f-string reaches the child as a script like any other. Keep its literal parts: the interpolations
+            # cannot be known here, and dropping the whole thing let `f"import os; os.abort(); print({v})"` through
+            # unread.
             out.append(
                 "".join(
                     part.value
@@ -410,14 +415,15 @@ def _is_crash_call(node, aliases = None) -> bool:
         return False
     # Only the signal argument, so a PID never reads as a signal.
     signal_argument = node.args[index]
-    # A string delivers nothing:
+    # A string delivers nothing: `raise_signal("SIGQUIT")` is a TypeError, and the quoted name survives unparsing and
+    # matched as though it were the symbol.
     if isinstance(signal_argument, ast.Constant) and isinstance(signal_argument.value, str):
         return False
     rendered = ast.unparse(signal_argument)
     if _FATAL_SIGNAL_RE.search(rendered):
         return True
-    # Numeric signals.
-    # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the same core as the named forms
+    # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the same core as the named forms,
+    # so matching only symbolic names missed them.
     return (
         isinstance(signal_argument, ast.Constant) and signal_argument.value in _FATAL_SIGNAL_NUMBERS
     )
@@ -436,6 +442,7 @@ def _enclosing_scopes(tree):
             if not is_scope:
                 continue
             # Defaults and annotations run where the def sits, so they belong to the enclosing scope.
+            # A further scope nested inside one of them keeps its own.
             for part in _definition_time(child):
                 for inner in ast.walk(part):
                     if owner.get(id(inner)) is child:
@@ -597,6 +604,7 @@ def _clears_dumpable_before(
         if w[0] < position
     )
     # Only a write that certainly runs decides: a conditional restore may never run.
+    # A conditional clear still counts: platform-guarded prctl is the documented shape.
     decisive = [w for w in writes if w[2] or w[1] == 0]
     if decisive:
         return decisive[-1][1] == 0
@@ -762,7 +770,7 @@ def _nested_scripts(tree, inherited = False):
         if not isinstance(node, ast.Call):
             continue
         scope = owner.get(id(node), tree)
-        # The builtin only, bare or via `builtins`:
+        # The builtin only, bare or via `builtins`: `Runner().exec(...)` is not it.
         if _is_builtin_exec(node.func):
             argument = node.args[0] if node.args else None
             # Bindings AT the exec, so a name reused afterwards is not what runs.

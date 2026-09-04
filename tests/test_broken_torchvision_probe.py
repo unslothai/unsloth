@@ -244,8 +244,8 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
             )
         return str(excinfo.value)
 
-    # CUDA families included:
-    # CUDA families included: PyPI ships exactly one of them, so `cu118only*` (pyproject.toml:176) is as mismatched
+    # CUDA families included: PyPI ships exactly one of them, so the `cu118only*` extras in pyproject.toml are as
+    # mismatched against PyPI's build as ROCm is.
     for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu", "cu118", "cu126", "cu128"):
         command = advice(f"2.7.0+{tag}")
         assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
@@ -275,13 +275,11 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         return str(excinfo.value)
 
     for raw, required in (
-        (
-            "2.9.1+rocm7.2.0.lw.git7e1940d4",
-            (0, 24, 1),
-        ),  # Radeon Linux extra Radeon Windows extra built from source
+        ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra
         ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
         ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
         ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
+        # Prereleases past the first: no `a0`/`b0` substring to match on.
         ("2.11.0a1+cu128", (0, 26, 0)),
         ("2.11.0b2+cu128", (0, 26, 0)),
         ("2.7.0rc1", (0, 22, 0)),
@@ -316,8 +314,9 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         conda = advice("2.5.1")
         assert "pip install" not in conda, conda
         assert "torch==2.5.1" in conda, conda
-        # A different version in the same prefix is pip's, and still gets pip's command:
+        # A different version in the same prefix is pip's, and still gets pip's command: only the exact match is
+        # conda's.
         assert "pip install" in advice("2.6.0")
 
-    # Without the ledger nothing changes:
+    # Without the ledger nothing changes: an absent tag still means PyPI.
     assert "pip install" in advice("2.5.1")

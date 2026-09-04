@@ -72,7 +72,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5213"))
-# Unset: start and stop our own server.
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 # rstrip("/"): a trailing slash would make the anchored /api/ route regex below never match, silently turning the
 # stubbed fork-count fan-out back into live HTTP.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip().rstrip("/")
@@ -91,8 +92,8 @@ CPU_THROTTLE_RATE = float(os.environ.get("SMOKE_CPU_THROTTLE", "6"))
 KEYSTROKES = int(os.environ.get("SMOKE_KEYSTROKES", "5"))
 SCROLL_STEPS = int(os.environ.get("SMOKE_SCROLL_STEPS", "20"))
 SCROLL_STEP_PX = int(os.environ.get("SMOKE_SCROLL_STEP_PX", "400"))
+# 500 uncontained messages under 6x throttling are slow by construction; these bound a wedge,
 # not a regression.
-# 500 uncontained messages under 6x throttling are slow by construction;
 SEED_TIMEOUT_MS = int(os.environ.get("SMOKE_SEED_TIMEOUT_MS", "180000"))
 ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "60000"))
 # How long an in-page action waits for the DOM to reach the state it asked for.
@@ -161,7 +162,9 @@ def long_task_summary(page) -> dict[str, float]:
     }
 
 
-# One character through the native value setter plus an input event:
+# One character through the native value setter plus an input event: what the browser leaves behind after a real
+# keypress, and what React's controlled textarea and react-textarea-autosize both react to. Resolved on the second
+# rAF, which is the frame that has painted it.
 KEYSTROKE_JS = """
 async (count) => {
   const api = window.__threadWeight;
@@ -238,6 +241,8 @@ async ([steps, stepPx]) => {
 """
 
 # Radix portals the menu to document.body and puts the body on the modal layer, which is the fan-out the issue blames.
+# bodyPointerEvents proves the open really took that path.
+#
 # The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and the whole measurement
 # silently reads zero.
 MENU_JS = """
@@ -323,7 +328,9 @@ async (timeoutMs) => {
 }
 """
 
-# The floor under every timing here:
+# The floor under every timing here: two rAFs resolve no sooner than two vsync intervals. Measured at 33.3ms on this
+# machine and unmoved by CPU throttling, so an action that never happened still reports ~33ms, which reads as a
+# plausible number rather than as a failure. Recorded per N and subtracted before any growth ratio is taken.
 PAINT_FLOOR_JS = """
 async (samples) => {
   const values = [];
@@ -357,10 +364,13 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
     """Seed a fresh page to `size` messages and run the four actions on it."""
     page = context.new_page()
     result: dict = {"messages_requested": size}
-    # A request that escapes to the server, or a warning storm, is work this harness would be charging to the app, once
-    # per message.
+    # A request that escapes to the server, or a warning storm, is work this harness would be charging to the app,
+    # once per message. Both are cleared after seeding, so what is asserted on is the four measured actions rather
+    # than page load.
+    #
     # startswith, not `"/api/" in url`: vite serves the app's own source modules from paths like
-    # /src/features/chat/api/chat-api.ts, and a substring match counts 45 of those as network calls.
+    # /src/features/chat/api/chat-api.ts, and a substring match counts 45 of those as network calls. Same trap the API
+    # route regex below is anchored to avoid.
     api_prefix = f"{BASE}/api/"
     stray_requests: list[str] = []
     console_warnings: list[str] = []
@@ -381,6 +391,8 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         # Seeding unthrottled: this measures interaction cost at a thread size, not the cost of constructing the thread,
         # and 500 messages at 6x would spend minutes here.
         page.evaluate("(n) => window.__threadWeight.seed(n)", size)
+        # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
+        # superlinear in the thing being seeded.
         page.wait_for_function(
             "(n) => window.__threadWeight.messageCount() >= n",
             arg = size,
@@ -391,8 +403,9 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             arg = size // 2,
             timeout = SEED_TIMEOUT_MS,
         )
-        # Single-selector gates. counts() walks every element in the document, so polling it per frame makes seeding
-        # superlinear in the thing being seeded.
+        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
+        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in
+        # the keystroke window, the first action measured.
         page.wait_for_function(
             """() => {
                 const n = window.__threadWeight.highlightedTokenCount();
@@ -404,7 +417,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         )
         result["counts"] = page.evaluate("window.__threadWeight.counts()")
         result["viewport"] = page.evaluate("window.__threadWeight.viewportMetrics()")
-        # Kept for the record, then cleared:
+        # Kept for the record, then cleared: load and seeding are not part of any timing.
         result["seed_api_requests"] = len(stray_requests)
         result["seed_console_warnings"] = len(console_warnings)
         stray_requests.clear()
@@ -445,15 +458,14 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             **long_task_summary(page),
         }
 
-        # 3.
-        # the same trap SCROLL_JS documents.
+        # 3. Menu open + close. The bar is hover-revealed once it is autohidden, so hover with a real pointer first;
+        # only the click-to-settled interval is timed.
+        # behavior: "instant". The viewport carries scroll-smooth, so the default animates, and at large N a fixed wait
+        # leaves that animation in flight inside the menu counters -- the same trap SCROLL_JS documents.
         page.evaluate(
             """() => { const m = window.__threadWeight.lastAssistantMessage();
                 if (m) m.scrollIntoView({ block: "center", behavior: "instant" }); }"""
         )
-        # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting code blocks gates
-        # nothing. Wait for the token count to stop moving instead: unfinished highlighting would otherwise land in the
-        # keystroke window, the first action measured.
         page.wait_for_function(
             """() => {
                 const top = window.__threadWeight.viewportMetrics().scrollTop;
@@ -496,7 +508,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
         }
 
         cdp.send("Emulation.setCPUThrottlingRate", {"rate": 1})
-        # Cumulative over seeding and all four actions:
+        # Cumulative over seeding and all four actions: a liveness check, not attributable to any one of them.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
         result["console_warnings"] = len(console_warnings)
@@ -571,7 +583,8 @@ TABLE_ROWS = (
     ("viewport clientHeight", lambda r: r["viewport"]["clientHeight"]),
     ("keystroke median ms", lambda r: r["keystroke"]["median_ms"]),
     ("keystroke worst ms", lambda r: r["keystroke"]["worst_ms"]),
-    # Compact so the column still lines up.
+    # Compact so the column still lines up. Worth a row of its own: the first sample is always a cold outlier, which
+    # is why the headline number is the median rather than the mean.
     (
         "keystroke samples ms",
         lambda r: "/".join(str(round(s)) for s in r["keystroke"]["samples_ms"]),
@@ -641,7 +654,8 @@ def print_table(results: dict) -> None:
                 cells.append("-")
         rows.append((name, cells))
     label_width = max(len(name) for name, _ in rows) + 2
-    # From the widest cell, not a constant:
+    # From the widest cell, not a constant: a fixed width silently runs the columns together on the one row that
+    # overflows it, which is the row you were reading.
     cell_width = max([len(cell) for _, cells in rows for cell in cells] + [8]) + 2
     header = "".ljust(label_width) + "".join(f"N={n}".rjust(cell_width) for n in sizes)
     info(header)
@@ -734,7 +748,9 @@ def harness_failures(results: dict) -> list[str]:
         keystroke = row["keystroke"]
         if keystroke["median_ms"] is None:
             failures.append(f"N={size} could not find the composer input")
-        # The DOM value is what the harness itself wrote, so it proves nothing on its own.
+        # The DOM value is what the harness itself wrote, so it proves nothing on its own. Only the runtime's copy
+        # shows the keystroke reached React rather than just the textarea -- and a keystroke that reached nothing
+        # still reports the ~33ms paint floor, which reads as a plausible timing.
         elif keystroke["runtime_text"] != keystroke["dom_text"]:
             failures.append(
                 f"N={size} typed {keystroke['dom_text']!r} into the DOM but the runtime holds "

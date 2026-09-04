@@ -200,7 +200,9 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert state["active"] == "True", out
     assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
     assert Path(state["dir"]).is_dir(), out
-    # Both halves are named, so the user is not left hunting for the moved tree.
+    # Both halves are named, so the user is not left hunting for the moved tree. Match the warning lines themselves
+    # rather than the bare paths: $existing is a prefix of the rollback dir, so "str(existing) in out" alone is
+    # satisfied by the dir= line and would stay green even with the warning missing entirely.
     assert f"still in place: {existing}" in out, out
     assert f"moved aside:    {state['dir']}" in out, out
 
@@ -419,7 +421,7 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     marker = source.index(
         '[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")'
     )
-    # Anchored past the command token:
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
     first_uv_pip = source.index("pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 

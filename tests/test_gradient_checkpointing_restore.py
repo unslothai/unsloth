@@ -32,6 +32,7 @@ _RL = (_ROOT / "rl.py").read_text(encoding = "utf-8")
 _RL_REPLACEMENTS = (_ROOT / "rl_replacements.py").read_text(encoding = "utf-8")
 
 # The single-line ternary form used at the trainer call sites:
+#   <obj>._unsloth_gradient_checkpointing if hasattr(<obj>, '...') else getattr(<args>, 'gradient_checkpointing', True)
 _TERNARY = re.compile(
     r"(?P<model>[\w.]+)\._unsloth_gradient_checkpointing "
     r"if hasattr\((?P=model), '_unsloth_gradient_checkpointing'\) "
@@ -66,7 +67,9 @@ class _Self:
         self.args = args
 
 
-# (recorded on model, args.gradient_checkpointing, expected restored value) The point of the fix:
+# (recorded on model, args.gradient_checkpointing, expected restored value)
+# The point of the fix: a recorded mode wins over args, and a recorded ``None`` (a valid setup value) is restored
+# verbatim rather than collapsing to the args fallback the way a ``None`` sentinel would.
 _MATRIX = [
     ("unsloth", False, "unsloth"),  # the #4735 case: args=False must NOT win
     (True, False, True),
@@ -141,7 +144,8 @@ def test_prepare_for_training_mode_block_semantics():
 
 
 def test_prepare_block_tolerates_missing_model():
-    # gemini flagged the unguarded self.model access:
+    # gemini flagged the unguarded self.model access: the block reads self.model via getattr(self, 'model', None), so a
+    # trainer without a .model attribute must fall back to args rather than raising AttributeError.
     block = _extract_prepare_restore_block()
     args = _Obj(gradient_checkpointing = True)
     self_no_model = _Self(model = None, args = args)  # _Self leaves .model unset when model is None

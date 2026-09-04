@@ -145,7 +145,8 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
 
 
 def test_cpu_fallback_does_not_override_mlx(monkeypatch):
-    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda" and get_device_count() then hit torch
+    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda" and get_device_count() then hit torch,
+    # which is never imported there.
     device_type = _load_device_type(
         monkeypatch,
         torch_module = None,

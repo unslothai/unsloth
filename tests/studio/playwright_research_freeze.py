@@ -46,7 +46,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5183"))
-# Unset: start and stop our own server.
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -63,6 +64,7 @@ DELTA_GAP_MS = int(os.environ.get("SMOKE_DELTA_GAP_MS", "80"))
 # All measured on this harness: the frame pump below runs at 62 callbacks/s, and a self-chaining rAF loop (the bug's
 # shape) sits exactly on that ceiling (310 callbacks in 5s).
 # The fixed tree spends 29/s over three repeats (592, 597, 597 in a 20.4s window) because chaining is conditional.
+# 45/s is the midpoint: above the fixed cost, well below anything that re-arms every frame.
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
 # Idle measures 0 across the same repeats: a quiet list has nothing to follow. A couple of frames
 # of slack covers a settle check landing just inside the window; more means a loop that never let
@@ -73,7 +75,8 @@ MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
 # 1000 keeps ~2.4x and still fails ten times the report size (1518ms at SMOKE_REPORT_SECTIONS=400).
 MAIN_THREAD_STALL_BUDGET_MS = int(os.environ.get("SMOKE_REPORT_STALL_BUDGET_MS", "1000"))
 
-# A real deep research run's size, with the three costliest things to render:
+# A real deep research run's size, with the three costliest things to render: fenced code (shiki), a table, and
+# display math (KaTeX).
 REPORT_SECTION = """
 ## Section {n}
 
@@ -169,10 +172,12 @@ def run() -> dict:
         headless = os.environ.get("SMOKE_HEADLESS", "1") == "1"
         browser = p.chromium.launch(headless = headless, args = chromium_launch_args())
         context = browser.new_context(viewport = {"width": 1440, "height": 900})
-        # Deliberately NOT installing the view-transition killer:
+        # Deliberately NOT installing the view-transition killer: it forces
+        # `body { pointer-events: auto !important }`, which is precisely the symptom under test.
         context.add_init_script(LONGTASK_INIT)
         # A token, and a 200 for every backend call: without them the auth guard sees a 401 and navigates to /login,
-        # throwing the harness away mid-run.
+        # throwing the harness away mid-run. The pattern is anchored on the origin so it cannot swallow vite's own
+        # module URLs under src/.../api/.
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'research-freeze-smoke');"
         )
@@ -207,7 +212,8 @@ def run() -> dict:
             }""",
             [DELTA_COUNT, DELTA_GAP_MS],
         )
-        # The tail is part of the measurement:
+        # The tail is part of the measurement: re-arming after the last event is the failure mode, so count those
+        # frames rather than stopping the clock.
         page.wait_for_timeout(1200)
         stream_window_ms = DELTA_COUNT * DELTA_GAP_MS + 1200
         stream_raf = page.evaluate("window.__rafCount")
@@ -258,7 +264,8 @@ def run() -> dict:
             }""",
             report,
         )
-        # A real, hit-tested input event:
+        # A real, hit-tested input event: lands late under a blocked thread, but it must land. Record a blocked
+        # click as a verdict; raising would lose every other measurement.
         try:
             page.click('[data-smoke="click-probe"]', timeout = 10_000)
             report_click_landed = True
@@ -289,6 +296,7 @@ def run() -> dict:
         }
 
         # Modal lifecycle: approval unmounts PlanReview's Dialog while open, and closing the pane unmounts the panel
+        # under it. Either one stranding `body { pointer-events: none }` leaves the whole window unclickable.
         page.evaluate("window.__research.clearReport()")
         page.evaluate("window.__research.awaitApproval()")
         page.wait_for_timeout(600)
@@ -419,7 +427,9 @@ def main() -> int:
     if not results["report"]["rendered"]:
         failures.append("the report never rendered")
     # The modal checks below compare click counts against a baseline, so they still pass if this one was swallowed.
-    # a synthetic element.click() would land straight on the handler and pass on that same tree.
+    # Responsiveness during the report parse is the reported symptom; assert it. Hit-tested, so a stranded
+    # `body { pointer-events: none }` fails here; a synthetic element.click() would land straight on the handler and
+    # pass on that same tree.
     if not results["report"]["click_landed"]:
         failures.append(
             "a real click during the report parse never became actionable; the window was "

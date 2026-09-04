@@ -78,7 +78,8 @@ def test_the_portable_primaries_are_the_growth_axes() -> None:
 
 
 def test_no_growth_axis_is_chromium_only() -> None:
-    # The whole point of the portable metrics:
+    # The whole point of the portable metrics: a curve built on CDP counters is a curve that does not exist on the
+    # engine Unsloth Desktop actually ships on macOS and Linux.
     axes = growth_axes()
     for metric in CHROMIUM_ONLY:
         assert f'"{metric}"' not in axes, metric
@@ -108,8 +109,8 @@ def test_the_longtask_api_is_recorded_as_supported_or_not() -> None:
 
 
 def test_the_stall_detector_is_a_timer_and_not_a_message_channel() -> None:
-    # Without this flag an engine with no Long Tasks API reports zero long tasks in exactly the same shape as an engine
-    # Measured, not preference:
+    # Measured, not preference: the MessageChannel ping-pong halves Firefox's frame rate before any application code
+    # runs, so it changes the thing it is there to measure.
     text = source(HARNESS)
     assert "new MessageChannel(" not in text, "the recorder must not spin a port"
     assert "setTimeout(stall, 1)" in text
@@ -145,9 +146,13 @@ def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
 
 
 def test_the_paint_floor_is_measured_and_subtracted() -> None:
+    # Two rAFs resolve no sooner than two vsync intervals, so an action that never happened still reports ~33ms. Left
+    # in a ratio, that floor compresses every axis towards 1 and lets a real regression sit under the discrimination
+    # threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    # Once per double-rAF wait the metric is clocked across, not once per metric:
+    # Once per double-rAF wait the metric is clocked across, not once per metric: `menu open+close ms` is the sum of
+    # two independently floored timings and carries two floors.
     assert 'value -= count * row["paint_floor_ms"]' in section(
         text, "def growth(", "def report_growth"
     )
@@ -167,7 +172,6 @@ def test_the_verdict_asserts_discrimination() -> None:
 
 
 def test_the_smoke_page_exposes_every_count_the_fixture_gate_needs() -> None:
-    # The SETTLEMENT half of the old token floor, asked per block.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     expected = section(page, "const EXPECTED_PER_CYCLE", "};")
     counts = section(page, "counts(): Record<string, number>", "viewportMetrics()")
@@ -178,7 +182,6 @@ def test_the_smoke_page_exposes_every_count_the_fixture_gate_needs() -> None:
 
 
 def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
-    # Two rAFs resolve no sooner than two vsync intervals, so an action that never happened still reports ~33ms.
     text = source(HARNESS)
     assert (FRONTEND / "smoke-heavy-thread.html").exists()
     assert (FRONTEND / "smoke-heavy-thread-main.tsx").exists()
@@ -197,7 +200,8 @@ def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
     # 10 badges and 4031 DOM nodes rather than 0 and 3981. Either way the fixture stops being the thing the table says
     # was measured.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
-    # Pin the fork-count entry to its own body rather than scanning the whole file:
+    # Pin the fork-count entry to its own body rather than scanning the whole file: other endpoints in the allowlist
+    # legitimately answer "{}", so a bare file-wide check for it would fail on them and tell us nothing about this one.
     forks = next(
         (line for line in page.splitlines() if "forks$/" in line),
         "",
@@ -221,7 +225,10 @@ def _stub_patterns(page: str) -> list[str]:
 
 def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None:
     # The drift this file exists to catch, checked against the app rather than against a string someone remembered to
-    # in #8992 and this allowlist was not moved with it;
+    # update. The fork-count endpoint moved from per message to per thread in #8992 and this allowlist was not moved
+    # with it; the harness's own stray-request check did catch it, but only in CI, and only in a job where the browser
+    # smokes reach the point of running at all. A URL the app builds and the stub does not answer is a round trip
+    # inside a timed region, so it is worth failing a unit test for.
     api = (FRONTEND / "src" / "features" / "chat" / "api" / "chat-api.ts").read_text(
         encoding = "utf-8"
     )

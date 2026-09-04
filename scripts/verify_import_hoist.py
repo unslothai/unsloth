@@ -86,13 +86,13 @@ _BUILTINS = set(dir(builtins)) | {
 
 @dataclass
 class Binding:
-    kind: str
+    kind: str  # 'import' | 'importfrom' | 'def' | 'class' | 'other'
     target: str | None = None  # canonical import target id, else None
 
 
 @dataclass
 class Scope:
-    kind: str
+    kind: str  # 'module' | 'function' | 'class' | 'lambda' | 'comp'
     qualname: str
     parent: "Scope | None"
     bindings: dict[str, list[Binding]] = field(default_factory = dict)
@@ -126,9 +126,7 @@ class _Builder(ast.NodeVisitor):
 
     def __init__(self):
         self.module = Scope("module", "<module>", None)
-        self.uses: list[
-            tuple[Scope, str, int]
-        ] = []  # hard loads annotations: count as "used" but never as
+        self.uses: list[tuple[Scope, str, int]] = []  # hard loads
         # annotations: count as "used" but never as "unresolved" (forward refs)
         self.soft_uses: list[tuple[Scope, str, int]] = []
 
@@ -218,7 +216,7 @@ class _Builder(ast.NodeVisitor):
             child = Scope("function", f"{scope.qualname}.{node.name}", scope)
             self._bind_type_params(node, child)
             self._bind_args(node.args, child)
-            # arg + return annotations:
+            # arg + return annotations: soft uses
             for a in self._all_args(node.args):
                 self._visit_annotation(a.annotation, child)
             self._visit_annotation(getattr(node, "returns", None), child)
@@ -578,6 +576,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         after_module_targets |= tids
     added_module_targets = after_module_targets - before_module_targets
 
+    # 1. UNRESOLVED-NEW
     for scope, names in b["unresolved"].items():
         new = names - a["unresolved"].get(scope, set())
         for n in sorted(new):
@@ -589,15 +588,15 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 2.
-    # HOISTED-IMPORT-UNUSED (core botched-hoist / wrong-rename signal) A module-level import in AFTER that NO load
-    # resolves to, that was either newly added by this change OR actually used before.
+    # 2. HOISTED-IMPORT-UNUSED (core botched-hoist / wrong-rename signal)
+    #    A module-level import in AFTER that NO load resolves to, that was either newly added by this change OR
+    #    actually used before. Excludes relocation and stable re-exports.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved -> fine
         # `from __future__ import ...` is a compiler directive, not a runtime binding: the name is
         # never loaded, so it can never "resolve" to a use. Skip it so a legitimately-added future
-        # import (e.g. `annotations`) is not flagged.
+        # import (e.g. `annotations` for lazy PEP 604 on py3.9) is not flagged.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
         # A name listed in __all__ in a package __init__ is an intentional public re-export: it is loaded by importers,
@@ -623,13 +622,13 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 3.
-    # TARGET-CHANGED (same scope+name resolves to a different import target) Only a *swap* is dangerous: a BEFORE target
-    # no longer reachable in AFTER means a reference was silently re-pointed.
-    # A pure superset growth (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB` case: both bind the
-    # same top-level name and only add submodule attributes, so nothing is lost
-    # A deliberate *relocation* is also benign: when a name keeps its spelling but its import source moves A -> B in
-    # THIS diff, the swap is intentional, not a silent re-point.
+    # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
+    #    Only a *swap* is dangerous: a BEFORE target no longer reachable in AFTER means a reference was silently
+    #    re-pointed. A pure superset growth (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
+    #    case: both bind the same top-level name and only add submodule attributes, so nothing is lost, skip it.
+    #    A deliberate *relocation* is also benign: when a name keeps its spelling but its import source moves A -> B in
+    #    THIS diff, the swap is intentional, not a silent re-point. The dangerous case, resolving to a target that
+    #    already existed before (shadow/clash), is NOT exempted.
     removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
@@ -647,6 +646,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
+    # 4. MODULE-DUP-IMPORT introduced
     for n in sorted(b["module_dup"] - a["module_dup"]):
         findings.append(
             (
@@ -656,12 +656,14 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
         )
 
+    # 5. AMBIGUOUS-BIND introduced (module scope)
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
             findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
 
-    # TARGET-MISSING (informational):
+    # 6. TARGET-MISSING (informational): a scope stopped resolving to an import target. Real bugs are covered above;
+    #    remaining cases are relocated code.
     for scope, tbefore in a["targets_by_scope"].items():
         tafter = b["targets_by_scope"].get(scope, set())
         for t in sorted(tbefore - tafter):
@@ -685,7 +687,7 @@ _SELF_TESTS = {
         "BLOCKER",
     ),
     "rename_clash": (
-        # before: _b is a deliberate alias;
+        # before: _b is a deliberate alias; `b` already means something else
         "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
         # after: someone normalized _b -> b ; now f().b is the int, re is lost
         "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
@@ -713,12 +715,12 @@ _SELF_TESTS = {
         "BLOCKER",
     ),
     "substring_safe": (
+        # correct _copy->copy rename while config_copy var exists: NO false positive
         "def f(config):\n"
         "    import copy as _copy\n"
         "    config_copy = _copy.deepcopy(config)\n"
         "    return config_copy\n",
         "import copy\n"
-        # correct _copy->copy rename while config_copy var exists:
         "def f(config):\n"
         "    config_copy = copy.deepcopy(config)\n"
         "    return config_copy\n",
@@ -749,7 +751,8 @@ _SELF_TESTS = {
         "BLOCKER",
         "pkg/__init__.py",
     ),
-    # quoted annotations are annotations --- A TYPE_CHECKING import reached only through a forward reference IS used.
+    # --- quoted annotations are annotations ---
+    # A TYPE_CHECKING import reached only through a forward reference IS used.
     "forward_ref_string_annotation_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
         "from typing import TYPE_CHECKING, Optional\n"

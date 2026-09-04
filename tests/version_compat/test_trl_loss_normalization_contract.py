@@ -54,6 +54,8 @@ _spoof.apply()
 
 
 # --------------------------------------------------------------------------
+# 1. TRL's SFT loss default
+# --------------------------------------------------------------------------
 def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     """chunked_nll bypasses the forward (fused CE never runs) and double-divides."""
     import unsloth  # noqa: F401  must precede trl
@@ -103,7 +105,9 @@ def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl
 
-    # Go by the marker rather than the name:
+    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's own name so that instances
+    # of it keep pickling, so `Unsloth` no longer appears in `__name__`. `__dict__` rather than `getattr`, so a user
+    # subclass of the generated class does not inherit its way past this.
     cls = trl.SFTConfig
     while "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth"):
         cls = cls.__mro__[1]
@@ -272,6 +276,8 @@ def test_unsloth_get_batch_samples_is_installed_and_shaped_as_expected():
 
 
 # --------------------------------------------------------------------------
+# 3. rl.py's own scoping
+# --------------------------------------------------------------------------
 def test_rl_py_scopes_loss_type_to_sft_trainer():
     """AST guard: no loss_type replacement outside an `if trainer_file ==` branch."""
     from unsloth.models import rl
@@ -290,7 +296,8 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
         keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
         if "loss_type" not in keys:
             continue
-        # A loss_type entry is only legitimate inside an `if trainer_file == ...` branch.
+        # A loss_type entry is only legitimate inside an `if trainer_file == ...` branch. Find the nearest enclosing
+        # If and check its test.
         guarded = False
         for parent in ast.walk(tree):
             if not isinstance(parent, ast.If):

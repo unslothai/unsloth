@@ -26,10 +26,12 @@ LLAMA_PY = REPO_ROOT / "unsloth" / "models" / "llama.py"
 FUNC_NAME = "_fast_prepare_inputs_for_generation"
 
 
-# Model files that call fix_prepare_inputs_for_generation(...) and share the guarded function.
-# glm4_moe (MLA attention, different path) and falcon_h1 (its own variant) are intentionally absent.
+# --------------------------------------------------------------------------
+# Layer 1: AST structural guard (stdlib only, no unsloth import)
 # --------------------------------------------------------------------------
 
+# Model files that call fix_prepare_inputs_for_generation(...) and share the guarded function.
+# glm4_moe (MLA attention, different path) and falcon_h1 (its own variant) are intentionally absent.
 WIRED_MODEL_FILES = [
     "mistral.py",
     "gemma.py",
@@ -173,7 +175,7 @@ def test_attention_mask_never_truncated_to_last_column():
             continue
         if not _mentions_attention_mask(value.value):
             continue
-        # Match a trailing [-1]-style column selection:
+        # Match a trailing [-1]-style column selection: [:, [-1]] or [:, -1:]
         sl = value.slice
         if isinstance(sl, ast.Tuple) and len(sl.elts) == 2:
             col = sl.elts[1]
@@ -315,7 +317,8 @@ def test_prefill_position_ids_derived_from_left_padded_mask():
 
 @pytest.mark.parametrize("pass_cache_position", [True, False])
 def test_cached_decode_position_ids_ignore_left_padding(pass_cache_position):
-    # Decode step:
+    # Decode step: PAST_LEN tokens cached, current token is the mask's last column. Row 0 has 2 pads, so its current
+    # token sits at logical position 2, NOT at cache_position == PAST_LEN. This is exactly issue #3699.
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     kwargs = {"past_key_values": FakeDynamicCache(PAST_LEN)}
     if pass_cache_position:
@@ -354,8 +357,6 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
 
 def test_cached_decode_4d_mask_builder_receives_full_target_length():
     model = FakeModelWith4DMask()
-    # Without a 4D mask builder the original 2D mask must survive untouched.
-    # The historical bug replaced it with attention_mask[:, [-1]].
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     result = _prepare(model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     assert len(model.mask_calls) == 1

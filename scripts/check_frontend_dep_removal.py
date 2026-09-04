@@ -245,7 +245,8 @@ def classify(pkg: str, file: str, content: str) -> str | None:
         flags_dotall,
     ):
         return "re_export"
-    # HTML script / link.
+    # HTML script / link. Match pkg as a complete path segment so `/node_modules/foo-extra/...` is not treated as
+    # usage of `foo`.
     html_pkg = rf"{esc}(?:/[^'\"#?]*)?(?=['\"#?])"
     if is_html and re.search(rf"<script[^>]*src\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_script"
@@ -451,7 +452,8 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
             return None
 
         first = words[idx]
-        # Package-manager runner (npx/pnpm exec/yarn dlx/bunx):
+        # Package-manager runner (npx/pnpm exec/yarn dlx/bunx): strip it and continue so the wrapped command
+        # re-enters the unwrap loop.
         if first in {"npx", "pnpx", "bunx"} and idx + 1 < len(words):
             idx += 1
             continue
@@ -459,7 +461,7 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
             idx += 2
             continue
 
-        # Wrapper bin (cross-env, dotenv):
+        # Wrapper bin (cross-env, dotenv): skip its flags and env prefixes.
         bin_token = first.removeprefix("./node_modules/.bin/").removeprefix("node_modules/.bin/")
         if bin_token in _SCRIPT_WRAPPERS and bin_token not in seen_wrappers:
             seen_wrappers.add(bin_token)
@@ -852,7 +854,8 @@ def main() -> int:
         return 2
     head_lock = read_pkg_file(head_lock_path)
 
-    # Base lockfile is best-effort:
+    # Base lockfile is best-effort: it only recovers the bin -> package mapping for packages the PR removes, so a
+    # scripts.biome cite still fires when @biomejs/biome is dropped from the head lockfile.
     if args.base_lock:
         base_lock_path = Path(args.base_lock)
         base_lock = read_pkg_file(base_lock_path) if base_lock_path.exists() else {}

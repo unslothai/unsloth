@@ -429,7 +429,7 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
         response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
         response.body_iterator = agen
         response.background = None
-        # __new__ bypasses __init__;
+        # __new__ bypasses __init__; __call__'s disconnect branch reads _unstarted_cleanup.
         response._unstarted_cleanup = None
 
         async def stream_response(_send):
@@ -448,6 +448,8 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
 
 
 def test_preset_cancel_event_exits_cleanly_with_done():
+    # Pending-replay: a stashed cancel pre-set cancel_event. The loop must break cleanly with final_chunk + [DONE],
+    # not propagate GeneratorExit from the GGUF wrapper.
     ev = threading.Event()
     ev.set()
     chunks = asyncio.run(_consume(_post_fix_gguf_loop(ev)))
@@ -467,7 +469,6 @@ def test_normal_path_streams_all_tokens():
 
 
 def test_cancel_during_streaming_stops_iteration_promptly():
-    # Regression: the top-of-loop cancel_event check must not short-circuit when unset.
     # Setting cancel_event between yields breaks on the next iteration, not draining the generator.
     ev = threading.Event()
 
@@ -807,7 +808,8 @@ def test_unsloth_stream_loop_breaks_on_external_cancel_event():
 
 
 def test_generate_stream_stays_responsive_under_blocking_next():
-    # Same sync-generator shape as generate_stream, with resp_queue.get modeled by sleep.
+    # Same sync-generator shape as generate_stream, with resp_queue.get modeled by sleep. The output must stay
+    # unchanged while next() moves off-loop.
     chunks = ["alpha", "beta", "gamma", "delta"]
 
     def _generate_chat_response():
@@ -966,6 +968,8 @@ def test_audio_stream_stays_responsive_under_blocking_next():
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():
+    # Pending-cancel replay: cancel_event pre-set, so the top-of-loop check must short-circuit iteration 1 (zero
+    # tokens). Catches moving the check below next().
     cancel_event = threading.Event()
     cancel_event.set()
     reset_calls = [0]

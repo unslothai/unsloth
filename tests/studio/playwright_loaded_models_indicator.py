@@ -52,11 +52,11 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The wall this suite did not have.
-# Its siblings (playwright_chat_ui.py, playwright_extra_ui.py) have carried one since a `page.evaluate`
-# This suite has four raw `page.evaluate` calls of its own and is the LAST thing the Windows chat lane runs, so a wedge
-# hung a job for 27 minutes in #5387. Same 720s default and same env knob as the siblings, so a slow runner is tuned in
-# one place.
+# The wall this suite did not have. Its siblings (playwright_chat_ui.py, playwright_extra_ui.py) have carried one
+# since a `page.evaluate` -- which takes no `timeout=` at all -- hung a job for 27 minutes in #5387. This suite has
+# four raw `page.evaluate` calls of its own and is the LAST thing the Windows chat lane runs, so a wedge here used to
+# be indistinguishable from the job simply never finishing. Same 720s default and same env knob as the siblings, so a
+# slow runner is tuned in one place.
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 # The card polls every 5s; two ticks plus slack is enough to see a change land.
@@ -217,7 +217,8 @@ def install_routes(context, state: Runtime) -> None:
 
 
 def rows(page) -> list[str]:
-    # One round trip, deliberately.
+    # One round trip, deliberately. Reading count() and then indexing nth(i) races the very thing the eject checks
+    # watch for: the row disappears between the two calls, and nth(1) then blocks for the whole locator timeout.
     # evaluate_all snapshots the list in a single evaluation.
     return page.locator(EJECT).evaluate_all(
         "els => els.map((el) => el.getAttribute('aria-label') || '')"
@@ -265,7 +266,7 @@ def boot(
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    # Bootstrap exactly as the other suites do:
+    # Bootstrap exactly as the other suites do: the first login forces a change.
     token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     try:
         api("/api/auth/change-password", {"current_password": OLD, "new_password": NEW}, token)
@@ -277,7 +278,8 @@ def main() -> int:
         info("FAIL bootstrap left must_change_password set")
         return 1
 
-    # add_init_script takes raw source, not a function to call:
+    # add_init_script takes raw source, not a function to call: an arrow expression here would evaluate to a function
+    # nobody invokes, the SPA would find no token, and every check would silently run against /login.
     seed_js = (
         "(() => {"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
@@ -319,7 +321,8 @@ def main() -> int:
             run(page, state)
         finally:
             page.screenshot(path = str(ART / f"final-{PLAYWRIGHT_BROWSER}.png"))
-            # Settle the deliberately-hung routes before tearing down:
+            # Settle the deliberately-hung routes before tearing down: closing over a parked one dumps a
+            # CancelledError traceback that reads like a failure.
             for parked in state.parked:
                 try:
                     parked.abort()
@@ -455,7 +458,10 @@ def run(page, state: Runtime) -> None:
     check("a hung runtime still lets the other rows render", len(rows(page)) == 1, str(rows(page)))
     state.hang = set()
 
-    # A failed read is not evidence the runtime is empty.
+    # ── A blip on a runtime that IS holding something ───────────────────
+    # A failed read is not evidence the runtime is empty. Dropping the rows for it takes a loaded model off the card,
+    # and on a remote Unsloth a blip can take all four at once, so the whole card would go while everything stayed
+    # resident. The row must survive the failure and outlive it.
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
@@ -486,10 +492,10 @@ def run(page, state: Runtime) -> None:
         len(rows(page)) == 0,
         str(rows(page)),
     )
-    # A blip on a runtime that IS holding something ─────────────────── A failed read is not evidence the runtime is
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     state.hang = set()
 
+    # ── The position restore: the bug this suite exists for ─────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
     # As if dragged to the corner of a 2560x1440 monitor, then reopened here.
     boot(page, state, seed = {POSITION_KEY: json.dumps({"left": 2300, "top": 1300})})
@@ -514,6 +520,7 @@ def run(page, state: Runtime) -> None:
     page.set_viewport_size({"width": 1440, "height": 900})
     page.wait_for_timeout(1500)
 
+    # ── Drag, and the pointer release the window never sees ─────────────
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     box = page.locator(HANDLE).first.bounding_box()
@@ -543,6 +550,7 @@ def run(page, state: Runtime) -> None:
         f"{before} -> {after}",
     )
 
+    # ── Collapse ────────────────────────────────────────────────────────
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     page.locator('[aria-label="Collapse loaded models"]').first.click()
@@ -559,7 +567,6 @@ def run(page, state: Runtime) -> None:
     # event at all: the poll is the only witness. Closing must also not be
     # undone by whatever is already resident, or the card could never be shut.
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
-    # ── Drag, and the pointer release the window never sees ─────────────
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     page.locator('[aria-label="Close loaded models"]').first.click()
@@ -568,11 +575,13 @@ def run(page, state: Runtime) -> None:
         "closing hides the card while a model is still resident",
         page.locator(CARD).count() == 0,
     )
+    # Several polls with nothing new: it must stay closed.
     page.wait_for_timeout(11_000)
     check(
         "a closed card stays closed over what was already loaded",
         page.locator(CARD).count() == 0,
     )
+    # Now a second model appears with no announcement, as a server-side load does.
     state.diffusion = dict(
         NOTHING_DIFFUSION,
         loaded = True,
@@ -581,7 +590,6 @@ def run(page, state: Runtime) -> None:
         device = "cuda",
         dtype = "bfloat16",
     )
-    # Several polls with nothing new:
     page.wait_for_timeout(11_000)
     check(
         "a load nobody announced reopens the closed card",
@@ -614,8 +622,8 @@ def run(page, state: Runtime) -> None:
         "the grip's drag was still held against the pill's first click",
     )
 
+    # ── Eject ───────────────────────────────────────────────────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
-    # Now a second model appears with no announcement, as a server-side load does.
     state.diffusion = dict(
         NOTHING_DIFFUSION,
         loaded = True,
@@ -631,7 +639,8 @@ def run(page, state: Runtime) -> None:
     check("the chat row is present before ejecting", index is not None, str(labels))
     if index is not None:
         page.locator(EJECT).nth(index).click()
-        # Watch across more than one poll:
+        # Watch across more than one poll: a read already in flight when the eject lands used to put the row
+        # straight back.
         reappeared = False
         gone = False
         for _ in range(60):

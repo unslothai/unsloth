@@ -61,7 +61,7 @@ class Studio:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.token: str | None = None
-        # The password this session is currently authenticated by.
+        # The password this session is currently authenticated by. See login().
         self.password: str | None = None
 
     def request(

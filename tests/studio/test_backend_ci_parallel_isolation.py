@@ -55,7 +55,11 @@ def _pytest_commands(text: str) -> list[str]:
     ]
 
 
-# Two different trees are run in parallel now, and the isolation below belongs to exactly one of them.
+# Two different trees are run in parallel now, and the isolation below belongs to exactly one of them. The repo-root
+# job runs `tests/` from the checkout; the matrix job runs the backend's own suite with
+# `working-directory: studio/backend`, so `tests/studio/...` is not a path that exists for it.
+# Told apart by what they ignore, because that is the thing both the ignores and this scan are about: only the
+# repo-root run excludes directories that live at the repo root.
 REPO_ROOT_MARKER = "--ignore=tests/qlora"
 
 
@@ -63,7 +67,9 @@ def _over_the_repo_root(command: str) -> bool:
     return REPO_ROOT_MARKER in command
 
 
-# The same pairing, for the backend matrix run.
+# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and running it again serially is
+# two edits held together by nothing, and dropping the second is silent: the job stays green while the tests stop
+# running.
 BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
@@ -124,12 +130,18 @@ BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "te
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 
 
-# Sites the scan finds and a human has read.
-# None of these can be broken by descheduling: a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken
-# between two reads.
-# a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the pattern that replaces a guessed
-# sleep.
-# a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
+# Sites the scan finds and a human has read. The scan looks for a comparison between two clock-derived quantities,
+# which is the right net to cast, but not every such comparison is a performance claim. None of these can be broken
+# by descheduling:
+#
+#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two reads. Widening the gap cannot
+#   falsify it.
+#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the pattern that replaces a
+#   guessed sleep. Its 5s budget is a timeout, not a measurement.
+#   a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
+#
+# Keyed on the enclosing function rather than a line number, so an edit above it does not silently move the exemption
+# onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
@@ -184,7 +196,8 @@ def _timing_helpers(tree: ast.AST) -> set:
         for node in functions:
             if node.name in helpers:
                 continue
-            # With the helpers found so far, not without them:
+            # With the helpers found so far, not without them: `value = base()` inside a wrapper only counts as
+            # timed once `base` is known, and the pass that learns `base` is not the pass that reads the wrapper.
             local = _timed_names(node, helpers)
             for inner in ast.walk(node):
                 if not isinstance(inner, ast.Return) or inner.value is None:

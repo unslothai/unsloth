@@ -122,8 +122,8 @@ def _run(
     torch.cuda = types.SimpleNamespace(is_bf16_supported = lambda: bf16_supported)
     import sys
 
-    # Stub the PARENT too:
     # Stub the PARENT too: `from unsloth_zoo.device_type import x` imports unsloth_zoo first, and a raising package
+    # __init__ would silently route the block through the torch.cuda fallback instead of the branch under test.
     mod = types.ModuleType("unsloth_zoo.device_type")
     mod.device_is_bf16_supported = lambda: bf16_supported
     utils = types.ModuleType("unsloth_zoo.utils")
@@ -212,7 +212,7 @@ def test_force_float32_models_take_the_earlier_branch():
 
 
 def test_force_float32_full_finetuning_on_bf16_gpu_keeps_bf16_autocast():
-    # The documented fast path:
+    # The documented fast path: master weights stay float32, autocast is bf16.
     args, env = _run(torch.float32, bf16_supported = True, force_float32 = "1", full_finetuning = "1")
     assert args.bf16 is True and args.fp16 is False
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
@@ -260,7 +260,8 @@ def test_the_legacy_language_model_path_records_it_too():
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     body = ast.unparse(fn)
     assert "_requested_float32(dtype)" in body
-    # Every exit, including the two that hand off to FastModel:
+    # Every exit, including the two that hand off to FastModel: it would otherwise record the dtype we derived from a
+    # 4bit compute dtype.
     returns = [
         ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Return) and n.value is not None
     ]

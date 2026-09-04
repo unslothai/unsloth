@@ -291,6 +291,9 @@ with sync_playwright() as p:
             return config_entries(cfg)
         matched = []
         for key in recognised:
+            # Parse the key rather than substring-searching its serialised form: the repo alone also matches this
+            # repo's *other* quants, so a stale entry for one quant could stand in for the one under test and mask
+            # its failed save.
             try:
                 parts = json.loads(str(key).split(":", 1)[1])
             except Exception:
@@ -301,7 +304,8 @@ with sync_playwright() as p:
             got = (_normalize_model_identity(str(raw[0])), str(raw[1]).strip().lower())
             if got == want and isinstance(cfg[key], dict):
                 matched.append(cfg[key])
-        # Scoping is meaningful, so an empty result is a real answer:
+        # Scoping is meaningful, so an empty result is a real answer: returning every entry here is what let another
+        # model's value satisfy these checks.
         return matched
 
     # ─────────────────────────────────────────────────────
@@ -321,7 +325,6 @@ with sync_playwright() as p:
         # re-navigates with a fresh page.
         form_err: Exception | None = None
         for _form_attempt in range(3):
-            # Parse the key rather than substring-searching its serialised form:
             try:
                 page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
                 try:
@@ -635,7 +638,9 @@ with sync_playwright() as p:
     if _count(od_tab):
         od_tab.click()
         page.wait_for_timeout(400)
-    # Waited for, not counted once:
+    # Waited for, not counted once: until cachedReady flips the picker renders the loading state with no rows at all,
+    # so a fixed pause turns a slow cache scan into a hard failure. A populated picker attaches a row as soon as it has
+    # one, so this returns immediately in the normal case and only spends the timeout when there is genuinely nothing.
     try:
         popover.locator("[data-model-picker-option]").first.wait_for(
             state = "attached", timeout = 20_000
@@ -774,9 +779,13 @@ with sync_playwright() as p:
             page.wait_for_timeout(500)
         except Exception as e:
             fail(f"Reset click failed: {e}")
+        # The input after Reset is informational only: a live-loaded model can still echo its context even with the
+        # stored override gone. The regression we guard ("Reset PINS the override") lives in localStorage, asserted
+        # below.
         ctx_in = context_input(popover)
         after_reset = ctx_in.input_value() if ctx_in else None
         info(f"reset: Context Length input now shows {after_reset!r}")
+        # Commit the reset so the stored override is dropped, then assert storage.
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
             btn.click()
@@ -809,9 +818,6 @@ with sync_playwright() as p:
         ctx_in = None
         native_default = None
     else:
-        # The input after Reset is informational only: a live-loaded model can still echo its context even with the
-        # stored override gone.
-        # The regression we guard ("Reset PINS the override") lives in localStorage, asserted below.
         ctx_in = context_input(popover)
         # With no override stored the box reads "Auto", and only reveals the number it
         # would edit (the fitted context) once it has focus. Click first, or there is
@@ -834,10 +840,10 @@ with sync_playwright() as p:
         ctx_in.click()
         ctx_in.fill(str(native_default))
         page.wait_for_timeout(200)
-        # Commit the reset so the stored override is dropped, then assert storage.
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
-            # Same-click Load: the button click must commit the draft, but a draft equal to the shown value carries no
+            # Same-click Load: the button click must commit the draft, but a draft equal to the shown value carries
+            # no override, so the click must still commit the reset and leave no stored `customContextLength`.
             btn.click()
             page.wait_for_timeout(1500)
         cfg = read_configs()
@@ -899,7 +905,8 @@ with sync_playwright() as p:
                 except Exception:
                     adv.click()
                 page.wait_for_timeout(500)
-            # The Tensor Parallelism Radix Switch has no aria-label, so target the first switch after the "Tensor
+            # The Tensor Parallelism Radix Switch has no aria-label, so target the first switch after the
+            # "Tensor Parallelism" text.
             tp = popover.locator(
                 'xpath=.//span[contains(text(),"Tensor Parallelism")]'
                 '/following::*[@role="switch"][1]'
@@ -938,9 +945,11 @@ with sync_playwright() as p:
     except Exception as e:
         runtime_warn(f"advanced-persist check errored: {e}")
 
-    # ───────────────────────────────────────────────────── 5.
-    # Legacy migration is idempotent (gates in CI via soft_fail).
-    # Seed a pre-feature unsloth_load_settings store, confirm it migrates once with the value preserved, then reload
+    # ─────────────────────────────────────────────────────
+    # 5. Legacy migration is idempotent (gates in CI via soft_fail).
+    #    Seed a pre-feature unsloth_load_settings store, confirm it migrates once with the value preserved, then
+    #    reload with a fresh legacy seed and confirm the migration does not re-run, duplicate, or clobber. Re-running
+    #    on every reload was the regression that reverted the predecessor PR.
     # ─────────────────────────────────────────────────────
     step("legacy unsloth_load_settings migrates once and stays idempotent")
 
@@ -1151,12 +1160,13 @@ with sync_playwright() as p:
         cfg_first = read_configs()
         model_entries = entries_for_model(cfg_first)
         migrated_ctx = any(e.get("customContextLength") == DISTINCT_CTX for e in model_entries)
-        # Did the import run at all? Two very different failures were being reported as one.
+        # Did the import run at all? Two very different failures were being reported as one: "it ran and lost the
+        # context" is a bug in the migration, while "nothing from this seed is here" means the key was written by
+        # something else and the import skipped it, which is what a racing write produces.
         migrated_any = any(e.get("disableVision") is True for e in model_entries)
-        # AND THE PASS REQUIRES THE FINGERPRINT TOO.
-        # The context alone does not say where it came from: a server override row that survived the cleanup carries
-        # DISTINCT_CTX as well
-        # and hydration can put that into `model_entries` with the legacy import never having applied the seed at all.
+        # AND THE PASS REQUIRES THE FINGERPRINT TOO. The context alone does not say where it came from: a server
+        # override row that survived the cleanup carries DISTINCT_CTX as well -- step 3b wrote it -- and hydration can
+        # put that into `model_entries` with the legacy import never having applied the seed at all.
         if migrated_ctx and migrated_any:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
         elif migrated_ctx:

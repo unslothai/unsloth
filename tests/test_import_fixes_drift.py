@@ -30,7 +30,7 @@ from importlib.metadata import version as importlib_version
 import pytest
 
 
-# Mirrors import_fixes.py's local Version():
+# Mirrors import_fixes.py's local Version(): strip dev/alpha/beta/rc/local suffixes.
 from packaging.version import Version as _PkgVersion
 
 
@@ -158,9 +158,9 @@ def test_pretrained_model_enable_input_require_grads_uses_old_pattern():
         pytest.skip(f"could not getsource(enable_input_require_grads): {exc!r}")
 
     if "for module in self.modules()" not in src:
-        return
-    if "NotImplementedError" in src:
         return  # pre-HF#41993 shape
+    if "NotImplementedError" in src:
+        return  # tolerant replacement installed
 
     pytest.fail(
         "DRIFT DETECTED: PreTrainedModel.enable_input_require_grads now "
@@ -262,6 +262,7 @@ def test_triton_compiled_kernel_has_num_ctas_and_cluster_dims():
 
     ck_cls = tc.CompiledKernel
     # Healthy if the pre-3.6 class attr is present, or __init__ is wrapped to install num_ctas + cluster_dims per
+    # instance (the post-3.6 fix).
     if hasattr(ck_cls, "num_ctas"):
         return
     init = getattr(ck_cls, "__init__", None)
@@ -443,9 +444,6 @@ def test_transformers_pretrained_model_has_get_input_embeddings():
     )
 
 
-# Regression for issue #4188:
-
-
 # Regression for https://github.com/unslothai/unsloth/issues/4188: Qwen3_5ForConditionalGeneration uses
 # loss_type='ForConditionalGeneration', a separate LOSS_MAPPING key left unpatched, falling back to stock
 # ForCausalLMLoss whose logits.float() OOMs on <=24 GB GPUs.
@@ -599,6 +597,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
 
             assert isinstance(res_mixed, dict)
             assert res_mixed["logits"] is e
+            # num_processes = 2 -> gathered to [42, 42]
             assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
 
             res_broadcast = acc_ops.broadcast(e)
@@ -649,6 +648,7 @@ def test_accelerate_find_device_skips_empty_logits():
     # Tensor-free payloads keep returning None (AlignDevicesHook needs it to skip moves)
     assert acc_ops.find_device({"a": 1}) is None
     # Sentinel-only payloads fall back to current device so debug-mode find_device(...).type doesn't raise
+    # AttributeError
     assert acc_ops.find_device(EmptyLogits()) == PartialState().device
 
 

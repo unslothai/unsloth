@@ -42,7 +42,9 @@ _IMPORT_RE = re.compile(
 _REEXPORT_RE = re.compile(
     r"^export\s+(?P<clause>\{[^}]*\}|\*)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
-# Initialisers a `const` may carry and still be safe to lift:
+# Initialisers a `const` may carry and still be safe to lift: literals and callables.
+# Anything else (a store built by `create(...)`, a client instantiated at import time) is
+# module setup rather than a helper, so it is refused instead of executed in the harness.
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -56,7 +58,9 @@ _KEYWORDS = frozenset(
 )
 
 
-# Keywords a `/` may legally follow, where it opens a regex rather than dividing.
+# Keywords a `/` may legally follow, where it opens a regex rather than dividing. Without
+# these `return /x{1,2}/.test(s)` scans as division and the quantifier braces count as
+# structure, which truncates every declaration that returns a regex.
 _REGEX_MAY_FOLLOW = frozenset(
     """return case typeof instanceof in of delete void yield await throw new do else""".split()
 )
@@ -76,7 +80,8 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
     """
     out = list(text)
     i, n = 0, len(text)
-    # Frames of the scanner: "code" is ordinary source, "template" is inside a backtick.
+    # Frames of the scanner: "code" is ordinary source, "template" is inside a backtick. A
+    # `${` pushes code onto a template, and the `}` that closes it pops back.
     frames: list[tuple[str, int]] = [("code", 0)]
 
     def blank(start: int, stop: int) -> None:
@@ -177,7 +182,7 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
             frames[-1] = (frames[-1][0], frames[-1][1] - 1)
         elif ch == "}":
             if frames[-1][1] == 0 and len(frames) > 1:
-                # The `}` closing a `${...}` hole:
+                # The `}` closing a `${...}` hole: blank it with the `${` that opened it.
                 out[i] = " "
                 frames.pop()
                 i += 1
@@ -294,13 +299,13 @@ class _Module:
             clause = match.group("clause")
             spec = match.group("spec")
             if clause.lstrip().startswith("type") or ("*" in clause and "{" not in clause):
+                # `import type {...}` is erased by node, and `export * from` names nothing here.
                 continue
             braces = re.search(r"\{([^}]*)\}", clause, re.DOTALL)
             if braces is None:
                 default = clause.strip()
                 if re.fullmatch(r"[A-Za-z_$][\w$]*", default):
                     found[default] = (spec, "default")
-                # `import type {...}` is erased by node, and `export * from` names nothing here.
                 continue
             default = clause[: braces.start()].rstrip().rstrip(",").strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", default):
@@ -490,7 +495,7 @@ def resolve_dependencies(
                 return
             pull(exported, path)
             if exported != name and exported in defined:
-                # Imported under another name:
+                # Imported under another name: bind the local spelling to what was emitted.
                 defined.add(name)
                 pulled[name] = ("const", f"const {name} = {exported};", {exported})
                 order.append(name)

@@ -64,6 +64,14 @@ EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 # by dropping its file from the scan.
 # The one live case is locale.getencoding() in the data-designer plugin's state_store, inside a try/except
 # AttributeError with a pre-3.11 fallback.
+
+
+# The floor is DECLARED, in the workflow, next to where the legs used to be.
+# Deriving it from the matrix became self-defeating once the matrix ran one interpreter: a 3.13-only matrix would move
+# the floor to 3.13 and leave this asserting that code written for 3.13 runs on 3.13. Deriving it from pyproject.toml
+# is not the answer either, because that says >= 3.9 and is not true today: unsloth/models/_utils.py already uses
+# tempfile.TemporaryDirectory(ignore_cleanup_errors), which is 3.10, so a 3.9 target fails on the tree as it stands.
+# So it is a number, written down once, in the workflow that would otherwise have tested it, and read from there.
 FLOOR_KEY = "PYTHON_FLOOR"
 
 

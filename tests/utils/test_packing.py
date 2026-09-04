@@ -178,7 +178,7 @@ def test_configure_padding_free():
 
 
 def _hybrid_config_model():
-    # Qwen3.5 / Qwen3-Next style:
+    # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
     return SimpleNamespace(config = _FakeConfig(layer_types = ["linear_attention", "full_attention"]))
 
 
@@ -228,8 +228,9 @@ def test_varlen_from_position_ids():
     cu, seq_idx = packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 0, 0, 1, 2]]))
     assert cu.tolist() == [0, 2, 3, 6]
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
-    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None
+    assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1, 2, 3]])) is None  # single sequence
     assert packing_module._varlen_from_position_ids(torch.tensor([[1, 2, 3]])) is None  # first != 0
+    # normal 2-row batch
     assert packing_module._varlen_from_position_ids(torch.tensor([[0, 1], [0, 1]])) is None
     assert packing_module._varlen_from_position_ids(None) is None
 
@@ -429,7 +430,8 @@ def _hybrid_model_with_gdn(gdn_forward):
 
 
 def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
-    # Dispatch is verified at runtime, not statically.
+    # Dispatch is verified at runtime, not statically. A mixer that never calls self.<kernel> installs the shim, but
+    # the first packed forward aborts (both boundary kernels are load-bearing).
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
     assert patch_hybrid_linear_attention_varlen(model) is True
@@ -468,6 +470,7 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
 
 
 def test_varlen_from_position_ids_mrope_3d():
+    # [3,1,T] text plane
     pos = torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()
     cu, seq_idx = packing_module._varlen_from_position_ids(pos)
     assert cu.tolist() == [0, 2, 3, 6]
@@ -1170,12 +1173,12 @@ def test_packing_sdpa(tmp_path):
         trainer.accelerator.free_memory()
 
 
+# --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
+
 # fmt: off
 # Named to match the unsloth_zoo helper (sourced by name, "def sft_prepare_dataset" -> "def _prepare_dataset").
 # Deliberately OMITS the "licensed under LGPLv3" header to emulate a newer Zoo whose header moved (dependency is only
-# lower-bounded).
-# --- wrapped-packing source-injection robustness (reviewer.py / fork findings) --------
-
+# lower-bounded). Source only.
 def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
@@ -1199,7 +1202,10 @@ def sft_prepare_dataset(
 
 
 def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
-    # Regression:
+    # Regression: the setup used to anchor on the Zoo license comment, so a header change silently no-op'd it while
+    # the truncation/pack edits still referenced its variables -> NameError on every SFT prep. It must now install via
+    # the signature before those references, and the pack edit must reuse the guarded _unsloth_pack_has_strategy
+    # instead of re-calling _inspect.signature(pack_dataset).
     import ast
     import textwrap
     import unsloth.models.rl_replacements as rlr
@@ -1351,17 +1357,14 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
 
 
-# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift internally) call
-
-
 # --- packed-boundary guard on the fused-CE path ---------------------------------------
 # mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
 # internally) call mask_packed_boundary_labels, the pre-shift equivalent.
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
-    # Docs start at 0, 2, 3;
-    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting it.
+    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting it. Slot 0 is the
+    # out-of-range redirect: harmless, the shift discards labels[0].
     assert out.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
     assert labels.reshape(-1).tolist() == [0, 1, 2, 3, 4, 5]
     assert out.shape == labels.shape
@@ -1507,9 +1510,8 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3.
-# the collator wrappers must leave boundary targets in place: unsloth_zoo counts num_items_in_batch off this batch and
-# already deducts them
+# 3. the collator wrappers must leave boundary targets in place: unsloth_zoo counts num_items_in_batch off this
+#    batch and already deducts them
 class _UnmaskedPackingCollator:
     """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
     built on TRL 0.24+ output would pass either way."""

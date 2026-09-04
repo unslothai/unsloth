@@ -46,9 +46,6 @@ VOCAB, HIDDEN = 17, 8
 PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 
 
-# The real unsloth_zoo helpers when importable, otherwise eager mirrors with identical semantics so a runner without
-
-
 # ---------------------------------------------------------------------------
 # Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors
 # with identical semantics so a runner without unsloth_zoo still exercises the
@@ -183,8 +180,8 @@ class _Model(torch.nn.Module):
         self.hidden_states = hidden_states
         self.calls = []
         if degraded:
-            # What _install_grpo_hidden_states_forward_wrapper leaves behind when it could not get hidden states out of
-            # what _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could not
+            # What _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could
+            # not get hidden states out of the model.
             self._unsloth_grpo_hidden_states_forward_wrapped = True
             self._unsloth_grpo_hidden_states_warning_issued = True
 

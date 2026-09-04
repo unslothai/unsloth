@@ -174,7 +174,7 @@ Write-Output "CALLS:$global:AddTypeCalls"
         )
     )
     assert result.returncode == 0, result.stderr
-    # One attempt, one retry with a private %TEMP%, then cached:
+    # One attempt, one retry with a private %TEMP%, then cached: the scan below resolves a path per running process.
     assert _lines(result, "CALLS:") == ["CALLS:2"]
 
 
@@ -232,7 +232,7 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "ATTEMPTS:") == ["ATTEMPTS:2"]
     assert _lines(result, "LOADED:") == ["LOADED:True"]
     assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
-    # Restored exactly, broken values and all:
+    # Restored exactly, broken values and all: they are the caller's, not ours.
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
@@ -306,7 +306,8 @@ Write-Output "NULL:$($null -eq $answer)"
         )
     )
     assert result.returncode == 0, result.stderr
-    # Without exact resolution two spellings may still be one directory;
+    # Without exact resolution two spellings may still be one directory; $null makes the caller take BOTH runtime
+    # locks, where $false would silently drop one.
     assert _lines(result, "NULL:") == ["NULL:True"]
 
 
@@ -406,10 +407,10 @@ def _same_path(got: str, expected: str) -> bool:
 _NT_DEVICE_PREFIX = "\\??\\"
 _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
-# What (Get-Item).Target actually hands back.
-# 5.1 returns a COLLECTION, not a string and not an [array] either, so a container test naming one type lets the real
-# one fall through and be space-joined.
-# None of these shapes can be produced on Linux, so Get-Item is stubbed and the paths are POSIX-style;
+# What (Get-Item).Target actually hands back. 5.1 returns a COLLECTION, not a string and not an [array] either, so a
+# container test naming one type lets the real one fall through and be space-joined. Junctions store the NT device
+# form; system junctions and Store AppExecLinks report nothing. None of these shapes can be produced on Linux, so
+# Get-Item is stubbed and the paths are POSIX-style; see _same_path for why the comparison cannot be a string equality.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
     (
@@ -753,11 +754,11 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     """
     root = tmp_path / "root"
     root.mkdir()
-    # Name says dead, owner.pid says alive:
+    # Name says dead, owner.pid says alive: keep it.
     keep = root / f"ust-{_DEAD_PID}-000000aa"
     keep.mkdir()
     (keep / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
-    # Name says alive, owner.pid says dead:
+    # Name says alive, owner.pid says dead: the recorded owner wins, so sweep it.
     drop = root / f"ust-{os.getpid()}-000000bb"
     drop.mkdir()
     (drop / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -849,7 +850,7 @@ Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
     )
     assert result.returncode == 0, result.stderr
     assert not abandoned.exists()
-    # And the healthy path is still the healthy path:
+    # And the healthy path is still the healthy path: nothing was redirected.
     assert _lines(result, "TMP:") == [f"TMP:{good}"]
     assert _lines(result, "OVERRIDE:") == ["OVERRIDE:False"]
 
@@ -877,7 +878,7 @@ Write-Output "EXISTS:$(Test-Path -LiteralPath '{ghost}')"
     assert _lines(result, "USABLE:") == ["USABLE:False"]
     assert _lines(result, "EXISTS:") == ["EXISTS:False"]
     assert not ghost.exists()
-    # A directory the installer owns is a different matter:
+    # A directory the installer owns is a different matter: that one it creates.
     owned = tmp_path / "owned" / "ust-1-aaaaaaaa"
     result = _run_powershell(
         _script(
@@ -944,7 +945,7 @@ def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
     user_profile = tmp_path / "userprofile"
     user_profile.mkdir()
 
-    # Pre-existing content under one of the same parents:
+    # Pre-existing content under one of the same parents: the unwind must stop.
     keep = local_app_data / "Unsloth Studio" / "studio.port"
     keep.parent.mkdir(parents = True)
     keep.write_text("41343", encoding = "utf-8")
@@ -1007,8 +1008,8 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
     (ours / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (ours / "scratch.bin").write_text("x", encoding = "utf-8")
     keep = []
-    # Case-insensitively ours:
     # Case-insensitively ours: Windows filenames are case-insensitive, so refusing the uppercase spelling would leak a
+    # directory we created.
     upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
     upper.mkdir()
     (upper / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1085,7 +1086,7 @@ def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
     two_days = time.time() - 2 * 24 * 3600
     eight_days = time.time() - 8 * 24 * 3600
 
-    # No owner.pid, dead name PID, two days old:
+    # No owner.pid, dead name PID, two days old: unknown, so it stays.
     unknown = root / f"ust-{_DEAD_PID}-aaaaaaaa"
     unknown.mkdir()
     (unknown / "in-use.txt").write_text("a live Unsloth may own this", encoding = "utf-8")
@@ -1096,7 +1097,7 @@ def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
     ancient.mkdir()
     os.utime(ancient, (eight_days, eight_days))
 
-    # Recorded dead owner, two days old:
+    # Recorded dead owner, two days old: proof, so it goes at the usual cutoff.
     recorded = root / f"ust-{_DEAD_PID}-cccccccc"
     recorded.mkdir()
     (recorded / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1211,7 +1212,8 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # LOCALAPPDATA\"Unsloth Studio" is the data dir uninstall.ps1 removes wholesale.
     assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots
     assert '"Unsloth Studio"' in uninstall
-    # ~\.unsloth\.cache is on its explicit sibling list.
+    # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth would be worse: that directory
+    # is removed only when it is empty.
     assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
     assert (
         '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }'
@@ -1219,11 +1221,16 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     )
     assert ".unsloth\\temp" not in roots
 
-    # The GetFolderPath fallback is the point of the second root:
+    # The GetFolderPath fallback is the whole point of the second root: LOCALAPPDATA is dropped in service and CI
+    # contexts. The uninstaller has to resolve the data dir the same way, or the tree it places there survives an
+    # uninstall on exactly the hosts that needed the fallback.
     assert '[Environment]::GetFolderPath("LocalApplicationData")' in roots
-    # And it has to consider BOTH spellings rather than the first that answers:
+    # And it has to consider BOTH spellings rather than the first that answers: install.ps1 falls through from a
+    # set-but-unusable LOCALAPPDATA to the known folder, so the variable being non-blank does not say where the tree
+    # landed.
     assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
-    # And the second spelling gets the TEMP TREE ONLY:
+    # And the second spelling gets the TEMP TREE ONLY. It can name a different user's profile, and the data-dir
+    # delete is recursive with no ownership sentinel, so widening that to both roots would have been the larger bug.
     assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
     assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
     assert "foreach ($d in $defaultDataDirs)" not in uninstall
@@ -1305,7 +1312,8 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
 
-    # The order is a property of the script body, not of any one function, so it is checked as one:
+    # The order is a property of the script body, not of any one function, so it is checked as one: every wholesale
+    # data-dir removal is preceded by the sweep and carries what the sweep kept.
     body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
     calls = [
         line.strip()
@@ -1393,7 +1401,8 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
         '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
     )
 
-    # The real profile, with an Unsloth temp tree in it that belongs to a dead owner:
+    # The real profile, with an Unsloth temp tree in it that belongs to a dead owner: nothing about the entries
+    # themselves protects them.
     real = tmp_path / "real profile"
     real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
     real_temp.mkdir(parents = True)
@@ -1402,7 +1411,7 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "precious.txt").write_text("another profile", encoding = "utf-8")
 
-    # Three levels above the temp directory, so neither it nor its parent is a link.
+    # Three levels above the temp directory, so neither it nor its parent is a link. Only a full walk sees this.
     redirected = tmp_path / "redirected profile"
     redirected.symlink_to(real, target_is_directory = True)
     aliased = redirected / "localappdata" / "Unsloth Studio" / "temp"
@@ -1424,6 +1433,7 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     assert _lines(result, "DONE:") == ["DONE:1"]
     assert (stale / "precious.txt").exists(), "the sweep walked through a link high above the root"
 
+    # Same shape, but now it is this uninstall's own profile: the tree goes.
     result = _run_powershell(
         "\n".join(
             [
@@ -1508,7 +1518,6 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
         root.mkdir(parents = True)
         (root / "ust-1234-abcdef01").mkdir()
 
-    # Same shape, but now it is this uninstall's own profile:
     result = _run_powershell(
         "\n".join(
             [

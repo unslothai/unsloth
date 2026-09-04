@@ -70,7 +70,8 @@ def _host(
 
     monkeypatch.setattr(stack, "_detect_amd_gfx_codes", _detect)
     monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [], raising = False)
-    # No AMD per-arch wheel is installed unless a case says so:
+    # No AMD per-arch wheel is installed unless a case says so: on the gfx1151 runner these two read a real one out
+    # of the venv and decide gates no case here described.
     monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: installed_family)
     monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: installed_family is not None)
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm_ver)
@@ -78,7 +79,7 @@ def _host(
     version, hip = torch
     monkeypatch.setattr(stack, "_probe_torch_runtime", lambda: (ran, importable, version, hip, ""))
 
-    # Nothing here may install:
+    # Nothing here may install: the dependency pass it unlocks owns that.
     def _no_installs(*_a, **_k):
         raise AssertionError("the fast-path probe must not install anything")
 
@@ -128,7 +129,9 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     ],
 )
 def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
-    # gfx1100 rather than the default gfx1151:
+    # gfx1100 rather than the default gfx1151: the question here is whether a ROCm wheel is left alone, and only an
+    # arch every one of these wheels actually carries asks it. Strix is not that arch on the older tags, and the case
+    # below is where it is answered.
     _host(monkeypatch, torch = torch, gfx = ("gfx1100",))
     assert _needs_pass() is False
 
@@ -172,6 +175,7 @@ def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkey
     """Being mixed is not being unreadable. Unpinned, probe and mask order can disagree with
     nothing to resolve it, so the fast path stands. Pinned, _runtime_gfx_target composes both
     layers and names a card whose generic wheel can still lack kernels for it."""
+    # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
     _host(
         monkeypatch,
         torch = ("2.9.0+cpu", ""),
@@ -180,6 +184,7 @@ def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkey
         env = {"HIP_VISIBLE_DEVICES": "1"},
     )
     assert _needs_pass() is False
+    # Ambiguous: a UUID names a device but no position in a list of arches.
     _host(
         monkeypatch,
         torch = ("2.9.0+cpu", ""),
@@ -187,10 +192,8 @@ def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkey
         env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
     )
     assert _needs_pass() is False
-    # Not ambiguous:
-    # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
-    # Ambiguous: a UUID names a device but no position in a list of arches.
-    # Not ambiguous: KFD node order IS the order the mask indexes, so this names gfx1103, whose generic wheel carries
+    # Not ambiguous: KFD node order IS the order the mask indexes, so this names gfx1103,
+    # whose generic wheel carries no kernels for it.
     _host(
         monkeypatch,
         torch = ("2.9.0+cpu", ""),
@@ -328,7 +331,8 @@ def _run_cli(
     # PINNED, and UNSLOTH_NO_TORCH is pinned for the same reason PATH and HOME already are: it is an ambient input to
     # the answer under test that the caller does not intend to vary.
     # Left unset, `_infer_no_torch` falls through to `install_manifest.recorded_no_torch()`, which reads
-    # `.unsloth-no-torch` and `unsloth_install_manifest.json` out of `sys.prefix`
+    # `.unsloth-no-torch` and `unsloth_install_manifest.json` out of `sys.prefix` -- one path, shared by every xdist
+    # worker.
     # Three other test modules drive the real `install_python_stack()` in process and leave that marker behind with no
     # cleanup, so whether it exists when this child starts is a race between workers.
     # It resolves the FIRST line of `_amd_torch_needs_dependency_pass`, which returns False and exits 1 before any
@@ -381,8 +385,10 @@ def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name, safe_pa
         safe_path = safe_path,
     )
     stderr = result.stderr.decode(errors = "replace")
+    # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
     assert not stderr, stderr
-    # Read as a STATEMENT, not in an assert message:
+    # Read as a STATEMENT, not in an assert message: a `_decision(result)` that appears only after the comma runs once
+    # the assertion has already failed, so it checks nothing on the passing path while reading exactly like it does.
     decision = _decision(result)
     assert result.returncode == 1, decision
     # ...and the gate that answered must be the one this case names, not whichever other exit-1 state the host happened
@@ -416,9 +422,10 @@ def test_the_cli_answers_end_to_end_over_a_stub_torch(tmp_path, version, hip, ex
         },
     )
     stderr = result.stderr.decode(errors = "replace")
-    # An import failure also exits 1, so exit 1 alone does not prove the gate ran.
     assert not stderr, stderr
-    # The decision line, not the bare code:
+    # The decision line, not the bare code: exit 1 is five states here, and a bare `assert 1 == 0` with both streams
+    # empty is what this case used to report. A statement, so it is checked on the passing path too, not only when the
+    # next line fails.
     decision = _decision(result)
     assert result.returncode == expected, f"{decision}\n{stderr}"
     # The wheel family must be the input that decided it, so the case cannot pass on a host that answered before the
@@ -641,6 +648,7 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
     """A pin commits to an index regardless of the visible GPU, which is why every hardware
     gate above it is skipped. Asked under a pin, the family question answers for whatever card
     the probing machine has -- how the end-to-end CLI case began failing on an AMD box."""
+    # The pin names the family torch already carries, so nothing is due for it either.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",
@@ -648,6 +656,8 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.13"},
     )
     assert _needs_pass() is False
+    # A pin that no longer matches the installed wheel is the pin's own question, not a hardware one, and
+    # _ensure_rocm_torch reinstalls for it.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",
@@ -666,7 +676,8 @@ def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
     and answering True here buys a dependency pass per update and never a working torch."""
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1010",))
     assert _needs_pass() is False
-    # An empty leaf is not the test:
+    # An empty leaf is not the test: the datacentre parts have none and the generic index serves them, so their
+    # stale family is still worth the pass.
     for _gfx in ("gfx942", "gfx950"):
         _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = (_gfx,))
         assert _needs_pass() is True, _gfx
@@ -692,7 +703,6 @@ def test_a_confirmed_spoof_forces_the_pass_even_on_a_matching_family(monkeypatch
     """_clear_confirmed_hsa_spoof runs only inside _ensure_rocm_torch, so a fast path taken
     on the wheel question alone leaves HSA_OVERRIDE_GFX_VERSION set: ROCr keeps presenting an
     ISA the installed wheels have no code for (#7331), however well the family matches."""
-    # The pin names the family torch already carries, so nothing is due for it either.
     _rocm_torch(
         monkeypatch,
         family = "gfx1152",
@@ -717,8 +727,6 @@ def test_a_repin_to_another_per_arch_leaf_forces_the_pass(monkeypatch):
     """Both leaves are torch 2.11 with a three-part +rocm7.13.0 tag, so the pin arm's version
     comparison sees no change and would keep the fast path over an edited pin -- the update
     that was supposed to move the card onto its own wheels."""
-    # A pin that no longer matches the installed wheel is the pin's own question, not a hardware one, and
-    # _ensure_rocm_torch reinstalls for it.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",

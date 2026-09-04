@@ -34,7 +34,9 @@ import urllib.request
 
 SEED = 3407
 MAX_TOKENS = 80
-# How many times the two-replay comparison may be re-run before a disagreement is called a real fault.
+# How many times the two-replay comparison may be re-run before a disagreement is called a real fault. See main():
+# the retry lives there, NOT in check(), so check()'s contract is unchanged and a divergence handed to it is still a
+# hard failure every time.
 ATTEMPTS = 3
 
 
@@ -49,7 +51,10 @@ class Nondeterministic(AssertionError):
 
 # Turn 2 cannot be answered without turn 1, and turn 4 without turn 3, so a server that drops history fails here rather
 # than returning something plausible.
-# Turn 2 asks for the ANSWER, not the question.
+# Turn 2 asks for the ANSWER, not the question: gemma-3-270m-it answers "What did I ask before?" with "I am doing
+# well! How can I help you today?" whether or not the history is attached, so that phrasing probes nothing.
+# 58+27 rather than 1+1 so the answer cannot be guessed: deriving the expected value from turn 1 is only worth
+# anything if turn 1 is unpredictable.
 PROMPTS = [
     "What is 58+27?",
     "What was the answer to my previous question?",
@@ -149,10 +154,11 @@ def run_anthropic() -> list[str]:
     from anthropic import Anthropic
 
     BASE, KEY = _server()
-    # Two SDK quirks against Unsloth: 1.
-    # the SDK appends /v1/messages itself, and a base_url that already has it hits /v1/v1/messages and 405s.
-    # The SDK sends x-api-key by default, but Unsloth's auth layer is HTTPBearer only, so Authorization has to be set
-    # through default_headers instead.
+    # Two SDK quirks against Unsloth:
+    #   1. base_url must NOT include /v1 -- the SDK appends /v1/messages itself, and a base_url that already has it
+    #      hits /v1/v1/messages and 405s.
+    #   2. The SDK sends x-api-key by default, but Unsloth's auth layer is HTTPBearer only, so Authorization has to be
+    #      set through default_headers instead.
     client = Anthropic(
         base_url = BASE,
         api_key = "unused",

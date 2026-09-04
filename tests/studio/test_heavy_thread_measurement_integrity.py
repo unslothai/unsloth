@@ -110,9 +110,11 @@ def _load_harness():
 HARNESS = _load_harness()
 
 
-# performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
 # ── the node side: the harness's own JS on a virtual clock ────────────
 
+# performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
+# -- the recorder's stall loop reschedules itself forever, so a real timer would keep the process alive past the end of
+# the test.
 FAKE_ENV = """
 let now = 0;
 let rafs = [];
@@ -189,7 +191,9 @@ say({ first_frames: first.frames, second_frames: second.frames,
 
 
 def test_the_recorder_starts_the_next_action_with_one_loop() -> None:
-    # Two frames pumped, two frames recorded.
+    # Two frames pumped, two frames recorded. A stale callback that survived into this action would be recording
+    # alongside the real one, so every frame is counted twice -- and it compounds, because each begin() can leave
+    # another behind.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_frames"] == 2, got
 
@@ -206,7 +210,8 @@ def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> Non
 
 REOPEN_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "REOPEN_JS": HARNESS.REOPEN_JS}
 
-# A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open actually has:
+# A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open actually has: the
+# message roots are back long before the fences inside them are coloured.
 REOPEN_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -240,8 +245,9 @@ say({
 
 
 def test_reopen_keeps_the_clock_running_until_the_highlighter_stops() -> None:
-    # quiet() settles on three sub-33ms frames, and the lull between two Shiki batches is longer than three frames
-    # the same lull wait_for_highlighting_settled() needs five stable reads to see through.
+    # quiet() settles on three sub-33ms frames, and the lull between two Shiki batches is longer than three frames --
+    # the same lull wait_for_highlighting_settled() needs five stable reads to see through. Settling on frames alone
+    # stops the re-open clock partway through the rebuild.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["settleMs"] >= got["lastChangeAt"] - 20, got
 
@@ -372,13 +378,17 @@ say({ notifications, querySelectorCalls, querySelectorAllCalls, openMs: done.ope
 
 
 def test_the_menu_reads_its_open_flag_from_the_mutation_and_not_from_a_scan() -> None:
+    # GUARD. The menu content is portaled to the END of document.body, so a querySelector for it walks the whole
+    # message list, and for the entire open latency it walks it and finds nothing. Measured on Chromium at 300000
+    # chars that query is 0.25ms a call against 0.025ms at 25000.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorCalls"] <= got["notifications"] + 1, got
 
 
 def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
-    # GUARD.
-    # Measured on Chromium at 300000 chars that query is 0.25ms a call against 0.025ms at 25000.
+    # GUARD. The tooltip-trigger census is the only querySelectorAll the menu window runs (measured 0.13ms at 300000
+    # chars against 0.005ms at 25000). It is taken once, under the pointer, because an action bar that never mounts
+    # and one that is autohidden at rest are otherwise indistinguishable.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorAllCalls"] <= 1, got
 
@@ -387,7 +397,8 @@ def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
 
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
-# A menu that opens and closes with NO work at all:
+# A menu that opens and closes with NO work at all: the flag flips inside the dispatch. Whatever this reports is
+# therefore pure floor.
 MENU_BODY = """
 eval(RECORDER_INIT);
 let menuOpen = false;
@@ -603,6 +614,9 @@ def test_deferred_fences_are_not_a_harness_failure() -> None:
 
 
 def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
+    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this still does. Tokens
+    # are left HIGH so only the character floor can fail: a thread whose code blocks quietly emptied still renders,
+    # still scrolls and still curves, of something else.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["codeChars"] = 6000
     cell["counts"]["highlightedTokens"] = 99999
@@ -636,9 +650,6 @@ def test_a_reopen_that_never_settled_is_a_harness_failure() -> None:
 
 
 def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
-    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this still does.
-    # Tokens are left HIGH so only the character floor can fail: a thread whose code blocks quietly emptied still
-    # renders, still scrolls and still curves, of something else.
     cell = copy.deepcopy(clean_cell())
     cell["actions"]["jump"]["settleMs"] = None
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
@@ -728,6 +739,9 @@ def repetition_log() -> list:
 
 
 def test_the_highlighter_gate_runs_after_the_tool_panes_are_mounted() -> None:
+    # The tool result panes ARE code -- two of the seven fences a content cycle produces -- and Radix does not mount
+    # them until they are expanded. Gating on the highlighter first and expanding second leaves a fresh batch of
+    # unhighlighted fences building inside the keystroke measurement, which is the very next thing timed.
     log = repetition_log()
     expand = log.index(("evaluate", "expandTools"))
     highlight = log.index(("wait", "highlighting"))
@@ -741,6 +755,9 @@ def test_the_highlighter_gate_runs_before_the_first_measured_action() -> None:
 
 
 def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> None:
+    # The delete removes a message from the repository, permanently. At the smallest size the whole thread is one
+    # ten-kind cycle, so three repetitions take the json fence, then both inline images, then the svg -- and the
+    # fixture census that would have caught it was taken before any repetition ran.
     log = repetition_log()
     assert ("evaluate", "restore") in log, log
     assert (
@@ -751,9 +768,8 @@ def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> N
 
 
 def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() -> None:
-    # The tool result panes ARE code -- two of the seven fences a content cycle produces -- and Radix does not mount
-    # The delete removes a message from the repository, permanently.
     # Restoring re-imports the thread, which unmounts every tool card and throws away every highlighted fence.
+    # Re-opening straight afterwards would time that rebuild as well as its own.
     log = repetition_log()
     restore = log.index(("evaluate", "restore"))
     reopen = log.index(("action", "REOPEN_JS"))
@@ -763,7 +779,10 @@ def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() 
 
 def test_the_tool_expand_gate_is_not_satisfied_by_a_thread_of_closed_cards() -> None:
     # `collapsibleOutputs` is the CollapsibleContent element itself, and Radix keeps that element in the tree for its
-    # collapse animation, so it is there while the card is shut.
+    # collapse animation, so it is there while the card is shut. Measured on this tree at 300000 characters, straight
+    # after seeding and before any expandTools() call: collapsibleOutputs 22 of the 22 expected, codeExecutionPanes 0.
+    # A `collapsibleOutputs >= n` gate is therefore satisfied by the closed thread, which is a wait that cannot fail,
+    # and it released the highlighter gate below it before the two fences per cycle it exists to sequence had mounted.
     # The pane's <pre> is a CHILD of that element: 0 collapsed, 22 expanded.
     gates = [line for line in HARNESS_SOURCE.splitlines() if "counts()." in line]
     assert gates, "the fixture no longer gates on a count at all"
@@ -1014,7 +1033,8 @@ def test_warnings_and_errors_are_captured_into_separate_lists() -> None:
     assert 'page.on("pageerror", lambda e: console_errors.append' in HARNESS_SOURCE
     assert 'if m.type == "error"' in HARNESS_SOURCE, "errors are no longer routed by severity"
     assert 'if m.type == "warning"' in HARNESS_SOURCE, "warnings are no longer routed by severity"
-    # Keyed on the predicate alone, not on the whole expression around it:
+    # Keyed on the predicate alone, not on the whole expression around it: the first version of this assertion pinned
+    # an exact one-line form and stayed green when the predicate was put back on a line of its own.
     assert 'm.type in ("warning", "error")' not in HARNESS_SOURCE, (
         "one predicate captures both severities again, so an application exception is filed as "
         "chatter and absorbed by the warning allowance"
@@ -1103,9 +1123,6 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
     )
 
 
-# The zero branch keyed on `floored`, which only identifies a timing that had a paint floor subtracted.
-
-
 # ── zero-based is not the same as counted ─────────────────────────────
 #
 # The zero branch keyed on `floored`, which only identifies a timing that had a paint floor
@@ -1173,9 +1190,6 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     assert (
         "scroll longest stall ms" in timings and "menu wall ms" in timings
     ), f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
-
-
-# Making the wall floor a callable put the lambda itself into the growth report.
 
 
 # ── the report has to survive being written out ───────────────────────
@@ -1284,9 +1298,6 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
     real latency curves that happen to sit at low absolute values."""
     row = HARNESS.report_growth(timing_cells(1.0, 4.0))["chromium"]["scroll longest stall ms"]
     assert row["discriminated"] is True, row
-
-
-# `quiet()` and `quietUntilIdle()` return `...
 
 
 # ── whole-window axes carry the whole window's floors ─────────────────

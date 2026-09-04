@@ -25,6 +25,8 @@ from pathlib import Path
 import pytest
 
 try:
+    # Import before the dnp fixture spoofs sys.platform: multiprocess picks its contexts at import time, so a Windows
+    # runner would get POSIX fork contexts.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -34,7 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "unsloth" / "dataset_num_proc.py"
 RL_PATH = REPO_ROOT / "unsloth" / "models" / "rl.py"
 
-# The dotted paths unsloth/models/rl.py bakes into every generated trainer:
+# The dotted paths unsloth/models/rl.py bakes into every generated trainer: the zoo first, so generated source does
+# not import back into unsloth, then this package as the fallback for a zoo that predates the module.
 GENERATED_IMPORT_MODULE = "unsloth_zoo.dataset_num_proc"
 GENERATED_FALLBACK_MODULE = "unsloth.dataset_num_proc"
 GENERATED_IMPORT_NAME = "get_dataset_num_proc"
@@ -57,6 +60,10 @@ def dnp(monkeypatch):
     # Pin the platform: macOS is refused by policy whatever the start method says, so every assertion expecting a worker
     # count is really about a forking platform. Platform tests set their own value afterwards, which wins.
     monkeypatch.setattr(module.sys, "platform", "linux")
+    # Pin the memory ceiling too, at its two sources rather than at the reader, so the memory tests can still patch
+    # either and win. Every count this module returns is clamped by free RAM and by the cgroup budget, so on a
+    # memory-limited runner a test about the start method or about an explicit value silently becomes a test of the
+    # clamp instead: `get_dataset_num_proc(6) == 6` returns 4 in a small container.
     try:
         import psutil
         monkeypatch.setattr(
@@ -67,19 +74,20 @@ def dnp(monkeypatch):
     # Point this module's cgroup reader at a path that does not exist rather than stubbing the reader itself, so the
     # tests that are about it can still install a fixture tree and win.
     monkeypatch.setattr(module, "CGROUP_ROOT", "/nonexistent-cgroup-root-for-tests")
-    # Pin the memory ceiling too, at its two sources rather than at the reader, so the memory tests can still patch
-    # either and win.
-    # Every count this module returns is clamped by free RAM and by the cgroup budget, so on a memory-limited runner a
-    # test about the start method or about an explicit value silently becomes a test of the clamp instead:
-    # `get_dataset_num_proc(6) == 6` returns 4 in a small container.
     # unsloth_zoo's readers are neutralised by name instead, and without requiring the name to be there: pinning
-    # hf_xet_tuning.CGROUP_ROOT alone only works on a zoo that has that global.
+    # hf_xet_tuning.CGROUP_ROOT alone only works on a zoo that has that global. An older zoo still exposes the private
+    # dir helpers this module prefers, monkeypatch finds no attribute to pin, and the policy reads the runner's real
+    # cgroup -- which in a memory-limited container turns a test about the start method into a test of the clamp. The
+    # tests that are about these readers install their own unsloth_zoo.hf_xet_tuning in sys.modules, so they are
+    # unaffected.
     try:
         from unsloth_zoo import hf_xet_tuning
     except Exception:
-        # Importing the package can fail long after it has imported this submodule (__init__ pulls in hf_xet_tuning near
-        # the top and only raises "Please install Unsloth" at the end), and the failure removes unsloth_zoo from
-        # sys.modules while leaving unsloth_zoo.hf_xet_tuning behind.
+        # Importing the package can fail long after it has imported this submodule (__init__ pulls in hf_xet_tuning
+        # near the top and only raises "Please install Unsloth" at the end), and the failure removes unsloth_zoo from
+        # sys.modules while leaving unsloth_zoo.hf_xet_tuning behind. The module under test reaches it through exactly
+        # that cache entry, so treating the failure as absence would leave the real readers live on the runner's own
+        # /sys/fs/cgroup.
         hf_xet_tuning = sys.modules.get("unsloth_zoo.hf_xet_tuning")
     if hf_xet_tuning is not None:
         for name, neutral in (
@@ -107,6 +115,9 @@ def _force_cpus(monkeypatch, dnp, count):
     monkeypatch.setattr(dnp, "_usable_cpus", lambda: count)
 
 
+# ---------- start-method veto ----------
+
+
 @pytest.mark.parametrize("method", ["spawn", "forkserver", None])
 def test_non_fork_start_method_disables_multiprocessing(monkeypatch, dnp, method):
     # Under spawn/forkserver the child must re-import the dynamically generated
@@ -117,7 +128,8 @@ def test_non_fork_start_method_disables_multiprocessing(monkeypatch, dnp, method
 
 
 def test_non_fork_start_method_warns_once(monkeypatch, dnp, capsys):
-    # Regression for eeffa4c065:
+    # Regression for eeffa4c065: an explicit value used to sail through the guard. It must be vetoed, and the veto
+    # must be visible.
     _force_start_method(monkeypatch, dnp, "spawn")
     dnp.get_dataset_num_proc(8)
     dnp.get_dataset_num_proc(8)
@@ -136,6 +148,7 @@ def test_fork_start_method_honours_explicit_value(monkeypatch, dnp):
 
 @pytest.mark.parametrize("value", [1, 0, -4])
 def test_non_positive_and_one_normalise_to_none(monkeypatch, dnp, value):
+    # `1` is a trap: callers mean "serial", datasets >= 4.0 gives a Pool(1).
     _force_start_method(monkeypatch, dnp, "fork")
     assert dnp.get_dataset_num_proc(value) is None
 
@@ -148,7 +161,8 @@ def test_serial_as_none_false_preserves_an_explicit_one(monkeypatch, dnp):
     """
     _force_start_method(monkeypatch, dnp, "fork")
     assert dnp.get_dataset_num_proc(1, serial_as_none = False) == 1
-    # 0 and negatives are incoherent requests but still mean "not parallel", so they land on the config serial sentinel
+    # 0 and negatives are incoherent requests but still mean "not parallel", so they land on the config serial
+    # sentinel (1), not on None.
     assert dnp.get_dataset_num_proc(0, serial_as_none = False) == 1
     assert dnp.get_dataset_num_proc(-4, serial_as_none = False) == 1
 
@@ -232,6 +246,7 @@ def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
 
 
 def test_auto_value_is_capped(monkeypatch, dnp):
+    # Was min(max(cpu_count + 4, 2), 64) -- up to 64 forked workers.
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
     _force_cpus(monkeypatch, dnp, 128)
@@ -326,8 +341,9 @@ def test_env_override_can_force_in_process(monkeypatch, dnp, raw):
 
 @pytest.mark.parametrize("raw", ["0", "none", "None", "false", "", "1"])
 def test_env_override_in_process_is_encoded_for_the_config_layer(monkeypatch, dnp, raw):
-    # Regression:
-    # AUTO_NUM_PROC_CAP bounds auto-sizing only.
+    # Regression: the env override used to return before _serial(), writing None into the *config*, which
+    # unsloth_zoo.sft_prepare_dataset reads as "auto-size me" -- so the hatch the dead-worker message recommends
+    # raised the worker count instead of removing it. Config serial is 1, never None.
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, raw)
     assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
@@ -347,8 +363,6 @@ def test_env_override_is_uncapped(monkeypatch, dnp):
 
 
 def test_invalid_env_override_is_ignored_with_a_warning(monkeypatch, dnp, capsys):
-    # Regression: the env override used to return before _serial(), writing None into the *config*, which
-    # unsloth_zoo.sft_prepare_dataset reads as "auto-size me"
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "banana")
     assert dnp.get_dataset_num_proc(4) == 4
@@ -370,7 +384,8 @@ def test_start_method_probe_prefers_multiprocess_and_has_no_side_effects(dnp):
 
     method = dnp.multiprocessing_start_method()
 
-    # Must name a method this host offers.
+    # Must name a method this host offers. The private default-context chain has answered "fork" on Windows, which
+    # offers only spawn; believing it would read Windows as forkable and let workers through.
     assert method in multiprocess.get_all_start_methods()
     assert multiprocess.get_start_method(allow_none = True) == before_mp
     assert multiprocessing.get_start_method(allow_none = True) == before_std
@@ -485,6 +500,8 @@ def _rl_serial_as_none(tree, source, trainer_file):
     """
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "_serial_as_none":
+            # Parenthesised for the same reason as the sibling below: a formatter may reflow the ternary, and the
+            # segment's continuation lines are an IndentationError on their own.
             return eval(  # noqa: S307
                 "(" + ast.get_source_segment(source, node.value) + ")",
                 {"trainer_file": trainer_file},
@@ -539,12 +556,14 @@ def test_rl_codegen_only_sft_gets_the_config_sentinel():
     assert '_serial_as_none = "False" if trainer_file == "sft_trainer" else "True"' in source
 
 
-# The tag rl_replacements.py gives the num_proc edit;
 # ---------- the map-site rewrite and the anchors it hangs on ----------
 
+# The tag rl_replacements.py gives the num_proc edit; both anchors share it, so a rename shows up as a missing call
+# rather than a silently unpinned anchor.
 NUM_PROC_WHERE = "sft_prepare_dataset dataset_num_proc selection"
 
-# The helpers that decide whether a source edit lands.
+# The helpers that decide whether a source edit lands. Named here so the tests below fail loudly if they are renamed
+# rather than quietly testing nothing.
 ANCHOR_HELPERS = ("_require_replace", "_replace_or_fallback", "_same_source")
 
 # The module-level regex the narrow fallback anchor uses.
@@ -823,6 +842,8 @@ def test_the_narrow_anchor_keeps_indentation_and_yields_none(monkeypatch):
 
 
 def test_rl_codegen_imports_the_module_that_exists():
+    # The snippet is spliced into generated source as text, so a rename would otherwise surface only at
+    # trainer-construction time in production.
     snippet = _rl_num_proc_snippet()
     assert f"from {GENERATED_IMPORT_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
     assert f"from {GENERATED_FALLBACK_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
@@ -904,6 +925,7 @@ def test_the_two_copies_have_not_drifted():
 
 
 def test_rl_codegen_snippet_is_valid_python_at_method_indent():
+    # rl.py re-indents extra_args to 8 spaces and drops it into __init__.
     snippet = _rl_num_proc_snippet()
     body = "\n".join(" " * 8 + line for line in snippet.split("\n"))
     source = (
@@ -984,6 +1006,7 @@ def test_unrelated_errors_pass_through_untouched(dnp):
     assert caught_key.value is key
 
     # The identity assertions above hold under `except Exception` as well, since the guard re-raises the same object.
+    # This one does not: it carries the dead-worker text, so a widened clause would rewrite it into a RuntimeError.
     lookalike = ValueError("One of the subprocesses has abruptly died during map operation.")
     with pytest.raises(ValueError) as caught_other:
         with dnp.map_failure_diagnostics(4):
@@ -1314,16 +1337,20 @@ def test_free_memory_pairs_each_limit_with_its_own_usage(monkeypatch, dnp, tmp_p
     leaf = slice_dir / "session.scope"
     leaf.mkdir(parents = True)
 
+    # The slice caps 32GB and 30 of them are spent, mostly by a sibling; this leaf has a 16GB cap of its own and has
+    # spent 1.
     (slice_dir / "memory.max").write_text("34359738368\n")
     (slice_dir / "memory.current").write_text("32212254720\n")
     (leaf / "memory.max").write_text("17179869184\n")
     (leaf / "memory.current").write_text("1073741824\n")
 
     _fake_cgroup_module(monkeypatch, v2_dirs = [leaf, slice_dir])
+    # 34 - 32 = 2GB from the slice, 16 - 1 = 15GB from the leaf. The slice binds.
     assert dnp._cgroup_free_bytes() == 2 * 1024**3
 
 
 def test_free_memory_is_never_negative(monkeypatch, dnp, tmp_path):
+    # An over-committed cgroup reports more usage than its limit under pressure.
     leaf = tmp_path / "scope"
     leaf.mkdir()
     (leaf / "memory.max").write_text("1073741824\n")
@@ -1384,8 +1411,6 @@ def test_the_unaided_reader_walks_to_the_binding_ancestor(monkeypatch, dnp, tmp_
     slice_dir = tmp_path / "user.slice"
     leaf = slice_dir / "session.scope"
     leaf.mkdir(parents = True)
-    # The slice caps 32GB and 30 of them are spent, mostly by a sibling;
-    # this leaf has a 16GB cap of its own and has spent 1.
     (slice_dir / "memory.max").write_text("34359738368\n")
     (slice_dir / "memory.current").write_text("32212254720\n")
     (leaf / "memory.max").write_text("17179869184\n")
@@ -1393,7 +1418,6 @@ def test_the_unaided_reader_walks_to_the_binding_ancestor(monkeypatch, dnp, tmp_
 
     monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
     monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/user.slice/session.scope"])
-    # 34 - 32 = 2GB from the slice, 16 - 1 = 15GB from the leaf.
     assert dnp._cgroup_free_bytes() == 2 * 1024**3
 
 
@@ -1432,7 +1456,6 @@ def test_the_unaided_reader_ignores_the_unlimited_sentinels(monkeypatch, dnp, tm
 
 def test_the_unaided_reader_is_never_negative(monkeypatch, dnp, tmp_path):
     _old_zoo(monkeypatch)
-    # An over-committed cgroup reports more usage than its limit under pressure.
     leaf = tmp_path / "scope"
     leaf.mkdir()
     (leaf / "memory.max").write_text("1073741824\n")
@@ -1476,7 +1499,9 @@ def _no_hf_xet_tuning(monkeypatch):
 
 
 def test_no_unsloth_zoo_and_no_cgroup_is_not_a_ceiling(monkeypatch, dnp, tmp_path):
-    # The cgroup tree is pointed away from the host's on purpose:
+    # The cgroup tree is pointed away from the host's on purpose: the unaided reader needs no unsloth_zoo, so leaving
+    # it on the real /sys/fs/cgroup would make the assertion depend on whether the runner is itself in a limited
+    # container, which is how this test would fail on CI and pass on a laptop.
     _no_hf_xet_tuning(monkeypatch)
     monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path / "absent"))
     monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: [])
@@ -1520,6 +1545,8 @@ def test_env_forced_serial_is_in_process_on_a_small_split(monkeypatch, dnp):
 
 
 def test_a_memory_starved_explicit_count_is_in_process_on_a_small_split(monkeypatch, dnp):
+    # Same shape without the env var: the memory clamp resolves to serial, and under the threshold that has an exact
+    # encoding.
     _force_start_method(monkeypatch, dnp, "fork")
     _force_stdlib_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 0)
@@ -1626,7 +1653,6 @@ def test_the_hatch_wins_on_a_small_split_too(monkeypatch, dnp):
     """A split under the threshold is where the resolver would otherwise stand
     down, and standing down there would silently discard the count a user set
     by hand to get workers on a small dataset."""
-    # Same shape without the env var:
     _force_start_method(monkeypatch, dnp, "fork")
     _force_stdlib_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "16")

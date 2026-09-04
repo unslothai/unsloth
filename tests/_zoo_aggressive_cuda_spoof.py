@@ -55,7 +55,8 @@ def apply() -> None:
     class _CudaRt:
         @staticmethod
         def cudaMemGetInfo(device: int = 0):
-            # (free, total), where `torch.cuda.mem_get_info` delegates.
+            # (free, total), where `torch.cuda.mem_get_info` delegates. The free half is deliberately nonzero: zero
+            # reads as an exhausted card to every caller that sizes a buffer or a chunk from it.
             return (60 * 1024**3, 80 * 1024**3)
 
         @staticmethod
@@ -88,10 +89,12 @@ def apply() -> None:
     sys.modules.setdefault("torch.cuda.nvtx", nvtx_stub)
     torch.cuda.nvtx = nvtx_stub  # type: ignore[attr-defined]
 
-    # CRITICAL:
+    # CRITICAL: torch.manual_seed() calls torch.cuda.manual_seed_all(), so routing the cuda seed APIs back through
+    # torch.manual_seed would infinite-recurse. No-op them; CUDA seeding is meaningless on CPU.
     torch.cuda.manual_seed = lambda *a, **k: None  # type: ignore[assignment]
     torch.cuda.manual_seed_all = lambda *a, **k: None  # type: ignore[assignment]
-    # rng_state APIs return a CPU-shaped placeholder;
+    # rng_state APIs return a CPU-shaped placeholder; do NOT route through torch.{get,set}_rng_state (those touch the
+    # CPU RNG).
     import torch as _t
 
     _empty_rng_state = _t.empty(0, dtype = _t.uint8)
@@ -159,7 +162,7 @@ def apply() -> None:
 
         setattr(torch, _name, _wrap)
 
-    # Tensor.pin_memory() instance method:
+    # Tensor.pin_memory() instance method: also a no-op (return self).
     if hasattr(torch.Tensor, "pin_memory"):
         torch.Tensor.pin_memory = lambda self, *a, **k: self  # type: ignore[assignment]
     if hasattr(torch.Tensor, "is_pinned"):

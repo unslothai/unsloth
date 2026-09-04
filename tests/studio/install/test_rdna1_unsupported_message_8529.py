@@ -78,7 +78,8 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-# Windows WMI reports the marketing name;
+# Windows WMI reports the marketing name; Linux lspci reports the chip plus a slash-joined list of the boards built
+# on it. Both must resolve.
 _RDNA1_NAMES = [
     ("AMD Radeon RX 5700 XT", "gfx1010"),
     ("AMD Radeon RX 5700", "gfx1010"),
@@ -99,7 +100,8 @@ _RDNA1_NAMES = [
     ("Navi 14 [Radeon Pro W5300M]", "gfx1012"),
     ("AMD Radeon RX 5300", "gfx1012"),
     ("AMD Radeon RX 5300M", "gfx1012"),
-    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10:
+    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10: the only Navi 10 retail parts naming neither
+    # "RX 5700" nor a W prefix.
     ("Navi 10 [Radeon Pro 5700 XT]", "gfx1010"),
     ("Navi 10 [Radeon Pro 5700]", "gfx1010"),
     ("AMD Radeon Pro 5700 XT", "gfx1010"),
@@ -292,7 +294,8 @@ class TestWindowsArm64GetsNoVulkanAdvice:
         ]
         assert offers, f"{path.name}: no Vulkan offer found"
         for i in offers:
-            # The resolver itself, not a boolean named after it:
+            # The resolver itself, not a boolean named after it: a mutant that kept the branch and hardcoded
+            # $unsupArm64 = $false survived that spelling.
             back = "\n".join(lines[max(i - 20, 0) : i])
             assert guard in back, (
                 f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
@@ -550,7 +553,7 @@ class TestAdviceIsNotEmittedForRdna1:
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1])
     def test_the_unsupported_arm_says_the_override_cannot_help(self, path):
         src = _normalised(path)
-        # Scoped to the card, not the host:
+        # Scoped to the card, not the host: see _HOST_WIDE_CLAIMS below for why.
         needle = "setting UNSLOTH_ROCM_GFX_ARCH will not change that for it."
         assert needle in src, f"{path.name}: the override disclaimer is missing"
 
@@ -672,7 +675,8 @@ class TestAdviceIsNotEmittedForRdna1:
         a CI failure with nothing untrue on the page.
         """
         src = _normalised(PACKAGE_ROOT / "README.md")
-        # Any spelling of the cutoff, not one literal:
+        # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2" slipped past an
+        # exact-string ban while contradicting the gfx906 carve-out.
         blanket = re.search(r"AMD GPUs? older than RDNA ?2", src, re.IGNORECASE)
         assert not blanket, (
             f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
@@ -683,7 +687,8 @@ class TestAdviceIsNotEmittedForRdna1:
         describes_group = re.search(r"no ROCm PyTorch wheels|Polaris|RDNA ?1", src, re.IGNORECASE)
         if not describes_group:
             return
-        # It does describe the group, so it has to describe it completely:
+        # It does describe the group, so it has to describe it completely: named by its members, and with the one
+        # member that is covered cut back out.
         for _member in ("Polaris", "RDNA 1"):
             assert _member in src, (
                 f"README describes the uncovered AMD group ({describes_group.group(0)!r}) "
@@ -905,12 +910,13 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
     )
 
 
+# ── Scope: these sentences speak for one card, not for the host ───────────
+
 # A host is not one GPU.
 # An RX 580 beside an RX 7900 XTX is a host where masking to the other card and pinning its arch DOES install wheels, so
 # a host-wide "nothing can enable ROCm here" is false there.
 # Deciding it at runtime was tried and dropped: "any adapter we cannot name" misfires on the Vega-class iGPU on most
 # Ryzen desktops, and "any covered peer" misses the Instinct and V620 parts no name table carries.
-# ── Scope: these sentences speak for one card, not for the host ───────────
 
 _ALL_SOURCES = [_INSTALL_SH, _SETUP_SH, _INSTALL_PS1, _SETUP_PS1, _STACK_PY]
 
@@ -1086,9 +1092,12 @@ class TestVulkanAdvice:
     # (stronger) live-output tests below cover it instead.
     _SHELL_SOURCES = [_INSTALL_PS1, _SETUP_PS1, _INSTALL_SH, _SETUP_SH]
 
-    # Everything the advice has to carry, asserted against EMITTED text only:
+    # Everything the advice has to carry, asserted against EMITTED text only: every phrase here also appears in the
+    # comments explaining the branch, so a whole-file search stays green after the message is gutted (three such
+    # mutants survived). The setter is per-file (see _SETTER) and gets its own tests below.
     _REQUIRED = [
-        # The offer must survive, not just the variable name:
+        # The offer must survive, not just the variable name: "no GPU acceleration is available" followed by a GPU
+        # backend's name is worse than either half alone.
         ("through Vulkan", "the affirmative Vulkan offer"),
     ]
 
@@ -1182,14 +1191,16 @@ class TestVulkanAdvice:
             f"duplicated; the advice must follow it either way."
         )
         for i in hits:
-            # Comments stripped from the WINDOW, not just the anchor:
+            # Comments stripped from the WINDOW, not just the anchor: every phrase below also appears in the
+            # comment explaining the branch, so raw lines stay green after the message is demoted to a comment
+            # (observed mutant).
             window = "\n".join(
                 line for line in _arm_window(lines, i) if not line.lstrip().startswith(("#", "//"))
             )
-            # The offer, not one phrasing of it: these arms are hard-wrapped to different widths.
-            # a backend without what it buys, or GGUF chat without the backend, is half an answer.
-            # "Vulkan" is matched case-sensitively in PROSE, so the setter's lowercase spelling cannot stand in for the
-            # sentence explaining it.
+            # The offer, not one phrasing of it: these arms are hard-wrapped to different widths. Both halves are
+            # required -- a backend without what it buys, or GGUF chat without the backend, is half an answer.
+            # "Vulkan" is matched case-sensitively in PROSE, so the setter's lowercase spelling cannot stand in
+            # for the sentence explaining it.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"
@@ -1361,7 +1372,8 @@ _POLARIS_NAMES = [
     ("AMD Radeon RX 480", "gfx803"),
     ("AMD Radeon RX 470", "gfx803"),
     ("Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]", "gfx803"),
-    # The Polaris 10 workstation boards:
+    # The Polaris 10 workstation boards: pci.ids groups them on Ellesmere, the RX 580 die from #8458, and their
+    # names carry no RX number for the consumer rows to hit.
     ("Ellesmere [Radeon Pro WX 7100 / WX 7100 Mobile / WX 5100 / V7300X / V7350x2]", "gfx803"),
     ("AMD Radeon Pro WX 7100", "gfx803"),
     ("AMD Radeon Pro WX 5100", "gfx803"),

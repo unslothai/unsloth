@@ -141,6 +141,7 @@ def _fake_cpu_gpu(mp):
     mp.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
 
     # Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
+    # Adam's _cuda_graph_capture_health_check() probes stream capture.
     mp.setattr(torch.cuda, "is_current_stream_capturing", lambda *a, **k: False, raising = False)
     try:
         import torch.cuda.graphs as _cg
@@ -217,7 +218,8 @@ def _load_plain():
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel).
+    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
+    # lacks them; supply minimal train/eval equivalents so the loop proceeds without the optimized wrapper.
     if not hasattr(model, "for_training"):
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
@@ -234,7 +236,10 @@ def _require_stack(_cpu_only_torch):
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
 
     # `import unsloth` reinstalls the real torch.compile (overwriting the eager passthrough set at module load), so the
-    # GRPO hot path (chunked_selective_ log_softmax) would really compile
+    # GRPO hot path (chunked_selective_log_softmax) would really compile -- and inductor picks the spoofed CUDA device,
+    # crashing on device props (`gcnArchName`). Re-apply the eager passthrough and flip dynamo's call-time kill switch
+    # so every @torch.compile runs eager regardless of when it was decorated. CPU eager is what we want. Through the
+    # module's MonkeyPatch, so both are undone with the rest of it.
     _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo  # noqa: E402

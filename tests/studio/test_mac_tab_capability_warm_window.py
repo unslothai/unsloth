@@ -37,8 +37,7 @@ SETTLED = {"status": "healthy", "service": "Unsloth UI Backend", "device_type": 
 UNMEASURED = {"status": "healthy", "service": "Unsloth UI Backend", "hardware_detecting": True}
 
 # Spelled out rather than read off the script, so these cases run unchanged against a build of it that does not define
-# the constant yet.
-# test_inline_row_ids_match_the_ frontends_default_pinned_set is what keeps the spelling honest.
+# the constant yet. test_inline_row_ids_match_the_frontends_default_pinned_set is what keeps the spelling honest.
 TRAIN = "train"
 
 GREYED = {"disabled": True, "spinner": False}
@@ -769,7 +768,8 @@ def _serve(
 
         def do_GET(self):
             if trickle:
-                # Headers, then a byte at a time forever.
+                # Headers, then a byte at a time forever. Every chunk resets urllib's per-operation timeout, which is
+                # the shape that hangs a naive read().
                 self.send_response(200)
                 self.send_header("Content-Length", "1000000")
                 self.end_headers()
@@ -1062,6 +1062,7 @@ def test_a_stall_that_begins_after_sampling_is_still_reported(tmp_path, monkeypa
     samples = _timeline(120)
     assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
     assert not mod._stall_windows(samples), "fixture already has a stall during sampling"
+    # 60s of silence after sampling stops, then the backend answers.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
     assert (
         _verdict(mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery) == []
@@ -1143,7 +1144,6 @@ def test_the_artifact_carries_what_the_verdict_was_computed_from(tmp_path, monke
     post-run stall, so nobody could check the claim."""
     mod = _load(tmp_path, monkeypatch)
     samples = _timeline(120)
-    # 60s of silence after sampling stops, then the backend answers.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
     assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
     assert any(pr["kind"] == "timeout" for pr in recovery), "fixture has no post-run stall"

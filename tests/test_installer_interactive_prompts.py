@@ -77,13 +77,17 @@ _MARKER = re.compile(
     r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE
 )
 
-# Anything that blocks waiting on a human.
+# Anything that blocks waiting on a human. `-p` is matched as an option word, not anchored on whitespace: it may be
+# bundled (`read -rp`) or follow `read` directly. The scan stops at `;|&`, since a `mkdir -p` later on the line is
+# another command.
 _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
 
-# An unredirected `read` takes the terminal it inherited, so it blocks too.
+# An unredirected `read` takes the terminal it inherited, so it blocks too. Loop and pipeline reads are fed by the
+# `done < ...` or the pipe: data, not questions. Options then variable names to end of line, in command position, so
+# the word `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*!?\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
@@ -107,6 +111,8 @@ _PY_READ = re.compile(
     r"|click\.confirm\s*\(|sys\.stdin(?:\.buffer)?\.read(?:line)?\s*\("
 )
 # In command position: starting the line or a `&`-joined command, after `do`, or as the body of a single-line `if`.
+# Echoing the word `choice` is not a prompt. `pause` asks nothing but waits for a keypress, which stalls setup just
+# the same.
 _BAT_READ = re.compile(
     r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b|pause\b)"
     r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b|pause\b)",
@@ -114,7 +120,7 @@ _BAT_READ = re.compile(
 )
 
 # A helper filename, with or without its `scripts/` prefix: sibling invocations such as "$SCRIPT_DIR/build_deps.sh"
-# carry no prefix.
+# carry no prefix. Resolved against the repo before it counts, so a name that is not a real script is ignored.
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
@@ -125,8 +131,8 @@ _FIELD = re.compile(r"\{[^}]*\(")
 # `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
 
-# `@' ...
-# The uninstaller prints its help from one and install.ps1 embeds source in the other.
+# `@' ... '@` is literal, unlike the expandable `@" ... "@`. The uninstaller prints its help from one and install.ps1
+# embeds source in the other.
 _HERESTRING_OPEN = re.compile(r"@'\s*$")
 _HERESTRING_CLOSE = re.compile(r"^\s*'@")
 
@@ -185,7 +191,8 @@ def _is_interactive_read(
         return any("<" not in part and _BAT_READ.search(part) for part in code.split("&"))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
-    # Inside a file-fed loop only a bare read consumes the file:
+    # Inside a file-fed loop only a bare read consumes the file: an explicit /dev/tty or -p read above overrode it and
+    # still waits on the terminal.
     if loop_input:
         return False
     # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's. `||` is a fallback, not a pipeline,
@@ -218,10 +225,12 @@ def _blank_heredocs(lines: list[str]) -> list[str]:
         # Openers come from code: not from a string, not from an inline comment.
         code = _blank_strings(line).split("#")[0]
         match = _HEREDOC.search(code)
-        # `python - <<PY` runs its body.
+        # `python - <<PY` runs its body. Blanking that would hide real code, which is the one thing worse than
+        # scanning it as shell.
         if match and not _INTERPRETER.search(code):
             terminator, start = match.group(1), index + 1
-    # An unterminated opener was not one.
+    # An unterminated opener was not one. Blanking to EOF would silently blind the scan for the rest of the file,
+    # prompts included.
     return out
 
 
@@ -283,7 +292,8 @@ def blank_comments(source: str, script: str) -> str:
             lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
             continue
-        # A comment naming a delimiter is not one:
+        # A comment naming a delimiter is not one: reading it as an opener would blank the rest of the file and take
+        # every prompt in it out of the scan.
         if _is_comment(line) or (batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE)):
             lines.append("")
             continue
@@ -543,7 +553,8 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
-        # A comment or a blank line inside the list does not end it.
+        # A comment or a blank line inside the list does not end it. Treating one as the end dropped every filter
+        # after it, so this guard passed while reading nothing.
         if collecting is not None and (not line.strip() or line.strip().startswith("#")):
             continue
         if collecting:
@@ -554,7 +565,7 @@ def test_the_workflow_runs_for_every_scanned_script():
     assert blocks, "no paths: filters found in cross-platform-parity-ci.yml"
 
     def matcher(pattern: str) -> re.Pattern:
-        # GitHub's `*` stops at a path separator;
+        # GitHub's `*` stops at a path separator; `**` does not.
         body = (
             re.escape(pattern)
             .replace(r"\*\*", "\x00")

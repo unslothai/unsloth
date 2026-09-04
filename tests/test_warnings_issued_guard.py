@@ -340,19 +340,20 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
     writers = set()
     for path in root.rglob("*_trainer.py"):
         if "experimental" in path.relative_to(root).parts:
-            continue
+            continue  # not exported from trl.trainer, so never wrapped by design
         try:
             text = path.read_text(encoding = "utf-8")
         except OSError:
-            continue  # not exported from trl.trainer, so never wrapped by design
+            continue
         if 'model.warnings_issued["estimate_tokens"] = True' in text:
             if 'hasattr(model, "warnings_issued")' in text:
-                continue
+                continue  # trl guards it itself here
             writers.add(path.stem[: -len("_trainer")])
 
     if not writers:
         pytest.skip("no trl trainer writes the attribute any more")
 
+    # trl file stems are snake_case; the wrapped names are CamelCase.
     normalized = {w.replace("_", "").lower() for w in wrapped}
     unwrapped = sorted(w for w in writers if w.replace("_", "") not in normalized)
     assert unwrapped == [], f"trl trainers writing warnings_issued but unwrapped: {unwrapped}"
@@ -363,6 +364,9 @@ if __name__ == "__main__":
 
 
 # ---- the kwargs the wrapper exists to move -------------------------------
+#
+# A real trl config, not a stand-in: `new_init` branches on isinstance(TrainingArguments), so a plain dataclass takes
+# the other branch and the tests would pass against the bug.
 def _sft_config():
     pytest.importorskip("trl")
     # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds that name to

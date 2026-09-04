@@ -46,7 +46,8 @@ ART.mkdir(parents = True, exist_ok = True)
 # against a partial install.
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
-# Per-turn assistant-bubble wait.
+# Per-turn assistant-bubble wait. The free macos-14 runner is ~3-5x slower at gemma-3-270m CPU inference; this lets it
+# bump the timeout.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # How long the rapid-submit step holds the first turn's response. Only needs to
 # outlast the 100 ms follow-up wait; kept well clear of it so a loaded runner
@@ -58,11 +59,13 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 
-# Default stays Chromium for CI.
+# Default stays Chromium for CI. Local runs can select firefox/webkit or a Chromium channel such as chrome/msedge.
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# Render like the 4 vCPU boxes users and Kaggle sessions actually run on.
+# Render like the 4 vCPU boxes users and Kaggle sessions actually run on. The rapid-submit step passes unthrottled
+# here and fails at 4x and 8x, which is how the parked-send bug was finally reproduced off Kaggle. Off unless set, and
+# Chromium only, since it is delivered over CDP.
 CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
@@ -248,8 +251,11 @@ def exercise_permission_mode_controls(page, shoot):
     # the reload starts there.
     # The debounce would not have fired until ~t+630ms, so the only PUT that goes out at all is the beforeunload
     # keepalive at t+252ms, and the reloaded page's hydrating GET arrives at t+697ms.
-    # It was betting that an unload-time keepalive beats a hydrating GET by 445ms of loopback, on every engine, every
-    # run.
+    # The assertion after the reload was therefore never testing the level this step chose. It was betting that an
+    # unload-time keepalive beats a hydrating GET by 445ms of loopback, on every engine, every run.
+    #
+    # So: wait for the level to actually be ON the installation before reloading and asserting on it. Assert what was
+    # achieved, not what was commanded.
     def expect_server_mode(expected, timeout_ms = 15_000):
         deadline = time.monotonic() + timeout_ms / 1000.0
         seen = "<never read>"
@@ -321,7 +327,9 @@ def exercise_permission_mode_controls(page, shoot):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 
-    # Legacy setting migration:
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto. Still under the refused hydration above: a
+    # stored level wins over the local derivation, so without it the second reload would assert against the level the
+    # first one seeded and read as a migration bug.
     migration_cases = (
         ("true", "Ask for approval"),
         ("false", "Run automatically"),
@@ -335,7 +343,8 @@ def exercise_permission_mode_controls(page, shoot):
     finally:
         page.unroute("**/api/chat/settings", refuse_settings_hydration)
 
-    # The other half of that contract:
+    # The other half of that contract: with a level stored for the install, a browser holding only the legacy key gets
+    # the installation's level back rather than its own derivation.
     choose("Ask for approval")
     expect_mode("Ask for approval")
     expect_server_mode("ask")
@@ -354,6 +363,7 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
+    # Full access requires explicit consent and never overwrites persistence.
     choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
@@ -363,7 +373,6 @@ def exercise_permission_mode_controls(page, shoot):
     expect(dialog).to_be_hidden()
     expect_mode("Run automatically")
 
-    # Full access requires explicit consent and never overwrites persistence.
     choose("Full access")
     expect(dialog).to_be_visible()
     dialog.get_by_role("button", name = "I understand").click()
@@ -575,7 +584,7 @@ def exercise_floating_monitor_geometry(page):
         ),
     )
 
-    # Chromium retains a blocked inline resize request.
+    # Chromium retains a blocked inline resize request. A subsequent drag must not reveal that hidden size.
     _, blocked_box = resize_monitor_to(
         viewport["width"] - 2,
         viewport["height"] - 2,
@@ -732,8 +741,8 @@ with sync_playwright() as p:
     )
 
     def shoot(name):
-        # Screenshots are diagnostic only
-        # Page.screenshot waits for webfonts, which on macos-14 can crowd the default;
+        # Screenshots are diagnostic only -- never fail on a screenshot timeout. Page.screenshot waits for webfonts,
+        # which on macos-14 can crowd the default; bump the timeout and swallow errors.
         _n[0] += 1
         try:
             page.screenshot(
@@ -751,7 +760,9 @@ with sync_playwright() as p:
     # new password twice and submit -- the user's first-run experience.
     # ─────────────────────────────────────────────────────
     step("change-password through UI (Setup your account)")
-    # Settle the network before touching the form:
+    # Settle the network before touching the form: a late bootstrap poll can rerender the page (dropping
+    # #new-password) mid-test. The whole goto/wait/fill/submit sequence is wrapped in a 3-attempt retry with a fresh
+    # page/reload between tries so a mid-try rerender doesn't poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
@@ -759,7 +770,7 @@ with sync_playwright() as p:
             try:
                 page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
-                pass
+                pass  # best-effort -- proceed even if network never idles
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             # Do NOT shoot() between wait_for and fill -- the screenshot's font-load wait can let a background poll
@@ -818,6 +829,7 @@ with sync_playwright() as p:
                         flush = True,
                     )
                     time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's page.goto() handles the reload.
                 page = recover_or_replace_page(
                     page,
                     ctx,
@@ -831,6 +843,9 @@ with sync_playwright() as p:
     # 2. Chat surface mounts, default model surface is visible.
     # ─────────────────────────────────────────────────────
     step("wait for composer to mount")
+    # After change-password the router rebuilds login -> chat shell; on macos-14 racing straight into wait_for() either
+    # burns the timeout or crashes the renderer mid-mount. Settle network first, then wait_for with one recovery cycle
+    # on failure.
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
     except Exception:
@@ -865,10 +880,10 @@ with sync_playwright() as p:
             try:
                 shoot(f"03-composer-wait-attempt-{_attempt + 1}-fail")
             except Exception:
-                pass  # best-effort -- proceed even if network never idles
+                pass
             if _attempt == 0:
-                # Replace the page if it died;
-                # otherwise next iteration's page.goto() handles the reload.
+                # Re-navigate: open a fresh page in the same context if the renderer died (localStorage auth
+                # survives), else re-goto to force a clean re-render.
                 page = recover_or_replace_page(
                     page,
                     ctx,
@@ -966,9 +981,6 @@ with sync_playwright() as p:
     # Best-effort: selector re-mounts as /api/models/list resolves, so use a short timeout and skip the snapshot on
     # miss.
     sel_text = ""
-    # After change-password the router rebuilds login -> chat shell; on macos-14 racing straight into wait_for() either
-    # burns the timeout or crashes the renderer mid-mount. Settle network first, then wait_for with one recovery cycle
-    # on failure.
     try:
         sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
     except Exception as _sel_err:
@@ -981,7 +993,8 @@ with sync_playwright() as p:
     # 3. Trigger model load via the same endpoint the picker uses.
     # ─────────────────────────────────────────────────────
     step("load GGUF via /api/inference/load (uses session cookie)")
-    # AbortSignal-bounded: macos-14 has been seen wedging on this fetch.
+    # AbortSignal-bounded: macos-14 has been seen wedging on this fetch. The 3-min budget is generous for a
+    # cold-cache load; a wedge fails cleanly instead of forcing a 30-min runner cancel.
     load_resp = evaluate_fetch(
         page,
         f"{BASE}/api/inference/load",
@@ -1097,7 +1110,8 @@ with sync_playwright() as p:
         )
 
     def send_and_wait(prompt, idx):
-        # Wait until the previous turn fully stopped:
+        # 1. Wait until the previous turn fully stopped: Send attached AND Stop detached. The composer hot-swaps
+        #    both in one DOM slot, so Stop's detached state alone is racy.
         page.wait_for_selector(
             'button[aria-label="Send message"]',
             state = "attached",
@@ -1110,13 +1124,16 @@ with sync_playwright() as p:
                 timeout = 5_000,
             )
         except Exception:
+            # Stop still on -- prior turn mid-stream. Wait it out at the full per-turn budget.
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
                 state = "detached",
                 timeout = TURN_TIMEOUT_MS,
             )
 
-        # Snapshot total bubble count before send;
+        # 2. Snapshot total bubble count before send; we wait for it to grow by exactly 1. We do NOT require
+        #    non-empty text: an empty assistant response is legitimate (gemma-3-270m does this at temp 0), and the
+        #    old non-empty predicate got stuck on such bubbles.
         bubbles_before = _bubble_count()
         # The llama.cpp and web update banners are fixed bottom-right toasts (z-9998 / z-9999) that can overlap the
         # composer's Send button and intercept the click. Snooze whichever is showing before sending.
@@ -1136,7 +1153,8 @@ with sync_playwright() as p:
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()
 
-        # Wait for the new placeholder bubble to render -- confirms the click was actionable and the request issued.
+        # 3. Wait for the new placeholder bubble to render -- confirms the click was actionable and the request
+        #    issued.
         page.wait_for_function(
             """(want) => {
                 return document.querySelectorAll(
@@ -1147,6 +1165,8 @@ with sync_playwright() as p:
             timeout = TURN_TIMEOUT_MS,
         )
 
+        # 4. Wait for this turn's streaming to finish. Stop may never appear (gemma-3-270m can finish before it
+        #    paints), so its appearance is best-effort; then wait for it to detach.
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1171,8 +1191,14 @@ with sync_playwright() as p:
     # How long a reply takes is not ours to decide: sampling settings, whatever GGUF_REPO points at and an early EOS all
     # move it, and a short answer can finish inside the follow-up delay on a fast runner, leaving nothing to queue
     # behind.
-    # The sync Playwright route handler runs on this thread, so a wait inside it blocks the test: the handler would fire
-    # during a wait_for_timeout, finish, and release the request before a Python-side second submit could happen, which
+    #
+    # The follow-up and the observation both run in the page, not here. The sync Playwright route handler runs on this
+    # thread, so a wait inside it blocks the test: the handler would fire during a wait_for_timeout, finish, and
+    # release the request before a Python-side second submit could happen, which puts the hold entirely before the
+    # follow-up instead of across it. Page timers keep running while this thread is parked in the handler. The page
+    # cannot observe a Playwright interception either, so no in-page timer can be aligned with one. Wrapping fetch
+    # solves both: the page sees the exact moment the first turn's request goes out, sends the follow-up then, and
+    # delays the response itself, so the turn is provably still running with no timing assumption.
     page.evaluate(
         """(args) => {
             const [secondPrompt, holdMs] = args;
@@ -1364,7 +1390,8 @@ with sync_playwright() as p:
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
     info(f"five turn lengths = {[len(t) for t in texts[:5]]}")
-    # Surface /v1/chat/completions status distribution:
+    # Surface /v1/chat/completions status distribution: a 4xx here is usually the cause of a hung wait_for_function
+    # downstream.
     if chat_completions_responses:
         statuses = [code for code, _ in chat_completions_responses]
         bad = [code for code in statuses if code >= 400]
@@ -1380,7 +1407,8 @@ with sync_playwright() as p:
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
     page.wait_for_timeout(400)
-    # Exclude disabled controls:
+    # Exclude disabled controls: the picker's new disabled "Reload model" button also matches and sorts first, so
+    # .first would target it.
     regen_btn = (
         page.get_by_role(
             "button",
@@ -1391,9 +1419,7 @@ with sync_playwright() as p:
     )
     if regen_btn.count() > 0:
         regen_btn.click()
-        # Wait for this turn's streaming to finish.
         try:
-            # Stop still on -- prior turn mid-stream.
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
                 state = "detached",
@@ -1568,6 +1594,8 @@ with sync_playwright() as p:
             if len(actual["fontSize"]) != 1:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
+            # Pin the token, not a range: one spanning every preference (12 to 20, so 11.625px to 19.375px) also
+            # admits the neighbouring tokens.
             try:
                 ui_font_scale = float(typography.get("uiFontScale") or "1")
             except ValueError:
@@ -1587,7 +1615,8 @@ with sync_playwright() as p:
                 0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
                 for v in actual["letterSpacing"]
             ]
-            # Sub-pixel tolerance only:
+            # Sub-pixel tolerance only: the browser reports the exact product, so anything larger would stop the
+            # check from noticing a changed tracking value.
             if len(spacings) != 1 or abs(spacings[0] - expected_spacing) > 0.005:
                 fail(
                     f"chat letter spacing {label}/{role}: expected {expected_em}em of "
@@ -1712,7 +1741,8 @@ with sync_playwright() as p:
                 "(toggle may not flip on this runner's color-scheme)"
             )
 
-        # These are user-driven theme transitions, not synthetic class changes.
+        # These are user-driven theme transitions, not synthetic class changes. A completed three-cycle toggle must
+        # expose both typography states before we check the Linux selector.
         if len(typography_states) != 3:
             soft_fail(
                 f"chat typography observed {len(typography_states)} theme state(s), expected 3"
@@ -1760,6 +1790,9 @@ with sync_playwright() as p:
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
+        # force=True bypasses the actionability check: the post-toggle view-transition can briefly report <html> as
+        # topmost even though the button is visible + enabled (belt-and-suspenders atop the startViewTransition
+        # neutraliser).
         try:
             click_forced(btn, timeout = 5_000)
         except Exception as exc:
@@ -1973,9 +2006,14 @@ with sync_playwright() as p:
         fail(f"rotated pw should be 200, got {s_new}")
     info("OK old=401, new=200")
 
-    # 16.
+    # ─────────────────────────────────────────────────────
+    # 16. Out-of-band ("terminal") password rotation via subprocess(curl).
+    # Rotating from a shell must invalidate the old creds and revoke
+    # refresh tokens server-side (auth.py:152), so the browser's
+    # /api/auth/refresh must fail too.
     # ─────────────────────────────────────────────────────
     step("rotate password via subprocess(curl) -- the 'terminal' path")
+    # Log in via the API for a fresh token (what an admin does from a shell).
     login_proc = subprocess.run(
         [
             "curl",
@@ -2118,10 +2156,7 @@ with sync_playwright() as p:
     wait_for_health(BASE, timeout = 30.0, info = info)
     relogin_err: Exception | None = None
     for _relogin_attempt in range(3):
-        # force=True bypasses the actionability check:
         try:
-            # Pin the token, not a range: one spanning every preference (12 to 20, so 11.625px to 19.375px) also admits
-            # the neighbouring tokens.
             try:
                 page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
             except Exception as exc:
@@ -2204,7 +2239,9 @@ with sync_playwright() as p:
     if relogin_err is not None:
         raise relogin_err
     # Composer mount confirms the rotated session is authenticated.
-    # Kept OUTSIDE the retry: the loop breaks right after submit, so we never re-goto /login once login has set tokens
+    # Kept OUTSIDE the retry: the loop breaks right after submit, so we never re-goto /login once login has set
+    # tokens -- that would hit the guest guard, redirect to /chat, and make a merely-slow composer look like a broken
+    # login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
     monitor_deadline = time.time() + 10
@@ -2272,8 +2309,9 @@ with sync_playwright() as p:
         except urllib.error.URLError as exc:
             info(f"OK /api/health unreachable: {exc!r}")
 
-    # Some pageerrors are benign: chat-completions 422s (network-layer bubble-up, not a JS bug;
-    # Full list in `_playwright_robust.BENIGN_PAGE_ERROR_PATTERNS`.
+    # Some pageerrors are benign: chat-completions 422s (network-layer bubble-up, not a JS bug; per-turn flow already
+    # validates each turn) and fetch failures after Shutdown (server is dead by design). Full list in
+    # `_playwright_robust.BENIGN_PAGE_ERROR_PATTERNS`.
     real_errors = [e for e in page_errors if not is_benign_page_error(e)]
     real_console_errors = [e for e in console_errors if not is_benign_console_error(e)]
     if page_errors:

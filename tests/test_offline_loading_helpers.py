@@ -70,6 +70,8 @@ def test_effective_lfo_is_read_only():
 
 
 # ---------------------------------------------------------------------------
+# _is_offline_related_error
+# ---------------------------------------------------------------------------
 
 
 def _http_error(status):
@@ -154,6 +156,7 @@ def test_urllib_httperror_503_is_offline():
 
 
 def test_ssl_error_is_not_offline():
+    # TLS/cert failure must surface, not silently fall back to cached files.
     import ssl
     assert L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
 
@@ -165,7 +168,6 @@ def test_requests_ssl_error_is_not_offline():
 
 
 def test_urlerror_wrapping_ssl_is_not_offline():
-    # TLS/cert failure must surface, not silently fall back to cached files.
     import ssl
     import urllib.error
 
@@ -231,6 +233,8 @@ def test_cause_context_cycle_terminates():
     assert L._is_offline_related_error(a) is False
 
 
+# ---------------------------------------------------------------------------
+# _force_hf_offline
 # ---------------------------------------------------------------------------
 
 
@@ -442,7 +446,8 @@ def test_offline_error_when_already_offline_propagates(monkeypatch):
 
 
 def test_kwargs_preserved_across_retry(monkeypatch):
-    # Callee popping config/tokenizer_name must not change what the retry sees:
+    # Callee popping config/tokenizer_name must not change what the retry sees: fn(*args, **kwargs) re-packs a fresh
+    # **kwargs per call.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     seen = []
@@ -490,7 +495,8 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
 
 
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
-    # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state
+    # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state,
+    # not the just-forced "1"; otherwise the process pins offline.
     import sys
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -519,14 +525,14 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
 
 
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
+    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its cached processor still
+    # loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
 
 
 def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
-    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its cached processor still
-    # loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     _touch(tmp_path, "preprocessor_config.json")
@@ -875,7 +881,7 @@ def test_a_context_the_loader_suppressed_is_not_promoted_to_a_cause(monkeypatch)
     "artifact",
     [
         # A missing vocabulary resolves to None and is then dereferenced, opened or stat'd, so the family spans four
-        # stat'd, so the family spans four exception types (#7845).
+        # exception types (#7845).
         AttributeError("'NoneType' object has no attribute 'readlines'"),
         TypeError(
             "argument should be a str or an os.PathLike object where __fspath__ "

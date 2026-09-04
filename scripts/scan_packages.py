@@ -103,10 +103,10 @@ RE_BASE64 = re.compile(
 
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
-# Network APIs (excludes urllib.parse which is pure string manipulation) ``httpx2`` is the pydantic-maintained successor
-# and a separate import name, so the older ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and
-# routes every call through it, which made the SDK's own HTTP invisible to each combined check that needs a network half
-# (secrets + network, IMDS + network, archive + network).
+# Network APIs (excludes urllib.parse which is pure string manipulation). ``httpx2`` is the pydantic-maintained
+# successor and a separate import name, so the older ``httpx``-only alternative did not see it. openai 3.0.0 requires
+# httpx2 and routes every call through it, which made the SDK's own HTTP invisible to each combined check that needs a
+# network half (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
@@ -272,7 +272,9 @@ RE_FS_ENUM = re.compile(
     r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
     # Undotted history files, with a boundary that finds them however the path was built.
     # fish writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a leading dot.
-    # A quote counts as a boundary alongside a separator, so a basename assembled by Path.home() / "fish" /
+    # A quote counts as a boundary alongside a separator, so a basename assembled by
+    # Path.home() / "fish" / "fish_history" or os.path.join(h, "fish", "fish_history") still matches: there the
+    # character before the name is the quote, not a slash.
     r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
     r"|['\"~/]\.history\b"
     r"|\bHISTFILE\b"
@@ -301,6 +303,8 @@ RE_REVERSE_SHELL = re.compile(
 
 # The same thing without the dup2 branch, used only to answer "would this file still be a reverse shell if dup2 did not
 # count?".
+# dup2 is the ordinary way to point a file descriptor at a file, and it was the only single-token alternative above,
+# in a pattern whose every other branch names two co-occurring signals.
 # So it fired on capture helpers and redirect plumbing: ten of the nineteen reverse-shell entries in the committed
 # baseline are dup2 with no socket anywhere in the file (click/testing.py, numba/tests/support.py, rich/console.py,
 # torch elastic redirects.py, sentencepiece) and not one is a true positive.
@@ -576,7 +580,7 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
 
     spans: list[
         tuple[int, int, int, int]
-    ] = []  # (srow, scol, erow, ecol) start-of-file behaves like a new line
+    ] = []  # (srow, scol, erow, ecol)
     prev_significant = tokenize.NEWLINE  # start-of-file behaves like a new line
     n = len(toks)
     for i, tok in enumerate(toks):
@@ -584,13 +588,13 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
         if ttype == tokenize.COMMENT:
             if blank_comments:
                 spans.append((*tok.start, *tok.end))
-            continue
+            continue  # transparent; never advances prev_significant
         if (
             ttype == tokenize.STRING
             and prev_significant in _LINE_START_TOKENS
             and not _is_fstring(tok.string)  # f-strings execute; never blank them
         ):
-            # Bare string only if it is the whole statement:
+            # Bare string only if it is the whole statement: the next significant token must close the logical line.
             j = i + 1
             while j < n and toks[j].type in (tokenize.COMMENT, tokenize.NL):
                 j += 1
@@ -606,7 +610,7 @@ def _strip_noncode(content: str, blank_comments: bool = True) -> str:
             tokenize.ENCODING,
         ):
             prev_significant = ttype
-            continue  # transparent; never advances prev_significant
+            continue
         prev_significant = ttype
 
     if not spans:
@@ -656,6 +660,9 @@ def _hidden_payload_findings(
     out = []
 
     # The visible exec/eval line is what makes the hidden string executable, so bind it into every finding's evidence:
+    # otherwise a reviewed false positive that keeps the same hidden text but flips a harmless `eval("1+1")` to
+    # `exec(__doc__)` (now running the payload) keeps the same key and stays suppressed. Taken from `stripped` (real
+    # code), where the exec/eval lives.
     trigger = _extract_evidence(stripped, RE_EXEC_EVAL)
 
     def _hidden(pat):
@@ -720,9 +727,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_anti = bool(RE_ANTI_ANALYSIS.search(content))
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
-    # dup2 counts only alongside a socket;
-    # see RE_FD_DUP.
-    # see RE_REVERSE_SHELL_WITHOUT_DUP.
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
     has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
         bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
     )
@@ -1183,7 +1188,7 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     per-line regex cannot blank."""
     out: list[str] = []
     in_triple: str | None = (
-        None  # active ''' or \"\"\" delimiter, or None active ' or " continued via a trailing
+        None  # active ''' or \"\"\" delimiter, or None
     )
     in_string: str | None = None  # active ' or " continued via a trailing backslash
     for line in lines:
@@ -1255,7 +1260,8 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
                 if closed:
                     i = j
                 else:
-                    # Ran off the line without closing:
+                    # Ran off the line without closing: an odd trailing backslash escapes the newline and continues
+                    # the string onto the next line, so remember the quote; otherwise it is just unterminated.
                     i = n
                     if _ends_with_odd_backslash(line):
                         in_string = ch
@@ -1354,7 +1360,11 @@ def _extract_evidence(
     ml_blanked = _blank_code_strings(lines)
     out = []
     seen: set[tuple[int, int]] = set()
-    # Overflow is streamed, not buffered:
+    # Overflow is streamed, not buffered: once `out` holds _MAX_EVIDENCE_SPANS rendered spans, every further span is
+    # folded straight into a running digest instead of being materialized and sliced off at the end, so memory and work
+    # stay bounded to the display cap rather than the match count while the digest still covers every overflow span.
+    # The fold reproduces _canon_evidence(" | ".join(overflow)) exactly (strip each span to its non-empty L<NN>-less
+    # code lines, join with "\n"), so the digest is identical to buffering the whole list and canonicalizing once.
     overflow_count = 0
     overflow_hash = hashlib.sha256()
     overflow_started = False
@@ -1377,7 +1387,9 @@ def _extract_evidence(
     def _render(start: int, end: int) -> str:
         span = lines[start - 1 : end] or ["<multiline match>"]
         if len(span) > _MAX_MULTILINE_LINES:
-            # Digest the code without the L<NN>:
+            # Digest the code without the L<NN>: markers so a pure line shift of the same span stays stable while a
+            # code change still reopens. The head is truncated for display only; the span digest already binds its
+            # full content, so no per-line digest is needed here.
             code = "\n".join(ln.rstrip() for ln in span)
             digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
             head = span[0].rstrip()
@@ -1452,14 +1464,15 @@ def _blob_digest(content: str) -> tuple[str, str]:
     return blobs[0], digest
 
 
-# Non-Python checkers Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a bundled .js / .sh /
-# workflow yaml so the Python imports looked clean. These checkers scan those file types when they appear inside a
-# wheel/sdist.
+# Non-Python checkers. Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a bundled
+# .js / .sh / workflow yaml so the Python imports looked clean. These checkers scan those file types when they appear
+# inside a wheel/sdist.
 def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run JS-side checks. Triggered by .js / .mjs / .cjs / .ts."""
     findings = []
 
-    # A >100 KB JS file inside a Python wheel is anomalous:
+    # A >100 KB JS file inside a Python wheel is anomalous: CRITICAL combined with any other JS heuristic, HIGH
+    # standalone.
     is_large = len(content) > 100 * 1024
     has_obf = bool(RE_JS_OBFUSCATION.search(content))
     has_web3 = bool(RE_WEB3_HIJACK.search(content))
@@ -1728,7 +1741,7 @@ def iter_archive_files(archive_path: str):
                         file = sys.stderr,
                     )
                     return
-                # Refuse symlinks/hardlinks/devices:
+                # Refuse symlinks/hardlinks/devices: tar parsers have historically dereferenced them on extract.
                 if member.issym() or member.islnk():
                     print(
                         f"  [WARN] {path.name}: refused link member " f"{member.name!r}",
@@ -1862,7 +1875,7 @@ def _check_blocked_pypi_versions(specs: list[str]) -> tuple[list[str], list[Find
         blocked = BLOCKED_PYPI_VERSIONS.get(name, set())
         if not blocked:
             safe.append(spec)
-            continue  # single-line matches are already covered by the pass above A giant greedy DOTALL span is bound
+            continue
         m = _RE_PYPI_SPEC_VERSION.search(spec)
         version = m.group(1) if m else None
         if version is not None and version in blocked:
@@ -1998,9 +2011,10 @@ def _marker_holds_by_default(marker: str) -> bool:
     any uncertainty, keep (over-scan, never silently skip)."""
     m = marker.strip()
     if not m or "extra" not in m:
-        return True  # also platform/python gated:
-    if any(v in m for v in _MARKER_ENV_VARS):
         return True  # no extra gate: installed by default on some target -> scan
+    if any(v in m for v in _MARKER_ENV_VARS):
+        return True  # also platform/python gated: true on some target -> scan
+    # Pure extra marker: decide by evaluating with no extra requested.
     try:
         from packaging.markers import Marker, default_environment
 
@@ -2008,7 +2022,7 @@ def _marker_holds_by_default(marker: str) -> bool:
         env["extra"] = ""
         return bool(Marker(m).evaluate(env))
     except Exception:
-        # packaging missing/unparseable:
+        # packaging missing/unparseable: drop only a pure positive extra-equality.
         return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
 
 
@@ -2922,7 +2936,8 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
             )
         except (KeyError, TypeError):
             continue
-        # None = unpinned (key alone suppresses).
+        # None = unpinned (key alone suppresses). A set = only those file digests. An unpinned entry wins, since it
+        # already suppresses the key on its own.
         pin = e.get("file_sha256")
         if key not in keys:
             keys[key] = {pin} if pin else None
@@ -3151,6 +3166,8 @@ def main() -> int:
 
         # Scanning, not downloading, is the cost here: on the hf-stack shard the `pip download` above takes 9.7s and the
         # pass below took 306s of a 316s total.
+        # `imap` with chunksize=1 yields in submission order, so the findings list is assembled in exactly the order
+        # the serial loop produced it and the report is unchanged.
         # chunksize=1 is also what makes `next(timeout=)` available at all: above 1, CPython's Pool.imap returns a bare
         # generator with no timeout support (Lib/multiprocessing/pool.py).
         tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
@@ -3229,7 +3246,7 @@ def main() -> int:
             _run_fix(critical_pkgs, entries, args.max_search)
 
     # Surface pip-download failures BEFORE the exit code so a partial download can't masquerade as "0 findings, all
-    # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
+    # clean" (silent-failure hardening 4). Also keeps us from writing a baseline from an incomplete scan.
     incomplete_errors = download_errors + scan_errors
     if incomplete_errors:
         print(

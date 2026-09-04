@@ -164,8 +164,9 @@ def _run_capturing_bytes(
     is how the CLI spawns setup for ``unsloth studio update``. Piped stdout is
     required to reproduce, and is captured as bytes, never decoded here.
     """
-    # Unique per call:
     # Unique per call. The name used to be (stem, shape), which several tests share, so under pytest-xdist one case
+    # could unlink the script after another had written it and before its pwsh child opened it. pwsh is installed on
+    # ubuntu-latest, so these do not skip there and would race for real.
     tmp = (
         REPO_ROOT
         / "tests"
@@ -195,7 +196,7 @@ def _run_capturing_bytes(
 def test_setup_output_is_valid_utf8(use_command_shape: bool) -> None:
     """Strict decode. Lossy decoding here would hide the exact regression."""
     raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
-    text = raw.decode("utf-8")
+    text = raw.decode("utf-8")  # strict on purpose; UnicodeDecodeError is the failure
     assert REPLACEMENT not in text, "output contains U+FFFD (OEM bytes decoded as UTF-8)"
 
 
@@ -203,7 +204,7 @@ def test_setup_output_is_valid_utf8(use_command_shape: bool) -> None:
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_glyphs_survive_the_pipe(use_command_shape: bool) -> None:
     raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
-    text = raw.decode("utf-8")  # strict on purpose; UnicodeDecodeError is the failure
+    text = raw.decode("utf-8")
     assert text.count(SLOTH) == 1, "sloth emoji lost or duplicated"
     assert "??" not in text, "emoji was transcoded to '?' by a non-UTF-8 code page"
     assert RULE_CHAR * 52 in text, "the 52-char rule did not survive intact"
@@ -231,17 +232,17 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     assert matches[0] == "  gpu            none (chat-only / GGUF)"
 
 
+# The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
+# step/substep, so they need their own byte-level coverage.
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
     raw = _run_capturing_bytes(_banner_footer_harness(), use_command_shape, stem = "banner_footer")
-    text = raw.decode("utf-8")
+    text = raw.decode("utf-8")  # strict on purpose
     assert REPLACEMENT not in text, "banner/footer contain U+FFFD (OEM bytes decoded as UTF-8)"
     assert "??" not in text, "emoji was transcoded to '?' by a non-UTF-8 code page"
 
 
-# The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
-# step/substep, so they need their own byte-level coverage.
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
@@ -251,6 +252,7 @@ def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
     assert text.count(SLOTH) == 1, "sloth emoji lost or duplicated"
     assert text.count(f"  {SLOTH} Unsloth Studio Setup") == 1
     assert text.count("  Unsloth Studio Setup Complete") == 1
+    # One rule under the banner, two around the footer.
     assert text.count("  " + RULE_CHAR * 52) == 3, "the 52-char rule did not survive intact"
 
 
@@ -332,7 +334,8 @@ def _function_match(masked: str, name: str) -> re.Match[str] | None:
     return re.search(r"(?im)^[ \t]*function\s+" + re.escape(name) + r"\b", masked)
 
 
-# Write-Host may only appear inside a helper that has already ruled out the redirected sink:
+# Write-Host may only appear inside a helper that has already ruled out the redirected sink: Write-StudioLine itself,
+# and setup.ps1's step/substep, which return through the console mirror before reaching their interactive branch.
 WRITE_HOST_ALLOW_LIST = {
     SETUP_PS1: ("Write-StudioLine", "step", "substep"),
     INSTALL_PS1: ("Write-StudioLine",),
@@ -482,14 +485,23 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     ), f"{rust_file} does not force PYTHONIOENCODING"
 
 
-# Calling FreeConsole() in the child first produces the state install.rs assumes, and there the two diverge hard:
-
-# The console-less spawn.
+# The console-less spawn. Windows only, and last in the file because it reuses the literal masking above to
+# brace-match the blocks it lifts.
+#
 # A GitHub runner hands a CREATE_NO_WINDOW child a console anyway (GetConsoleOutputCP 437, GetConsoleWindow 0), so the
-# UTF-8 setter in the preamble succeeds there and every version of these scripts emits a clean banner.
+# UTF-8 setter in the preamble succeeds there and every version of these scripts emits a clean banner. The cases above
+# therefore cannot tell this fix from what preceded it. Calling FreeConsole() in the child first puts it in the state
+# install.rs's own comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard: without the sink,
+# Write-Host throws `HostException: GetConsoleScreenBufferInfo, The Win32 internal error "The handle is invalid" 0x6`,
+# the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where the
+# banner should be.
+#
+# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue and the stderr
+# diagnostics are harness.
 CREATE_NO_WINDOW = 0x08000000
 
-# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends.
+# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends. Not Bypass:
+# RemoteSigned is what the shipped spawn uses.
 TAURI_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]
 
 # install.rs::powershell_exe.
@@ -711,7 +723,8 @@ def test_console_less_banner_is_valid_utf8(path: Path) -> None:
         "log shows U+FFFD. With no console the UTF-8 setter throws, and only the "
         "writers bound in its catch branch keep the stream UTF-8." + detail
     )
-    # Strict on purpose; UnicodeDecodeError is the failure.
+    # Strict on purpose; UnicodeDecodeError is the failure. Reruns the cached bytes rather than trusting the lossy
+    # pass above to have caught everything.
     _run_console_less(path)[1].decode("utf-8")
 
 
@@ -727,7 +740,9 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     )
 
 
-# Sliced back out to rebuild the function this replaced, so parity is measured against the real predecessor.
+# Sliced back out to rebuild the function this replaced, so parity is measured against the real predecessor. The
+# comments go with the guard: they do not execute, but leaving them behind would make the reconstruction something
+# this test invented rather than the merge-base function.
 _VT_FAST_PATH = re.compile(
     r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
     r"(?:^[ \t]*#.*\n)*"

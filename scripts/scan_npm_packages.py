@@ -58,18 +58,21 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# ───────────────────────────────────────────────────────────────────── Hard caps (deliberately conservative;
-# npm tarballs in this repo are all well under these limits, so a packaging spike is noticeable).
-# ───────────────────────────────────────────────────────────────────── Caps calibrated against the real Unsloth
-# frontend transitive closure: - typescript.js is 9.1 MB (TS compiler bundled into one file) - mermaid 11.x
-# dist/mermaid.js.map is ~12 MB (sourcemap) - lightningcss-linux-x64-{gnu,musl}.node is 10 MB - rolldown bindings
-# (.node) are 18-26 MB per platform - @next/swc-*.node is ~137 MB (rust-compiled SWC engine) - next.js cumulative bundle
-# is ~134 MB (turbopack compiled) Native binaries (.node, .wasm, .so, .dll, .dylib) are GENUINELY huge and not amenable
-# to text pattern scanning
-# we extract them only to verify the tarball integrity over the full archive, then skip them in scan_extracted_tree.
-# Text files (JS/TS/JSON/etc) keep the tight cap because the pattern scanner runs over them and a 9.1 MB typescript.js
-# is the legitimate ceiling.
-# 256 MiB compressed 16 MiB per text file 256 MiB per .node etc 512 MiB cumulative entries per tarball per request
+# ─────────────────────────────────────────────────────────────────────
+# Hard caps (deliberately conservative; npm tarballs in this repo are all well under these limits, so a packaging
+# spike is noticeable).
+# ─────────────────────────────────────────────────────────────────────
+# Caps calibrated against the real Unsloth frontend transitive closure:
+#   - typescript.js is 9.1 MB (TS compiler bundled into one file)
+#   - mermaid 11.x dist/mermaid.js.map is ~12 MB (sourcemap)
+#   - lightningcss-linux-x64-{gnu,musl}.node is 10 MB
+#   - rolldown bindings (.node) are 18-26 MB per platform
+#   - @next/swc-*.node is ~137 MB (rust-compiled SWC engine)
+#   - next.js cumulative bundle is ~134 MB (turbopack compiled)
+# Native binaries (.node, .wasm, .so, .dll, .dylib) are GENUINELY huge and not amenable to text pattern scanning: we
+# extract them only to verify the tarball integrity over the full archive, then skip them in scan_extracted_tree.
+# They get a much higher per-file cap. Text files (JS/TS/JSON/etc) keep the tight cap because the pattern scanner runs
+# over them and a 9.1 MB typescript.js is the legitimate ceiling.
 HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
 HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
 HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
@@ -122,7 +125,8 @@ _VERSIONED_LIB = re.compile(
     re.IGNORECASE,
 )
 
-# Magic numbers at offset 0 that identify common executable formats.
+# Magic numbers at offset 0 that identify common executable formats. We sniff the first ~16 bytes of every member to
+# catch extensionless binaries (eg `package/biome`, `package/bin/foo`).
 _BINARY_MAGICS = (
     b"\x7fELF",  # ELF (Linux executable / .so)
     b"MZ",  # PE / .exe / .dll (DOS header prefix)
@@ -212,11 +216,14 @@ class PackageEntry:
         return f"{self.name}@{self.version}"
 
 
-# ───────────────────────────────────────────────────────────────────── IOC patterns.
-# Two flavours: - HOSTS / TOKEN_PATHS: high-confidence substrings;
-# near-zero FP rate - JS_PATTERNS / SCRIPT_PATTERNS: regex;
+# ─────────────────────────────────────────────────────────────────────
+# IOC patterns. Two flavours:
+#   - substring tables (KNOWN_IOC_STRINGS, CRED_HOST_*, CRED_PATH_SUBSTRINGS): high-confidence, near-zero FP rate
+#   - regexes (_JS_FETCH_EVAL, _JS_ENV_TOKEN, _LIFECYCLE_FETCH_EXEC, _OBFUSC_BLOB): tuned to recent campaigns
+# Keep this list short and factual. Speculative patterns spam the false-positive ledger and dull the signal.
 # ─────────────────────────────────────────────────────────────────────
 
+# Substring (case-sensitive) -> (severity, detail).
 KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     # Shai-Hulud TanStack wave (2026-05-11, GHSA-g7cv-rxg3-hmpx).
     "router_init.js": (HIGH, "filename associated with TanStack worm"),
@@ -248,7 +255,7 @@ KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
         HIGH,
         "tanstack_runner.js payload SHA-256",
     ),
-    # The new dependency vector:
+    # The new dependency vector: optional dep -> Bun-executed prepare script.
     "bun run tanstack_runner.js": (
         CRITICAL,
         "TanStack-wave Bun prepare-script dropper invocation",
@@ -306,7 +313,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/vue-start-client": {"1.166.46", "1.166.49"},
     "@tanstack/vue-start-server": {"1.166.50", "1.166.53"},
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: OpenSearch JS client.
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
     # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
     # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
@@ -405,7 +412,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages).
     "@tallyui/components": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-medusa": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-shopify": {"1.0.1", "1.0.2", "1.0.3"},
@@ -416,7 +423,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tallyui/pos": {"0.1.1", "0.1.2", "0.1.3"},
     "@tallyui/storage-sqlite": {"0.2.1", "0.2.2", "0.2.3"},
     "@tallyui/theme": {"0.2.1", "0.2.2", "0.2.3"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions).
     "@beproduct/nestjs-auth": {
         "0.1.2",
         "0.1.3",
@@ -437,16 +444,16 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
         "0.1.18",
         "0.1.19",
     },
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/*.
     "@draftauth/client": {"0.2.1", "0.2.2"},
     "@draftauth/core": {"0.13.1", "0.13.2"},
     "@draftlab/auth": {"0.24.1", "0.24.2"},
     "@draftlab/auth-router": {"0.5.1", "0.5.2"},
     "@draftlab/db": {"0.16.1"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli.
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*.
     "@dirigible-ai/sdk": {"0.6.2", "0.6.3"},
     "@mesadev/rest": {"0.28.3"},
     "@mesadev/saguaro": {"0.4.22"},
@@ -455,7 +462,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@ml-toolkit-ts/xgboost": {"1.0.3", "1.0.4"},
     "@supersurkhet/cli": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
     "@supersurkhet/sdk": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
-    # Mini Shai-Hulud May-12 wave:
+    # Mini Shai-Hulud May-12 wave: unscoped packages (10 entries).
     "safe-action": {"0.8.3", "0.8.4"},
     "ts-dna": {"3.0.1", "3.0.2", "3.0.3", "3.0.4"},
     "cross-stitch": {"1.1.3", "1.1.4", "1.1.5", "1.1.6"},
@@ -472,12 +479,13 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
 }
 
 # Cloud / k8s / CI credential surfaces.
-# A bare substring match here false-positives on DEFENSIVE code
-# langchain ships an SSRF protection module with a literal blocklist of IMDS IPs.
-# We split these into two tiers: ALWAYS_BAD: substrings with no legitimate use anywhere in a dependency.
-# NEEDS_CONTEXT: hosts/paths that DO appear legitimately in defensive code.
-
-# Cloud / k8s / CI credential surfaces.
+# A bare substring match here false-positives on DEFENSIVE code, e.g. langchain ships an SSRF protection module with a
+# literal blocklist of IMDS IPs. We split these into two tiers:
+#   ALWAYS_BAD: substrings with no legitimate use anywhere in a dependency. A bare match is enough.
+#   NEEDS_CONTEXT: hosts/paths that DO appear legitimately in defensive code. We only fire when they co-occur with a
+#     fetch verb or appear inside an http URL, which is the structural difference between "blocked address constant"
+#     and "exfil target".
+# The dispatch lives in `scan_text_blob` below.
 CRED_HOST_ALWAYS_BAD: tuple[tuple[str, str], ...] = (
     ("registry.npmjs.org/-/npm/v1/tokens", "npm publish-token enumeration endpoint"),
     ("ACTIONS_ID_TOKEN_REQUEST_URL", "GitHub Actions OIDC token-exchange endpoint env"),
@@ -496,7 +504,8 @@ CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ),
 )
 
-# Credentials a frontend package should never read.
+# Credentials a frontend package should never read. Bare substring match is too noisy (legit dev tooling mounts
+# ~/.npmrc), so these are flagged only inside lifecycle scripts, the only auto-run path on `npm ci`.
 # See `scan_package_json` below.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.npmrc", "npm credentials file"),
@@ -539,7 +548,8 @@ _JS_ENV_TOKEN = re.compile(
     re.VERBOSE,
 )
 
-# Lifecycle-script fetch+exec chain:
+# Lifecycle-script fetch+exec chain: curl/wget an external resource and run it. Bare curl/wget is allowed (legit
+# fixture fetches); only the fetch+exec chain is blocked.
 _LIFECYCLE_FETCH_EXEC = re.compile(
     r"""(?xs)
     (?:curl|wget|fetch|http\.get|axios\.get)\s+ # fetch verb
@@ -779,7 +789,7 @@ def safe_extract(
     total = 0
     count = 0
     try:
-        # Streaming mode (no backward seeks);
+        # Streaming mode (no backward seeks); `r|gz` rejects bad gzip.
         with tarfile.open(tarball_path, mode = "r|gz") as tf:
             for member in tf:
                 count += 1
@@ -837,7 +847,7 @@ def safe_extract(
                         f"({'binary' if is_binary else 'text'})"
                     )
                 total += len(data)
-                # Restrictive mode (rw-r--r--):
+                # Restrictive mode (rw-r--r--): nothing executable.
                 with open(dest, "wb") as out:
                     out.write(data)
                 os.chmod(dest, 0o644)
@@ -855,6 +865,8 @@ def safe_extract(
 
 _MAX_CONT_LINES = 200
 # Hard cap on how far forward a bracket group is followed to its close, measured from the matched line so the tail
+# after the match is always reachable even when the opener was found near the backward limit (digest input only, never
+# displayed); a realistic config object closes well within it.
 _MAX_GROUP_LINES = 200
 
 # JS string literal (single / double / template), blanked before counting brackets so a bracket inside a string is not
@@ -1029,8 +1041,9 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
                 start = j  # outermost still-open opener begins here
             depth += right
 
-    # Forward:
-    # Forward: extend until the group opened at `start` closes past the match.
+    # Forward: extend until the group opened at `start` closes past the match. The same order-aware reduction is used
+    # (clamping leading closers at 0) so the foreign `})` on the opener line does not drive the count negative and stop
+    # the scan before the real close. The cap is measured from the match (`idx`), not from `start`.
     depth = 0
     end = start
     for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
@@ -1194,8 +1207,11 @@ def _ioc_evidence(text: str, needle: str) -> str:
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
-# ───────────────────────────────────────────────────────────────────── Code-only scanning for JS/TS sources.
-# JS sibling of scan_packages.py::_strip_noncode.
+# ─────────────────────────────────────────────────────────────────────
+# Code-only scanning for JS/TS sources. Blank `//` and `/* */` comments before matching (the top FP source: scary
+# strings in JSDoc/changelog comments), tracking string/template/regex context so a `//` inside "http://..." is not
+# mistaken for a comment. Strings are NOT blanked (droppers hide payloads there). Fail open on lexer confusion: the
+# raw text is still scanned. JS sibling of scan_packages.py::_strip_noncode.
 # ─────────────────────────────────────────────────────────────────────
 
 _JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
@@ -1466,7 +1482,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     ),
                 )
             )
-    # Optional deps pointing at github:
+    # Optional deps pointing at github: are the TanStack-style injection vector.
     opt = meta.get("optionalDependencies") or {}
     if isinstance(opt, dict):
         for k, v in opt.items():
@@ -1503,7 +1519,7 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     )
     if url_form.search(text):
         return True
-    # host appears within 200 chars of a fetch verb (either side).
+    # 2. host appears within 200 chars of a fetch verb (either side).
     fetch_context = re.compile(
         rf"(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}{host_re}"
         rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})",
@@ -1511,7 +1527,7 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     )
     if fetch_context.search(text):
         return True
-    # `host:` / `hostname:` config field referencing the IP.
+    # 3. `host:` / `hostname:` config field referencing the IP.
     cfg_form = re.compile(
         rf"(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`]",
         re.IGNORECASE,
@@ -1634,6 +1650,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
 
     # Credential PATHS aren't scanned here (too many FPs at file scope);
     # scan_package_json catches them inside lifecycle scripts.
+    # JS-specific regex.
     if _JS_FETCH_EVAL.search(text):
         findings.append(
             Finding(
@@ -1674,7 +1691,8 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     return findings
 
 
-# Filename suffix decides which scanners run;
+# Filename suffix decides which scanners run; .cjs/.mjs/.ts are treated like .js (attackers use whichever the loader
+# resolves).
 _TEXT_SUFFIXES = (
     ".js",
     ".mjs",
@@ -1770,8 +1788,11 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             pass
 
 
-# Baseline allowlist, matched on ``(normalized package, package-relative path, pattern)`` rather than evidence text:
-
+# ─────────────────────────────────────────────────────────────────────
+# Baseline allowlist: triaged known-good HIGH/CRITICAL findings so the gate can enforce without red-failing on rare
+# legitimate-library behavior. Matched on ``(normalized package, package-relative path, pattern)`` rather than evidence
+# text, so a version bump does not reopen a finding, but a *new* kind of finding in a listed file is a different
+# pattern and still fails. Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
 # ─────────────────────────────────────────────────────────────────────
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
@@ -2079,9 +2100,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_baseline(args.write_baseline, all_findings, threshold_rank)
         return 0
 
-    # ───────────────────────────────────────────────────────────────────── Baseline allowlist: triaged known-good
-    # HIGH/CRITICAL findings so the gate can enforce without red-failing on rare legitimate-library behavior.
-    # Mirrors scan_packages.py.
+    # Baseline allowlist: suppress triaged, known-good findings so the CI gate can be enforcing without red-failing on
+    # legitimate-library noise.
     if args.no_baseline:
         baseline_path = None
     elif args.baseline:

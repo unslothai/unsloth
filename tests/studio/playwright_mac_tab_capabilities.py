@@ -80,7 +80,7 @@ NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# How long to keep polling the backend.
+# How long to keep polling the backend. The reported crash landed at t+66s, so the window has to reach well past that;
 # the workflow narrows it to 120s because nothing in this phase runs the launcher's watchdog and the longer window buys
 # no extra evidence.
 SURVIVAL_S = float(os.environ.get("STUDIO_MAC_SURVIVAL_S", "330"))
@@ -89,11 +89,12 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 # How long the forced-verdict check gives the row to settle into its pending state.
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
 # Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs, so a probe here waits as long as the launcher's does
-# before calling it a miss.
+# before calling it a miss. It is the only watchdog number this file needs;
 # see BackendSurvivalPoller.report for why it does not mirror the rest.
 PROBE_TIMEOUT_S = 10.0
 # How long to keep watching after sampling stops before calling a stall terminal.
-# In run 32862298967 one macOS runner produced four of them, at 10.03s, 25.1s, 27.75s and 33.2s, so a window that
+# Sized from the stalls actually observed on this job rather than from a round number. In run 32862298967 one macOS
+# runner produced four of them, at 10.03s, 25.1s, 27.75s and 33.2s, so a window that
 # decides "this one never ended" has to comfortably clear 33.2s.
 # 90s is a little under three times that.
 #
@@ -105,7 +106,10 @@ PROBE_TIMEOUT_S = 10.0
 RECOVERY_WINDOW_S = 90.0
 # Minimum spacing between recovery probes.
 # _transport_kind classifies a connection reset as a stall rather than a death on purpose, because a reset means a
-# listener accepted and then failed to finish.
+# listener accepted and then failed to finish. But a reset comes back in about a millisecond, so an unpaced loop turns
+# this window into thousands of connections against a backend that is already in trouble, which can prolong the fault
+# it is waiting to clear. Spacing costs nothing on the case that matters: a real stall spends the full probe budget
+# before returning, so no pause is added at all there.
 RECOVERY_PROBE_SPACING_S = 2.0
 # Health replies are a few hundred bytes; these bound a body read that is going wrong.
 _READ_CHUNK_BYTES = 65536
@@ -320,11 +324,12 @@ def await_recovery(
     while True:
         remaining = window_s - (time.monotonic() - began)
         if probes and remaining <= 0:
-            # No time left to give a probe.
+            # No time left to give a probe. Starting one anyway is how the watch ran past its own bound: the pacing
+            # sleep is clamped to the window, so the loop could arrive here with nothing left and still begin a
+            # full-budget request. That is the overrun the wall watchdog exists to catch.
             break
-        # Never hand out more budget than the window has left either.
-        # A probe started near the end with the default PROBE_TIMEOUT_S can outlive the window by most of that budget on
-        # its own.
+        # Never hand out more budget than the window has left either. A probe started near the end with the default
+        # PROBE_TIMEOUT_S can outlive the window by most of that budget on its own.
         probe_began = time.monotonic()
         status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
         # Recorded in the same shape and on the same clock as the poller's samples, so
@@ -348,7 +353,6 @@ def await_recovery(
             break
         elapsed = time.monotonic() - began
         if elapsed >= window_s:
-            # No time left to give a probe.
             break
         # A probe that failed instantly did not spend its budget, so it was a reset
         # rather than silence. Pace the next one, and never past the end of the window.
@@ -470,6 +474,8 @@ class BackendSurvivalPoller:
             refused = [s for s in got if s["kind"] == "refused"]
             answered_badly = [s for s in got if s["kind"] == "http"]
             if refused:
+                # The port stopped accepting. Nothing transient does this to a backend that is meant to be up, so it
+                # is fatal on the first occurrence.
                 fail(
                     f"{path}: connection refused at t={refused[0]['t']}s; the port was gone, "
                     "so the backend did not stay up through the warm window"
@@ -487,7 +493,12 @@ class BackendSurvivalPoller:
         # This phase gets STUDIO_MAC_SURVIVAL_S = 120 (.github/workflows/studio-mac-ui-smoke.yml), while the busy path
         # alone is HEALTH_WATCHDOG_MAX_FAILURES_BUSY * 15s plus a 30s confirmation, about 210s, and
         # BACKEND_STARTUP_GRACE_PERIOD is 300s before a backend that has not yet answered healthy counts a failure at
-        # all.
+        # all. The watchdog is not running here either: this phase boots `unsloth studio` directly, with no Tauri
+        # shell, and the watchdog's own behaviour is covered by the Rust tests beside it in commands.rs.
+        #
+        # One timeline: the poller's samples then the watch's probes, same clock. A span is therefore measured across
+        # the join rather than truncated at it, and a stall that starts after sampling stops gets a span of its own
+        # instead of none.
         observed = list(self.samples) + list(recovery_samples)
         (ART / "survival_samples.json").write_text(
             json.dumps(observed, indent = 1),
@@ -510,8 +521,11 @@ class BackendSurvivalPoller:
                 "but reporting itself unhealthy"
             )
         elif final_kind == "timeout":
-            # Nothing came back for the whole recovery window.
+            # Nothing came back for the whole recovery window. A stall that was going to end had every one of those
+            # seconds to end in.
             if terminal is not None:
+                # terminal spans the recovery probes too, now that they are on the same timeline, so the total already
+                # includes the watch. Naming the watch again as extra time on top of it would count it twice.
                 fail(
                     f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
                     f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence in "
@@ -519,8 +533,6 @@ class BackendSurvivalPoller:
                     "did not survive the window."
                 )
             else:
-                # The port stopped accepting.
-                # terminal spans the recovery probes too, now that they are on the same timeline, so the total already
                 fail(
                     f"backend answered nothing for {final_wait_s}s after the run "
                     f"({LIVENESS_PATH} kept timing out), so it did not survive the window"
@@ -631,6 +643,7 @@ def log_in(page) -> bool:
             pw_box.fill(OLD)
             submit = page.get_by_role("button", name = re.compile(r"^(login|sign in)$", re.I))
             submit.first.click()
+            # Settle on the post-auth route rather than sleeping a fixed 3s.
             try:
                 page.wait_for_url(
                     lambda url: not signed_out(url),
@@ -646,6 +659,7 @@ def log_in(page) -> bool:
     except Exception as exc:
         info(f"login form interaction raised {exc!r}")
 
+    # Prove it rather than assume it: land somewhere authed and check we stayed.
     try:
         page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
         page.wait_for_timeout(1500)
@@ -780,7 +794,6 @@ def assert_pending_state_on_forced_verdict(page) -> None:
         route.fulfill(status = 200, content_type = "application/json", body = body)
 
     page.route(_HEALTH_ROUTE, serve_provisional)
-    # Prove it rather than assume it:
     try:
         try:
             page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
@@ -798,7 +811,6 @@ def assert_pending_state_on_forced_verdict(page) -> None:
         deadline = time.monotonic() + FORCED_PENDING_S
         got = None
         while True:
-            # Settle on the post-auth route rather than sleeping a fixed 3s.
             try:
                 got = row_states(page, (GATED_ROW_ID,)).get(GATED_ROW_ID)
             except Exception as exc:
@@ -857,8 +869,9 @@ def drive_tabs(page) -> None:
         # without the capability. What it must not do is bounce while the verdict
         # is still unknown, which is the race this run is here to catch.
         if signed_out(landed):
-            # Never legitimate here:
-            # Never legitimate here: the session was proven signed in before the walk started.
+            # Never legitimate here: the session was proven signed in before the walk started. Calling this an
+            # allowed redirect is exactly how a run that authenticated with nobody goes green having exercised
+            # nothing.
             fail(f"{name}: bounced to the login page at {landed}; the session was lost mid-walk")
             continue
         if route not in landed:
@@ -870,13 +883,15 @@ def drive_tabs(page) -> None:
             else:
                 info(f"{name}: redirected to {landed} after a measured verdict (allowed)")
 
+        # Read every inline row, not just this tab's: they render together, so one read records that the sidebar came
+        # up at all and keeps the per-route detail in the log.
         try:
             _rows_seen.update(rid for rid, got in row_states(page).items() if got)
         except Exception as exc:
             info(f"{name}: could not read the sidebar rows ({exc!r})")
 
-        # Read every inline row, not just this tab's:
-        # Clicking the row is the interaction the user reported;
+        # Clicking the row is the interaction the user reported; a greyed-out row swallows the click, so this doubles
+        # as a check that it is reachable.
         try:
             row = page.locator(f'[data-testid="nav-row-{row_id}"]')
             if row.count() > 0 and row.first.is_enabled():
@@ -889,7 +904,8 @@ def drive_tabs(page) -> None:
                 # render and this tab checked nothing.
                 fail(f"{name}: nav row {row_id} is pinned inline by default but did not render")
             else:
-                # Expected and permanent for Video and Export:
+                # Expected and permanent for Video and Export: they live under "More", which renders no test id.
+                # Reached by route instead.
                 info(f"{name}: nav row not pinned inline; reached by route instead")
         except Exception as exc:
             info(f"{name}: row click did not land ({exc!r})")

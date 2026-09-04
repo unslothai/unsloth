@@ -27,8 +27,11 @@ from unsloth_pwsh_runner import PWSH, PwshInterpreterCrash, run_pwsh
 # A SIGABRT is forged with Python rather than pwsh: the real trigger is a .NET startup stack overflow we cannot summon
 # on demand, and the helper keys on the signal, not on who sent it, so `os.abort()` reproduces exactly the condition CI
 # hit.
-# PR_SET_DUMPABLE = 0 first, per tests/test_deliberate_crashes_suppress_cores.py.
+# PR_SET_DUMPABLE = 0 first, per tests/test_deliberate_crashes_suppress_cores.py. The child still dies of SIGABRT, so
+# every verdict below is unchanged; what goes away is apport reading a multi-MB core before the child is reaped, on
+# each of the several aborts these tests spend.
 # Linux-only, and deliberately not fatal elsewhere: Windows has no CDLL(None) and pipes no core anywhere, so failing to
+# arm it there would turn a no-op into a lost test.
 _ABORT = [
     sys.executable,
     "-c",

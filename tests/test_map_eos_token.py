@@ -111,7 +111,7 @@ def test_other_map_eos_token_combinations_are_unchanged():
 
 def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
     # gemma_chatml / gemma2_chatml: <|im_end|> only exists because <eos> is renamed to it, so the opt-out cannot be
-    # honored without leaving eos_token dangling.
+    # honored without leaving eos_token dangling. This pins the common shape, where eos_token is the renamed piece;
     # the next test pins the checkpoints where it is not, which is the case keying on tokenizer.eos_token used to miss.
     resolved, messages = _resolve(
         map_eos_token = False,
@@ -138,6 +138,8 @@ def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
 
 
 def test_a_template_veto_still_wins_over_the_refusal():
+    # The refusal only overrides the caller. A template that does not want eos mapping at all keeps
+    # map_eos_token = False even if it carries a token_mapping.
     resolved, messages = _resolve(
         map_eos_token = True,
         yes_map_eos_token = False,
@@ -149,8 +151,8 @@ def test_a_template_veto_still_wins_over_the_refusal():
 
 
 def test_opt_out_still_honored_when_the_template_leaves_the_vocab_alone():
-    # The refusal only overrides the caller.
     # chatml / gemma / gemma2 carry no token_mapping, so nothing is half-applied when the mapping is skipped and the
+    # caller's choice stands.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,

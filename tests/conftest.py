@@ -14,6 +14,8 @@ Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 from __future__ import annotations
 
 # --- torch.compile cache isolation -------------------------------------------------
+# Must run before torch is imported anywhere below, so it is here rather than in a
+# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
 import importlib.util as _ilu  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 

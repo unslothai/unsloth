@@ -47,6 +47,9 @@ SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
 # ---- the premise ---------------------------------------------------------
+#
+# Every check drives torch.amp.autocast(device_type = "cuda"), and on a CPU runner torch hands back a no-op instead.
+# Claiming the device is present is what lets these run anywhere; only torch's dispatch decisions are needed.
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 

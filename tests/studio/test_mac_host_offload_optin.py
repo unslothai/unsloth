@@ -78,8 +78,9 @@ def test_the_opt_out_explains_itself_in_place():
 def test_no_other_gguf_workflow_disables_the_guard(name):
     doc = _doc(name)
     offenders = []
-    # Workflow level first.
     # Workflow level first. GitHub propagates a top-level `env:` to every job, so it is the BROADEST way to set this
+    # and was the one place a job/step scan could not see: one line at the top of the Linux or Windows workflow would
+    # disable the guard across every job in it while this test, whose whole subject is blast radius, stayed green.
     if (doc.get("env") or {}).get(ENV_VAR) is not None:
         offenders.append("workflow env (applies to every job)")
     for jid, job in (doc.get("jobs") or {}).items():
