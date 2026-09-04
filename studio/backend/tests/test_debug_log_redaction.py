@@ -120,7 +120,10 @@ SECRETS = [
     ('password = """opaqueSecret123"""', "opaqueSecret123"),
     ("password = '''opaqueSecret123'''", "opaqueSecret123"),
     ("UID=alice;PWD=/hunter2;Encrypt=yes", "/hunter2"),
-    ("X-Amz-Security-Token: IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ", "IQoJb3JpZ2luX2VjEJr"),
+    (
+        "X-Amz-Security-Token: IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ",
+        "IQoJb3JpZ2luX2VjEJr",
+    ),
     ('headers={"x-amz-security-token": "IQoJb3JpZ2luX2VjEJr"}', "IQoJb3JpZ2luX2VjEJr"),
 ]
 

@@ -327,7 +327,11 @@ def _redact_kv(match: re.Match[str]) -> str:
     value = match.group("val")
     # a standalone PWD= holding a path is the shell's working directory; inside a ;-delimited odbc string it is a password
     preceded_by = match.string[match.start() - 1] if match.start() else ""
-    if match.group("key") == "PWD" and _PATH_START_RE.match(value) and (not preceded_by or preceded_by.isspace()):
+    if (
+        match.group("key") == "PWD"
+        and _PATH_START_RE.match(value)
+        and (not preceded_by or preceded_by.isspace())
+    ):
         return match.group(0)
     boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
     tail = ""
@@ -599,7 +603,8 @@ def _redact_credentials(text: str) -> str:
     text = _ESCAPED_QUOTED_KV_RE.sub(_redact_escaped_quoted_kv, text)
     text = _QUOTED_HEADER_PAIR_RE.sub(_redact_quoted_header_pair, text)
     text = _TRIPLE_QUOTED_KV_RE.sub(
-        lambda m: f"{m.group('key')}{m.group('sep')}{m.group('quote')}{REDACTED}{m.group('quote')}", text
+        lambda m: f"{m.group('key')}{m.group('sep')}{m.group('quote')}{REDACTED}{m.group('quote')}",
+        text,
     )
     text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
