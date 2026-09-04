@@ -7179,6 +7179,13 @@ def _limited_resource_limits() -> tuple[int, int, int, int]:
         raise RuntimeError("Limited mode resource-limit configuration is invalid") from exc
     if any(value <= 0 for value in limits):
         raise RuntimeError("Limited mode resource limits must be positive")
+    if sys.platform == "darwin":
+        # Darwin can report RLIM_INFINITY for NOFILE while rejecting values
+        # above the kernel's current per-process descriptor ceiling.
+        try:
+            limits = (*limits[:3], min(limits[3], int(os.sysconf("SC_OPEN_MAX"))))
+        except (ValueError, OSError):
+            raise RuntimeError("Limited mode could not determine the macOS file limit")
     return limits
 
 
