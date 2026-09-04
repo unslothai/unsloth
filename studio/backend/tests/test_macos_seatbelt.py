@@ -136,6 +136,18 @@ def test_sbpl_filters_include_a_validated_runtime_alias(monkeypatch, tmp_path):
     assert f"(literal {json.dumps(str(target))})" in filters
 
 
+def test_sbpl_ancestor_filters_are_literal_and_not_global(tmp_path):
+    runtime = tmp_path / "Frameworks" / "Python.framework" / "Python"
+    runtime.parent.mkdir(parents = True)
+    runtime.touch()
+
+    filters = os_sandbox._sbpl_ancestor_filters((str(runtime),))
+
+    assert f"(literal {json.dumps(str(runtime.parent))})" in filters
+    assert f"(literal {json.dumps(str(tmp_path))})" in filters
+    assert all(filter_.startswith("(literal ") for filter_ in filters)
+
+
 def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     monkeypatch, tmp_path
 ):
@@ -167,6 +179,11 @@ def test_profile_is_deny_default_with_narrow_filesystem_and_unix_socket_rules(
     encoded_tmp = json.dumps(os.path.realpath(private_tmp))
 
     assert profile.startswith("(version 1)\n(deny default)\n")
+    metadata_line = next(
+        line for line in profile.splitlines() if line.startswith("(allow file-read-metadata")
+    )
+    assert metadata_line != "(allow file-read-metadata)"
+    assert f"(literal {json.dumps(str(runtime.parent))})" in metadata_line
     deny_line = next(line for line in profile.splitlines() if line.startswith("(deny process-exec"))
     assert all(json.dumps(os.path.realpath(path)) in deny_line for path in denied)
     assert f"(allow network-bind (local unix-socket (subpath {encoded_tmp})))" in profile

@@ -1199,15 +1199,36 @@ def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
     return filters
 
 
+def _sbpl_ancestor_filters(paths: tuple[str, ...]) -> list[str]:
+    filters: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        canonical, _ = _sbpl_path(path)
+        for spelling in (os.path.abspath(path), json.loads(canonical)):
+            current = os.path.dirname(spelling.rstrip(os.path.sep)) or os.path.sep
+            while current:
+                encoded = json.dumps(current)
+                if encoded not in seen:
+                    seen.add(encoded)
+                    filters.append(f"(literal {encoded})")
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+    return filters
+
+
 def _macos_seatbelt_profile(
     *, workdir: str, private_tmp: str, runtime_paths: tuple[str, ...]
 ) -> str:
+    readable_paths = (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
     read_filters = [
         '(literal "/")',
-        *_sbpl_path_filters(
-            (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
-        ),
+        *_sbpl_path_filters(readable_paths),
     ]
+    metadata_filters = _sbpl_ancestor_filters(readable_paths)
     write_filters = _sbpl_path_filters((workdir, private_tmp))
     temp_encoded, _ = _sbpl_path(private_tmp)
     device_filters = _sbpl_path_filters(_MACOS_DEVICES)
@@ -1228,6 +1249,7 @@ def _macos_seatbelt_profile(
         "(allow signal (target same-sandbox))",
         "(allow process-info* (target same-sandbox))",
         "(deny process-exec " + " ".join(denied_exec) + ")",
+        "(allow file-read-metadata " + " ".join(metadata_filters) + ")",
         "(allow file-read* file-test-existence " + " ".join(read_filters) + ")",
         "(allow file-map-executable " + " ".join(read_filters) + ")",
         "(allow file-write* " + " ".join(write_filters) + ")",
