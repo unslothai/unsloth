@@ -720,7 +720,12 @@ def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
     text = _INSTALL_SH.read_text(encoding = "utf-8")
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
-    window = text[i : i + 500]
+    # Bounded by the generic-failure fallback rather than by a character count: what this
+    # asserts is that exit 2 is propagated BEFORE the reroute degrades to "run it yourself",
+    # and a fixed-size window makes that pass or fail on how much comment sits in between.
+    end = text.find('substep "Could not auto-continue in $_rr_target', i)
+    assert end != -1, "WSL reroute generic-failure fallback not found after the reroute call"
+    window = text[i:end]
     assert (
         '[ "$_rr_rc" -eq 2 ]' in window and "exit 2" in window
     ), "the reroute must propagate the child's tauri exit 2 (NEED_SUDO)"

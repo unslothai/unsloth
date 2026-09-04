@@ -44,12 +44,32 @@ Run with no arguments to uninstall. Unrecognized arguments never trigger
 removal.
 
 Environment:
+  UNSLOTH_HOME              Also remove this portable install root, the one
+                            passed to install.sh --root. Covers the caches and
+                            native runtimes beside the Studio install. Wins over
+                            the two below, as it does in install.sh.
   UNSLOTH_STUDIO_HOME       Also remove this custom install root. Pass the value
                             used at install time.
   STUDIO_HOME               Alias for the above, ignored when both are set.
   UNSLOTH_UNINSTALL_ROCM=1  Also remove system ROCm (WSL only). Off by default
                             because ROCm is a shared prerequisite.
+
+Only the first of the three root variables that is set is removed. Each names a
+whole install, so a stale one left over in the environment would otherwise take
+another install's chat history with it.
 EOF
+}
+
+# Strip leading/trailing whitespace, the same normalization install.sh applies to every root
+# it reads (install.sh:73). The installer, storage_roots.py ((os.environ.get(...) or "").strip())
+# and unsloth_cli/commands/studio.py all treat a whitespace-only root as UNSET, so the
+# uninstaller has to agree: untrimmed, `UNSLOTH_HOME=" "` passed `-n`, took the first branch of
+# the precedence chain below and stopped there, so a real install named by UNSLOTH_STUDIO_HOME
+# was never examined and survived the uninstall that environment asked for.
+# Written as a multi-line function on purpose: tests/sh/test_uninstall_sd_cpp_custom_root.sh
+# lifts helpers out with `sed -n '/^_name() {/,/^}/p'`, and a one-liner would extract as nothing.
+_trim_ws() {
+    printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
 # Stop an Unsloth server via its PID file (written by install.sh's _spawn_terminal).
@@ -98,7 +118,13 @@ _owned_sd_cpp_roots() {
     _sd_cpp_sibling_bases 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
         _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
-        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+        # `if`, not `[ ... ] && printf`: this loop is the last statement of the function, so a
+        # final iteration finding no marker would make the loop, and with it the function,
+        # return non-zero and abort the caller under `set -e` -- skipping the process stop
+        # for every sd.cpp already printed.
+        if [ -f "$_sd_root/.unsloth-studio-owned" ]; then
+            printf '%s\n' "$_sd_root"
+        fi
     done
 }
 
@@ -111,7 +137,22 @@ _sd_cpp_sibling_bases() {
     {
         _custom_studio_roots 2>/dev/null
         _custom_studio_roots lexical 2>/dev/null
-    } | awk '!seen[$0]++'
+    } | awk '!seen[$0]++' | while IFS= read -r _sb; do
+        # Studio roots only. _custom_studio_roots also emits the MASTER root of a nested
+        # portable install, whose parent is one level above the install, so an sd-server
+        # belonging to a NEIGHBOURING install would be signalled there. The master root's own
+        # <root>/stable-diffusion.cpp is already covered by the loop above. Same master-root
+        # test as the removal loop; see the comment there for why the venv alone cannot decide
+        # it. Inline rather than a shared helper: this function is extracted and sourced on its
+        # own by tests/sh/test_uninstall_sd_cpp_custom_root.sh, where a helper defined
+        # elsewhere would die as "command not found" inside a condition and go silently inert.
+        if [ ! -f "$_sb/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_sb/studio/unsloth_studio" ] \
+                 || [ -f "$_sb/.unsloth-portable-root" ]; }; then
+            continue
+        fi
+        printf '%s\n' "$_sb"
+    done
 }
 
 # pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
@@ -299,6 +340,14 @@ _remove_root_recording_db() {
     [ -n "$_rrd_real" ] || _rrd_real="$_rrd_root"
     _rrd_had_db=0
     _rrd_db="$_rrd_real/studio.db"
+    # A nested portable root is the MASTER root, and its database sits one level in at
+    # <root>/studio/studio.db. The caller passes the master root because that is the tree
+    # to delete, so probe the Studio root here rather than reporting no history was found
+    # after removing it. Flat test first, matching storage_roots.studio_root().
+    if [ ! -f "$_rrd_db" ] && [ ! -d "$_rrd_real/unsloth_studio" ] \
+        && [ -f "$_rrd_real/studio/studio.db" ]; then
+        _rrd_db="$_rrd_real/studio/studio.db"
+    fi
     if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
         # The db itself can be a symlink out of the tree: -f follows it but the rm below
@@ -358,6 +407,11 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # Nested portable root: the venv is one level down and the shim is a wrapper file, not a
+    # symlink, so neither test above fires until create_studio_shortcuts writes share/studio.conf
+    # and an install that failed before that is left on disk. Both sentinels, never the portable
+    # marker alone: the owner marker is the same ownership proof the checks above require.
+    [ -f "$_r/.unsloth-portable-root" ] && [ -f "$_r/studio/unsloth_studio/.unsloth-studio-owned" ] && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
@@ -379,7 +433,12 @@ _is_unsafe_root() {
 # Print share/ dirs of known custom roots (where PID files live).
 _custom_studio_data_dirs() {
     _custom_studio_roots 2>/dev/null | while IFS= read -r _r; do
-        [ -d "$_r/share" ] && printf '%s\n' "$_r/share"
+        # `if`, not `[ ... ] && printf`: the loop is the last statement here, so a final root
+        # with no share/ would return non-zero out of the function and abort the caller under
+        # `set -e`, losing the PID files of the roots already printed.
+        if [ -d "$_r/share" ]; then
+            printf '%s\n' "$_r/share"
+        fi
     done
 }
 
@@ -411,9 +470,16 @@ _custom_studio_roots() {
         # Skipped for the lexical pass, which exists only to rebuild the path an
         # older build derived with a plain dirname (see _sd_cpp_sibling_bases).
         if [ "${_studio_roots_lexical:-}" != "lexical" ]; then
+            # `|| _canon=""` is load-bearing under `set -e`, like the identical walks in
+            # _remove_root_recording_db: an assignment takes the exit status of its command
+            # substitution, so a root that cannot be canonicalized (already deleted by hand,
+            # mistyped, or removed by this very run before the producer reached it) killed
+            # this whole subshell and silently dropped every root still to be enumerated.
             # shellcheck disable=SC1007
-            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
-            [ -n "$_canon" ] && _r="$_canon"
+            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P) || _canon=""
+            if [ -n "$_canon" ]; then
+                _r="$_canon"
+            fi
         fi
         case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
         case ":$_seen:" in *":$_r:"*) return 0 ;; esac
@@ -427,16 +493,49 @@ _custom_studio_roots() {
         _exe=$(printf '%s' "$_exe" | sed "s/'\\\\''/'/g")
         [ -n "$_exe" ] || return 0
         _emit "$(dirname "$(dirname "$(dirname "$_exe")")")"
+        # A portable install puts the venv in <root>/studio, so the walk above
+        # lands on the Studio root and leaves the rest of <root> behind.
+        _master=$(sed -n "s/^export UNSLOTH_HOME='\(.*\)'\$/\1/p" "$1" | head -n1)
+        _master=$(printf '%s' "$_master" | sed "s/'\\\\''/'/g")
+        # `if`, not a trailing `[ ... ] && _emit`: that form is the last statement of this
+        # function, so under `set -e` a conf with no `export UNSLOTH_HOME` line (every
+        # non-portable install writes one) returned non-zero and aborted the caller, which
+        # dropped the default-mode conf root that is enumerated after it.
+        if [ -n "$_master" ]; then
+            _emit "$_master"
+        fi
     }
-    # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is
-    # ignored when both are set. Otherwise uninstalling install A could also
-    # delete install B if the user has STUDIO_HOME left over from B.
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
-        _emit "$UNSLOTH_STUDIO_HOME"
-        _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
-    elif [ -n "${STUDIO_HOME:-}" ]; then
-        _emit "$STUDIO_HOME"
-        _from_conf "$STUDIO_HOME/share/studio.conf"
+    # Mirror install.sh's precedence: the master root, else UNSLOTH_STUDIO_HOME,
+    # else STUDIO_HOME. One branch, not three, because each name is a whole install:
+    # uninstalling A could otherwise delete B when B's variable is left over in the
+    # environment. install.sh really does take UNSLOTH_HOME alone -- it seeds
+    # _UNSLOTH_ROOT from it, that turns portable mode on, and _resolve_studio_destinations
+    # then derives STUDIO_HOME from the root without reading UNSLOTH_STUDIO_HOME -- so
+    # with both exported nothing was installed at UNSLOTH_STUDIO_HOME by this environment
+    # and a real install found there belongs to someone else. The backend disagrees on
+    # purpose (storage_roots.studio_root prefers UNSLOTH_STUDIO_HOME, and warns that such
+    # an install "is not self-contained"), and an irreversible rm -rf is where the
+    # narrower reading wins: a spare directory is recoverable, a deleted studio.db is not.
+    # Nothing is stranded either way, since the studio root of the install being removed
+    # comes from the master root's own studio.conf just above.
+    # Trimmed BEFORE the precedence test, as install.sh trims UNSLOTH_HOME before it decides
+    # portable mode: a whitespace-only value is what an unset variable looks like to the
+    # installer and to storage_roots.py, so it must not claim the first branch here and hide
+    # the variable that names the install this environment really produced. Trimmed values are
+    # what the branches use as well, so " /path " resolves like /path rather than failing every
+    # -d test. `$(_trim_ws ...)` and not a trailing `[ ... ] &&` chain: this runs under `set -e`.
+    _root_master=$(_trim_ws "${UNSLOTH_HOME:-}")
+    _root_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    _root_alias=$(_trim_ws "${STUDIO_HOME:-}")
+    if [ -n "$_root_master" ]; then
+        _emit "$_root_master"
+        _from_conf "$_root_master/share/studio.conf"
+    elif [ -n "$_root_studio" ]; then
+        _emit "$_root_studio"
+        _from_conf "$_root_studio/share/studio.conf"
+    elif [ -n "$_root_alias" ]; then
+        _emit "$_root_alias"
+        _from_conf "$_root_alias/share/studio.conf"
     fi
     # Default-mode conf.
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
@@ -541,7 +640,43 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
+        # Is this entry a Studio root, or the MASTER root above one? _custom_studio_roots emits
+        # both (UNSLOTH_HOME and studio.conf's `export UNSLOTH_HOME` name the master root, the
+        # UNSLOTH_EXE walk names the Studio root), and the legacy sibling cleanup below takes
+        # each entry's PARENT, which is one level too high for a master root. Decided BEFORE the
+        # removal, which takes the layout this reads with it.
+        #
+        # Flat test first, matching storage_roots.studio_root(): a root holding the venv
+        # directly IS the Studio root, and there the parent walk is the path an older build
+        # really used. But the venv cannot decide this ON ITS OWN in either direction, and the
+        # two directions are not symmetric. Presence of <root>/unsloth_studio is only evidence
+        # of a flat install when that venv is OURS, so it takes the install-time owner marker
+        # -- otherwise a stray directory of that name inside a nested master root would send
+        # the walk one level above the install. And ABSENCE of a venv is no evidence at all: a
+        # nested portable install whose studio/unsloth_studio was deleted or damaged still has
+        # its portable marker, and reading that as "flat" made this remove
+        # <parent>/stable-diffusion.cpp, which a SEPARATE installation beside the portable root
+        # can own. So the marker counts as master evidence in its own right, and the nested
+        # venv stays a bare -d: widening what reads as a master root only ever SKIPS the parent
+        # walk, which at worst leaves a legacy sibling of a broken install on disk, while
+        # narrowing it deletes somebody else's runtime. The one behaviour this gives up is
+        # removing the legacy sibling of a flat portable root whose venv lost its owner marker.
+        # Inline, not a shared helper: this loop body is extracted and run standalone by
+        # tests/sh/test_uninstall_sd_cpp_custom_root.sh.
+        _custom_is_master=0
+        if [ ! -f "$_custom_root/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_custom_root/studio/unsloth_studio" ] \
+                 || [ -f "$_custom_root/.unsloth-portable-root" ]; }; then
+            _custom_is_master=1
+        fi
         _remove_root_recording_db "$_custom_root"
+        # A master root is not a Studio root, so there is no legacy sibling to walk to: the one
+        # an older build wrote for a nested install is <root>/stable-diffusion.cpp, already gone
+        # with the tree above. Walking anyway names <parent>/stable-diffusion.cpp, a path this
+        # install never used and a separate installation beside the portable root can own.
+        if [ "$_custom_is_master" = 1 ]; then
+            continue
+        fi
         # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
         # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
         # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
@@ -571,13 +706,25 @@ _unsloth_uninstall_main() {
         # a path that is not there), and without this "/parent/typo" would take the marked
         # /parent/stable-diffusion.cpp of somebody else's Unsloth with it.
         _is_studio_root "$_lex_root" || continue
+        # The same master-root exclusion the canonical pass makes: this pass takes the parent
+        # too, so a nested portable master root would reach one level above the install here.
+        # Same predicate, inline for the same reason (this block is extracted and run on its
+        # own too); see the canonical loop for why the venv alone cannot decide it.
+        if [ ! -f "$_lex_root/unsloth_studio/.unsloth-studio-owned" ] \
+            && { [ -d "$_lex_root/studio/unsloth_studio" ] \
+                 || [ -f "$_lex_root/.unsloth-portable-root" ]; }; then
+            continue
+        fi
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
         # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can
         # carry ".." or a symlinked ancestor and slip a protected tree ("/tmp/../usr/...") past it.
         # Canonicalize a copy for the check only; the removal still uses the lexical path.
         # shellcheck disable=SC1007
-        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P)
+        # `|| _lex_sd_canon=""` for the same reason as _emit: without it `set -e` takes the
+        # failed substitution and kills this subshell, and the fallback on the next line --
+        # written for exactly the unresolvable case -- never runs.
+        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P) || _lex_sd_canon=""
         [ -n "$_lex_sd_canon" ] || _lex_sd_canon="$_lex_sd_cpp"
         if _is_unsafe_root "$_lex_sd_cpp" || _is_unsafe_root "$_lex_sd_canon"; then
             echo "  refusing to remove unsafe path: $_lex_sd_cpp" >&2
@@ -890,12 +1037,46 @@ _unsloth_uninstall_main() {
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can
     # only be located if the user re-exports the variable. Print a hint when
     # neither var is set so the bare `curl | sh` flow doesn't silently miss.
-    if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then
+    # Trimmed like the precedence chain in _custom_studio_roots: a whitespace-only value named
+    # no root and removed nothing, so the hint that explains how to reach a custom install has
+    # to print rather than be suppressed by a variable that is set to nothing usable.
+    if [ -z "$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")" ] && [ -z "$(_trim_ws "${STUDIO_HOME:-}")" ]; then
         echo ""
         echo "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
         echo "pointing at a custom directory, re-run this script with the same variable"
         echo "set to also remove that install tree, e.g.:"
         echo "  UNSLOTH_STUDIO_HOME=/your/path sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh)\""
+    fi
+    # UNSLOTH_HOME takes the precedence chain in _custom_studio_roots alone, on purpose: with a
+    # master root exported, nothing was installed at UNSLOTH_STUDIO_HOME by this environment, so
+    # an install found there is treated as somebody else's and spared. Say so. Every build that
+    # shipped before UNSLOTH_HOME existed read UNSLOTH_STUDIO_HOME as "remove this install", and
+    # for an env-mode install re-exporting it is the ONLY way to reach the tree -- there is no
+    # breadcrumb in $HOME (install.sh puts DATA_DIR at $STUDIO_HOME/share). So a user upgrading
+    # from such a build, with UNSLOTH_HOME left over from a portable install or exported for
+    # anything else, otherwise saw "Unsloth Studio uninstalled" and "No studio.db was found"
+    # while that tree and its chat history stayed on disk, with nothing on stdout naming the
+    # variable that had been ignored. The removal policy is unchanged; only the silence is.
+    _ign_master=$(_trim_ws "${UNSLOTH_HOME:-}")
+    _ign_studio=$(_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
+    [ -n "$_ign_studio" ] || _ign_studio=$(_trim_ws "${STUDIO_HOME:-}")
+    # Skip when both name the same tree, and when the Studio root is the master root's own
+    # studio/ child: that one was already removed with the master root, so there is nothing
+    # left behind to report (tests/sh/test_uninstall_home_precedence.sh case 4).
+    if [ -n "$_ign_master" ] && [ -n "$_ign_studio" ] \
+        && [ "$_ign_studio" != "$_ign_master" ] \
+        && [ "$_ign_studio" != "$_ign_master/studio" ] \
+        && [ -e "$_ign_studio" ]; then
+        echo ""
+        echo "Note: UNSLOTH_HOME was set, so it named the install to remove and"
+        echo "      UNSLOTH_STUDIO_HOME / STUDIO_HOME were ignored. This is still on disk:"
+        echo "        $_ign_studio"
+        echo "      Its chat history was NOT removed. If that is the install you meant to"
+        echo "      remove, re-run with UNSLOTH_HOME blank:"
+        # Blank rather than `env -u`: the branch above trims before testing -n, so an empty
+        # value falls through to UNSLOTH_STUDIO_HOME exactly as an unset one does, and BSD
+        # env on macOS is not somewhere to send a user for a -u that may not be there.
+        echo "        UNSLOTH_HOME= UNSLOTH_STUDIO_HOME='$_ign_studio' sh scripts/uninstall.sh"
     fi
 }
 

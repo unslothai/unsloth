@@ -17,8 +17,11 @@
 #   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
 #            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
 #            divergence masking cannot reproduce.
+#   contained  A portable install wrote nothing into $HOME outside $CONTAINED_ROOT.
+#              Needs $CONTAINED_STAMP, a file created before the install.
 #
 # Usage: bash .github/scripts/clean-machine-assert.sh absent nodylibtool notools dylibpatch nobuild macho
+#        CONTAINED_ROOT=... CONTAINED_STAMP=... bash .github/scripts/clean-machine-assert.sh contained
 set -uo pipefail
 
 LOG="${INSTALL_LOG:-logs/install.log}"
@@ -352,6 +355,65 @@ $f
           fail "Mach-O main executable carries a signature that does not verify:$broken"
         else
           ok "$n Mach-O files under $root, plus uv and the venv's base interpreter, are $want$([ "$want" = arm64 ] && echo "; all $nexe main executable(s) signed")"
+        fi
+      fi
+      ;;
+
+    contained)
+      root="${CONTAINED_ROOT:-${UNSLOTH_HOME:-}}"
+      stamp="${CONTAINED_STAMP:-}"
+      if [ -z "$root" ]; then
+        fail "contained: set CONTAINED_ROOT (or UNSLOTH_HOME) to the portable root"
+      elif [ ! -d "$root" ]; then
+        fail "contained: $root does not exist, so the install did not land where it said"
+      elif [ -z "$stamp" ] || [ ! -e "$stamp" ]; then
+        fail "contained: set CONTAINED_STAMP to a file created before the install"
+      else
+        # Physical paths: a lexical prefix test accepts "$root/../elsewhere".
+        root_p=$(CDPATH= cd -P -- "$root" 2>/dev/null && pwd -P) || root_p="$root"
+        home_p=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || home_p="$HOME"
+
+        # EVERY entry, no -type filter. Filtering to f/d skipped symlinks, which is
+        # the one shape an interpreter/launcher leak actually takes: an unpinned
+        # UV_PYTHON_BIN_DIR drops managed-Python links into ~/.local/bin, and a uv
+        # tool install drops ~/.local/bin/unsloth. Such a link is invisible whenever
+        # its parent is one of the allowed directory NODES below, so the leak this
+        # mode exists to catch read as OK. Sockets and fifos are leaks too.
+        # find defaults to -P on GNU and BSD alike, so -newer reads the link's own
+        # lstat mtime and a dangling link is still reported rather than erroring.
+        # Allowances below are paths the OS or the shell writes.
+        strays=$(find "$home_p" -newer "$stamp" -print 2>/dev/null |
+          while IFS= read -r p; do
+            pp=$(CDPATH= cd -P -- "$(dirname "$p")" 2>/dev/null && pwd -P) || continue
+            pp="$pp/$(basename "$p")"
+            # Leading "(" on every pattern: this case sits inside $( ), and
+            # macOS bash 3.2 ends the substitution at the first pattern-closing
+            # ")" unless the parentheses balance (autoconf "Shell Substitutions").
+            case "$pp" in
+              ("$root_p"|"$root_p"/*) continue ;;
+              ("$home_p") continue ;;
+              ("$home_p"/.bash_history|"$home_p"/.zsh_history) continue ;;
+              ("$home_p"/.sudo_as_admin_successful) continue ;;
+              ("$home_p"/.wget-hsts|"$home_p"/.lesshst) continue ;;
+              # The directory NODES only; children are still reported. Allowed
+              # because the OS bumps their mtime, which a real directory is all
+              # this can be: the same name as a SYMLINK is a redirect of the whole
+              # subtree out of $HOME, and it would take its children with it.
+              ("$home_p"/.local|"$home_p"/.cache|"$home_p"/.config)
+                if [ -d "$pp" ] && [ ! -L "$pp" ]; then continue; fi ;;
+              ("$home_p"/.docker/*|"$home_p"/.gitconfig) continue ;;
+            esac
+            printf ' %s\n' "$pp"
+          done)
+        # A run that finds nothing has lost its stamp or its HOME.
+        probe=$(find "$root_p" -newer "$stamp" -print -quit 2>/dev/null || true)
+        if [ -z "$probe" ]; then
+          fail "contained: nothing under $root_p is newer than the stamp, so this check proved nothing"
+        elif [ -n "$strays" ]; then
+          fail "contained: the install wrote outside $root_p:
+$strays"
+        else
+          ok "the install wrote nothing into $home_p outside $root_p"
         fi
       fi
       ;;

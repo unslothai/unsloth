@@ -906,15 +906,63 @@ fi
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
 # (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+# Whitespace stripped before the fallback so " " is treated as unset (matches
+# Python .strip()) instead of masking a real STUDIO_HOME.
+_setup_trim_ws() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+# Absolute + symlink-resolved form of "$1", without requiring it to exist:
+# setup.sh legitimately runs before the tree does. Resolves through the deepest
+# existing ancestor, the same trick the llama.cpp local-dir compare uses below.
+_setup_abs_path() {
+    _sap_path="$1"
+    case "$_sap_path" in
+        /*) ;;
+        *) _sap_path="$(pwd -P)/$_sap_path" ;;
+    esac
+    # Trailing slashes would leave an empty leaf below; "/" itself is already canonical.
+    while :; do
+        case "$_sap_path" in
+            /) printf '%s' "/"; return 0 ;;
+            */) _sap_path="${_sap_path%/}" ;;
+            *) break ;;
+        esac
+    done
+    if _sap_out="$(CDPATH= cd -P -- "$_sap_path" 2>/dev/null && pwd -P)"; then
+        printf '%s' "$_sap_out"
+        return 0
+    fi
+    _sap_parent="$(dirname -- "$_sap_path")"
+    if _sap_out="$(CDPATH= cd -P -- "$_sap_parent" 2>/dev/null && pwd -P)"; then
+        case "$_sap_out" in
+            /) printf '/%s' "$(basename -- "$_sap_path")" ;;
+            *) printf '%s/%s' "$_sap_out" "$(basename -- "$_sap_path")" ;;
+        esac
+        return 0
+    fi
+    printf '%s' "$_sap_path"
+}
+# UNSLOTH_HOME is the portable master root, and node/, llama.cpp/ and whisper.cpp/
+# hang off it further down. install.sh trims, tilde-expands and resolves the same
+# variable, and storage_roots.py strips it, but setup.sh read it raw: a
+# whitespace-only value passed -n and installed those runtimes into a directory
+# literally named " " in the working directory, and a relative one landed them
+# under the working directory too (a different one for Node and llama.cpp, since
+# `cd "$SCRIPT_DIR"` runs between the two). Normalize once, here, ahead of the
+# portable-marker probe below and both derivations later on.
+UNSLOTH_HOME=$(_setup_trim_ws "${UNSLOTH_HOME:-}")
+case "$UNSLOTH_HOME" in
+    "~") UNSLOTH_HOME="$HOME" ;;
+    "~/"*) UNSLOTH_HOME="$HOME/${UNSLOTH_HOME#'~/'}" ;;
+esac
+if [ -n "$UNSLOTH_HOME" ]; then
+    UNSLOTH_HOME=$(_setup_abs_path "$UNSLOTH_HOME")
+fi
+_studio_override=$(_setup_trim_ws "${UNSLOTH_STUDIO_HOME:-}")
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(_setup_trim_ws "${STUDIO_HOME:-}")
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -949,7 +997,91 @@ VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 # a writable-but-empty override still aborts at the venv check below, and clearing first
 # would cost the cache for a run that then does nothing; a fresh install has neither venv
 # nor cache. Still before any install work, while the old frontend is the one on disk.
-if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then
+
+# A portable install promised the desktop app was left untouched, and these caches
+# live under $HOME, outside the root. The marker covers a shim-less activated venv.
+_setup_portable_mode() {
+    # Stripped and case-folded like install.sh and storage_roots.portable_mode(); reading
+    # UNSLOTH_PORTABLE=True as off here clears webview caches a portable run promised to keep.
+    case "$(_setup_trim_ws "${UNSLOTH_PORTABLE:-}" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) return 0 ;; esac
+    if [ -n "${UNSLOTH_HOME:-}" ] && [ -f "${UNSLOTH_HOME}/.unsloth-portable-root" ]; then return 0; fi
+    if [ -f "$STUDIO_HOME/.unsloth-portable-root" ]; then return 0; fi
+    # A marker one level up names THIS install under one spelling only: install.sh
+    # writes either <master>/studio (nested) or the master root itself (flat), so
+    # any other child of a marked root is an unrelated tree whose own update would
+    # then skip the WebView cache clear. Same rule as install.sh's
+    # _clear_stale_portable_marker and storage_roots._inherits_parent_portable_marker.
+    # Lexical parent, not "$STUDIO_HOME/..", and no dirname: BSD dirname has no
+    # `--`. Two of the ownership tests below are `grep -qxF` against a path
+    # install.sh WROTE, and install.sh derives it as ${...%/*} from a `pwd -P`
+    # root -- so a `..` component here makes the literal comparison miss every
+    # time and takes the whole exclusion silently inert. Strip whatever the leaf
+    # is spelled rather than a literal `/studio`, which would derive the wrong
+    # parent for a differently-cased leaf.
+    _spm_leafname="${STUDIO_HOME##*/}"
+    _spm_parent="${STUDIO_HOME%/*}"
+    [ -n "$_spm_parent" ] || _spm_parent="/"
+    if [ "$_spm_leafname" != studio ]; then
+        # A leaf spelled otherwise can still BE <parent>/studio: on a
+        # case-insensitive filesystem the installer writes `studio` while a user
+        # typing `Studio` into UNSLOTH_STUDIO_HOME names the same directory, and
+        # `cd -P` keeps their spelling. Asked of the FILESYSTEM rather than of
+        # `uname`: macOS is case-insensitive by default but not by rule, and a
+        # case-sensitive APFS volume -- which is what a portable install on an
+        # external disk is often formatted as -- has `studio` and `Studio` as two
+        # separate installs. `-ef` is the st_dev/st_ino comparison used below, and
+        # needs neither `readlink -f` nor `realpath`, neither of which is on the
+        # BSD side. The name test stays in front so the common case costs no stat
+        # and a differently-named child is never adopted. Both probes DECLINE on
+        # failure, which here means clearing the WebView caches: doing that to a
+        # portable install costs a re-download of nothing, whereas skipping it
+        # leaves the desktop serving the previous frontend.
+        case "$(printf '%s' "$_spm_leafname" | tr '[:upper:]' '[:lower:]')" in
+            (studio) ;;
+            (*) return 1 ;;
+        esac
+        [ -d "$_spm_parent/studio" ] || return 1
+        [ "$STUDIO_HOME" -ef "$_spm_parent/studio" ] 2>/dev/null || return 1
+    fi
+    if [ ! -f "$_spm_parent/.unsloth-portable-root" ]; then return 1; fi
+    # ...and the marker has to be the MASTER root's, not a flat install's own. A
+    # flat portable install occupying <root> keeps its venv directly at
+    # <root>/unsloth_studio and its marker at <root>, and a separate normal install
+    # pointed at <root>/studio through UNSLOTH_STUDIO_HOME is then a different tree
+    # that would read the flat neighbour's marker and skip its own WebView clear --
+    # leaving the desktop app serving the previous frontend after `unsloth studio
+    # update`. The legitimate nested case is the mirror image: its venv is at
+    # <root>/studio/unsloth_studio and there is nothing at <root>/unsloth_studio.
+    #
+    # Told apart by the one question that separates them: does the parent own a
+    # venv DIRECTLY? Same four ownership tests, same order, as install.sh's
+    # _resolve_studio_destinations and _clear_stale_portable_marker, and as
+    # storage_roots._flat_venv_is_owned. The two sentinels outside the venv have to
+    # NAME it rather than merely exist: `unsloth` is an ordinary word, and a bare
+    # bin/unsloth beside a bare unsloth_studio is somebody's own pair as often as
+    # ours. Deliberately WITHOUT that selector's already-nested exclusion -- a
+    # nested child under the flat parent is exactly the shape this case has, so
+    # excluding on it would answer "not flat" for the wrong reason.
+    # Inline, not a helper, so this block still runs when lifted out on its own.
+    _spmp_flat_venv="$_spm_parent/unsloth_studio"
+    if [ -d "$_spmp_flat_venv" ]; then
+        _spmp_flat_exe=$(printf '%s' "$_spmp_flat_venv/bin/unsloth" | sed "s/'/'\\\\''/g")
+        if [ -f "$_spmp_flat_venv/.unsloth-studio-owned" ]; then
+            return 1
+        elif grep -qxF "UNSLOTH_EXE='$_spmp_flat_exe'" \
+                "$_spm_parent/share/studio.conf" 2>/dev/null; then
+            return 1
+        elif [ -L "$_spm_parent/bin/unsloth" ] \
+             && [ "$_spm_parent/bin/unsloth" -ef "$_spmp_flat_venv/bin/unsloth" ] 2>/dev/null; then
+            return 1
+        elif grep -qxF "exec '$_spmp_flat_exe' \"\$@\"" \
+                "$_spm_parent/bin/unsloth" 2>/dev/null; then
+            return 1
+        fi
+    fi
+    return 0
+}
+if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ] && ! _setup_portable_mode; then
     _clear_webview_caches
 fi
 
@@ -967,6 +1099,49 @@ fi
 _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
+fi
+# _STUDIO_HOME_IS_CUSTOM answers a LAYOUT question -- is STUDIO_HOME somewhere other than
+# the legacy $HOME/.unsloth/studio -- and the ownership guards below rode on it because the
+# two used to coincide. They come apart for the FLAT portable layout. `install.sh
+# --portable` over an existing default install (UNSLOTH_STUDIO_HOME=$HOME/.unsloth/studio)
+# makes that directory the MASTER root, so node/, llama.cpp/ and whisper.cpp/ hang off
+# $HOME/.unsloth/studio, a level no install has ever used, while the spelling stays the
+# legacy one and the layout flag stays false. Every guard keyed on it was then skipped, and
+# install_node_prebuilt._swap_into_place renames a pre-existing unowned
+# $HOME/.unsloth/studio/node aside and rm -rf's it -- permanently deleting a directory
+# Unsloth never created. prebuilt_core.swap_into_place (whisper.cpp) and
+# activate_install_tree (llama.cpp) move and delete the same way, so all three guards move.
+#
+# Keyed on the Studio root BEING the master root, not on portable mode, the same way
+# sd_cpp_engine._root_is_portable_master is. `install.sh --root ~/.unsloth` builds a NESTED
+# master whose helpers are $HOME/.unsloth/node, $HOME/.unsloth/llama.cpp and
+# $HOME/.unsloth/whisper.cpp -- precisely the unmarked directories every pre-marker default
+# install already carries -- so demanding a marker there would refuse to replace trees
+# Unsloth genuinely owns and break every update.
+_STUDIO_ROOT_IS_MASTER_ROOT=false
+if [ -n "$UNSLOTH_HOME" ]; then
+    # Both sides are canonical already: _setup_abs_path resolved UNSLOTH_HOME above, and
+    # _studio_home_canon was resolved just now.
+    if [ "$UNSLOTH_HOME" = "$_studio_home_canon" ]; then
+        _STUDIO_ROOT_IS_MASTER_ROOT=true
+    fi
+elif [ -f "$STUDIO_HOME/.unsloth-portable-root" ] &&
+    [ ! -f "$STUDIO_HOME/.unsloth-master-root" ]; then
+    # Nothing in the environment to read (a bare `bash setup.sh`, or the CLI's recovery
+    # path). install.sh publishes the marker AT the master root, so one here names THIS
+    # directory; a NESTED run instead leaves a .unsloth-master-root record here naming the
+    # level above, which outranks the marker in every reader, and install.sh removes that
+    # record when it converts the same directory into a flat root.
+    _STUDIO_ROOT_IS_MASTER_ROOT=true
+fi
+# Always set from here on, but every READ below spells it
+# "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" anyway. Several tests lift those
+# guards out of this file with sed/awk and run them standalone, seeding only the layout
+# flag; a bare read there dies under set -u, and the default makes the lifted copy behave
+# exactly as it did before this variable existed instead.
+_STUDIO_STRICT_OWNERSHIP=false
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] || [ "$_STUDIO_ROOT_IS_MASTER_ROOT" = true ]; then
+    _STUDIO_STRICT_OWNERSHIP=true
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
@@ -1052,11 +1227,21 @@ _report_denied_ancestor() {
     fi
 }
 
+# Strict for a custom root, and equally for a root that is ITSELF the portable master root
+# even when spelled as the legacy $HOME/.unsloth/studio: the helper directories then sit at a
+# level no legacy install ever used, so nothing unmarked there is ours by history.
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+    # Defaulted, not read bare: tests lift this function out on its own and seed only the
+    # layout flag, where a bare read would abort under set -e/-u.
+    _aso_strict="${_STUDIO_STRICT_OWNERSHIP:-}"
+    if [ -z "$_aso_strict" ]; then
+        _aso_strict=false
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then _aso_strict=true; fi
+    fi
+    if [ "$_aso_strict" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
@@ -1166,6 +1351,8 @@ decide_node_source() {
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ -n "$STAGE_ROOT" ]; then
     _NODE_PARENT="$RUNTIME_ROOT"
+elif [ -n "${UNSLOTH_HOME:-}" ]; then
+    _NODE_PARENT="$UNSLOTH_HOME"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
@@ -1182,9 +1369,11 @@ if [ "$NODE_SOURCE" = system ]; then
     step "node" "$(node -v) | npm $(npm -v) (system)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
-    # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
-    # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    # install_node_prebuilt.py uses os.replace() and then rm -rf's what it moved aside
+    # (_swap_into_place), so guard anything but the legacy default cache: a custom home,
+    # and a flat portable master root, whose $HOME/.unsloth/studio/node is a level no
+    # legacy install ever wrote to and so is never ours by history.
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
         _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
@@ -1220,7 +1409,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ] &&
+        [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
@@ -1246,6 +1436,18 @@ elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
     step "frontend" "up to date"
     verbose_substep "frontend dist is newer than source inputs"
 else
+
+# Keep bun's package cache inside the portable root. bun reads none of npm's
+# configuration: with only NPM_CONFIG_CACHE pinned, `bun pm cache` still answers
+# ~/.bun/install/cache and every package the install below downloads lands there,
+# outside the root a portable install promises holds everything. install.sh exports
+# this before it hands over; derived here as well so an update that arrives carrying
+# only UNSLOTH_HOME (the CLI's recovery environment, or a plain `bash setup.sh`) is
+# contained the same way. A value the caller set explicitly always wins.
+if [ -n "${UNSLOTH_HOME:-}" ] && [ -z "${BUN_INSTALL_CACHE_DIR:-}" ]; then
+    export BUN_INSTALL_CACHE_DIR="$UNSLOTH_HOME/cache/bun"
+    verbose_substep "bun package cache pinned to $BUN_INSTALL_CACHE_DIR"
+fi
 
 # ── Install bun (optional, faster package installs) ──
 # Install bun via npm only when we manage the isolated Node (npm -g lands in the
@@ -2484,8 +2686,13 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
+# A portable install exports the master root, where the native runtimes are
+# siblings of studio/ rather than children of it.
+_PORTABLE_ROOT="${UNSLOTH_HOME:-}"
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ -n "$_PORTABLE_ROOT" ]; then
+    UNSLOTH_HOME="$_PORTABLE_ROOT"
 elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
@@ -2649,7 +2856,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
         [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
         rm -rf "$LLAMA_CPP_DIR" || true
@@ -2675,7 +2882,7 @@ fi
 # swap only reaches its own guards after the whole build, so check here instead.
 # Local-link paths are excluded: they already replaced or reused the tree above.
 if [ "$_LOCAL_LLAMA_CPP_LINKED" != true ]; then
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
@@ -2702,7 +2909,7 @@ else
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
     # ownership check below ever runs.
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     # The ownership check above misses the default cache; stop before pathlib
@@ -2776,7 +2983,8 @@ else
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+        if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ] &&
+            [ -d "$LLAMA_CPP_DIR" ]; then
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
@@ -2848,7 +3056,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
     ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
@@ -3446,7 +3654,7 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
 fi
 
 if [ ! -L "$LLAMA_CPP_DIR" ] && {
-    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+    [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" != true ] ||
         [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
@@ -3465,7 +3673,7 @@ if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; 
 elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
     verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
 else
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ]; then
         _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
     fi
     _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
@@ -3493,7 +3701,8 @@ else
         else
             step "whisper.cpp" "prebuilt installed"
         fi
-        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+        if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ] &&
+            [ -d "$WHISPER_CPP_DIR" ]; then
             : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         rm -f "$_WHISPER_LOG"
@@ -3515,11 +3724,18 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            # build_whisper_cpp.sh resolves UNSLOTH_STUDIO_HOME before UNSLOTH_HOME, and the
+            # inherited one is <root>/studio in a nested portable install and the LIVE studio
+            # home under a staged run, so the build lands where the sidecar never looks (and,
+            # staged, inside the environment the app is running from).
+            # Blanked rather than unset: `env -u` is not POSIX, and the builder uses `:-`.
             if run_quiet_no_exit "whisper.cpp source build" \
-                    env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
+                    env UNSLOTH_HOME="$UNSLOTH_HOME" UNSLOTH_STUDIO_HOME= STUDIO_HOME= \
+                    sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
-                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                if [ "${_STUDIO_STRICT_OWNERSHIP:-$_STUDIO_HOME_IS_CUSTOM}" = true ] &&
+                    [ -d "$WHISPER_CPP_DIR" ]; then
                     : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
                 fi
             else

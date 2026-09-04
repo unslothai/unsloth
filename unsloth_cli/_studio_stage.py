@@ -45,12 +45,62 @@ def stage_root(studio_home: Path) -> Path:
     return studio_home / STAGE_DIR_NAME
 
 
+def _cli_master_root() -> Optional[Path]:
+    """Master root of this install per the CLI's resolver, or None.
+
+    Lazily imported: unsloth_cli.commands.studio imports this module, so a
+    top-level import would be a cycle. By the time stage() runs, that module is
+    already in sys.modules and this is a dict lookup.
+    """
+    try:
+        from unsloth_cli.commands.studio import _portable_master_root
+    except ImportError:
+        return None
+    try:
+        return _portable_master_root()
+    except (OSError, ValueError):
+        return None
+
+
+def _containing_roots(studio_home: Path, resolved: Path) -> tuple[Path, ...]:
+    """Roots a master root is allowed to be, for a Studio root at *studio_home*.
+
+    Both spellings, because <master>/studio may ALREADY have been a symlink to
+    another volume: install.sh follows that layout rather than refusing it, so
+    the venv lands on the far volume while the marker stays at <master>, and
+    resolve() then names a directory the master root sits nowhere near. The
+    resolved-then-lexical pair storage_roots._venv_studio_home_candidates offers
+    for sys.prefix, resolved first so every tree that resolves today resolves
+    identically. abspath, not Path: it normalizes without touching the
+    filesystem, so the symlinked spelling survives where resolve() collapses it.
+    """
+    try:
+        lexical = Path(os.path.abspath(studio_home))
+    except (OSError, ValueError):
+        lexical = studio_home
+    return (resolved, resolved.parent, lexical, lexical.parent)
+
+
 def managed_helper_root(studio_home: Path) -> Path:
+    """Directory holding node / llama.cpp / whisper.cpp for *studio_home*.
+
+    A portable install keeps the three native runtimes BESIDE studio/ at the
+    master root, so deriving them from the Studio root is one level too deep and
+    stage() then clones nothing into the update tree. Delegates to the CLI's
+    master-root resolver rather than repeating its marker lookups; the
+    containment check keeps a caller that passed some OTHER root off this
+    process' master root.
+    """
+    master = _cli_master_root()
     legacy = Path.home() / ".unsloth" / "studio"
     try:
-        is_legacy = studio_home.resolve() == legacy.resolve()
+        resolved = studio_home.resolve()
+        is_legacy = resolved == legacy.resolve()
     except (OSError, ValueError):
+        resolved = studio_home
         is_legacy = studio_home == legacy
+    if master is not None and master in _containing_roots(studio_home, resolved):
+        return master
     return studio_home.parent if is_legacy else studio_home
 
 

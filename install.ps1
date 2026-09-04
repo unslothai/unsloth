@@ -642,6 +642,13 @@ function Install-UnslothStudio {
         # and the host's real one is broken. The next run sweeps the old ones.
     }
 
+    function Deny-PortableMode([string] $Which) {
+        Write-StudioLine "ERROR: $Which is not supported on Windows yet." -ForegroundColor Red
+        Write-StudioLine "       Portable mode (install.sh --portable / --root) is POSIX-only for now." -ForegroundColor Yellow
+        Write-StudioLine "       Use UNSLOTH_STUDIO_HOME to choose the install location on Windows." -ForegroundColor Yellow
+        return "$Which is not supported on Windows yet."
+    }
+
     # ── Parse flags ──
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
@@ -660,6 +667,11 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
+            # POSIX-only. Accepting silently would split the install: the
+            # backend does honour UNSLOTH_HOME, so this would land in
+            # %USERPROFILE%\.unsloth\studio while Studio resolved <root>\studio.
+            "--portable" { return (Exit-InstallFailure (Deny-PortableMode "--portable")) }
+            "--root"     { return (Exit-InstallFailure (Deny-PortableMode "--root")) }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -676,6 +688,48 @@ function Install-UnslothStudio {
                 }
                 $WithLlamaCppDir = $argList[$i]
             }
+            default {
+                # `--root=DIR` is one argument, and switch matches exactly, so the
+                # arm above misses it and the install would silently be a normal one.
+                if ($argList[$i] -like "--root=*") {
+                    return (Exit-InstallFailure (Deny-PortableMode "--root"))
+                }
+            }
+        }
+    }
+
+    # `irm ... | iex` takes no arguments, so UNSLOTH_HOME is how a piped install
+    # asks for portable mode; unhandled it produces the same split.
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_HOME"))
+    }
+    # The same two allowlists install.sh parses and storage_roots.portable_mode() reads,
+    # so one value of UNSLOTH_PORTABLE cannot mean three things. -in / -notin are already
+    # case-insensitive, which is what install.sh's tr to lowercase buys there; spelling
+    # "False" out bought nothing here and left off/no -- off everywhere else -- failing
+    # an otherwise normal install.
+    #
+    # Anything on neither list used to take the deny path, so `flase` aborted the install
+    # announcing that portable mode is unsupported: an answer to a question the user never
+    # asked, and one that sends them looking for a portable install they never requested.
+    # It is still refused, matching install.sh, because an installer can fail before it
+    # touches anything and the fix is one corrected value away. portable_mode() only
+    # declines to guess instead of refusing because there is no useful way to fail a
+    # process that is already running. Reading it as off would be worse than either: on
+    # Windows a genuine portable request has to be an error pointing at UNSLOTH_STUDIO_HOME,
+    # and a mistyped one would install normally with no word that the request was dropped.
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_PORTABLE)) {
+        if ($env:UNSLOTH_PORTABLE.Trim() -in @("1", "true", "yes", "on")) {
+            return (Exit-InstallFailure (Deny-PortableMode "UNSLOTH_PORTABLE"))
+        }
+        if ($env:UNSLOTH_PORTABLE.Trim() -notin @("0", "false", "off", "no")) {
+            $_portableBad = "UNSLOTH_PORTABLE='$($env:UNSLOTH_PORTABLE)' is not a recognized value."
+            Write-StudioLine "ERROR: $_portableBad" -ForegroundColor Red
+            Write-StudioLine "       Use 0, false, off, no (or leave it unset) for a normal install." -ForegroundColor Yellow
+            Write-StudioLine "       The on spellings (1, true, yes, on) ask for portable mode, which is" -ForegroundColor Yellow
+            Write-StudioLine "       POSIX-only for now. Use UNSLOTH_STUDIO_HOME to choose the install" -ForegroundColor Yellow
+            Write-StudioLine "       location on Windows." -ForegroundColor Yellow
+            return (Exit-InstallFailure $_portableBad)
         }
     }
 

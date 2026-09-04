@@ -53,6 +53,273 @@ def _enable_verbose_access_logs() -> None:
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
+# storage_roots.PORTABLE_MARKER, duplicated: the CLI must not import the backend.
+_PORTABLE_MARKER = ".unsloth-portable-root"
+
+# storage_roots.STUDIO_CHILD_DIRNAME, duplicated for the same reason.
+_STUDIO_CHILD_DIRNAME = "studio"
+
+# storage_roots.STUDIO_OWNED_MARKER, likewise. See _is_flat_portable_root.
+_STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
+
+# storage_roots.MASTER_ROOT_RECORD, likewise. See _in_root_master_root.
+_MASTER_ROOT_RECORD = ".unsloth-master-root"
+
+# storage_roots._RECORD_TRIM, likewise: the whitespace install.sh's _trim_ws
+# strips from a root and nothing else, so that a path ending in U+00A0 -- which
+# sed's [[:space:]] leaves alone and the installer therefore accepts -- is not
+# read back here as a different directory.
+_RECORD_TRIM = " \t\n\r\v\f"
+
+# storage_roots._SENTINEL_MAX_BYTES, likewise: enough for share/studio.conf and
+# the generated bin/unsloth wrapper, so that whether a file at a guessable path
+# is ours cannot depend on how large somebody else's file at that path is.
+_SENTINEL_MAX_BYTES = 65536
+
+
+def _sh_single_quoted(value: str) -> str:
+    """*value* as install.sh records it between single quotes.
+
+    storage_roots._sh_single_quoted. The installer escapes with
+    `sed "s/'/'\\\\''/g"`, so every `'` becomes `'\\''`; the lines below are
+    matched literally, and a root with an apostrophe in it is where a different
+    convention would stop recognising a genuine install as its own.
+    """
+    return value.replace("'", "'\\''")
+
+
+def _holds_exact_line(path: Path, line: str) -> bool:
+    """Whether *path* holds *line* as a whole line, the way `grep -qxF` does.
+
+    storage_roots._holds_exact_line. Whole line rather than substring, because
+    the installer's own test is `grep -qxF`; split on b"\\n" alone, as grep does;
+    bytes throughout, since a POSIX path is a byte string.
+    """
+    try:
+        with path.open("rb") as handle:
+            blob = handle.read(_SENTINEL_MAX_BYTES)
+    except (OSError, ValueError):
+        return False
+    return os.fsencode(line) in blob.split(b"\n")
+
+
+def _flat_venv_is_owned(master: Path) -> bool:
+    """Whether <master>/unsloth_studio is a venv OUR installer put there.
+
+    storage_roots._flat_venv_is_owned, duplicated for the same reason the marker
+    constants are; the two must not disagree, since this CLI exports UNSLOTH_HOME
+    into the backend. install.sh's four ownership tests, in its order: the
+    in-venv marker, then the three that must NAME this venv rather than merely
+    exist at a path whose basename happens to be `unsloth`. Every writer records
+    the venv in the sentinel it writes -- UNSLOTH_EXE='<venv>/bin/unsloth' in
+    share/studio.conf, an `ln -s` at bin/unsloth in non-portable env mode, and
+    `exec '<venv>/bin/unsloth' "$@"` as the last line of the generated portable
+    wrapper.
+
+    No already-nested exclusion here, unlike _is_flat_portable_root: that test
+    answers which LAYOUT a root has, while this one answers whether the root owns
+    a venv of its own, which is what tells a flat parent's portable marker from a
+    nested child's. See _parent_portable_root.
+
+    POSIX spelling throughout: only install.sh builds this layout, and install.ps1
+    refuses portable mode rather than writing an unsloth.exe here.
+    """
+    venv = master / "unsloth_studio"
+    try:
+        if not venv.is_dir():
+            return False
+        if (venv / _STUDIO_OWNED_MARKER).is_file():
+            return True
+    except OSError:
+        return False
+    quoted = _sh_single_quoted(str(venv / "bin" / "unsloth"))
+    if _holds_exact_line(master / "share" / "studio.conf", f"UNSLOTH_EXE='{quoted}'"):
+        return True
+    shim = master / "bin" / "unsloth"
+    try:
+        # `[ -L ... ] && [ ... -ef ... ]`: a symlink, and the same file once
+        # followed. samefile is the st_dev/st_ino pair -ef compares.
+        if shim.is_symlink() and os.path.samefile(shim, venv / "bin" / "unsloth"):
+            return True
+    except (OSError, ValueError):
+        pass
+    return _holds_exact_line(shim, f"exec '{quoted}' \"$@\"")
+
+
+def _is_flat_portable_root(master: Path) -> bool:
+    """Whether *master* holds the Studio venv directly, rather than in studio/.
+
+    storage_roots._is_flat_portable_root, duplicated for the same reason the
+    marker constants are; the two must not disagree, since this CLI exports
+    UNSLOTH_HOME into the backend and a split here would point them at two
+    different installs. Bare existence of <master>/unsloth_studio does not say
+    flat: `--root` takes any writable directory, so an empty leftover or a dev
+    venv of that name would turn the nested layout install.sh built into a flat
+    Studio root. install.sh requires one of four ownership sentinels and
+    excludes an already-nested root FIRST, because share/studio.conf and
+    bin/unsloth sit at <master> in BOTH layouts; same set, same order here, via
+    _flat_venv_is_owned. The installer now REFUSES a root whose sentinels do not
+    name the candidate venv, so an existence-only rule here launched or updated
+    an unrelated environment the installer would not touch.
+
+    Nested on OSError, which is the layout install.sh builds by default.
+    """
+    try:
+        if not (master / "unsloth_studio").is_dir():
+            return False
+        if (master / _STUDIO_CHILD_DIRNAME / "unsloth_studio").is_dir():
+            return False
+    except OSError:
+        return False
+    return _flat_venv_is_owned(master)
+
+
+def _inherits_parent_portable_marker(root: Path) -> bool:
+    """Whether a marker in ``root.parent`` COULD name the install rooted at *root*.
+
+    install.sh writes either <master>/studio (nested) or the master root itself
+    (flat), and its _clear_stale_portable_marker matches that same `*/studio`
+    spelling before it will touch a parent marker. Any OTHER direct child of a
+    marked root is a separate installation, and the CLI is what exports
+    UNSLOTH_HOME into the backend's environment, where it outranks the backend's
+    own on-disk lookup -- so an unrestricted lookup here hands that install the
+    first one's master root, cache roots, node, llama.cpp and whisper.cpp no
+    matter what storage_roots decides. Same predicate as
+    storage_roots._inherits_parent_portable_marker; the two must not disagree.
+
+    A leaf spelled otherwise can still BE <parent>/studio, because a
+    case-insensitive filesystem opens the `studio` the installer wrote for a user
+    who typed `Studio` into UNSLOTH_STUDIO_HOME, and resolve() does not correct
+    the spelling. Asked of the FILESYSTEM, not of the platform: macOS is
+    case-insensitive by default but not by rule, and a case-sensitive APFS volume
+    is exactly what an external disk carrying a portable install tends to be
+    formatted as. There `studio` and `Studio` are two directories, and a
+    platform-wide fold hands a separate normal install at <master>/Studio the
+    nested portable sibling's master root and managed runtimes -- which this CLI
+    then exports, outranking whatever the backend decides on its own. samefile is
+    the st_dev/st_ino pair `[ x -ef y ]` compares for the two shell copies.
+
+    The cheap name test stays in front so the common case costs no stat. DECLINES
+    when the probe cannot run, for the reason storage_roots does: a nested
+    portable root still has its own .unsloth-master-root record, which
+    _in_root_master_root reads and which outranks this lookup.
+
+    Necessary, not sufficient: a marker beside a FLAT install is that install's
+    own, and `studio` is a name a separate install placed under it can equally
+    have. _parent_portable_root makes that second half of the decision.
+    """
+    name = root.name
+    if name == _STUDIO_CHILD_DIRNAME:
+        return True
+    if name.lower() != _STUDIO_CHILD_DIRNAME:
+        return False
+    try:
+        return root.samefile(root.parent / _STUDIO_CHILD_DIRNAME)
+    except (OSError, ValueError):
+        return False
+
+
+def _parent_marker_is_trustworthy(parent: Path) -> bool:
+    """Whether a marker in *parent* is proof that OUR installer wrote it.
+
+    storage_roots._parent_marker_is_trustworthy, duplicated for the same reason
+    the marker constant is; the two must not disagree. Inheriting a parent marker
+    exports that parent as UNSLOTH_HOME, and this CLI's export outranks the
+    backend's own on-disk lookup, so a marker anyone can create would let a
+    lower-privileged user name the llama.cpp, node and whisper.cpp directories a
+    protected Studio root then executes. Contents cannot answer this: whoever
+    writes the file writes the contents. Windows has no comparable st_uid or mode
+    bits and install.ps1 refuses portable mode outright, so nothing is checked
+    and nothing installed breaks.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        parent_stat = parent.stat()
+        marker_uid = (parent / _PORTABLE_MARKER).stat().st_uid
+    except OSError:
+        return False
+    # root is trusted so a system-wide install under /opt stays inheritable when
+    # Studio runs as an unprivileged service account.
+    trusted_uids = (os.geteuid(), 0)
+    if parent_stat.st_uid not in trusted_uids or marker_uid not in trusted_uids:
+        return False
+    # 0o022 is group-write | other-write. A sticky shared directory such as /tmp
+    # still fails here, which is the case this exists for.
+    return not parent_stat.st_mode & 0o022
+
+
+def _parent_portable_root(root: Path) -> Optional[Path]:
+    """Master root the parent marker names for *root*, or None.
+
+    Fails closed, and silently: this runs at import time from
+    _resolve_studio_home, where a message would land in `unsloth --help`. The
+    backend logs the one warning, since declining here makes it decline too.
+
+    A parent that owns a venv DIRECTLY is a flat install, and its marker is its
+    own: install.sh writes no studio/ child in that layout, so a <root>/studio
+    beside it is a separate installation that arrived through
+    UNSLOTH_STUDIO_HOME. Inheriting there gave the child the flat install's
+    master root, and with it that install's node, llama.cpp, whisper.cpp and
+    cache policy -- and this CLI is what exports it. Asked as "does the parent
+    own a direct venv" rather than "is the parent flat": _is_flat_portable_root
+    excludes an already-nested root first, which is precisely the shape this case
+    has. Same rule as storage_roots._parent_portable_root.
+    """
+    if not _inherits_parent_portable_marker(root):
+        return None
+    parent = root.parent
+    if not (parent / _PORTABLE_MARKER).is_file():
+        return None
+    if _flat_venv_is_owned(parent):
+        return None
+    if not _parent_marker_is_trustworthy(parent):
+        return None
+    return parent
+
+
+def _in_root_master_root(root: Path) -> Optional[Path]:
+    """Master root *root* records for itself, or None.
+
+    storage_roots._in_root_master_root, duplicated for the same reason the marker
+    constants are; the two must not disagree, since this CLI exports UNSLOTH_HOME
+    into the backend where it outranks the backend's own lookup. Trusted on its
+    location alone: it is inside the Studio root, so anyone able to write it can
+    equally rewrite the venv it points at, and a permissions check would protect
+    nothing already unprotected. That is why it exists -- the parent marker needs
+    one, and a root created under `umask 002` cannot pass it.
+
+    Exactly one line, and the whole of it, for the reason storage_roots spells
+    out: install.sh refuses a root containing a newline, so anything after the
+    first line was not written by our installer, and taking that line on its own
+    would resolve a TRUNCATED PREFIX of the recorded path.
+
+    Bytes, decoded with filesystem semantics, for the reason storage_roots spells
+    out as well: install.sh writes the root back verbatim and a POSIX path is a
+    byte string, so a root carrying a byte that is not valid UTF-8 came back
+    through errors="replace" as U+FFFD and named nothing. This CLI exports
+    UNSLOTH_HOME into the backend, so a decline here is not merely a decline --
+    it hands the backend ~/.unsloth and loses containment for the whole install.
+    """
+    try:
+        with (root / _MASTER_ROOT_RECORD).open("rb") as handle:
+            first = handle.readline(4096)
+            if handle.readline(1):
+                return None
+        recorded = os.fsdecode(first).strip(_RECORD_TRIM)
+    except (OSError, ValueError):
+        return None
+    if not recorded or not os.path.isabs(recorded):
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+    except (OSError, ValueError):
+        master = Path(recorded).expanduser()
+    try:
+        return master if master.is_dir() else None
+    except OSError:
+        return None
+
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
@@ -72,6 +339,17 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     install.ps1 and the uninstaller's recursive-delete guard require.
     """
     if (candidate / "share" / "studio.conf").is_file():
+        return True
+    # A NESTED portable install keeps share/ and bin/ one level above the venv,
+    # so neither sentinel below is beside it and the CLI fell back to
+    # ~/.unsloth/studio. Same spellings as _infer_studio_home_from_venv, parent
+    # lookup included: a venv under an unrelated child of a portable root has no
+    # sentinel of its own and must keep falling back. The in-root record is what
+    # keeps that install recognizable when its master root is group-writable and
+    # the parent marker can no longer be believed.
+    if (candidate / _PORTABLE_MARKER).is_file() or _in_root_master_root(candidate) is not None:
+        return True
+    if _parent_portable_root(candidate) is not None:
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -96,6 +374,42 @@ def _is_managed_cmd_shim(path: Path) -> bool:
     return all(marker in body for marker in _CMD_SHIM_MARKERS)
 
 
+def _venv_studio_home_candidates(prefix_value: str) -> list[Path]:
+    """STUDIO_HOME spellings to test for *prefix_value*, resolved one first.
+
+    storage_roots._venv_studio_home_candidates, duplicated for the same reason
+    the marker constant is: resolve() lands on the physical venv, which is the
+    wrong side of a <master>/studio the user pre-symlinked to another volume.
+    install.sh follows such a symlink (`mkdir -p "$STUDIO_HOME"`) and names it in
+    the closing summary rather than refusing it, so the marker stays at <master>
+    while the venv lives on the far volume, and only the spelling baked into the
+    console script's shebang still reaches it. The two must not disagree: this
+    CLI exports UNSLOTH_HOME into the backend, where it outranks that lookup.
+    """
+    spellings: list[Path] = []
+    try:
+        spellings.append(Path(prefix_value).resolve())
+    except (OSError, ValueError):
+        pass
+    try:
+        # abspath, not Path: it normalizes without touching the filesystem, so
+        # the symlinked spelling survives where resolve() would collapse it.
+        spellings.append(Path(os.path.abspath(prefix_value)))
+    except (OSError, ValueError):
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for prefix in spellings:
+        if prefix.name != "unsloth_studio":
+            continue
+        candidate = prefix.parent
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        out.append(candidate)
+    return out
+
+
 def _resolve_studio_home() -> tuple[Path, bool]:
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
@@ -109,20 +423,30 @@ def _resolve_studio_home() -> tuple[Path, bool]:
     master = (os.environ.get("UNSLOTH_HOME") or "").strip()
     if master:
         try:
-            candidate = Path(master).expanduser().resolve() / "studio"
+            root = Path(master).expanduser().resolve()
         except (OSError, ValueError):
-            candidate = Path(master).expanduser() / "studio"
+            root = Path(master).expanduser()
+        # Flat layout: a root holding the venv directly IS the Studio root, but
+        # only when it can prove it is ours. Same rule storage_roots.studio_root()
+        # applies to UNSLOTH_HOME; see _is_flat_portable_root.
+        candidate = root if _is_flat_portable_root(root) else root / _STUDIO_CHILD_DIRNAME
         try:
             is_custom = candidate != (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             is_custom = candidate != (Path.home() / ".unsloth" / "studio")
         return candidate, is_custom
     try:
-        prefix = Path(sys.prefix).resolve()
-        if prefix.name == "unsloth_studio":
-            inferred = prefix.parent
-            legacy = (Path.home() / ".unsloth" / "studio").resolve()
-            if inferred != legacy and _looks_like_installer_managed_studio_home(inferred):
+        legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        for inferred in _venv_studio_home_candidates(sys.prefix):
+            # Compared resolved, so the legacy path stays suppressed under a
+            # symlinked HOME no matter which spelling offered it.
+            try:
+                same_as_legacy = inferred.resolve() == legacy
+            except (OSError, ValueError):
+                same_as_legacy = inferred == legacy
+            if same_as_legacy:
+                continue
+            if _looks_like_installer_managed_studio_home(inferred):
                 return inferred, True
     except (OSError, ValueError):
         pass
@@ -132,17 +456,128 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
 
+def _portable_marker_root() -> Optional[Path]:
+    """Master root the installer recorded inside, beside or above STUDIO_HOME.
+
+    Same order as storage_roots.unsloth_home(); the two must not disagree. The
+    in-root record first, since it is the only one written inside the tree the
+    install owns and so needs no permissions argument. The parent lookup is the
+    nested layout only; see _inherits_parent_portable_marker for why it cannot be
+    every child.
+    """
+    try:
+        recorded = _in_root_master_root(STUDIO_HOME)
+        if recorded is not None:
+            return recorded
+        if (STUDIO_HOME / _PORTABLE_MARKER).is_file():
+            return STUDIO_HOME
+        return _parent_portable_root(STUDIO_HOME)
+    except OSError:
+        return None
+
+
+def _portable_master_root() -> Optional[Path]:
+    """Master root of a portable install, or None.
+
+    Mirrors storage_roots.unsloth_home(): the environment first, then the
+    on-disk marker, which is all a venv-activated CLI has to go on.
+    """
+    override = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().resolve()
+        except (OSError, ValueError):
+            return Path(override).expanduser()
+    return _portable_marker_root()
+
+
+def _env_unset_or_blank(name: str) -> bool:
+    """Whether *name* is missing, empty, or whitespace-only.
+
+    The same predicate install.sh applies through _trim_ws and storage_roots'
+    _setup_cache_env applies to every cache default, so all three agree on what
+    counts as already set. It matters here because a whitespace-only value is a
+    RELATIVE path: uv, npm and pip would resolve " " against the working
+    directory and write outside the portable root, which is the exact escape
+    this recovery exists to prevent.
+    """
+    return not (os.environ.get(name) or "").strip()
+
+
+_PORTABLE_CONF_EXPORT = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _portable_root_env(master: Path) -> dict[str, str]:
+    """Cache and tool roots a portable install pins, keyed by variable name.
+
+    Derived from the root, then overlaid with <root>/share/studio.conf when the
+    installer wrote one, so this list cannot drift from install.sh.
+
+    The conf is read as bytes and decoded with filesystem semantics, for the
+    reason _in_root_master_root spells out: install.sh writes these values from
+    the resolved root verbatim and a POSIX path is a byte string, so a root
+    carrying a byte that is not valid UTF-8 came back through errors="replace"
+    as U+FFFD -- which is not an unusable value but a DIFFERENT and perfectly
+    creatable one (the single byte re-encodes to the three bytes of U+FFFD), so
+    an activated-venv update would point UV_CACHE_DIR and PIP_CACHE_DIR at a
+    sibling of the root and write outside it. os.fsdecode is also what the
+    master-root record next door uses, so the two readers agree on what a
+    recorded path says. On Windows it decodes UTF-8 with surrogatepass, which is
+    right here too: only install.sh writes this file, NTFS paths are UTF-16, and
+    a conf that is not valid UTF-8 there was not written by us -- it raises,
+    caught below, and the derived values stand rather than a mangled overlay.
+    """
+    derived = {
+        "UNSLOTH_PORTABLE": "1",
+        "UV_CACHE_DIR": str(master / "cache" / "uv"),
+        "UV_PYTHON_INSTALL_DIR": str(master / "cache" / "uv-python"),
+        "UV_TOOL_DIR": str(master / "cache" / "uv-tools"),
+        "UV_TOOL_BIN_DIR": str(master / "bin"),
+        "UV_PYTHON_BIN_DIR": str(master / "bin"),
+        "UV_INSTALL_DIR": str(master / "bin"),
+        "UV_NO_MODIFY_PATH": "1",
+        "NPM_CONFIG_CACHE": str(master / "cache" / "npm"),
+        # setup.sh prefers bun over npm when it is present, and bun ignores
+        # NPM_CONFIG_CACHE entirely, caching under $HOME instead.
+        "BUN_INSTALL_CACHE_DIR": str(master / "cache" / "bun"),
+        "CUDA_CACHE_PATH": str(master / "cache" / "cuda"),
+        # pip is install_python_stack's fallback when uv fails, and it caches by default.
+        "PIP_CACHE_DIR": str(master / "cache" / "pip"),
+    }
+    try:
+        with (master / "share" / "studio.conf").open("rb") as handle:
+            conf = os.fsdecode(handle.read())
+    except (OSError, ValueError):
+        return derived
+    for line in conf.splitlines():
+        matched = _PORTABLE_CONF_EXPORT.match(line)
+        if matched is None or matched.group(1) not in derived:
+            continue
+        try:
+            parts = shlex.split(matched.group(2))
+        except ValueError:
+            continue
+        if len(parts) == 1:
+            derived[matched.group(1)] = parts[0]
+    return derived
+
+
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH only for real
     custom roots so subprocesses inherit the right install. Called from each
     studio subcommand entry rather than at import time, to avoid leaking env
     state into unrelated importers (tests, --help, CLI introspection).
     """
-    if not _STUDIO_HOME_IS_CUSTOM:
+    # `--portable` with its default root puts the venv at the legacy path, so
+    # STUDIO_HOME is not custom and only the marker tells that install apart from
+    # a plain one, which must keep exporting nothing.
+    if not _STUDIO_HOME_IS_CUSTOM and _portable_marker_root() is None:
         return
-    # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
-    # suppress the inferred custom root.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    # Blank-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
+    # suppress the inferred custom root. _resolve_studio_home already ignored
+    # such a value, so keeping it here would export a root the CLI itself does
+    # not use.
+    if _env_unset_or_blank("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     # When override == legacy default, llama.cpp stays at ~/.unsloth/llama.cpp.
     try:
@@ -150,19 +585,26 @@ def _ensure_studio_env_exported() -> None:
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    # The native runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is
-    # one level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
-    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
-    if _master:
-        try:
-            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
-        except (OSError, ValueError):
-            _llama_dir = Path(_master).expanduser() / "llama.cpp"
+    # The runtimes sit BESIDE studio/, so STUDIO_HOME/llama.cpp is one level too
+    # deep, and run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so the wrong
+    # value exported here wins everywhere.
+    _master = _portable_master_root()
+    if _master is not None:
+        _llama_dir = _master / "llama.cpp"
+        # _portable_master_root() already discarded a whitespace-only UNSLOTH_HOME,
+        # so test it the same way rather than preserving what it ignored.
+        if _env_unset_or_blank("UNSLOTH_HOME"):
+            os.environ["UNSLOTH_HOME"] = str(_master)
+        # Without these, an activated-venv `unsloth studio update` hands setup.sh a
+        # bare environment and uv/npm repopulate ~/.cache and ~/.local/bin.
+        for _name, _value in _portable_root_env(_master).items():
+            if _env_unset_or_blank(_name):
+                os.environ[_name] = _value
     elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if _env_unset_or_blank("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
@@ -4092,7 +4534,12 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
         # The assignments go before `sh`, not before `curl`: that is the form
         # install.sh documents, and it is sh that reads them.
         env = ""
-        if _STUDIO_HOME_IS_CUSTOM:
+        # install.sh derives everything from UNSLOTH_HOME, so passing only
+        # UNSLOTH_STUDIO_HOME would push the caches back outside the root.
+        _master_root = _portable_master_root()
+        if _master_root is not None:
+            env = f"UNSLOTH_HOME={shlex.quote(str(_master_root))} "
+        elif _STUDIO_HOME_IS_CUSTOM:
             env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
         if no_torch:
             env += "UNSLOTH_NO_TORCH=1 "
