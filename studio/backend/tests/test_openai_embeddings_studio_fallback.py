@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import asyncio
 import base64
 import os
@@ -25,6 +28,7 @@ class _Request:
         self.method = "POST"
         self.url = SimpleNamespace(path = "/v1/embeddings")
         self.state = SimpleNamespace(skip_api_monitor = True)
+        self.scope = {"type": "http", "path": "/v1/embeddings"}
 
     async def json(self):
         return self._body
@@ -211,3 +215,84 @@ def test_studio_embedder_requests_are_admission_limited(studio_embedder):
 
     asyncio.run(run())
     assert active["peak"] == inference_route._STUDIO_EMBED_CONCURRENCY
+
+
+def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedder):
+    # /v1/embeddings is an _INFERENCE_SUFFIXES path and is NOT in _NON_LLM_SLOT_SUFFIXES, so a
+    # 2xx that reaches llama_keepwarm._finish claims the llama slot and clears preview ownership.
+    # The studio embedder never touches the resident GGUF, so it must untrack first -- the same
+    # contract the external-provider chat branch follows.
+    from core.inference import llama_keepwarm as kw
+
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+    )
+    request = _Request({"input": "alpha"})
+    before = kw._inflight
+    kw._inflight = before + 1
+    try:
+        response = asyncio.run(inference_route.openai_embeddings(request, "tester"))
+        assert response.status_code == 200
+        # Set => _finish() skips both _claim_non_preview_slot() and the activity stamp.
+        assert request.scope.get(kw._UNTRACKED_SCOPE_KEY) is True
+        assert kw._inflight == before
+    finally:
+        kw._inflight = before
+
+
+def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
+    # The proxy path DOES run against the resident GGUF, so it must stay tracked.
+    import httpx
+
+    class _Client:
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}]})
+
+        async def aclose(self):
+            return None
+
+    from core.inference import llama_keepwarm as kw
+
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    request = _Request({"input": "alpha", "model": "org/E-GGUF"})
+    asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert request.scope.get(kw._UNTRACKED_SCOPE_KEY) is None
+
+
+def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
+    # _monitor_openai_chunk's 3rd arg is context_length, and api_monitor divides the batch's
+    # summed prompt_tokens by it. Passing the per-text limit for a multi-input request would
+    # report 100% context use for a request that used a fraction of it per text.
+    seen = []
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 8)
+    studio_embedder.setattr(
+        inference_route,
+        "_monitor_openai_chunk",
+        lambda monitor_id, payload, context_length = None, **_: seen.append(context_length),
+    )
+    request = _Request({"input": ["alpha", "beta", "gamma"]})
+    request.state.skip_api_monitor = False
+    asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert seen == [None]
+
+    seen.clear()
+    request = _Request({"input": "alpha"})
+    request.state.skip_api_monitor = False
+    asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert seen == [8]

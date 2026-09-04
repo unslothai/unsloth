@@ -25778,8 +25778,16 @@ def _embedding_payload(vector, encoding_format: str):
 
 
 async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
+    from core.inference.llama_keepwarm import untrack_current_request
     from core.rag import config as rag_config
     from core.rag import embeddings as rag_embeddings
+
+    # Served entirely by core.rag.embeddings, so the resident GGUF is never touched. Untrack before
+    # the encode: /embeddings is an _INFERENCE_SUFFIXES path that is not slot-excluded, so a 2xx
+    # here would otherwise claim the llama slot and clear preview ownership, hold the in-flight
+    # count for the whole encode (blocking a preview swap), and stamp the idle-unload TTL for a
+    # model that did no work.
+    untrack_current_request(getattr(request, "scope", None))
 
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format") or "float"
@@ -25839,7 +25847,10 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
         "model": model_name,
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
     }
-    _monitor_openai_chunk(monitor_id, payload, limit)
+    # limit is the per-text token cap but prompt_tokens is the batch sum, so the monitor's
+    # total_tokens/context_length gauge only means anything for a single input; a batch would
+    # otherwise sit pinned at 100%.
+    _monitor_openai_chunk(monitor_id, payload, limit if len(texts) == 1 else None)
     api_monitor.finish(monitor_id)
     return Response(content = json.dumps(payload), media_type = "application/json")
 
