@@ -246,6 +246,7 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        # Called from a `finally`: never raise over the failure that sent us here.
         try:
             proc.wait(timeout = 10)
         except subprocess.TimeoutExpired:
@@ -268,13 +269,12 @@ def wait_for_smoke_page(
     deadline = time.monotonic() + timeout_s
     last = "no response"
     while time.monotonic() < deadline:
-        # Ours died (busy port, missing node_modules):
+        # Ours died (busy port, missing node_modules): stop instead of polling out the timeout.
         if proc is not None and proc.poll() is not None:
             tail = "\n".join(getattr(proc, "vite_tail", []))
             raise RuntimeError(
                 f"vite exited with code {proc.returncode} before serving {url}\n{tail}"
             )
-        # Called from a `finally`: never raise over the failure that sent us here.
         try:
             with urllib.request.urlopen(url, timeout = 3.0) as r:
                 body = r.read().decode("utf-8", errors = "replace")

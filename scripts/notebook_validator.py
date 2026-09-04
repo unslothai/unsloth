@@ -194,7 +194,8 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     return out
 
 
-# Colab oracle only applies to notebooks that run on Colab;
+# Colab oracle only applies to notebooks that run on Colab; AMD, Kaggle,
+# DGX-Spark have their own preinstalls and the Colab-vs-cell rules don't apply.
 def target_environment(notebook_name: str) -> str:
     parts = pathlib.PurePath(notebook_name).parts
     base = parts[-1] if parts else notebook_name

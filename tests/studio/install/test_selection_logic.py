@@ -2326,6 +2326,7 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
     def test_cuda13_minor_bump_pairs_matching_cudart(self, monkeypatch):
+        # The paired cudart bundle must track the same bumped minor.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
         assets = {
@@ -2339,6 +2340,8 @@ class TestWindowsCudaAttempts:
         assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.3-x64.zip"
 
     def test_driver_below_published_minor_does_not_get_newer_build(self, monkeypatch):
+        # Only cuda-13.3 published; a 13.1 driver can't run it (forward minor), so it is gated to cuda-12.4.
+        # A 13.3 driver still gets 13.3 (other tests).
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.3", "12.4")
@@ -2347,6 +2350,7 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
 
     def test_tracks_future_cuda13_minor(self, monkeypatch):
+        # A later within-major bump (13.4) is tracked the same as 13.3.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 4))
         assets = self._upstream("13.4", "12.4")
@@ -2363,8 +2367,7 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
 
     def test_new_cuda_major_degrades_to_published_cuda13(self, monkeypatch):
-        # Legacy cudart-only naming path must not self-pair.
-        # The paired cudart bundle must track the same bumped minor.
+        # A 14.x driver with no cuda14 build runs the newest published cuda13 build via backward compatibility.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
         assets = self._upstream("13.3", "12.4")
@@ -2485,9 +2488,6 @@ class TestDirectUpstreamBlackwellPin:
         )
 
     def test_blackwell_13_1_falls_to_cpu(self, monkeypatch):
-        # Only cuda-13.3 published; a 13.1 driver can't run it (forward minor), so it is
-        # A later within-major bump (13.4) is tracked the same as 13.3.
-        # A 14.x driver with no cuda14 build runs the newest published cuda13 build via backward compatibility.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         host = make_host(

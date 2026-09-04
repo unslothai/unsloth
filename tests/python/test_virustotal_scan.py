@@ -839,6 +839,7 @@ class TestRetryBackoffRespectsTheDeadline:
     def test_backoff_never_sleeps_past_the_deadline(self, status):
         slept = []
         client = self._client(status, [0.0], slept, interval = 20.0)
+        # 5s of budget left, but an uncapped backoff would sleep 20s, then 40s.
         with pytest.raises((RuntimeError, TimeoutError)):
             client.request("GET", "https://api.example/x", deadline = 5.0)
         assert slept, "expected the retry path to sleep at all"
@@ -847,7 +848,6 @@ class TestRetryBackoffRespectsTheDeadline:
     def test_no_remaining_budget_means_no_sleep_at_all(self):
         slept = []
         client = self._client(429, [10.0], slept, interval = 20.0)
-        # 5s of budget left, but an uncapped backoff would sleep 20s, then 40s.
         with pytest.raises((RuntimeError, TimeoutError)):
             client.request("GET", "https://api.example/x", deadline = 10.0)
         assert slept == []

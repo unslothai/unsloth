@@ -397,6 +397,7 @@ def test_functional_equivalence_snac_match():
 
 
 def test_functional_equivalence_csm_match():
+    # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {"<|AUDIO|>": [0], "<|audio_eos|>": [0]},
@@ -413,7 +414,7 @@ def test_functional_equivalence_whisper_match():
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1],
+            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0],
         },
@@ -426,16 +427,15 @@ def test_functional_equivalence_whisper_match():
 
 
 def test_functional_equivalence_audio_vlm_match():
-    # audio_vlm:
-    # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
-    # whisper: snac/csm fail, then <|startoftranscript|> is 1 token.
+    # audio_vlm: snac/csm/whisper fail, then the Gemma 4 <|audio|> arm (#6000)
+    # tokenises to 1 token while <audio_soft_token> stays 2 to isolate it.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1],
+            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
             "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1],
-            "<audio_soft_token>": [0, 1],
+            "<|startoftranscript|>": [0, 1],  # whisper fails
+            "<audio_soft_token>": [0, 1],  # Gemma 3n arm fails ...
             "<|audio|>": [0],  # ... Gemma 4 arm matches (#6000)
         },
     ) as srv:
@@ -453,7 +453,7 @@ def test_functional_equivalence_bicodec_match():
         tok_response_map = {
             "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
-            "<|startoftranscript|>": [0, 1],  # whisper fails
+            "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
             "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0],
@@ -469,7 +469,6 @@ def test_functional_equivalence_bicodec_match():
 
 def test_shim_returns_500_on_tokenize_returns_none():
     """Non-200 responses fall through to None on both sync and threaded paths."""
-    # bicodec: all prior branches fail, then bicodec_semantic_0/global_0 are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_status = 500,

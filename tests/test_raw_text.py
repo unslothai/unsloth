@@ -392,6 +392,7 @@ def test_negative_stride_is_rejected():
     tokenizer = CharTokenizer()
     text = "x" * 100
 
+    # Both entry points validate stride, so both need the lower bound.
     try:
         RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
         assert False, "the constructor should reject a negative stride"
@@ -434,7 +435,6 @@ def test_load_from_files_all_empty_raises():
 
     loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size = 2048, stride = 512)
     paths = []
-    # Both entry points validate stride, so both need the lower bound.
     try:
         for content in ("", "   \n\t  "):
             with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:

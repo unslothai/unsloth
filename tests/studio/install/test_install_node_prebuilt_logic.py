@@ -409,6 +409,7 @@ def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypat
 
 
 def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, monkeypatch):
+    # Archive download fails but a usable older Node is on disk -> keep it.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
@@ -422,8 +423,7 @@ def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, mon
 
 
 def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: Path, monkeypatch):
-    # Archive download fails but a usable older Node is on disk -> keep it.
-    install_dir = tmp_path / "node"
+    install_dir = tmp_path / "node"  # nothing usable on disk
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "download_file_verified", _offline)

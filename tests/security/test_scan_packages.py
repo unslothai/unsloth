@@ -1710,6 +1710,7 @@ def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
 
 
 def test_release_files_pinned_missing_fails_closed():
+    # A pin absent from metadata must NOT fall back to the latest artifact.
     meta = _meta(
         [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
         version = "2.0.0",
@@ -1721,6 +1722,7 @@ def test_release_files_pinned_missing_fails_closed():
 
 
 def test_download_sdist_direct_missing_pin_does_not_scan_latest(tmp_path):
+    # Pinned version absent -> no sdist returned (never the latest file).
     meta = _meta(
         [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
         version = "2.0.0",
@@ -1746,8 +1748,6 @@ def test_download_sdist_direct_no_sdist_published(tmp_path):
 def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch):
     payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
     monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload))
-    # A pin absent from metadata must NOT fall back to the latest artifact.
-    # Pinned version absent -> no sdist returned (never the latest file).
     meta = _meta(
         [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")],
         version = "1.1.6",
@@ -1767,6 +1767,7 @@ def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
 
 
 def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
+    # A spec that fails pip but HAS a wheel on PyPI is a genuine error (-> exit 2).
     class _Proc:
         returncode = 1
         stderr = "ResolutionImpossible"
@@ -1785,7 +1786,6 @@ def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
 
 
 def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
-    # A spec that fails pip but HAS a wheel on PyPI is a genuine error (-> exit 2).
     # sdist-only spec: pip fails, PyPI shows no wheel -> direct fetch, no error.
     class _Proc:
         returncode = 1

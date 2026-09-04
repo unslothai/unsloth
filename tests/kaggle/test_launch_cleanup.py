@@ -620,6 +620,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
         f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
     )
+    # And the retry still did the budget control the handler exists for.
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
 
@@ -677,8 +678,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
         f"a log call that raised inside the handler turned SIGTERM into returncode "
         f"{proc.returncode}. Launcher said: {_tail(proc)}"
     )
-    # And the retry still did the budget control the handler exists for.
-    # And the kernel is still deleted:
+    # And the kernel is still deleted: the logging is what failed, not the cleanup.
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
 

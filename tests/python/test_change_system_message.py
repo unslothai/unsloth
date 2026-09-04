@@ -50,13 +50,13 @@ def test_custom_template_preserves_backslashes():
 
 
 def test_custom_template_requires_system_message():
+    # A placeholder with no system message must raise, not stay literal.
     fn = _load_change_system_message()
     with pytest.raises(ValueError):
         fn("System: {system_message}", CUSTOM, None)
 
 
 def test_custom_template_without_placeholder_unchanged():
-    # A placeholder with no system message must raise, not stay literal.
     fn = _load_change_system_message()
     template, used = fn("System: fixed", CUSTOM, "ignored")
     assert template == "System: fixed"

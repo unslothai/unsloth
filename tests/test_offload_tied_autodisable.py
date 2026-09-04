@@ -144,6 +144,7 @@ def test_tied_model_disables_offload_instead_of_raising():
 
 
 def test_opaque_model_leaves_request_alone():
+    # Cannot inspect it, so do not guess, and do not crash.
     with _as_platform("posix"):
         assert resolve(_Opaque(), True) is True
 
@@ -165,7 +166,6 @@ def test_wsl_and_windows_disable_offload():
         assert resolve(_untied_model(), True) is False
         assert resolve(_Opaque(), True) is False
 
-    # Cannot inspect it, so do not guess, and do not crash.
     with _as_platform("posix"):
         assert unsupported_platform() is None
 

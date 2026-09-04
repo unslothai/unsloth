@@ -200,9 +200,10 @@ def test_harnesses_own_their_dev_server() -> None:
         assert "wait_for_smoke_page" in text, f"{name} gates on status rather than on content"
 
 
-# The #8977 thread-weight harness deliberately asserts no timing budget:
-
-# number that would have shown the regression is collected and then thrown away.
+# The #8977 thread-weight harness deliberately asserts no timing budget: it exists to produce the numbers a budget
+# would later be set from. That removes the `main()` check the tests above rely on, so the same rule is enforced one
+# step earlier, every metric it records has to reach the printed table. An unprinted metric there is the same failure
+# as an unasserted one here: the number that would have shown the regression is collected and then thrown away.
 THREAD_WEIGHT = "playwright_thread_weight.py"
 
 

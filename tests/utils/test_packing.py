@@ -183,6 +183,7 @@ def _hybrid_config_model():
 
 
 def _gemma3_model():
+    # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
         config = _FakeConfig(
             model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]
@@ -191,7 +192,6 @@ def _gemma3_model():
 
 
 def _dense_qwen3_model():
-    # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
         config = _FakeConfig(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
     )

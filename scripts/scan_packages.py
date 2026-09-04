@@ -2688,6 +2688,7 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
             os.fsync(f.fileno())
         os.replace(tmp_path, filepath)
     except Exception:
+        # Best effort cleanup; the destination was never touched.
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -2908,7 +2909,6 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     for e in entries:
         if not isinstance(e, dict):
             continue
-        # Best effort cleanup; the destination was never touched.
         try:
             # Use the reviewed hash; else recompute it from the stored evidence.
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")

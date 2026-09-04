@@ -2345,6 +2345,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
             lambda path: 1000 * GB if str(path).endswith("_gguf") else state["free"],
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: (a[0], None))
+        # Only the save-directory / sibling pair can be split. The working directory the conversion writes to is one
+        # filesystem with the sibling here, so it is never charged to the save directory's disk.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -2453,15 +2455,14 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def test_split_storage_charges_each_side_instead(self, phases):
         """The reclamation declines across filesystems, so the relief must too."""
         phases.update(separate = True, free = 62 * GB)
+        # 141 aggregate - 78 sibling = 63GB of checkpoint, 66.3GB once the merge's own 0.95 reserve is on it, and 62GB
+        # holds neither.
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "66.3GB" in str(error.value)
 
     def test_it_can_only_ever_lower_the_figure(self, phases, monkeypatch):
         """An estimator whose phases exceed the aggregate changes nothing."""
-        # Only the save-directory / sibling pair can be split. The working
-        # directory the conversion writes to is one filesystem with the sibling
-        # here, so it is never charged to the save directory's disk.
         monkeypatch.setattr(
             S,
             "estimate_gguf_export_bytes",
@@ -2483,8 +2484,6 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
             return real(**kwargs)
 
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
-        # 141 aggregate - 78 sibling = 63GB of checkpoint, 66.3GB once the merge's own 0.95 reserve is on it, and 62GB
-        # holds neither.
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
         assert "141.0GB" in str(error.value)

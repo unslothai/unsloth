@@ -611,6 +611,9 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
 def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     monkeypatch, studio, tmp_path, capsys
 ):
+    # Aborting here would make an antivirus hold enough to render the environment unupdatable, which main did not do
+    # either. But the cost has to be visible: uv cannot replace a launcher it could not move, and the pip fallback
+    # drops --upgrade-package, so unsloth stays at its old version.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     ran = []
     seen = {}
@@ -669,10 +672,6 @@ def _blocked_exe_run(interpreter_result, calls = None):
 
 
 def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):
-    # Aborting here would make an antivirus hold enough to render the
-    # environment unupdatable, which main did not do either. But the cost has to
-    # be visible: uv cannot replace a launcher it could not move, and the pip
-    # fallback drops --upgrade-package, so unsloth stays at its old version.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     calls = []
