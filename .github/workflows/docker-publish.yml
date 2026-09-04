@@ -3,7 +3,8 @@
 # No GPU runner needed: cu128 wheels are fat binaries, the build-time check uses
 # torch._C._cuda_getArchFlags(), and UNSLOTH_COMPILE_DISABLE=1 blocks GPU-keyed JIT.
 #
-# Required secret: DOCKER_API_KEY, the Docker Hub token for REGISTRY_USERNAME.
+# Required secret: DOCKER_API_KEY, a Docker Hub ORGANIZATION access token for the
+# unsloth org. It logs in as REGISTRY_USERNAME below, which is the org name.
 # Optional variable HAS_GPU_RUNNER='true' gates the smoke-test job.
 
 name: Publish Blackwell Docker image
@@ -42,9 +43,12 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: unsloth/unsloth
-  # The account DOCKER_API_KEY belongs to. Not a secret, and named once so the
-  # four login steps cannot drift apart.
-  REGISTRY_USERNAME: danielhanc
+  # DOCKER_API_KEY is an ORGANIZATION access token, and Docker Hub authenticates an
+  # OAT as the ORGANISATION, not as whoever created it. So this is the org name and
+  # must stay that way: putting a person's account here fails every login, which is
+  # why it is spelled out rather than left to look like an arbitrary owner field.
+  # Not a secret, and named once so the four login steps cannot drift apart.
+  REGISTRY_USERNAME: unsloth
 
 # Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
 # shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
