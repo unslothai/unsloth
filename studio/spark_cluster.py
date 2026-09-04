@@ -789,27 +789,460 @@ def update_instructions() -> List[str]:
 
 RPC_DEFAULT_PORT = 50052
 
+# The executable and the library, under every name the bundles have used. The
+# legacy `rpc-server` name predates the ggml- prefix; Windows bundles carry .exe
+# and ggml-rpc.dll; macOS carries a versioned dylib.
+_RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
+_RPC_LIB_NAMES = ("libggml-rpc.so", "libggml-rpc.dylib", "libggml-rpc.0.dylib", "ggml-rpc.dll")
+# Where inside a bundle the payload lives: the Linux/macOS layout, the Windows
+# layout, the raw tarball layout, and a flat directory, in that order.
+_BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
+
+
+def llama_bundle_dir() -> Path:
+    """The managed llama.cpp prebuilt bundle, resolved the way the installer resolves it.
+
+    Mirrors ``default_managed_llama_dir()`` in studio/install_llama_prebuilt.py and the
+    ``_css_llama_path`` logic in setup.sh rather than importing either: this module has
+    to stay stdlib-only and cheap. The rule is ``UNSLOTH_LLAMA_CPP_PATH`` if set, else
+    ``<UNSLOTH_STUDIO_HOME>/llama.cpp`` for a custom studio home, else the legacy
+    ``~/.unsloth/llama.cpp``. The default is deliberately NOT under the studio root:
+    the venv lives at ``~/.unsloth/studio/unsloth_studio`` while the bundle lives one
+    level up, so ``_studio_root() / "llama.cpp"`` would name a directory that does not
+    exist on a default install and provision would silently skip the bundle.
+    """
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    root = _studio_root()
+    try:
+        is_default = root.resolve() == _DEFAULT_STUDIO_ROOT.resolve()
+    except (OSError, ValueError, RuntimeError):
+        is_default = root == _DEFAULT_STUDIO_ROOT
+    if not is_default:
+        return root / "llama.cpp"
+    return Path.home() / ".unsloth" / "llama.cpp"
+
+
+def _find_in_bundle(root: Path, names: Tuple[str, ...], executable: bool = False) -> Optional[Path]:
+    """The first of ``names`` present in any known bundle layout under ``root``."""
+    for parts in _BUNDLE_SUBDIRS:
+        base = root.joinpath(*parts) if parts else root
+        for name in names:
+            candidate = base / name
+            try:
+                if not candidate.is_file():
+                    continue
+                if executable and not os.access(candidate, os.X_OK):
+                    continue
+            except OSError:
+                continue
+            return candidate
+    return None
+
 
 def rpc_server_binary() -> Optional[str]:
     """Path to ggml-rpc-server, or None.
 
-    Unsloth's llama.cpp prebuilt bundles the RPC *client* backend (libggml-rpc.so,
-    and llama-server's --rpc flag) but NOT the ggml-rpc-server executable, so the
-    remote half has to come from a source build. Checked in the bundle first anyway,
-    so a future prebuilt that does ship it is picked up automatically.
+    Unsloth's llama.cpp prebuilt ships the executable next to llama-server, together
+    with libggml-rpc.so, from release b10796-mix-659e406 of unslothai/llama.cpp
+    onward; earlier bundles shipped only the RPC client backend. So the managed bundle
+    (``llama_bundle_dir()``, which honours UNSLOTH_STUDIO_HOME and
+    UNSLOTH_LLAMA_CPP_PATH) is searched first, under the current name and the legacy
+    ``rpc-server`` name, and a source build or a binary on PATH is the fallback for
+    an older bundle.
     """
-    roots = []
-    env_root = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-    if env_root:
-        roots.append(Path(env_root))
-    roots += [Path.home() / ".unsloth" / "llama.cpp", Path.home() / "src" / "llamacpp-rpc"]
+    roots = [llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"]
     for root in roots:
-        for name in ("ggml-rpc-server", "rpc-server"):
-            candidate = root / "build" / "bin" / name
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
-    found = shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
-    return found
+        found = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+        if found is not None:
+            return str(found)
+    return shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
+
+
+def _bundle_version(root: Path) -> str:
+    """The release tag from the bundle's BUILD_INFO.txt, or ``"unknown"``.
+
+    The first line reads ``llama.cpp version: b10796-mix-659e406``. Bundles older
+    than the file, and source builds, have no BUILD_INFO.txt at all, and that must
+    read as unknown rather than fail: an unknown is compared by library hash instead.
+    """
+    for parts in ((), ("build", "bin"), ("bin",)):
+        base = root.joinpath(*parts) if parts else root
+        text = _read(base / "BUILD_INFO.txt", 4096)
+        if not text:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                key, _, value = line.partition(":")
+                if "version" in key.lower() and value.strip():
+                    return value.strip()
+            return line
+    return "unknown"
+
+
+def _file_md5(path: Path) -> Optional[str]:
+    import hashlib
+
+    digest = hashlib.md5()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def llama_bundle_identity(root: Optional[Path] = None) -> Dict[str, Any]:
+    """What llama.cpp this node would run: the bundle tag and the RPC library's hash.
+
+    Two independent signals because each fails alone. BUILD_INFO.txt is absent from
+    older bundles and from source builds (``version`` is then ``"unknown"``); the md5
+    of libggml-rpc catches a bundle that was patched in place under the same tag.
+    Never raises: a missing bundle answers ``present: False``.
+    """
+    root = Path(root) if root is not None else llama_bundle_dir()
+    out: Dict[str, Any] = {
+        "root": str(root),
+        "present": False,
+        "version": "unknown",
+        "rpc_lib": None,
+        "rpc_lib_md5": None,
+        "rpc_server": None,
+    }
+    try:
+        out["present"] = root.is_dir()
+    except OSError:
+        return out
+    if not out["present"]:
+        return out
+    out["version"] = _bundle_version(root)
+    lib = _find_in_bundle(root, _RPC_LIB_NAMES)
+    if lib is not None:
+        out["rpc_lib"] = str(lib)
+        out["rpc_lib_md5"] = _file_md5(lib)
+    server = _find_in_bundle(root, _RPC_SERVER_NAMES, executable = True)
+    if server is not None:
+        out["rpc_server"] = str(server)
+    return out
+
+
+def _peer_relative_path(path: Path) -> str:
+    """``path`` as the peer should see it: ``~/...`` when it sits under our home.
+
+    Provision copies to the same path on the peer, but the peer's home directory may
+    differ from ours (different username), so a path under our home is sent home
+    relative and expanded THERE. A custom absolute location is sent as is.
+    """
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+# Runs on the PEER under its own python3, so it must be self-contained: the peer may
+# have no Unsloth checkout at all. It mirrors llama_bundle_identity() field for field.
+_BUNDLE_PROBE = """\
+import hashlib, json, os
+root = os.path.expanduser(os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or {root!r})
+subs = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
+libs = {libs!r}
+servers = {servers!r}
+out = {{"root": root, "present": os.path.isdir(root), "version": "unknown",
+       "rpc_lib": None, "rpc_lib_md5": None, "rpc_server": None}}
+def find(names, executable):
+    for parts in subs:
+        base = os.path.join(root, *parts) if parts else root
+        for name in names:
+            c = os.path.join(base, name)
+            if os.path.isfile(c) and (not executable or os.access(c, os.X_OK)):
+                return c
+    return None
+if out["present"]:
+    for parts in ((), ("build", "bin"), ("bin",)):
+        p = os.path.join(root, *parts, "BUILD_INFO.txt")
+        try:
+            with open(p, "r", errors="replace") as fh:
+                text = fh.read(4096)
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                k, _, v = line.partition(":")
+                if "version" in k.lower() and v.strip():
+                    out["version"] = v.strip()
+                    break
+            out["version"] = line
+            break
+        break
+    lib = find(libs, False)
+    if lib:
+        out["rpc_lib"] = lib
+        h = hashlib.md5()
+        with open(lib, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        out["rpc_lib_md5"] = h.hexdigest()
+    out["rpc_server"] = find(servers, True)
+print("UNSLOTH_BUNDLE " + json.dumps(out))
+"""
+
+
+def peer_llama_bundle_identity(peer_ip: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
+    """``llama_bundle_identity()`` as evaluated ON THE PEER, or None if it cannot be.
+
+    Runs over non-interactive ssh with the same base64 transport the other peer probes
+    use. None means "could not check", which callers must report as unverified rather
+    than as matching.
+    """
+    if not peer_ip or not shutil.which("ssh"):
+        return None
+    import base64
+
+    source = _BUNDLE_PROBE.format(
+        root = _peer_relative_path(llama_bundle_dir()),
+        libs = _RPC_LIB_NAMES,
+        servers = _RPC_SERVER_NAMES,
+    )
+    blob = base64.b64encode(source.encode()).decode()
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-n",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=8",
+                f"{user}@{peer_ip}",
+                f"echo {blob} | base64 -d | python3 -",
+            ],
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+        )
+    except Exception:
+        return None
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith("UNSLOTH_BUNDLE "):
+            try:
+                data = json.loads(line[len("UNSLOTH_BUNDLE ") :])
+            except ValueError:
+                return None
+            return data if isinstance(data, dict) else None
+    return None
+
+
+PROVISION_FIX = "run `unsloth spark provision` to copy this node's llama.cpp bundle to the peer"
+
+
+def compare_llama_bundles(
+    local: Dict[str, Any], peer: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Will llama-server here and ggml-rpc-server there speak the same RPC protocol?
+
+    The protocol is pinned by the build, so two nodes on the same bundle tag with the
+    same libggml-rpc are safe, and two nodes on different tags are not: b10796 speaks
+    RPC 6.0 where the bundles before it spoke 5.1, and llama-server then fails at load
+    with "RPC server version mismatch". ``ok`` is True, False, or None for
+    "could not verify". Pure: it compares two dicts and touches nothing.
+    """
+    out: Dict[str, Any] = {"ok": None, "problems": [], "notes": [], "local": local, "peer": peer}
+    lv = str(local.get("version") or "unknown")
+    if peer is None:
+        out["notes"].append(
+            "could not read the peer's llama.cpp bundle (ssh unavailable or the probe "
+            "failed), so RPC protocol parity is UNVERIFIED. If llama-server fails at "
+            f"load with 'RPC server version mismatch', {PROVISION_FIX}."
+        )
+        return out
+    if not peer.get("present"):
+        out["problems"].append(
+            f"the peer has no llama.cpp bundle at {peer.get('root')} while this Spark "
+            f"runs {lv}. Nothing there can answer an RPC connection. Fix: {PROVISION_FIX}."
+        )
+        out["ok"] = False
+        return out
+    pv = str(peer.get("version") or "unknown")
+    lm, pm = local.get("rpc_lib_md5"), peer.get("rpc_lib_md5")
+    if lv != pv and not (lv == "unknown" and pv == "unknown"):
+        out["problems"].append(
+            f"llama.cpp bundle mismatch: this Spark has {lv}, the peer has {pv}. The RPC "
+            f"protocol is pinned by the build (b10796 speaks 6.0, earlier bundles 5.1), so "
+            f"llama-server fails at load with 'RPC server version mismatch'. "
+            f"Fix: {PROVISION_FIX}."
+        )
+    elif lm and pm and lm != pm:
+        out["problems"].append(
+            f"libggml-rpc differs between the nodes (md5 {lm[:12]} here, {pm[:12]} on the "
+            f"peer) although both report {lv}; one of them was rebuilt or patched in "
+            f"place. Fix: {PROVISION_FIX}."
+        )
+    elif lv == "unknown" and not (lm and pm):
+        out["notes"].append(
+            "neither bundle carries BUILD_INFO.txt and libggml-rpc could not be hashed "
+            "on both nodes, so RPC protocol parity is UNVERIFIED."
+        )
+        return out
+    out["ok"] = not out["problems"]
+    if out["ok"]:
+        out["notes"].append(
+            f"llama.cpp bundles match on both nodes ({lv}"
+            + (f", libggml-rpc md5 {lm[:12]}" if lm else "")
+            + ")."
+        )
+    return out
+
+
+# ── Live RPC HELLO probe ─────────────────────────────────────────────────────
+# Wire format of the handshake, from ggml/src/ggml-rpc/ggml-rpc.cpp and transport.h
+# at ggml-org/llama.cpp tag b10796 (RPC protocol 6.0.0):
+#
+#   client -> one byte RPC_CMD_HELLO (14), a little-endian uint64 payload length,
+#             then rpc_msg_hello_req: uint8 conn_caps[RPC_CONN_CAPS_SIZE], all zero
+#   server -> a little-endian uint64 body length, then rpc_msg_hello_rsp:
+#             uint8 major, minor, patch, padding, then conn_caps[RPC_CONN_CAPS_SIZE]
+#
+# A 6.0 server checks the request length first and, if it is not exactly
+# sizeof(rpc_msg_hello_req), logs "HELLO request size mismatch" and closes the socket
+# without replying. So EOF before any reply means "something is listening but it is
+# not a 6.0 server", which is a different finding from a refused connection.
+RPC_CMD_HELLO = 14
+RPC_CONN_CAPS_SIZE = 24
+RPC_HELLO_MAX_BODY = 4096
+
+
+def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def rpc_hello_probe_detail(
+    host: str,
+    port: int = RPC_DEFAULT_PORT,
+    timeout: float = 2.0,
+    read_timeout: float = 3.0,
+) -> Dict[str, Any]:
+    """Send one HELLO and classify what came back. Never raises, always bounded.
+
+    ``state`` is one of ``ok`` (``version`` holds (major, minor, patch)), ``refused``
+    (nothing listening), ``closed`` (a listener hung up without replying, which is
+    what a 6.0 server does to a request it does not recognise and what an older
+    server may do to a 6.0 request), ``timeout``, or ``garbled`` (a reply too short
+    or too long to be a HELLO response).
+    """
+    import struct
+
+    out: Dict[str, Any] = {"host": host, "port": port, "state": "refused", "version": None}
+    try:
+        sock = socket.create_connection((host, port), timeout = timeout)
+    except (socket.timeout, TimeoutError):
+        out["state"] = "timeout"
+        return out
+    except Exception:
+        return out
+    try:
+        sock.settimeout(read_timeout)
+        payload = bytes(RPC_CONN_CAPS_SIZE)
+        sock.sendall(bytes([RPC_CMD_HELLO]) + struct.pack("<Q", len(payload)) + payload)
+        header = _recv_exact(sock, 8)
+        if header is None:
+            out["state"] = "closed"
+            return out
+        (length,) = struct.unpack("<Q", header)
+        if length < 3 or length > RPC_HELLO_MAX_BODY:
+            out["state"] = "garbled"
+            return out
+        body = _recv_exact(sock, length)
+        if body is None:
+            out["state"] = "closed"
+            return out
+        out["state"] = "ok"
+        out["version"] = (body[0], body[1], body[2])
+        return out
+    except (socket.timeout, TimeoutError):
+        out["state"] = "timeout"
+        return out
+    except Exception:
+        out["state"] = "garbled"
+        return out
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def rpc_hello_probe(
+    host: str,
+    port: int = RPC_DEFAULT_PORT,
+    timeout: float = 2.0,
+) -> Optional[Tuple[int, int, int]]:
+    """The (major, minor, patch) RPC protocol of a running ggml-rpc-server, or None."""
+    return rpc_hello_probe_detail(host, port, timeout = timeout)["version"]
+
+
+def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
+    """Both signals, before a two-node layer split is launched.
+
+    (a) the bundle identity on both nodes, from BUILD_INFO.txt and the libggml-rpc
+    hash, which works before anything is running; (b) a live HELLO against whatever
+    already listens on the peer's RPC port, and on ours, which catches a stale server
+    left over from an older bundle. A refused connection is the normal state before
+    launch and is only a note. ``ok`` False means a mismatch was CONFIRMED; None means
+    it could not be verified and the caller should say so and carry on.
+    """
+    result = compare_llama_bundles(llama_bundle_identity(), peer_llama_bundle_identity(peer_ip))
+    result["peer_rpc"] = peer_live = rpc_hello_probe_detail(peer_ip, port)
+    result["local_rpc"] = local_live = rpc_hello_probe_detail("127.0.0.1", port)
+    seen: Dict[str, Tuple[int, int, int]] = {}
+    for where, live in (("the peer", peer_live), ("this Spark", local_live)):
+        state, version = live["state"], live["version"]
+        if state == "ok":
+            seen[where] = version
+            result["notes"].append(
+                f"a ggml-rpc-server on {where} ({live['host']}:{port}) answers HELLO with "
+                f"RPC protocol {version[0]}.{version[1]}.{version[2]}."
+            )
+        elif state == "closed":
+            result["problems"].append(
+                f"something listens on {where} at {live['host']}:{port} but closed the "
+                f"connection on an RPC 6.0 HELLO without answering. That is what an older "
+                f"(5.x) ggml-rpc-server does, and llama-server would report 'RPC server "
+                f"version mismatch'. Stop it, then {PROVISION_FIX} and start the one from "
+                f"the current bundle."
+            )
+        elif state == "garbled":
+            result["problems"].append(
+                f"the listener on {where} at {live['host']}:{port} is not a ggml-rpc-server "
+                f"(its HELLO reply was malformed). Free the port or pick another with "
+                f"--rpc-port."
+            )
+    if len(seen) == 2 and seen["the peer"] != seen["this Spark"]:
+        a, b = seen["this Spark"], seen["the peer"]
+        result["problems"].append(
+            f"RPC protocol mismatch between the running servers: this Spark speaks "
+            f"{a[0]}.{a[1]}.{a[2]}, the peer {b[0]}.{b[1]}.{b[2]}. Fix: {PROVISION_FIX}, "
+            f"then restart both servers."
+        )
+    if result["problems"]:
+        result["ok"] = False
+    return result
 
 
 def peer_ip_for(rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
@@ -851,8 +1284,9 @@ def rpc_cluster_plan(port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
         problems.append("not a DGX Spark")
     if binary is None:
         problems.append(
-            "no ggml-rpc-server binary (Unsloth's llama.cpp prebuilt ships the RPC "
-            "client only; build llama.cpp with -DGGML_RPC=ON to get it)"
+            f"no ggml-rpc-server binary in {llama_bundle_dir()} (bundles from "
+            f"b10796-mix-659e406 onward ship it; update the llama.cpp prebuilt, or build "
+            f"llama.cpp with -DGGML_RPC=ON)"
         )
     if peer is None or local is None:
         problems.append("no configured peer rail (run `unsloth spark setup`)")
@@ -1425,6 +1859,20 @@ def _cmd_doctor() -> int:
             print(f"      rsync -a {cache}/ {peer}:{cache}/")
             print("")
 
+    # The llama.cpp bundle must match too, or a two-node layer split dies at load
+    # with "RPC server version mismatch". Only worth asking when we have a bundle.
+    bundle_bad = False
+    local_bundle = llama_bundle_identity()
+    if local_bundle["present"]:
+        bundles = compare_llama_bundles(local_bundle, peer_llama_bundle_identity(peer))
+        for problem in bundles["problems"]:
+            bundle_bad = True
+            print(f"  LLAMA.CPP BUNDLE MISMATCH: {problem}")
+            print("")
+        for note in bundles["notes"]:
+            print(f"  llama.cpp: {note}")
+            print("")
+
     print(f"Measuring NCCL all-reduce {local} <-> {peer} (takes ~30s)...")
     result = diagnose_link(nccl_bandwidth(peer, local))
     print("")
@@ -1432,7 +1880,9 @@ def _cmd_doctor() -> int:
     if result["advice"]:
         print("")
         print(result["advice"])
-    return 0 if result["verdict"] in ("healthy", "unknown") else 1
+    if result["verdict"] not in ("healthy", "unknown"):
+        return 1
+    return 1 if bundle_bad else 0
 
 
 def _cmd_status(benchmark: bool = False) -> int:
@@ -1514,8 +1964,13 @@ _DEFAULT_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
 
 
 def provision_paths() -> Tuple[Tuple[str, str], ...]:
+    # The llama.cpp bundle is NOT inside the venv: it sits beside the studio root
+    # (see llama_bundle_dir). Without it a paired peer keeps whatever llama-server it
+    # had, and two bundles a release apart speak different RPC protocols, which
+    # llama-server reports at load as "RPC server version mismatch".
     return (
         (str(_studio_root() / "unsloth_studio"), "Unsloth venv"),
+        (str(llama_bundle_dir()), "llama.cpp prebuilt"),
         ("~/.cache/flashinfer", "FlashInfer JIT cache"),
         ("~/.cache/vllm/flashinfer_autotune_cache", "vLLM FlashInfer autotune cache"),
         ("~/.cache/vllm/torch_compile_cache", "vLLM torch.compile cache"),
@@ -1802,15 +2257,16 @@ def model_size_gib(target: str) -> Optional[float]:
 #   axis                       c=1    c=2    c=4    c=8   median TPOT
 #   tensor-parallel (TP=2)    2.09x  2.13x  2.10x  1.97x  332.7ms -> 162.4ms
 #   pipeline-parallel (PP=2)  1.08x  1.11x  1.09x  1.07x  ~320ms  -> ~320ms  (FLAT)
-#   replicas (2 copies)       1.00x per request; ~2x AGGREGATE only
-#   layer-split a model that already fits on one node        0.92x  (a LOSS)
+#   replicas (2 copies)       1.00x per request; AGGREGATE only (measured below)
+#   layer-split a model that already fits on one node   decode 0.85x to 1.01x (never a win)
 #
 # The whole planner follows from those four rows:
 #   * TP is the ONLY axis that makes a single request faster.
 #   * PP moves tokens through more silicon but does not shorten the critical path
 #     of one token, so its TPOT is flat -- PP is for CAPACITY, never for latency.
 #   * replicas raise aggregate throughput and change per-request latency not at all.
-#   * splitting a model that fits is strictly worse than not clustering.
+#   * splitting a model that fits never speeds up decode; it is a capacity feature
+#     and a prefill feature (see REPLICAS_DECODE_SPEEDUP and its neighbours).
 TP_SPEEDUP_2 = {1: 2.09, 2: 2.13, 4: 2.10, 8: 1.97}
 PP_SPEEDUP_2 = {1: 1.08, 2: 1.11, 4: 1.09, 8: 1.07}
 TP_TPOT_MS_2 = (332.7, 162.4)
@@ -1869,6 +2325,240 @@ def layer_split_speedup(prompt_tokens = None, concurrency = 1, async_rpc = False
     by_c = LAYER_SPLIT_ASYNC_RPC_SPEEDUP[key]
     near = min(by_c, key = lambda c: abs(c - max(1, int(concurrency))))
     return by_c[near]
+
+
+# ── Replicas versus layer split for a model that FITS, measured ──────────────
+# Qwen3.8-27B-UD-Q4_K_XL (16.4 GiB) served by llama.cpp b10796 on two DGX Sparks
+# (GB10, aarch64, 121 GiB each, cabled over ConnectX-7), measured 2026-09-04 with
+# UNCAPPED clocks, closed-loop concurrent clients and 128 generated tokens per
+# request. Every ratio is aggregate DECODE tok/s against the same model on ONE
+# Spark. That is a different question from LAYER_SPLIT_ASYNC_RPC_SPEEDUP above,
+# which is end to end request throughput with prefill included; both tables are
+# right about what they measure.
+#
+#   prompt 512   users |  1 Spark | 2 replicas | layer split || replicas | split
+#                    1 |   12.0   |    12.0    |    11.3     ||  1.00x   | 0.95x
+#                    2 |   21.2   |    23.8    |    21.0     ||  1.13x   | 0.99x
+#                    4 |   39.0   |    44.0    |    35.8     ||  1.13x   | 0.92x
+#                    8 |   59.7   |    77.8    |    51.0     ||  1.30x   | 0.85x
+#                   16 |   68.1   |   119.4    |    64.2     ||  1.75x   | 0.94x
+#                   32 |   70.9   |   135.7    |    71.7     ||  1.91x   | 1.01x
+#
+#   prompt 2048  users |    1      2      4      8     16     32
+#           replicas   |  1.01   1.38   1.30   1.81   1.99   2.38
+#           split      |  0.94   0.96   0.88   0.96   1.06   1.12
+#
+# The two split figures above 1.0 at prompt 2048 are not decode wins: the single
+# node control was prefill-contended there. Measured decode-only, the split is
+# 0.95x. Layer split PREFILL is 1.7x to 1.85x. Memory per node at 16 users, prompt
+# 512: single 22.6 GiB; replicas 19.3 GiB on each node; split 10.9 + 11.8 GiB.
+#
+# What follows from the table:
+#   * a layer split never speeds up decode at any user count. It is a capacity
+#     feature (model larger than one node) and a prefill feature;
+#   * two replicas are the throughput winner whenever model plus KV fits on one
+#     node and 8 or more users are concurrent;
+#   * below 8 users a second copy buys 1.00x to 1.13x, and at 1 user nothing helps
+#     except vLLM tensor parallel (TP_SPEEDUP_2).
+TOPOLOGY_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL on llama.cpp b10796, two DGX Sparks, 2026-09-04, uncapped clocks"
+)
+REPLICAS_DECODE_SPEEDUP = {
+    512: {1: 1.00, 2: 1.13, 4: 1.13, 8: 1.30, 16: 1.75, 32: 1.91},
+    2048: {1: 1.01, 2: 1.38, 4: 1.30, 8: 1.81, 16: 1.99, 32: 2.38},
+}
+LAYER_SPLIT_DECODE_SPEEDUP = {
+    512: {1: 0.95, 2: 0.99, 4: 0.92, 8: 0.85, 16: 0.94, 32: 1.01},
+    2048: {1: 0.94, 2: 0.96, 4: 0.88, 8: 0.96, 16: 1.06, 32: 1.12},
+}
+LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
+LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
+REPLICAS_MIN_USERS = 8
+REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
+TOPOLOGIES = ("single", "replicas", "layer_split")
+
+
+def _measured_cell(table: Dict[int, Dict[int, float]], prompt_tokens: int, users: int) -> float:
+    """Nearest measured row at or below ``prompt_tokens``, nearest user count. No fitting."""
+    rows = sorted(table)
+    key = rows[0]
+    for row in rows:
+        if prompt_tokens >= row:
+            key = row
+    by_users = table[key]
+    near = min(by_users, key = lambda u: (abs(u - max(1, int(users))), u))
+    return by_users[near]
+
+
+def replicas_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
+    """Aggregate decode gain of two replicas over one Spark, at the nearest measured point."""
+    return _measured_cell(REPLICAS_DECODE_SPEEDUP, prompt_tokens, users)
+
+
+def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> float:
+    """Aggregate decode ratio of a layer split over one Spark, for a model that fits."""
+    return _measured_cell(LAYER_SPLIT_DECODE_SPEEDUP, prompt_tokens, users)
+
+
+def recommend_topology(
+    model_bytes: float,
+    kv_bytes_per_user: float,
+    users: int,
+    prompt_tokens: int,
+    per_node_free_bytes: float,
+    prefill_heavy: bool = False,
+) -> Dict[str, Any]:
+    """Which of single / replicas / layer_split to serve a GGUF with, and why. Pure.
+
+    The rules, from the measurements above:
+
+    * a model that does not fit on one node is a ``layer_split``: the only option;
+    * a model that fits, with 8 or more concurrent users, is ``replicas``;
+    * a model that fits, with fewer users, is ``single``: leave the second node idle,
+      because a second copy buys 1.00x to 1.13x and nothing helps one user except
+      tensor parallel, which llama.cpp does not do;
+    * ``layer_split`` is never recommended for a model that fits UNLESS the caller
+      says the work is prefill-heavy long-prompt work, where the split's 1.7x to
+      1.85x prefill outweighs its 0.95x decode. Even then, at 8 or more users the
+      replicas win end to end (1.81x against 0.96x at prompt 2048, 8 users).
+
+    Memory is checked with the KV of every concurrent user included, so a model that
+    fits alone but not with its users' KV is routed to replicas (each node carries
+    half the users) or, failing that, to a layer split. Returns a dict with
+    ``topology``, a one-paragraph ``reason``, the measured ``speedup`` where one
+    exists, and the byte counts it decided on.
+    """
+    users = max(1, int(users or 1))
+    prompt_tokens = max(1, int(prompt_tokens or 512))
+    model_bytes = max(0.0, float(model_bytes or 0))
+    kv_each = max(0.0, float(kv_bytes_per_user or 0))
+    free = float(per_node_free_bytes or 0)
+    single_need = model_bytes + kv_each * users
+    replica_need = model_bytes + kv_each * ((users + 1) // 2)
+    fits_model = model_bytes <= free
+    out: Dict[str, Any] = {
+        "topology": "single",
+        "reason": "",
+        "speedup": None,
+        "prefill_speedup": None,
+        "fits_one_node": fits_model,
+        "users": users,
+        "prompt_tokens": prompt_tokens,
+        "single_node_bytes": single_need,
+        "replica_node_bytes": replica_need,
+        "per_node_free_bytes": free,
+        "measured_on": TOPOLOGY_MEASUREMENT,
+    }
+    gib = 2**30
+    if not fits_model:
+        out.update(
+            topology = "layer_split",
+            prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            reason = (
+                f"the model ({model_bytes / gib:.1f} GiB) does not fit in one node's "
+                f"{free / gib:.1f} GiB, so a layer split across both Sparks is the only way "
+                f"to run it. That is a capacity feature: expect decode about "
+                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x of what one node would do if it "
+                f"could, and prefill {LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to "
+                f"{LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x."
+            ),
+        )
+        return out
+    if single_need > free:
+        if replica_need <= free:
+            out.update(
+                topology = "replicas",
+                speedup = replicas_speedup(prompt_tokens, users),
+                reason = (
+                    f"the model fits, but with KV for {users} users it needs "
+                    f"{single_need / gib:.1f} GiB against {free / gib:.1f} GiB free. Two "
+                    f"replicas carry half the users each ({replica_need / gib:.1f} GiB per "
+                    f"node) and measured {replicas_speedup(prompt_tokens, users):.2f}x "
+                    f"aggregate decode at {users} users."
+                ),
+            )
+        else:
+            out.update(
+                topology = "layer_split",
+                prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+                reason = (
+                    f"the model fits, but model plus KV for {users} users "
+                    f"({single_need / gib:.1f} GiB) exceeds one node even when halved "
+                    f"across replicas ({replica_need / gib:.1f} GiB against "
+                    f"{free / gib:.1f} GiB free), so only a layer split, which spreads the KV "
+                    f"with the layers, has the room. Capacity, not speed: decode about "
+                    f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
+                ),
+            )
+        return out
+    if prefill_heavy and users < REPLICAS_MIN_USERS:
+        out.update(
+            topology = "layer_split",
+            speedup = layer_split_decode_speedup(prompt_tokens, users),
+            prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            reason = (
+                f"you asked for prefill-heavy long-prompt work at {users} users. A layer "
+                f"split measured {LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to "
+                f"{LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x on prefill, which is the only "
+                f"reason to split a model that fits; its decode is "
+                f"{layer_split_decode_speedup(prompt_tokens, users):.2f}x, so time to first "
+                f"token improves and tokens per second do not. Chat-shaped traffic should "
+                f"stay on one node."
+            ),
+        )
+        return out
+    fit_note = (
+        f"the model fits on one node with KV for {users} users "
+        f"({single_need / gib:.1f} of {free / gib:.1f} GiB)"
+        if kv_each
+        else f"the model fits on one node ({single_need / gib:.1f} of {free / gib:.1f} GiB, "
+        f"KV not counted)"
+    )
+    if users >= REPLICAS_MIN_USERS:
+        gain = replicas_speedup(prompt_tokens, users)
+        out.update(
+            topology = "replicas",
+            speedup = gain,
+            reason = (
+                f"{fit_note}, and at {users} concurrent "
+                f"users two replicas measured {gain:.2f}x aggregate decode "
+                f"(1.30x at 8, 1.75x at 16, 1.91x at 32 users, prompt 512). A layer split "
+                f"measured {layer_split_decode_speedup(prompt_tokens, users):.2f}x here, so "
+                f"never split a model that fits for throughput."
+                + (
+                    " Prefill-heavy work does not change this at this many users: the "
+                    "replicas still win end to end (1.81x against 0.96x at prompt 2048, "
+                    "8 users)."
+                    if prefill_heavy
+                    else ""
+                )
+            ),
+        )
+        return out
+    few = replicas_speedup(prompt_tokens, users)
+    out.update(
+        topology = "single",
+        speedup = 1.0,
+        reason = (
+            f"{fit_note}, "
+            f"and {users} concurrent user{'s' if users != 1 else ''} cannot use a second "
+            f"one: two replicas measured {few:.2f}x at this concurrency (1.00x at 1 user, "
+            f"{REPLICAS_FEW_USERS_SPEEDUP:.2f}x at 2 to 4) for the cost of a full second "
+            f"copy, and a layer split measured "
+            f"{layer_split_decode_speedup(prompt_tokens, users):.2f}x. Leave the second "
+            f"Spark idle, or use it for something else. Replicas start paying at "
+            f"{REPLICAS_MIN_USERS} users."
+            + (
+                " At 1 user the only measured win is vLLM tensor parallel "
+                f"({TP_SPEEDUP_2[1]:.2f}x), which llama.cpp cannot do."
+                if users == 1
+                else ""
+            )
+        ),
+    )
+    return out
+
+
 REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per request
 # Training, GPipe pipeline parallel with M=4 microbatches, 2 nodes:
 # 3024 tok/s against a 2032 tok/s single-node control.
@@ -1886,6 +2576,7 @@ def expected_gain(
     axis: str,
     n_nodes: int,
     concurrency: int = 1,
+    prompt_tokens: int = 512,
 ) -> Dict[str, Any]:
     """What to expect from an axis at N nodes -- measured where measured, honest elsewhere.
 
@@ -1945,29 +2636,44 @@ def expected_gain(
         )
         return out
     if axis == "replicas":
-        out.update(
-            speedup = 1.0,
-            measured = n_nodes == 2,
-            aggregate = float(n_nodes) * REPLICA_AGGREGATE_PER_NODE,
-            note = (
-                f"~{n_nodes}x AGGREGATE throughput, 1.00x per request. Independent "
-                f"copies never make one request faster; they let you serve more of "
-                f"them at once."
-            ),
-        )
+        if n_nodes == 2:
+            gain = replicas_speedup(prompt_tokens or 512, concurrency)
+            out.update(
+                speedup = 1.0,
+                measured = True,
+                aggregate = gain,
+                note = (
+                    f"{gain:.2f}x AGGREGATE decode at {concurrency} concurrent, "
+                    f"{prompt_tokens or 512} prompt tokens (measured at prompt 512: 1.00x "
+                    f"at 1, 1.13x at 2 to 4, 1.30x at 8, 1.75x at 16, 1.91x at 32 users), "
+                    f"1.00x per request. Two copies pay from {REPLICAS_MIN_USERS} users "
+                    f"up; below that the second Spark is idle money."
+                ),
+            )
+        else:
+            out.update(
+                speedup = 1.0,
+                measured = False,
+                aggregate = float(n_nodes) * REPLICA_AGGREGATE_PER_NODE,
+                note = (
+                    f"up to ~{n_nodes}x AGGREGATE throughput, 1.00x per request; only two "
+                    f"replicas were measured here (1.91x at 32 users). Independent copies "
+                    f"never make one request faster; they let you serve more at once."
+                ),
+            )
         return out
     if axis == "layer-split-fitting":
         out.update(
-            speedup = LAYER_SPLIT_FITTING_SPEEDUP,
+            speedup = LAYER_SPLIT_DECODE_ONLY_SPEEDUP,
             measured = True,
             note = (
-                f"measured {LAYER_SPLIT_FITTING_SPEEDUP:.2f}x -- SLOWER than a single "
-                f"Spark, on a llama.cpp whose RPC backend predates ggml-org#18626. "
-                f"With that commit it depends on prompt length instead: roughly "
-                f"break-even at {LAYER_SPLIT_BREAK_EVEN_TOKENS} prompt tokens, a 2-6% "
-                f"loss below it, and a win above ~1024 that grows with prompt length and "
-                f"concurrency (measured up to 1.45x at 4096 tokens, 8 concurrent). So "
-                f"this is a loss for chat-shaped traffic and a win for prompt-heavy work."
+                f"decode measured {LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x, and 0.85x to "
+                f"1.01x across 1 to 32 users: a layer split never speeds up decode for a "
+                f"model that fits. It is a capacity feature and a prefill feature "
+                f"({LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to "
+                f"{LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x prefill), so it pays only for "
+                f"prefill-heavy long-prompt work at few users. For {REPLICAS_MIN_USERS} or "
+                f"more users two replicas measured 1.30x to 1.91x instead."
             ),
         )
         return out
@@ -2039,18 +2745,24 @@ def plan_deployment(
     intent: str = "throughput",
     concurrency: int = 1,
     model: str = "<model>",
+    prompt_tokens: Optional[int] = None,
+    prefill_heavy: bool = False,
+    kv_gib_per_user: float = 0.0,
 ) -> Dict[str, Any]:
     """Recommend a topology AND an axis from model size, node count and intent.
 
     Measured behaviour, not theory. Two facts drive everything:
 
-    * a model that FITS on one Spark is *slower* layer-split across two (0.92x) on a
-      llama.cpp predating ggml-org#18626; with it, prompt-length dependent (see
-      LAYER_SPLIT_ASYNC_RPC_SPEEDUP),
-      because ggml walks the split graph device by device and the nodes take turns.
-      Splitting buys capacity, never speed.
+    * a model that FITS on one Spark never decodes faster layer-split across two:
+      0.85x to 1.01x measured from 1 to 32 users (LAYER_SPLIT_DECODE_SPEEDUP). A split
+      buys capacity and prefill (1.7x to 1.85x), never decode. For 8 or more users two
+      replicas measured 1.30x to 1.91x aggregate instead (REPLICAS_DECODE_SPEEDUP).
     * TP is the only axis that shortens a single request (2.09x on two Sparks);
       PP's median TPOT is flat, and replicas raise aggregate throughput only.
+
+    ``serving`` carries the llama.cpp specific answer from ``recommend_topology()``
+    for a model that fits across the cluster: ``prompt_tokens`` (default 512),
+    ``prefill_heavy`` and ``kv_gib_per_user`` feed it and change nothing else.
 
     ``topology`` is a MEMORY-FIT class and keeps its historical vocabulary --
     ``replicas`` / ``single-or-replicas`` / ``layer-split`` / ``too-large`` /
@@ -2138,13 +2850,22 @@ def plan_deployment(
         topology = "single-or-replicas"
     out["topology"] = topology
     out["fits"] = topology != "too-large"
+    if topology != "too-large":
+        out["serving"] = recommend_topology(
+            size_gib * 2**30,
+            max(0.0, float(kv_gib_per_user or 0)) * 2**30,
+            concurrency,
+            prompt_tokens or 512,
+            budget * 2**30,
+            prefill_heavy = prefill_heavy,
+        )
 
     # `summary` answers ONLY "what fits where". Every statement about which axis to
     # use lives in `recommendation`. They used to overlap, and the overlap read as the
     # tool contradicting itself: for a 70B the summary named the llama.cpp layer split
-    # (0.92x) while the recommendation named tensor parallel (2.09x), both true of
-    # different axes but printed as though they were one answer. A caller can now print
-    # both, in either order, and get one coherent paragraph.
+    # while the recommendation named tensor parallel (2.09x), both true of different
+    # axes but printed as though they were one answer. A caller can now print both,
+    # in either order, and get one coherent paragraph.
     copies = int(budget // size_gib) if size_gib > 0 else 0
     if topology == "replicas":
         out["summary"] = (
@@ -2210,20 +2931,26 @@ def plan_deployment(
             f"TENSOR parallel across {nodes} Sparks. It is the only axis that makes a "
             f"single request faster: TP=2 measured 2.09x with median TPOT 332.7ms -> "
             f"162.4ms. Do NOT use pipeline parallel for this -- its TPOT is flat at "
-            f"~320ms -- and do NOT layer-split a model that fits (0.92x)."
+            f"~320ms -- and do NOT layer-split a model that fits: its decode measured "
+            f"0.85x to 1.01x across 1 to 32 users, never a win."
         )
     elif intent == "throughput":
+        gain = replicas_speedup(prompt_tokens or 512, concurrency)
         out.update(
             axis = "replicas",
             axis_nodes = nodes,
-            expected = expected_gain("replicas", nodes, concurrency),
+            expected = expected_gain("replicas", nodes, concurrency, prompt_tokens or 512),
             commands = _serve_commands("replicas", nodes, model),
         )
         out["recommendation"] = (
             f"REPLICAS: one independent server per Spark, {nodes} in total, behind "
-            f"`python -m studio.spark_lb`. That is ~{nodes}x aggregate throughput. It does "
-            f"not make any single request faster -- if that is what you want, ask for "
-            f"intent=latency and use tensor parallel instead."
+            f"`python -m studio.spark_lb`. Two replicas measured {gain:.2f}x aggregate "
+            f"decode at {concurrency} concurrent (1.30x at 8, 1.75x at 16, 1.91x at 32 "
+            f"users; only 1.00x to 1.13x below {REPLICAS_MIN_USERS}, where one Spark is as "
+            f"good and the second copy is wasted). It does not make any single request "
+            f"faster -- if that is what you want, ask for intent=latency and use tensor "
+            f"parallel instead. Never layer-split a model that fits for throughput: "
+            f"decode measured 0.85x to 1.01x."
         )
     else:  # capacity, and it already fits
         out.update(
@@ -2235,8 +2962,9 @@ def plan_deployment(
         out["recommendation"] = (
             f"For capacity, MORE SPARKS WILL NOT HELP YOU HERE: {size_gib:.1f} GiB already "
             f"fits in one node's {budget:.0f} GiB. Serve it on a single Spark. The extra "
-            f"nodes are worth using only for throughput (replicas, ~{nodes}x aggregate) or "
-            f"for latency (tensor parallel, 2.09x measured at 2 nodes)."
+            f"nodes are worth using only for throughput (replicas, 1.30x to 1.91x "
+            f"aggregate decode at 8 to 32 users) or for latency (tensor parallel, 2.09x "
+            f"measured at 2 nodes)."
         )
     out["command"] = "\n".join(out.get("commands") or [])
     return out
@@ -2247,6 +2975,8 @@ def _cmd_plan(
     intent: str = "throughput",
     nodes: Optional[int] = None,
     concurrency: int = 1,
+    prompt_tokens: int = 512,
+    prefill_heavy: bool = False,
 ) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to plan.")
@@ -2255,11 +2985,21 @@ def _cmd_plan(
         info = discover_peers(timeout = 0.0)
         nodes = max(info.get("n_nodes", 1), 2 if peer_ip_for() else 1)
     size = model_size_gib(model)
-    plan = plan_deployment(size, n_nodes = nodes, intent = intent, concurrency = concurrency, model = model)
+    plan = plan_deployment(
+        size,
+        n_nodes = nodes,
+        intent = intent,
+        concurrency = concurrency,
+        model = model,
+        prompt_tokens = prompt_tokens,
+        prefill_heavy = prefill_heavy,
+    )
     print(f"  model     : {model}")
     print(f"  size      : " + (f"{size:.1f} GiB" if size else "unknown (not cached locally)"))
     print(f"  Sparks    : {nodes}")
     print(f"  intent    : {intent}")
+    if concurrency != 1 or prompt_tokens != 512:
+        print(f"  traffic   : {concurrency} concurrent, {prompt_tokens} prompt tokens")
     print(f"  topology  : {plan['topology']}")
     if plan.get("axis"):
         print(f"  axis      : {plan['axis']}")
@@ -2268,6 +3008,12 @@ def _cmd_plan(
     if plan.get("recommendation"):
         print("")
         print(f"  {plan['recommendation']}")
+    serving = plan.get("serving")
+    if serving:
+        print("")
+        print(f"  llama.cpp : {serving['topology']}")
+        print(f"              {serving['reason']}")
+        print(f"              (measured on {serving['measured_on']})")
     exp = plan.get("expected") or {}
     if exp.get("note"):
         print("")
@@ -2664,18 +3410,22 @@ def _cmd_serve(
 
     Measured on this hardware, and the reason this prints what it prints:
 
-      one engine, layer-split across both Sparks   0.92x a single Spark
+      one engine, layer-split, a model that fits   decode 0.85x to 1.01x (1 to 32 users)
       TWO engines, each split, requests alternated 1.35x a single Spark
+      two independent replicas, one per Spark      1.30x / 1.75x / 1.91x at 8 / 16 / 32 users
       prefill, `-ub 512` + CUDA_SCALE_LAUNCH_QUEUES=4x   1.51x
 
-    A single split engine is SLOWER than one Spark because the two nodes take turns:
-    ggml walks the split graph device by device, so while one node computes the other
-    idles. Two independent engines give the pair data-independent work, which is the
-    same structure vLLM and SGLang require to fill a pipeline. A single autoregressive
-    stream can never be pipelined -- token t+1 depends on token t.
+    A single split engine never decodes faster than one Spark: the split moves the
+    same weight bytes per token and the nodes take turns on the graph. Two independent
+    engines give the pair data-independent work, which is the same structure vLLM and
+    SGLang require to fill a pipeline. A single autoregressive stream can never be
+    pipelined -- token t+1 depends on token t.
 
-    So use one engine only when the model does not fit on one Spark (121.69 GiB); for
-    anything that fits, more engines is strictly better.
+    So use one split engine only when the model does not fit on one Spark (121.69
+    GiB); for anything that fits, replicas win from 8 users up and a single Spark is
+    as good below that. Before a split is printed, both nodes' llama.cpp bundles are
+    compared and any running RPC server is asked its protocol version, because a
+    peer on a different bundle fails at load with "RPC server version mismatch".
     """
     if not is_dgx_spark():
         print(NOT_A_SPARK)
@@ -2691,11 +3441,14 @@ def _cmd_serve(
     engines = max(1, engines)
 
     # Decide the topology from the model rather than making the user know the rule. The
-    # rule is not guessable: a model that FITS on one Spark is slower layer-split across
-    # two (0.92x), so splitting is for capacity only, and the right answer flips at the
-    # point where two copies stop fitting.
+    # rule is not guessable: a model that FITS on one Spark never decodes faster
+    # layer-split across two (0.85x to 1.01x measured), so splitting is for capacity
+    # and prefill only, and the right answer flips at the point where two copies stop
+    # fitting.
     size = model_size_gib(model)
-    advice = plan_deployment(size, two_sparks = True)
+    advice = plan_deployment(size, two_sparks = True, concurrency = slots)
+    bin_dir = Path(binary).parent
+    peer_bin_dir = _peer_relative_path(bin_dir)
     if advice["topology"] == "replicas":
         # Emit the layout that actually wins rather than advising and then printing a
         # worse one. Independent replicas never touch the wire during decode: each Spark
@@ -2705,19 +3458,20 @@ def _cmd_serve(
         print(f"  model    : {model}  ({size:.1f} GiB)")
         print("  topology : INDEPENDENT REPLICAS -- one full model per Spark, no RPC")
         print("")
-        print("  Two copies fit comfortably, and this beats every split layout for a model")
-        print("  that fits: a layer split of such a model measures 0.92x a single Spark,")
-        print("  because ggml walks the split graph device by device and the nodes take turns.")
+        print("  Two copies fit, and for a model that fits this beats every split layout:")
+        print("  a layer split never speeds up decode (0.85x to 1.01x measured from 1 to 32")
+        print("  users), while two replicas measured 1.30x at 8 users, 1.75x at 16 and")
+        print("  1.91x at 32. Below 8 concurrent users one Spark is as good as two.")
         print("")
         print("  1. This Spark:")
-        print(f"     {binary.rsplit('/', 1)[0]}/llama-server -m {model} \\")
+        print(f"     {bin_dir}/llama-server -m {model} \\")
         print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {local_port}")
         print("")
         print(f"  2. The peer ({peer_ip}) -- the model must exist there; copy it over the")
         print("     ConnectX link rather than downloading (444 MB/s vs ~20 KB/s internet):")
         print(f"     rsync -a <model.gguf> {peer_ip}:<path>")
-        print(f"     ssh {peer_ip} '~/llamacpp-rpc/bin/llama-server -m <path> \\")
+        print(f"     ssh {peer_ip} '{peer_bin_dir}/llama-server -m <path> \\")
         print(f"         -ngl 999 --ctx-size {ctx} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {peer_port}'")
         print("")
@@ -2740,6 +3494,21 @@ def _cmd_serve(
         print(f"  {advice['summary']}")
         return 1
 
+    # Both nodes must speak the same RPC protocol, and that is pinned by the build:
+    # b10796 speaks 6.0, the bundles before it 5.1. Check the bundles and ask any
+    # server that is already listening, before printing a launch that would fail at
+    # load with "RPC server version mismatch".
+    preflight = rpc_protocol_preflight(peer_ip, rpc_port)
+    for note in preflight["notes"]:
+        print(f"  note: {note}")
+    if preflight["problems"]:
+        for problem in preflight["problems"]:
+            print(f"  RPC PROTOCOL: {problem}")
+        print("")
+        print("  Not printing a launch that would fail at load. Fix the above and re-run.")
+        return 1
+    print("")
+
     print(f"  model   : {model}")
     print(f"  engines : {engines} (each layer-split across both Sparks)")
     print(f"  peer    : {peer_ip}")
@@ -2747,13 +3516,13 @@ def _cmd_serve(
     print(f"  1. Start {engines} rpc-server(s) on the peer, one per engine:")
     for i in range(engines):
         print(
-            f"     ssh {peer_ip} '~/llamacpp-rpc/bin/ggml-rpc-server "
+            f"     ssh {peer_ip} '{peer_bin_dir}/{Path(binary).name} "
             f"-H 0.0.0.0 -p {rpc_port + i} -c'"
         )
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
     for i in range(engines):
-        print(f"     {binary.rsplit('/', 1)[0]}/llama-server -m {model} \\")
+        print(f"     {bin_dir}/llama-server -m {model} \\")
         print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx} \\")
         print(f"         -np {slots} -cb -ub 512 --host 127.0.0.1 --port {port + 1 + i}")
     print("")
@@ -3091,6 +3860,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         help = "requests in flight, for the expected-speedup number",
     )
     parser.add_argument(
+        "--prompt-tokens",
+        type = int,
+        default = 512,
+        help = "typical prompt length, for the replicas/layer-split decision in `plan`",
+    )
+    parser.add_argument(
+        "--prefill-heavy",
+        action = "store_true",
+        help = "the work is prefill-heavy long-prompt work (RAG, documents); the only "
+        "case where `plan` will layer-split a model that fits",
+    )
+    parser.add_argument(
         "--switched",
         action = "store_true",
         help = "all Sparks share a switched RoCE fabric; required to plan "
@@ -3124,7 +3905,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("plan needs --model <path-or-repo-id>")
             return 2
         return _cmd_plan(
-            args.model, intent = args.intent, nodes = args.nodes, concurrency = args.concurrency
+            args.model,
+            intent = args.intent,
+            nodes = args.nodes,
+            concurrency = args.concurrency,
+            prompt_tokens = args.prompt_tokens,
+            prefill_heavy = args.prefill_heavy,
         )
     if args.command == "peers":
         return _cmd_peers(check = not args.no_probe)

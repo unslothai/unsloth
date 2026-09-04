@@ -2291,9 +2291,10 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
     Advisory only -- it never changes what `run` does. Two measured rules it surfaces,
     neither of which is guessable:
 
-    * a model that FITS on one Spark is *slower* layer-split across two (0.92x), because
-      ggml walks the split graph device by device and the nodes take turns. Splitting
-      buys capacity, never speed;
+    * a model that FITS on one Spark never decodes faster layer-split across two (0.85x
+      to 1.01x measured from 1 to 32 users): a split moves the same weight bytes per
+      token. Splitting buys capacity and prefill, never decode; two replicas of such a
+      model measured 1.30x to 1.91x at 8 to 32 users instead;
     * tensor parallel is the ONLY axis that makes a single request faster (2.09x on two
       Sparks, median TPOT 332.7ms -> 162.4ms). Pipeline parallel's TPOT is flat, and
       replicas raise aggregate throughput while leaving per-request latency untouched.

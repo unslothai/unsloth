@@ -78,8 +78,9 @@ def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
 def test_planner_never_recommends_splitting_a_model_that_fits() -> None:
     """The rule that is easy to get backwards, pinned.
 
-    Splitting a model that fits measures 0.92x a single Spark, so the planner must never
-    suggest it. Regressing this would make Unsloth actively slower than not clustering.
+    Splitting a model that fits never decodes faster than a single Spark (0.85x to 1.01x
+    measured from 1 to 32 users), so the planner must never suggest it for speed.
+    Regressing this would make Unsloth actively slower than not clustering.
     """
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
@@ -484,8 +485,8 @@ def test_summary_and_recommendation_never_contradict() -> None:
 
     `summary` answers "what fits where" and must name no axis; every axis claim lives
     in `recommendation`. They overlapped once, and a 70B then had a summary naming the
-    llama.cpp layer split (0.92x) beside a recommendation naming tensor parallel
-    (2.09x) -- both true, and together they read as the tool arguing with itself.
+    llama.cpp layer split beside a recommendation naming tensor parallel (2.09x) --
+    both true, and together they read as the tool arguing with itself.
     """
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
@@ -761,8 +762,10 @@ def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
     venv, label = sc.provision_paths()[0]
     assert label == "Unsloth venv"
     assert venv == str(tmp_path / "elsewhere" / "unsloth_studio"), venv
+    # The llama.cpp bundle follows the studio home too; see the bundle tests below.
+    assert sc.provision_paths()[1][1] == "llama.cpp prebuilt"
     # The caches are genuinely per-user and are not moved by STUDIO_HOME.
-    assert [p for p, _ in sc.provision_paths()[1:]] == [
+    assert [p for p, _ in sc.provision_paths()[2:]] == [
         "~/.cache/flashinfer",
         "~/.cache/vllm/flashinfer_autotune_cache",
         "~/.cache/vllm/torch_compile_cache",
@@ -835,3 +838,440 @@ def test_layer_split_speedup_snaps_down_to_a_measured_row() -> None:
         sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[1024][8]
     assert sc.layer_split_speedup(99999, 8, async_rpc = True) == \
         sc.LAYER_SPLIT_ASYNC_RPC_SPEEDUP[4096][8]
+
+
+# ── Replicas versus layer split for a model that fits ────────────────────────
+# Measured 2026-09-04 on Qwen3.8-27B Q4_K_XL, llama.cpp b10796, two Sparks, uncapped
+# clocks. A layer split never speeds up decode for a model that fits; two replicas
+# win from 8 concurrent users up. Both directions of getting this wrong hand users
+# a slower deployment than the single Spark they started with, so pin the rules.
+
+_GIB = 2**30
+
+
+def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
+    sc = _load("studio/spark_cluster.py")
+    out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 1, 512, 113 * _GIB)
+    assert out["topology"] == "layer_split" and out["fits_one_node"] is False
+    assert "does not fit" in out["reason"]
+    # Even a prefill-heavy caller with many users gets the same answer: it is the only option.
+    out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 2048, 113 * _GIB, prefill_heavy = True)
+    assert out["topology"] == "layer_split"
+
+
+def test_recommend_topology_replicas_from_eight_users_up() -> None:
+    sc = _load("studio/spark_cluster.py")
+    for users in (8, 12, 16, 32, 64):
+        out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
+        assert out["topology"] == "replicas", (users, out)
+        assert out["speedup"] >= 1.30, (users, out)
+    assert sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 8, 512, 113 * _GIB)["speedup"] == 1.30
+    assert sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 32, 512, 113 * _GIB)["speedup"] == 1.91
+    assert sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 32, 2048, 113 * _GIB)["speedup"] == 2.38
+
+
+def test_recommend_topology_single_below_eight_users() -> None:
+    """Below 8 users the second copy buys 1.00x to 1.13x; say so and leave it idle."""
+    sc = _load("studio/spark_cluster.py")
+    for users in (1, 2, 4, 7):
+        out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
+        assert out["topology"] == "single", (users, out)
+        assert "1.13x" in out["reason"]
+    one = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 1, 512, 113 * _GIB)
+    assert "tensor parallel" in one["reason"] and "2.09x" in one["reason"]
+
+
+def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() -> None:
+    sc = _load("studio/spark_cluster.py")
+    for users in (1, 2, 4, 8, 16, 32):
+        for tokens in (128, 512, 2048, 8192):
+            out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, tokens, 113 * _GIB)
+            assert out["topology"] != "layer_split", (users, tokens, out)
+    # The one exception: the caller says the work is prefill-heavy, at few users.
+    out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 2, 4096, 113 * _GIB, prefill_heavy = True)
+    assert out["topology"] == "layer_split"
+    assert "prefill" in out["reason"] and "1.7x" in out["reason"]
+    assert out["prefill_speedup"] == sc.LAYER_SPLIT_PREFILL_SPEEDUP
+    # At 8 or more users the replicas still win end to end, prefill-heavy or not.
+    out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, 16, 4096, 113 * _GIB, prefill_heavy = True)
+    assert out["topology"] == "replicas"
+
+
+def test_recommend_topology_counts_kv_for_every_user() -> None:
+    """A model that fits alone but not with its users' KV is not `single`."""
+    sc = _load("studio/spark_cluster.py")
+    # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB on one node, 116 per replica.
+    out = sc.recommend_topology(100 * _GIB, 2 * _GIB, 16, 512, 120 * _GIB)
+    assert out["topology"] == "replicas" and "KV" in out["reason"]
+    # 100 GiB model, 4 GiB KV per user, 16 users: 132 GiB even per replica.
+    out = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
+    assert out["topology"] == "layer_split" and "KV" in out["reason"]
+
+
+def test_recommend_topology_is_pure_and_tolerant() -> None:
+    sc = _load("studio/spark_cluster.py")
+    for bad in (0, None, -5):
+        out = sc.recommend_topology(16.4 * _GIB, bad, bad, bad, 113 * _GIB)
+        assert out["topology"] in sc.TOPOLOGIES and out["reason"]
+
+
+def test_measured_tables_snap_to_measured_points() -> None:
+    """Six user counts and two prompt lengths were measured; nothing is interpolated."""
+    sc = _load("studio/spark_cluster.py")
+    assert sc.replicas_speedup(512, 8) == sc.REPLICAS_DECODE_SPEEDUP[512][8]
+    assert sc.replicas_speedup(1023, 8) == sc.REPLICAS_DECODE_SPEEDUP[512][8]
+    assert sc.replicas_speedup(4096, 12) == sc.REPLICAS_DECODE_SPEEDUP[2048][8]
+    assert sc.layer_split_decode_speedup(512, 8) == 0.85
+    # The rule itself, pinned against the data: no measured split cell beats 1.01x at
+    # prompt 512, and the two above 1.0 at 2048 are prefill contention, not decode.
+    assert max(sc.LAYER_SPLIT_DECODE_SPEEDUP[512].values()) <= 1.01
+    assert sc.LAYER_SPLIT_DECODE_ONLY_SPEEDUP < 1.0
+    assert all(v >= 1.30 for u, v in sc.REPLICAS_DECODE_SPEEDUP[512].items() if u >= 8)
+    assert all(v <= 1.13 for u, v in sc.REPLICAS_DECODE_SPEEDUP[512].items() if u < 8)
+
+
+def test_plan_deployment_carries_the_serving_layout() -> None:
+    sc = _load("studio/spark_cluster.py")
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    few = sc.plan_deployment(16.4, n_nodes = 2, intent = "throughput", concurrency = 2)
+    assert few["serving"]["topology"] == "single"
+    many = sc.plan_deployment(16.4, n_nodes = 2, intent = "throughput", concurrency = 16)
+    assert many["serving"]["topology"] == "replicas"
+    assert "1.75x" in many["recommendation"]
+    big = sc.plan_deployment(budget * 1.5, n_nodes = 2)
+    assert big["serving"]["topology"] == "layer_split"
+    assert "serving" not in sc.plan_deployment(budget * 2.5, n_nodes = 2)
+    assert "serving" not in sc.plan_deployment(None, n_nodes = 2)
+    # The headline that came from pre-#18626 RPC is gone from every planner sentence.
+    for size in (budget / 4, budget * 0.6, budget * 1.5):
+        for intent in sc.INTENTS:
+            out = sc.plan_deployment(size, n_nodes = 2, intent = intent)
+            text = " ".join(str(v) for v in out.values())
+            assert "0.92x" not in text, (size, intent)
+    assert "0.92" not in sc.expected_gain("layer-split-fitting", 2)["note"]
+    assert sc.expected_gain("replicas", 2, 16)["aggregate"] == 1.75
+
+
+# ── Provisioning must carry the llama.cpp bundle ─────────────────────────────
+# The bundle lives beside the studio root, not inside the venv, so copying the venv
+# alone leaves the peer on whatever llama-server it had. Two bundles a release apart
+# speak different RPC protocols and llama-server then fails at load with
+# "RPC server version mismatch".
+
+
+def test_provision_paths_include_the_llama_bundle(monkeypatch) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    paths = dict((label, path) for path, label in sc.provision_paths())
+    assert paths["llama.cpp prebuilt"] == str(Path.home() / ".unsloth" / "llama.cpp")
+    assert paths["Unsloth venv"] == str(Path.home() / ".unsloth" / "studio" / "unsloth_studio")
+    # Order: venv first, bundle second, then the caches, so the peer can serve before
+    # the caches land.
+    labels = [label for _, label in sc.provision_paths()]
+    assert labels[:2] == ["Unsloth venv", "llama.cpp prebuilt"]
+
+
+def test_provision_paths_bundle_follows_studio_home(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    paths = dict((label, path) for path, label in sc.provision_paths())
+    assert paths["llama.cpp prebuilt"] == str(tmp_path / "elsewhere" / "llama.cpp")
+    assert paths["Unsloth venv"] == str(tmp_path / "elsewhere" / "unsloth_studio")
+    # The explicit override wins over the studio home, as it does in the installer.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "custom-llama"))
+    paths = dict((label, path) for path, label in sc.provision_paths())
+    assert paths["llama.cpp prebuilt"] == str(tmp_path / "custom-llama")
+
+
+def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    (tmp_path / "elsewhere" / "llama.cpp").mkdir(parents = True)
+    monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
+    ran = []
+
+    class _Ok:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(sc.subprocess, "run", lambda cmd, **k: ran.append(cmd) or _Ok())
+    res = sc.provision_peer("192.168.200.13", dry_run = True)
+    assert ("llama.cpp prebuilt", str(tmp_path / "elsewhere" / "llama.cpp")) in res["copied"]
+    bundle_cmd = next(c for c in ran if c[-2].startswith(str(tmp_path / "elsewhere" / "llama.cpp")))
+    assert bundle_cmd[-1].endswith(":" + str(tmp_path / "elsewhere" / "llama.cpp") + "/")
+    assert any("mkdir -p" in part for part in bundle_cmd)
+
+
+# ── RPC protocol parity between the two nodes ────────────────────────────────
+# Signal (a): the bundle identity, from BUILD_INFO.txt and the libggml-rpc hash.
+# Signal (b): a live HELLO against a running ggml-rpc-server.
+
+
+def _mk_bundle(root: Path, version = "b10796-mix-659e406", lib = b"rpc-lib-bytes", server = True):
+    bin_dir = root / "build" / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    if version is not None:
+        (root / "BUILD_INFO.txt").write_text(
+            f"llama.cpp version: {version}\nrequested source ref: {version}\nvariant: cuda13\n"
+        )
+    if lib is not None:
+        (bin_dir / "libggml-rpc.so").write_bytes(lib)
+    if server:
+        exe = bin_dir / "ggml-rpc-server"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+    return root
+
+
+def test_bundle_identity_reads_version_and_hashes_the_rpc_library(tmp_path) -> None:
+    import hashlib
+
+    sc = _load("studio/spark_cluster.py")
+    root = _mk_bundle(tmp_path / "llama.cpp")
+    ident = sc.llama_bundle_identity(root)
+    assert ident["present"] is True
+    assert ident["version"] == "b10796-mix-659e406"
+    assert ident["rpc_lib_md5"] == hashlib.md5(b"rpc-lib-bytes").hexdigest()
+    assert ident["rpc_server"] == str(root / "build" / "bin" / "ggml-rpc-server")
+
+
+def test_bundle_identity_is_unknown_not_a_crash_without_build_info(tmp_path) -> None:
+    """Older bundles and source builds have no BUILD_INFO.txt."""
+    sc = _load("studio/spark_cluster.py")
+    root = _mk_bundle(tmp_path / "llama.cpp", version = None)
+    ident = sc.llama_bundle_identity(root)
+    assert ident["present"] is True and ident["version"] == "unknown"
+    assert ident["rpc_lib_md5"]  # the hash still works as the second signal
+    missing = sc.llama_bundle_identity(tmp_path / "nowhere")
+    assert missing["present"] is False and missing["version"] == "unknown"
+    assert missing["rpc_lib_md5"] is None and missing["rpc_server"] is None
+    # A BUILD_INFO.txt without the expected key still yields its first line.
+    odd = tmp_path / "odd"
+    odd.mkdir()
+    (odd / "BUILD_INFO.txt").write_text("\n  b10700-custom  \n")
+    assert sc.llama_bundle_identity(odd)["version"] == "b10700-custom"
+
+
+def test_compare_bundles_names_both_versions_and_the_fix(tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    new = sc.llama_bundle_identity(_mk_bundle(tmp_path / "new"))
+    old = sc.llama_bundle_identity(
+        _mk_bundle(tmp_path / "old", version = "b10715-mix-86bd2d3", lib = b"older-lib")
+    )
+    same = sc.compare_llama_bundles(new, sc.llama_bundle_identity(_mk_bundle(tmp_path / "twin")))
+    assert same["ok"] is True and not same["problems"]
+
+    diff = sc.compare_llama_bundles(new, old)
+    assert diff["ok"] is False and len(diff["problems"]) == 1
+    text = diff["problems"][0]
+    assert "b10796-mix-659e406" in text and "b10715-mix-86bd2d3" in text
+    assert "unsloth spark provision" in text and "RPC server version mismatch" in text
+
+    # Same tag, different library: the hash is the signal that catches it.
+    patched = sc.llama_bundle_identity(_mk_bundle(tmp_path / "patched", lib = b"patched-lib"))
+    hashed = sc.compare_llama_bundles(new, patched)
+    assert hashed["ok"] is False and "libggml-rpc differs" in hashed["problems"][0]
+
+    # Unverifiable is never reported as matching.
+    unknown = sc.compare_llama_bundles(new, None)
+    assert unknown["ok"] is None and not unknown["problems"]
+    assert "UNVERIFIED" in unknown["notes"][0]
+    absent = sc.compare_llama_bundles(new, {"present": False, "root": "/nowhere"})
+    assert absent["ok"] is False and "no llama.cpp bundle" in absent["problems"][0]
+
+
+def test_peer_bundle_probe_is_self_contained_and_matches_local(tmp_path, monkeypatch) -> None:
+    """The peer-side probe runs under a bare python3 and must agree with the local reader."""
+    import json
+    import subprocess
+
+    sc = _load("studio/spark_cluster.py")
+    root = _mk_bundle(tmp_path / "llama.cpp")
+    source = sc._BUNDLE_PROBE.format(root = str(root), libs = sc._RPC_LIB_NAMES, servers = sc._RPC_SERVER_NAMES)
+    env = dict(os.environ)
+    env.pop("UNSLOTH_LLAMA_CPP_PATH", None)
+    out = subprocess.run([sys.executable, "-"], input = source, capture_output = True, text = True, env = env, timeout = 60)
+    line = next(l for l in out.stdout.splitlines() if l.startswith("UNSLOTH_BUNDLE "))
+    remote = json.loads(line[len("UNSLOTH_BUNDLE ") :])
+    local = sc.llama_bundle_identity(root)
+    assert remote == local
+
+
+def test_peer_relative_path_keeps_a_home_path_home_relative(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: tmp_path / "me"))
+    assert sc._peer_relative_path(tmp_path / "me" / ".unsloth" / "llama.cpp") == "~/.unsloth/llama.cpp"
+    assert sc._peer_relative_path(tmp_path / "opt" / "llama") == (tmp_path / "opt" / "llama").as_posix()
+
+
+def _fake_rpc_server(behaviour: str):
+    """A one-shot ggml-rpc-server stand-in on 127.0.0.1. Returns (port, thread, seen)."""
+    import socket
+    import struct
+    import threading
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    port = listener.getsockname()[1]
+    seen = {}
+
+    def serve():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5)
+            try:
+                cmd = conn.recv(1)
+                (n,) = struct.unpack("<Q", conn.recv(8))
+                payload = b""
+                while len(payload) < n:
+                    chunk = conn.recv(n - len(payload))
+                    if not chunk:
+                        break
+                    payload += chunk
+                seen.update(cmd = cmd, size = n, payload = payload)
+                if behaviour == "6.0.0":
+                    body = bytes([6, 0, 0, 0]) + bytes(24)
+                    conn.sendall(struct.pack("<Q", len(body)) + body)
+                elif behaviour == "short":
+                    conn.sendall(struct.pack("<Q", 2) + b"\x06\x00")
+                elif behaviour == "closed":
+                    pass  # what a size-mismatched HELLO gets: silence, then EOF
+            except OSError:
+                pass
+        listener.close()
+
+    thread = threading.Thread(target = serve, daemon = True)
+    thread.start()
+    return port, thread, seen
+
+
+def test_rpc_hello_probe_reads_a_six_zero_reply() -> None:
+    sc = _load("studio/spark_cluster.py")
+    port, thread, seen = _fake_rpc_server("6.0.0")
+    assert sc.rpc_hello_probe("127.0.0.1", port, timeout = 3) == (6, 0, 0)
+    thread.join(5)
+    # The request was a well-formed 6.0 HELLO: command 14, exactly RPC_CONN_CAPS_SIZE zero bytes.
+    assert seen["cmd"] == bytes([14])
+    assert seen["size"] == sc.RPC_CONN_CAPS_SIZE == 24
+    assert seen["payload"] == bytes(24)
+    detail = sc.rpc_hello_probe_detail("127.0.0.1", 1)  # nothing listens on port 1
+    assert detail["state"] == "refused" and detail["version"] is None
+
+
+def test_rpc_hello_probe_survives_a_truncated_reply_and_a_hangup() -> None:
+    sc = _load("studio/spark_cluster.py")
+    port, thread, _ = _fake_rpc_server("short")
+    assert sc.rpc_hello_probe("127.0.0.1", port, timeout = 3) is None
+    thread.join(5)
+    port, thread, _ = _fake_rpc_server("closed")
+    detail = sc.rpc_hello_probe_detail("127.0.0.1", port, timeout = 3, read_timeout = 3)
+    thread.join(5)
+    assert detail["state"] == "closed" and detail["version"] is None
+    # Never raises, even for an address that cannot be resolved.
+    assert sc.rpc_hello_probe("host.invalid.", 50052, timeout = 1) is None
+
+
+def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    new = sc.llama_bundle_identity(_mk_bundle(tmp_path / "new"))
+    old = sc.llama_bundle_identity(_mk_bundle(tmp_path / "old", version = "b10715-mix-86bd2d3", lib = b"x"))
+    monkeypatch.setattr(sc, "llama_bundle_identity", lambda root = None: new)
+    monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: old)
+    monkeypatch.setattr(sc, "rpc_hello_probe_detail", lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None})
+    pre = sc.rpc_protocol_preflight("192.168.200.13")
+    assert pre["ok"] is False and "unsloth spark provision" in pre["problems"][0]
+
+    # Matching bundles, but a stale 5.x server is still up on the peer and hangs up on
+    # a 6.0 HELLO: the live signal catches what the bundle signal cannot.
+    monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: new)
+
+    def live(host, port, **k):
+        state = "closed" if host == "192.168.200.13" else "refused"
+        return {"host": host, "port": port, "state": state, "version": None}
+
+    monkeypatch.setattr(sc, "rpc_hello_probe_detail", live)
+    pre = sc.rpc_protocol_preflight("192.168.200.13")
+    assert pre["ok"] is False and "version mismatch" in pre["problems"][0]
+
+    # Both servers up and disagreeing.
+    def two(host, port, **k):
+        version = (5, 1, 0) if host == "192.168.200.13" else (6, 0, 0)
+        return {"host": host, "port": port, "state": "ok", "version": version}
+
+    monkeypatch.setattr(sc, "rpc_hello_probe_detail", two)
+    pre = sc.rpc_protocol_preflight("192.168.200.13")
+    assert pre["ok"] is False and "6.0.0" in pre["problems"][0] and "5.1.0" in pre["problems"][0]
+
+    # Unverifiable peer, nothing listening: not a failure, but not a pass either.
+    monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "rpc_hello_probe_detail", lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None})
+    pre = sc.rpc_protocol_preflight("192.168.200.13")
+    assert pre["ok"] is None and not pre["problems"] and "UNVERIFIED" in pre["notes"][0]
+
+
+# ── ggml-rpc-server ships in the bundle from b10796 ──────────────────────────
+
+
+def test_rpc_server_binary_found_in_the_bundle(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(sc.shutil, "which", lambda name: None)
+    root = _mk_bundle(tmp_path / "studio" / "llama.cpp")
+    assert sc.llama_bundle_dir() == root
+    assert sc.rpc_server_binary() == str(root / "build" / "bin" / "ggml-rpc-server")
+    # The explicit override wins, as in the installer.
+    other = _mk_bundle(tmp_path / "override")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(other))
+    assert sc.rpc_server_binary() == str(other / "build" / "bin" / "ggml-rpc-server")
+
+
+def test_rpc_server_binary_accepts_the_legacy_name(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(sc.shutil, "which", lambda name: None)
+    root = _mk_bundle(tmp_path / "studio" / "llama.cpp", server = False)
+    legacy = root / "build" / "bin" / "rpc-server"
+    legacy.write_text("#!/bin/sh\nexit 0\n")
+    legacy.chmod(0o755)
+    assert sc.rpc_server_binary() == str(legacy)
+
+
+def test_rpc_server_binary_none_when_absent(monkeypatch, tmp_path) -> None:
+    """An older bundle without the executable, no source build, nothing on PATH."""
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setattr(sc.shutil, "which", lambda name: None)
+    _mk_bundle(tmp_path / "studio" / "llama.cpp", server = False)
+    # A file that is present but not executable does not count either.
+    stub = tmp_path / "studio" / "llama.cpp" / "build" / "bin" / "ggml-rpc-server"
+    stub.write_text("not executable")
+    stub.chmod(0o644)
+    assert sc.rpc_server_binary() is None
+    plan = sc.rpc_cluster_plan()
+    assert plan["ok"] is False  # off a Spark, and the message names the bundle when on one
+
+
+def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> None:
+    """Default installs keep ~/.unsloth/llama.cpp, beside the studio root, not inside it."""
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
+    # Pointing UNSLOTH_STUDIO_HOME at the default location must not move the bundle.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(Path.home() / ".unsloth" / "studio"))
+    assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"

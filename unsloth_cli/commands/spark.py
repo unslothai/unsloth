@@ -17,9 +17,13 @@ CLI states them rather than assuming anyone will infer them:
     NVFP4 kernel by workload is 6.2x on prefill (CUTLASS 309 TF/s vs Marlin 50 TF/s
     at M=4096). Most Spark owners have exactly one Spark, so this is surfaced in
     `status`, in `doctor`, and in `up` whenever the kernel is not installed.
-  * A second Spark does not make a model that already fits go faster. Layer-splitting
-    such a model measures 0.92x -- slower than not clustering. So the planner refuses
-    to recommend it, and says plainly when a second Spark will not help.
+  * A second Spark does not make a model that already fits decode faster. Layer-
+    splitting such a model measures 0.85x to 1.01x across 1 to 32 users -- never a
+    win; a split is for capacity and for prefill. What a second Spark does buy for a
+    model that fits is throughput at load: two replicas measured 1.30x at 8 users,
+    1.75x at 16 and 1.91x at 32, and 1.00x to 1.13x below 8. So the planner recommends
+    replicas from 8 users up, one Spark below that, and a split only for a model that
+    does not fit or for prefill-heavy long-prompt work.
 
 Nothing here imports torch, transformers, vllm or numpy at module scope, and nothing
 touches the network unless the machine is a DGX Spark with a cabled peer. On a Mac,
@@ -168,6 +172,8 @@ def _plan_deployment(
     intent: str = "throughput",
     concurrency: int = 1,
     model: str = "<model>",
+    prompt_tokens: int = 512,
+    prefill_heavy: bool = False,
 ):
     """Call plan_deployment against whichever signature the module currently has.
 
@@ -192,6 +198,10 @@ def _plan_deployment(
                 kwargs["concurrency"] = concurrency
             if "model" in params:
                 kwargs["model"] = model
+            if "prompt_tokens" in params:
+                kwargs["prompt_tokens"] = prompt_tokens
+            if "prefill_heavy" in params:
+                kwargs["prefill_heavy"] = prefill_heavy
             return fn(size_gib, **kwargs)
         if "nodes" in params:
             return fn(size_gib, nodes = nodes)
@@ -567,8 +577,11 @@ def up(
         _say("    decode (TPOT)      332.7 -> 162.4 ms      2.09x")
         _say("")
         _say("  RAG, summarisation, long documents and code review are prefill-heavy and")
-        _say("  gain the 3.87x. Short-prompt chat gains the 2.09x. And a model that")
-        _say("  already fits on one Spark gains NOTHING from splitting -- 0.92x, a loss.")
+        _say("  gain the 3.87x. Short-prompt chat gains the 2.09x. A model that already")
+        _say("  fits on one Spark gains nothing in decode from a layer split (0.85x to")
+        _say("  1.01x measured, 1 to 32 users); with 8 or more concurrent users two")
+        _say("  replicas of it measured 1.30x to 1.91x instead, and below 8 one Spark")
+        _say("  is as good as two.")
         if _kernel_banner(kernels):
             _say("")
             _say(f"NEXT: {KERNEL_INSTALL}")
@@ -708,12 +721,16 @@ def up(
         f"TTFT {TTFT_MS[0]} -> {TTFT_MS[1]} ms)"
     )
     _say("                             so RAG and long-prompt work gain far more than chat")
-    _say("    two replicas             ~2x aggregate throughput, per-request latency unchanged")
+    _say("    two replicas             1.30x / 1.75x / 1.91x aggregate decode at 8 / 16 / 32")
+    _say("                             users (1.00x to 1.13x below 8), per-request latency")
+    _say("                             unchanged; measured on Qwen3.8-27B Q4_K_XL, llama.cpp")
     _say("    layer-split a model")
-    _say("      that FITS on one node  0.92x -- SLOWER than not clustering at all")
+    _say("      that FITS on one node  decode 0.85x to 1.01x at 1 to 32 users, never a win;")
+    _say("                             prefill 1.7x to 1.85x")
     _say("")
-    _say("  So: a second Spark is for models that do not fit, and for tensor parallelism.")
-    _say("  It will not make a model that already fits go faster.")
+    _say("  So: a second Spark is for models that do not fit, for tensor parallelism, and")
+    _say("  for serving 8 or more users at once as two replicas. It will not make a")
+    _say("  model that already fits decode faster.")
     _say("")
     _say("  The link is not measured here -- only a real NCCL collective can tell a")
     _say("  throttled link from a healthy one, and it takes ~30 s:")
@@ -853,18 +870,25 @@ def serve(
     engines: int = typer.Option(
         2,
         "--engines",
-        help = "Independent engines. 2 measured 1.35x one Spark; "
-        "1 measured 0.92x, i.e. slower than one Spark.",
+        help = "Independent engines. 2 measured 1.35x one Spark; a single split "
+        "engine never beats one Spark on decode (0.85x to 1.01x measured).",
     ),
     slots: int = typer.Option(16, "--slots", help = "Server slots per engine."),
 ) -> None:
     """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.
 
     Defaults to TWO engines, each split across both Sparks, behind a round-robin front
-    end -- measured at 1.35x a single Spark, where ONE split engine measures 0.92x, i.e.
-    slower than not clustering at all. The difference is that two engines give the pair
-    data-independent work; a single autoregressive stream cannot be pipelined, which is
-    why vLLM and SGLang also require pp_size independent batches in flight.
+    end -- measured at 1.35x a single Spark, where ONE split engine never beats a single
+    Spark on decode (0.85x to 1.01x measured from 1 to 32 users). The difference is that
+    two engines give the pair data-independent work; a single autoregressive stream
+    cannot be pipelined, which is why vLLM and SGLang also require pp_size independent
+    batches in flight. A model that fits on one Spark is served as two independent
+    replicas instead, which measured 1.30x to 1.91x at 8 to 32 users.
+
+    Before a split is printed, both nodes' llama.cpp bundles are compared and any RPC
+    server already listening is asked its protocol version: a peer on a different
+    bundle fails at load with "RPC server version mismatch", and the fix is
+    `unsloth spark provision`.
     """
     sc = _cluster_or_none()
     if sc is None:
@@ -1121,6 +1145,15 @@ def plan(
     concurrency: int = typer.Option(
         1, "--concurrency", "-c", help = "Requests in flight, for the expected number."
     ),
+    prompt_tokens: int = typer.Option(
+        512, "--prompt-tokens", help = "Typical prompt length, for the llama.cpp layout."
+    ),
+    prefill_heavy: bool = typer.Option(
+        False,
+        "--prefill-heavy",
+        help = "The work is prefill-heavy long-prompt work (RAG, documents). The only "
+        "case in which a model that fits is layer-split.",
+    ),
 ) -> None:
     """Say exactly how to deploy a model here, and what it will buy you.
 
@@ -1131,9 +1164,13 @@ def plan(
     throughput, and those are different commands with different results.
 
     It will also say plainly when more Sparks buy you nothing. A model that already fits
-    on one Spark is SLOWER split across two (0.92x measured), so that layout is never
-    recommended, whatever you ask for; and anything not measured at your node count is
-    reported as not measured rather than extrapolated.
+    on one Spark never decodes faster split across two (0.85x to 1.01x measured from 1 to
+    32 users), so that layout is recommended only for a model that does not fit, or with
+    `--prefill-heavy` for long-prompt work where the split's 1.7x to 1.85x prefill is the
+    point. Two replicas of a model that fits measured 1.30x at 8 users, 1.75x at 16 and
+    1.91x at 32, and only 1.00x to 1.13x below 8, so `--concurrency` decides between one
+    Spark and two. Anything not measured at your node count is reported as not measured
+    rather than extrapolated.
     """
     sc = _cluster_or_none()
     if sc is None:
@@ -1166,7 +1203,14 @@ def plan(
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
     result = _plan_deployment(
-        sc, size, nodes, intent = resolved, concurrency = concurrency, model = model
+        sc,
+        size,
+        nodes,
+        intent = resolved,
+        concurrency = concurrency,
+        model = model,
+        prompt_tokens = prompt_tokens,
+        prefill_heavy = prefill_heavy,
     )
     if result is None:
         _say("Could not produce a plan (the planner is unavailable in this build).")
@@ -1240,9 +1284,22 @@ def plan(
     if result.get("axis") in ("layer-split", "pipeline-parallel") and result.get("fits_one_node"):
         _say("")
         _print_wrapped(
-            "DO NOT DO THIS: splitting a model that already fits measures 0.92x -- "
-            "slower than the single Spark you already have."
+            "DO NOT DO THIS FOR SPEED: splitting a model that already fits never decodes "
+            "faster than the single Spark you already have (0.85x to 1.01x measured from "
+            "1 to 32 users). A split of such a model is only for prefill-heavy long-prompt "
+            "work, where prefill measured 1.7x to 1.85x."
         )
+
+    # The llama.cpp specific layout: single, replicas or layer split, from the
+    # measured table, keyed by the concurrency and prompt length given.
+    serving = result.get("serving")
+    if isinstance(serving, dict) and serving.get("topology"):
+        _say("")
+        _field("llama.cpp", str(serving["topology"]).replace("_", " "))
+        if serving.get("reason"):
+            _print_wrapped(str(serving["reason"]), indent = "                 ")
+        if serving.get("measured_on"):
+            _print_wrapped(f"(measured on {serving['measured_on']})", indent = "                 ")
 
     commands = result.get("commands") or []
     if commands:
