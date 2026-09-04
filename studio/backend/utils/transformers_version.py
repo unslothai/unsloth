@@ -7,8 +7,8 @@ Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
 tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
 newer 5.x sidecar.  Dense NemotronH models (e.g. NVIDIA-Nemotron-3-Nano-4B) use
 MLP layers that only transformers>=5.10 can parse natively, so they go on the
-5.10 sidecar too.  Everything else needs the default 4.57.x that ships with
-Unsloth.
+5.10 sidecar too.  Everything else runs on the ambient default that ships with
+Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
@@ -40,10 +40,17 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from pathlib import Path
 
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
@@ -51,6 +58,10 @@ from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+
+# Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
+# cannot pin a transformers version into sys.modules before the sidecar is activated.
+from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
 
@@ -286,6 +297,9 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "locateanything",
     "diffusion-gemma",
     "diffusiongemma",
+    "higgs-tts-2",
+    "higgs-audio-v2",
+    "higgs-audio-v3-tts",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -306,12 +320,16 @@ _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
+    "HiggsAudioV2ForConditionalGeneration",
+    "HiggsMultimodalQwen3ForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "diffusion_gemma",
     "gemma4",
     "kimi_k3",
     "locateanything",
+    "higgs_audio_v2",
+    "higgs_multimodal_qwen3",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).
@@ -365,7 +383,7 @@ TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57
 # TRANSFORMERS_550_VERSION / TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
-# Pre-installed directories — created by setup.sh / setup.ps1.
+# Pre-installed directories - created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
@@ -487,7 +505,9 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
-        logger.info("Using default transformers (4.57.x) for %s", model_name)
+        logger.info(
+            "Using default transformers (%s) for %s", TRANSFORMERS_DEFAULT_VERSION, model_name
+        )
 
 
 def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool:
@@ -564,10 +584,9 @@ def recorded_local_base(model_name) -> "tuple[str | None, bool]":
                     return base, False
         # Only reachable without a Hub call when there is no adapter_config.json; with one,
         # the resolver tries get_base_model_from_lora first, which needs_hub already covers.
-        if not adapter_cfg and root.name.startswith("unsloth_") and _has_adapter_weights(root):
-            parts = root.name.split("_")
-            if len(parts) >= 2:
-                return "unsloth/" + "_".join(parts[1:-1]), False
+        base = base_model_from_run_dir_name(root.name)
+        if base and not adapter_cfg and _has_adapter_weights(root):
+            return base, False
         return None, adapter_cfg
     except Exception:
         return None, True
@@ -640,25 +659,28 @@ def _resolve_base_model(model_name: str) -> str:
             )
 
     # adapter_model-only LoRA: no config, so parse the unsloth_<model>_<timestamp> dir name.
-    if local_path.name.startswith("unsloth_") and _has_adapter_weights(local_path):
-        parts = local_path.name.split("_")
-        if len(parts) >= 2:  # unsloth_<model...>_<timestamp>
-            base = "unsloth/" + "_".join(parts[1:-1])
-            logger.info(
-                "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
-                model_name,
-                base,
-            )
-            return base
+    base = base_model_from_run_dir_name(local_path.name)
+    if base and _has_adapter_weights(local_path):
+        logger.info(
+            "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
+            model_name,
+            base,
+        )
+        return base
 
     return model_name
 
 
-def _token_cache_key(model_name: str, hf_token: str | None) -> tuple[str, str | None]:
+def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | None]:
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
-    unauthenticated miss on a gated/private repo never poisons a later authed lookup."""
+    unauthenticated miss on a gated/private repo never poisons a later authed lookup.
+
+    Forced-anonymous is its own credential, so it takes its own slot too.
+    """
     import hashlib
 
+    if is_anonymous(hf_token):
+        return (model_name, ANONYMOUS_CACHE_IDENTITY)
     tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
     return (model_name, tok)
 
@@ -879,10 +901,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     authenticated read. The HF hub cache is consulted only offline or after a failed
     network fetch, so an online read never serves stale metadata.
     """
-    import hashlib
-
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    cache_key = (model_name, tok)
+    cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_json_cache:
         return _config_json_cache[cache_key]
 
@@ -902,9 +921,19 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if _safe_is_dir(Path(model_name)):
         return None
 
+    # Every route to the hub cache below reads it without authorizing, so a caller denied
+    # the ambient credential is refused them all: keying the memo apart is not enough when
+    # the value it memoizes came off disk in the first place.
+    if is_anonymous(hf_token):
+        cache_denied = True
+    else:
+        cache_denied = False
+
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
         # never the miss, so a later online read still fetches the config.
+        if cache_denied:
+            return None
         cfg = _config_json_from_hf_cache(model_name)
         if cfg is not None:
             _config_json_cache[cache_key] = cfg
@@ -929,11 +958,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         # Transient: serve the hub cache uncached so the next call retries the network.
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
 
 
 def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> bool:
@@ -1431,7 +1460,7 @@ _TRUSTSTORE_VENDOR = """
     + inline_gate_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
-if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
+if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
 try:
     from transformers import AutoConfig
@@ -1468,7 +1497,7 @@ def _stderr_is_transient(err: str) -> bool:
 
 def _probe_tier_venvs():
     """tier -> (target_dir, ensure_fn), a function so the later _ensure_* defs resolve. The
-    ``default`` entry (empty target_dir = ambient 4.57.x) is only probed with include_default."""
+    ``default`` entry (empty target_dir = ambient default) is only probed with include_default."""
     return {
         "default": ("", lambda: True),
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
@@ -1493,11 +1522,8 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-    if hf_token:
-        env["HF_TOKEN"] = hf_token
-        # The probe relies on the implicit HF_TOKEN env; clear any inherited
-        # HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so a gated repo authenticates instead of 401ing.
-        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+    # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
+    apply_token_to_child_env(env, hf_token)
     if _env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
@@ -1560,8 +1586,8 @@ def _probe_tier(
       - all tiers probed, none parse -> remote-code/custom model_type; keep *floor*.
 
     Known-5.x callers use ``floor='530'``; weak-signal callers (config saved by transformers
-    5.x) use ``include_default=True, floor='default'`` so a model that still parses on 4.57.x
-    stays on the default. Cached per _probe_cache_key (process lifetime). No Hub sha is
+    5.x) use ``include_default=True, floor='default'`` so a model that still parses on the
+    ambient default stays there. Cached per _probe_cache_key (process lifetime). No Hub sha is
     resolved: that would import huggingface_hub before the sidecar is on sys.path.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes", "on"):
@@ -1697,14 +1723,14 @@ def get_transformers_tier(
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
     ``"550"`` for models needing transformers 5.5.0 (e.g. Gemma 4 or mlx-vlm processors),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
-    or ``"default"`` for everything else (4.57.x).
+    or ``"default"`` for everything else.
 
     Strong signals (architecture/model_type, name substrings) are fast paths. For local paths,
     ``config.json`` is checked before name heuristics to avoid false-positives from directory
     name fragments. When the only signal is the 5.x tokenizer class, the exact tier is resolved
     by probing AutoConfig in each sidecar; a config saved by transformers 5.x with no fast-path
-    match is probed default-first, catching a new 5.x-only arch while 4.57.x-loadable models
-    stay on default.
+    match is probed default-first, catching a new 5.x-only arch while models the ambient
+    default can load stay on default.
 
     ``probe=False`` skips the sidecar subprocesses (used by the cheap
     :func:`needs_transformers_5`); it still classifies via cheap signals (a 5.x-saved config
@@ -1811,7 +1837,8 @@ def get_transformers_tier(
                 if tier != "default":
                     return tier
             logger.info(
-                "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
+                "Transformers tier default (%s) selected for %s (local config.json no match)",
+                TRANSFORMERS_DEFAULT_VERSION,
                 model_name,
             )
             return "default"
@@ -1891,7 +1918,11 @@ def get_transformers_tier(
         if tier != "default":
             return tier
 
-    logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
+    logger.info(
+        "Transformers tier default (%s) selected for %s (no match)",
+        TRANSFORMERS_DEFAULT_VERSION,
+        model_name,
+    )
     return "default"
 
 
@@ -2023,6 +2054,24 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+# Version-tagged extension suffixes (.cpython-313-darwin.so, .cp313-win_amd64.pyd,
+# free-threaded .cpython-314t-*). Untagged binaries carry no version and are skipped, as
+# are pypy/graalpy/debug spellings, which this deliberately does not match: an unrecognised
+# name reports nothing rather than guessing, in line with the rest of the scan.
+_EXT_VERSION_TAG_RE = re.compile(r"\.(?:cpython-|cp)(\d{2,}t?)\b")
+# Stable-ABI binaries. A GIL build imports one produced by any older CPython, so they are
+# skipped there. A free-threaded build cannot: it still advertises .abi3.so in
+# EXTENSION_SUFFIXES, but the object layout differs and importing a GIL-built one takes the
+# whole interpreter down with SIGSEGV instead of raising ImportError. No installer ever puts
+# one into a free-threaded tree -- packaging offers those builds abi3t, never abi3 -- so
+# reporting it cannot loop: the reinstall fetches the cp<ver>t wheel and the next scan is
+# clean. Only a venv whose interpreter was swapped underneath it can hold one.
+_ABI3_EXT_RE = re.compile(r"\.abi3\.(?:so|pyd)$")
+_CURRENT_EXT_TAG = "{}{}{}".format(
+    sys.version_info.major,
+    sys.version_info.minor,
+    "t" if sysconfig.get_config_var("Py_GIL_DISABLED") else "",
+)
 
 
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
@@ -2057,9 +2106,10 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
     exactly as a truncated ``transformers/`` does. Measured on three live
     sidecars that is 7729 files instead of 7432, i.e. 4% more work.
 
-    Only shrinkage and disappearance count, and only for paths a single
-    distribution claims: when two claim one path, whichever copy landed says
-    nothing about either RECORD, in either direction. A file LARGER than
+    Shrinkage, disappearance, and compiled extensions tagged for another
+    interpreter count. Sizes are trusted only for paths a single distribution
+    claims: when two claim one path, whichever copy landed says nothing about
+    either RECORD, in either direction. A file LARGER than
     recorded is a packaging collision, not damage. Sizes are therefore compared
     after the whole scan, once multiply-owned paths are known.
 
@@ -2161,6 +2211,24 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 found.append(f"{name}: {rel} is not a regular file")
             elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
                 found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
+            elif rel.endswith((".so", ".pyd")):
+                # A sidecar built by one interpreter survives a Python upgrade intact,
+                # but its compiled extensions no longer load (issue: cp313 .so under 3.14).
+                # The BASENAME alone decides. rel is a whole RECORD path, and a directory
+                # component carrying a wheel-style tag (build.cp312/, pkg.cp312.libs/) says
+                # nothing about the untagged binary sitting inside it; searching the path
+                # would wipe several hundred MB over a directory name.
+                base = rel.replace("\\", "/").rsplit("/", 1)[-1]
+                m = _EXT_VERSION_TAG_RE.search(base)
+                if m and m.group(1) != _CURRENT_EXT_TAG:
+                    found.append(
+                        f"{name}: {rel} targets cp{m.group(1)}, interpreter is cp{_CURRENT_EXT_TAG}"
+                    )
+                elif m is None and _CURRENT_EXT_TAG.endswith("t") and _ABI3_EXT_RE.search(base):
+                    found.append(
+                        f"{name}: {rel} is a stable-ABI build, which free-threaded "
+                        f"cp{_CURRENT_EXT_TAG} cannot load"
+                    )
         if len(found) >= limit:
             return found, inconclusive
     return found, inconclusive
@@ -3100,7 +3168,7 @@ def ensure_transformers_version(model_name: str) -> None:
         # Different 5.x -> need to switch (e.g. 5.3.0 loaded but need 5.10.x).
         in_memory_major = int(in_memory.split(".")[0])
         if in_memory_major == target_major and venv_dir is None:
-            # Both are default (4.x) — close enough.
+            # Both are default (4.x) - close enough.
             logger.info(
                 "transformers %s already loaded — correct for '%s'",
                 in_memory,

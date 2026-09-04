@@ -61,13 +61,10 @@ test("a backend without the field reads as off", async () => {
 test("the toggle round-trips", async () => {
   invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, auto_unload_api_only: true };
-  const saved = await updateOpenAIAutoSwitchSettings(
-    true,
-    undefined,
-    undefined,
-    undefined,
-    true,
-  );
+  const saved = await updateOpenAIAutoSwitchSettings({
+    enabled: true,
+    autoUnloadApiOnly: true,
+  });
   assert.equal(saved.autoUnloadApiOnly, true);
   nextBody = { ...API };
 });
@@ -75,13 +72,10 @@ test("the toggle round-trips", async () => {
 test("saving it alone leaves the other switches untouched", async () => {
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
-  await updateOpenAIAutoSwitchSettings(
-    true,
-    undefined,
-    undefined,
-    undefined,
-    true,
-  );
+  await updateOpenAIAutoSwitchSettings({
+    enabled: true,
+    autoUnloadApiOnly: true,
+  });
   assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema

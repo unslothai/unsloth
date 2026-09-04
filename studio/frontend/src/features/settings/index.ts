@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { SettingsDialog } from "./settings-dialog";
+export { SettingsDialogMount } from "./settings-dialog-mount";
+export {
+  type DownloadTransportMode,
+  type DownloadTransportSettings,
+  loadDownloadTransportSettings,
+  subscribeDownloadTransportSettings,
+  updateDownloadTransportSettings,
+} from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
@@ -46,18 +53,28 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   type MonitorFrame,
-  type StackGeometry,
-  stackBottomInset,
-  stackGeometry,
-  stackMaxHeight,
   useMonitorFrameStore,
-  useStackGeometry,
 } from "./stores/monitor-frame-store";
 export type {
   Personalization,
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
+export {
+  COMPOSER_INPUT_SELECTOR,
+  isImeComposing,
+  isSurfaceBackgrounded,
+  isSurfaceInForeground,
+  useShortcut,
+  useShortcutLabel,
+  useShortcutLabels,
+} from "./hooks/use-shortcut";
+export { Shortcut } from "./components/shortcut";
+export {
+  currentBinding,
+  useKeyboardShortcutsStore,
+} from "./stores/keyboard-shortcuts-store";
+export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

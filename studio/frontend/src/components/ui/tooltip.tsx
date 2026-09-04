@@ -12,7 +12,11 @@ import {
 } from "react";
 import type * as React from "react";
 
-import { isBlockedByActiveModal } from "@/components/ui/tooltip-modal-layer";
+import {
+  getModalLayer,
+  isBlockedByActiveModal,
+  subscribeModalLayer,
+} from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
 import { cn } from "@/lib/utils";
 
@@ -21,57 +25,6 @@ const TooltipToggleCtx = createContext<ToggleFn | null>(null);
 const TooltipTriggerElementCtx = createContext<(element: HTMLElement | null) => void>(
   () => undefined,
 );
-
-// Radix sets body pointer-events to none while a modal layer is up. That is also when a hovered
-// trigger stops receiving pointerleave, so a tooltip already on screen hangs over the dialog
-// with nothing able to close it. One observer serves every tooltip.
-let modalLayerUp = false;
-const modalLayerListeners = new Set<() => void>();
-let modalLayerObserver: MutationObserver | null = null;
-
-function readModalLayer(): void {
-  modalLayerUp = document.body.style.pointerEvents === "none";
-  for (const listener of modalLayerListeners) listener();
-}
-
-function readPointerEvents(style: string | null): string {
-  return (
-    /(?:^|;)\s*pointer-events\s*:\s*([^;]+)/.exec(style ?? "")?.[1]?.trim() ??
-    ""
-  );
-}
-
-function readRelevantLayerMutations(records: MutationRecord[]): void {
-  const pointerEventsChanged = records.some(
-    (record) =>
-      readPointerEvents(record.oldValue) !==
-      readPointerEvents(
-        (record.target as Element).getAttribute?.("style") ?? null,
-      ),
-  );
-  if (pointerEventsChanged) readModalLayer();
-}
-
-function subscribeModalLayer(listener: () => void): () => void {
-  modalLayerListeners.add(listener);
-  if (!modalLayerObserver && typeof MutationObserver !== "undefined") {
-    modalLayerObserver = new MutationObserver(readRelevantLayerMutations);
-    modalLayerObserver.observe(document.body, {
-      attributes: true,
-      attributeFilter: ["style"],
-      attributeOldValue: true,
-      subtree: true,
-    });
-    readModalLayer();
-  }
-  return () => {
-    modalLayerListeners.delete(listener);
-  };
-}
-
-function getModalLayer(): boolean {
-  return modalLayerUp;
-}
 
 function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
   if (typeof ref === "function") {

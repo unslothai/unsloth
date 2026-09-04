@@ -33,6 +33,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
       # test_installer_profile_hardening.py asserts this module directly (unconditional
       # -NoProfile, the proxy handoff), so a change to it has to run here.
       - 'unsloth_cli/commands/studio.py'
@@ -64,12 +67,24 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -81,6 +96,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
       # test_installer_profile_hardening.py asserts this module directly (unconditional
       # -NoProfile, the proxy handoff), so a change to it has to run here.
       - 'unsloth_cli/commands/studio.py'
@@ -112,12 +130,24 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
+      # studio-backend-ci runs tests/studio/install on ubuntu only, so the windows
+      # row here is the sole place the keep path meets a real loader. install_*.py
+      # above is only the entrypoint; these two are the rest of what it loads.
+      - 'tests/studio/install/test_keep_install_backcompat_9979.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -126,11 +156,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -174,7 +204,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
       # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
       # single test runs. rich arrives through typer today, but unsloth_cli imports it
@@ -195,6 +224,7 @@ jobs:
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
           tests/test_installer_profile_hardening.py
+          tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
@@ -212,6 +242,31 @@ jobs:
       - name: XPU arm64 torchaudio tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      # Same again: mocked filesystem reads and one `python -c` child, so no venv, no AMD GPU and
+      # no Windows needed. Read the file header before adding cases -- pwsh 7 cannot reproduce the
+      # 5.1 half of #8335, so the checks covering it are deliberately source shapes.
+      - name: AMD venv repair loop tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
+      # The same file under Windows PowerShell 5.1, the shell the CLI actually launches setup.ps1
+      # with. Every other step here is `shell: pwsh` (PowerShell 7), and 7 answers `.Count = 1`
+      # for the single CimInstance 5.1 answers `$null` for, so only this leg fails on unfixed #8335.
+      - name: AMD venv repair loop tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1
+      # Slices the shipped $nameArchTable out of install.ps1 and setup.ps1 and resolves GPU
+      # names through PowerShell's own -match, so no venv, no AMD GPU and no Windows needed.
+      - name: AMD GPU-name arch table tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
+      # Windows needed. The 1260 classification is exercised against crafted exceptions:
+      # a hosted runner has no Application Control policy to be denied by. The enforced
+      # end-to-end leg lives in the AppLocker workflow.
+      - name: Application Control CLI fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

@@ -1,69 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelType, StepConfig } from "@/types/training";
+import type { ModelType } from "@/types/training";
 import type { PipelineType } from "@huggingface/hub";
-
-export const STEPS: StepConfig[] = [
-  {
-    number: 1,
-    title: "Model Type",
-    subtitle: "Select type",
-    description: "Choose the type of model you want to fine-tune",
-  },
-  {
-    number: 2,
-    title: "Model",
-    subtitle: "Select model",
-    description: "Choose a base model and training method",
-  },
-  {
-    number: 3,
-    title: "Dataset",
-    subtitle: "Add dataset",
-    description: "Select or upload a training dataset",
-  },
-  {
-    number: 4,
-    title: "Parameters",
-    subtitle: "Configure",
-    description: "Fine-tune your training hyperparameters",
-  },
-  {
-    number: 5,
-    title: "Summary",
-    subtitle: "Review",
-    description: "Review your configuration before starting",
-  },
-];
-
-export const MODEL_TYPES: ReadonlyArray<{
-  value: ModelType;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: "text",
-    label: "Text",
-    description: "Language models",
-  },
-  {
-    value: "vision",
-    label: "Vision",
-    description: "Image understanding models",
-  },
-  {
-    value: "audio",
-    label: "Audio",
-    description: "Audio and speech models",
-  },
-  {
-    value: "embeddings",
-    label: "Embeddings",
-    description: "Text embedding models",
-  },
-];
-
 export const CONTEXT_LENGTHS = [
   512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
 ];
@@ -78,12 +17,81 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
+/** CPT trains embeddings via modules_to_save; keep them visible in the UI. */
+export const CPT_EMBEDDING_MODULES = ["embed_tokens", "lm_head"] as const;
+
 /** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
-export const CPT_TARGET_MODULES = [
-  ...TARGET_MODULES,
-  "embed_tokens",
-  "lm_head",
-];
+export const CPT_TARGET_MODULES = [...TARGET_MODULES, ...CPT_EMBEDDING_MODULES];
+
+const CPT_UI_TARGET_MODULES = ["all-linear", ...CPT_TARGET_MODULES] as const;
+
+export function isCptAllLinearTargetModules(
+  targetModules: readonly string[],
+): boolean {
+  const loraTargetModules = targetModules.filter(
+    (module) =>
+      !CPT_EMBEDDING_MODULES.some(
+        (embeddingModule) => embeddingModule === module,
+      ),
+  );
+  return (
+    loraTargetModules.length === 1 && loraTargetModules[0] === "all-linear"
+  );
+}
+
+/** Preserve all-linear model defaults for CPT. */
+export function resolveCptTargetModules(
+  currentTargetModules: readonly string[],
+): string[] {
+  if (isCptAllLinearTargetModules(currentTargetModules)) {
+    return ["all-linear", ...CPT_EMBEDDING_MODULES];
+  }
+  return [...CPT_TARGET_MODULES];
+}
+
+export function getCptUiTargetModules(): readonly string[] {
+  return CPT_UI_TARGET_MODULES;
+}
+
+export function isCptTargetModuleActive(
+  targetModules: readonly string[],
+  module: string,
+): boolean {
+  return module === "all-linear"
+    ? isCptAllLinearTargetModules(targetModules)
+    : targetModules.includes(module);
+}
+
+export function toggleCptTargetModule(
+  targetModules: readonly string[],
+  module: string,
+): string[] {
+  if (
+    CPT_EMBEDDING_MODULES.some((embeddingModule) => embeddingModule === module)
+  ) {
+    return targetModules.includes(module)
+      ? targetModules.filter((candidate) => candidate !== module)
+      : [...targetModules, module];
+  }
+
+  if (module === "all-linear") {
+    const embeddingModules = targetModules.filter((candidate) =>
+      CPT_EMBEDDING_MODULES.some(
+        (embeddingModule) => embeddingModule === candidate,
+      ),
+    );
+    return isCptAllLinearTargetModules(targetModules)
+      ? [...TARGET_MODULES, ...embeddingModules]
+      : ["all-linear", ...embeddingModules];
+  }
+
+  const namedTargetModules = targetModules.filter(
+    (candidate) => candidate !== "all-linear",
+  );
+  return targetModules.includes(module)
+    ? namedTargetModules.filter((candidate) => candidate !== module)
+    : [...namedTargetModules, module];
+}
 
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{
   value: string;
@@ -120,7 +128,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 ];
 
 /** Method-aware learning rate defaults; the backend mirrors these in
-* studio/backend/assets/configs/. */
+ * studio/backend/assets/configs/. */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;

@@ -73,11 +73,11 @@ test("footer profile sits 11px above the sidebar edge", async () => {
   );
 });
 
-test("every sidebar row pill sits in one shared box", async () => {
+test("navigation rows align while the profile footer ignores the scroll rail", async () => {
   // A recent chat's pill has to match New Chat's. The rows inside the scroller
-  // lose the rail's width, so the rows outside add it back and both end on one
-  // edge; both pads match, so a pill sits the same distance from the scrollbar
-  // as from the near edge. Logical sides, since the rail moves under rtl.
+  // lose the rail's width, so New Chat adds it back and both end on one edge.
+  // The profile footer is unrelated to that list and must keep its full width
+  // when the scrollbar appears. Logical sides, since the rail moves under rtl.
   const source = await sidebarSource();
   assert.match(
     source,
@@ -85,12 +85,21 @@ test("every sidebar row pill sits in one shared box", async () => {
   );
   assert.match(
     source,
-    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
+    /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
   );
-  // New Chat and the footer sit outside the scroller.
-  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
-  // Nav rows, pinned projects, Recents, training runs sit inside it.
-  assert.equal(source.match(/scrollRowPadding[,}]/g)?.length, 4);
+  // New Chat is the only outside row that aligns with the scroller's rail.
+  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
+  // Nav rows, pinned chats, Projects, Recents, and training runs sit inside the
+  // scroller; the footer is the sixth unrailed use outside it.
+  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
+
+  const footer = source
+    .split("<SidebarFooter")[1]
+    ?.split("</SidebarFooter>")[0];
+  assert.ok(footer, "no sidebar footer");
+  const footerProps = footer.split(">\n")[0];
+  assert.match(footerProps, /unrailedRowPadding/);
+  assert.doesNotMatch(footerProps, /var\(--sidebar-rail/);
   assert.equal(source.match(/"pl-2 pr-\[5px\]"/g), null);
 });
 
@@ -143,9 +152,13 @@ test("the sidebar list measures its scroll rail", async () => {
     new URL("../src/index.css", import.meta.url),
     "utf8",
   );
-  // No width override: the rail keeps the width the rest of the app uses, and
-  // hiding it outright is what took the scrollbar away.
-  assert.equal(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width/.test(css), false);
+  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // width override caused before.
+  const railWidthDecls = (
+    css.match(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g) ?? []
+  ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
+  assert.deepEqual(railWidthDecls, ["auto"]);
+  assert.match(css, /:root\.client-windows \.sidebar-scroll-fade,/);
   assert.equal(
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(css),
     false,

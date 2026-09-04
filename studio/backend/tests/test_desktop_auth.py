@@ -26,6 +26,8 @@ def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
+
+    monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)
     yield
 
 
@@ -574,6 +576,12 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
         else web_bearer(client)
     )
 
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    credential_key = storage.get_or_create_credential_encryption_key()
+    nonce = os.urandom(12)
+    encrypted = AESGCM(credential_key).encrypt(nonce, b"hf-survives-password-change", b"test")
+
     response = client.post(
         "/api/auth/change-password",
         headers = {"Authorization": f"Bearer {bearer}"},
@@ -583,6 +591,10 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
     assert response.status_code == 200
     assert is_desktop_token(response.json()["access_token"]) is desktop
     assert (storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME) is desktop
+
+    storage._credential_encryption_key_cache = None
+    reloaded_key = storage.get_or_create_credential_encryption_key()
+    assert AESGCM(reloaded_key).decrypt(nonce, encrypted, b"test") == b"hf-survives-password-change"
 
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
@@ -682,10 +694,26 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from unsloth_cli.commands import studio as studio_cli
 
+    from auth import storage as auth_storage
+    from storage import credential_secrets
+
     auth_dir = tmp_path / "auth"
+    studio_db = tmp_path / "studio.db"
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(auth_storage, "DB_PATH", auth_dir / "auth.db")
+    monkeypatch.setattr(auth_storage, "_credential_encryption_key_cache", None)
+    monkeypatch.setattr(credential_secrets, "studio_db_path", lambda: studio_db)
+    monkeypatch.setattr(credential_secrets, "ensure_dir", lambda _path: None)
+    monkeypatch.setattr(
+        credential_secrets,
+        "get_or_create_credential_encryption_key",
+        auth_storage.get_or_create_credential_encryption_key,
+    )
+    credential_secrets._schema_ready = False
+
     secret = studio_cli._create_desktop_secret_in_cli()
     studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    credential_secrets.save_hf_token("hf_survives_reset")
     (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
@@ -705,9 +733,20 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
                 studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
             ),
         ).fetchone()[0]
+
+        credential_key = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("credential_encryption_key_v1",),
+        ).fetchone()
     finally:
         conn.close()
     assert surviving == 0
+
+    assert credential_key is not None
+    auth_storage._credential_encryption_key_cache = None
+    assert credential_secrets.get_hf_token() == "hf_survives_reset"
+    credential_secrets._schema_ready = False
+    auth_storage._credential_encryption_key_cache = None
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):
@@ -742,6 +781,22 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
     assert isinstance(body["version"], str)
 
 
+def _routers_main_imports() -> set[str]:
+    """Every ``*_router`` name in main.py's ``from routes import (...)`` block, read textually:
+    importing ``routes`` would pull in torch, transformers and llama.cpp, which is what the stub
+    below exists to avoid."""
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    block = re.search(r"from routes import \(([^)]*)\)", main_src, re.S)
+    assert block is not None, "main.py no longer has a parenthesised routes import; re-derive this"
+    names = set(re.findall(r"(\w+_router)", block.group(1)))
+    assert names, "the routes import block named no routers; re-derive this"
+    return names
+
+
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
     routes_module = ModuleType("routes")
     routes_module.__path__ = []
@@ -749,38 +804,40 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    llama_compat_module = ModuleType("routes.llama_compat")
+    llama_compat_module.router = APIRouter()
+    # main.py imports this name alongside the router and calls it from serve_frontend.
+    llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
+    whisper_module = ModuleType("routes.whisper")
+    whisper_module.router = APIRouter()
+    profile_stats_module = ModuleType("routes.profile_stats")
+    profile_stats_module.router = APIRouter()
 
-    for name, router in {
-        "auth_router": APIRouter(),
-        "chat_history_router": APIRouter(),
-        "data_recipe_router": APIRouter(),
-        "datasets_router": APIRouter(),
-        "export_router": APIRouter(),
-        "inference_router": APIRouter(),
-        "inference_studio_router": APIRouter(),
-        "mcp_servers_router": APIRouter(),
-        "models_router": APIRouter(),
-        "providers_router": APIRouter(),
-        "rag_router": APIRouter(),
-        "research_runs_router": APIRouter(),
-        "settings_router": settings_module.router,
-        "training_history_router": APIRouter(),
-        "training_router": APIRouter(),
-        "video_router": APIRouter(),
-    }.items():
-        setattr(routes_module, name, router)
+    # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
+    # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
+    # test in this file with an ImportError.
+    for name in _routers_main_imports():
+        setattr(
+            routes_module,
+            name,
+            # The health payload reads the real settings router.
+            settings_module.router if name == "settings_router" else APIRouter(),
+        )
     routes_module.settings = settings_module
     routes_module.llama = llama_module
 
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
+    monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
 
     import studio.backend.main as backend_main
 
@@ -789,6 +846,14 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
+    # _hardware_snapshot() returns None until detection settles, so chat_only never publishes.
+    import threading
+
+    _settled = threading.Event()
+    _settled.set()
+    monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
+    # On a Mac the MLX self-heal overturns "mlx_unavailable" and health_check() drops the snapshot.
+    monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
     from auth.authentication import create_access_token
@@ -1009,3 +1074,42 @@ def test_desktop_auth_provision_has_bounded_timeout():
     assert m is not None
     seconds = int(m.group(1))
     assert 5 <= seconds <= 120
+
+
+def test_the_router_stub_covers_every_router_main_imports():
+    """The stub is derived from main.py, so it cannot go stale as it did for #8511's
+    ``openai_codex_auth_router`` and #8648's ``youtube_router``. What can still break is the
+    derivation: a reshaped import block would silently yield a short list. So pin it against the
+    real package's ``__all__``, read textually for the same no-import reason."""
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    imported = _routers_main_imports()
+
+    init_src = (backend / "routes" / "__init__.py").read_text(encoding = "utf-8")
+    all_block = re.search(r"__all__\s*=\s*\[([^\]]*)\]", init_src, re.S)
+    assert all_block is not None, "routes/__init__.py no longer has a literal __all__"
+    exported = set(re.findall(r'"(\w+_router)"', all_block.group(1)))
+    assert exported, "routes/__init__.py's __all__ named no routers; re-derive this"
+
+    unknown = sorted(imported - exported)
+    assert not unknown, (
+        f"main.py imports {unknown} from routes, but routes/__init__.py does not export them: "
+        f"the app itself would fail to start"
+    )
+
+    # Same drift for submodule imports, which need a sys.modules entry and are still hand-listed.
+    import inspect
+
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
+    submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
+    assert submodules, "main.py imports no routes submodule; re-derive this"
+    registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
+    assert registered, "the health test registered no routes submodule; re-derive this"
+    unstubbed = sorted(submodules - registered)
+    assert not unstubbed, (
+        f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
+        f"registers in sys.modules, so the real package would be imported instead"
+    )

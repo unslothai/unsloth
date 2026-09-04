@@ -38,21 +38,20 @@ logger = get_logger(__name__)
 
 # Keep the Hub probe short so a slow Hub can't stall the request path.
 _MODEL_INFO_TIMEOUT_S = 8.0
-# auth_check and hf_hub_download take no timeout of their own and run while the
-# provisional slot is held, so an unresponsive Hub would pin the single flight. The
-# code probe fetches up to three configs, so it gets more room than the auth call.
+# auth_check and hf_hub_download take no timeout of their own and run while the provisional slot is held, so an
+# unresponsive Hub would pin the single flight. The code probe fetches up to three configs, so it gets more room than
+# the auth call.
 _CODE_PROBE_TIMEOUT_S = 20.0
 # Headroom left free after the download, so filling the disk can't wedge the box.
 _DISK_RESERVE_BYTES = 5 * 1024**3
 _WATCH_POLL_S = 2.0
 # A stalled watcher must not pin the single-flight slot forever.
 _MAX_WATCH_S = 24 * 60 * 60
-# Past the watch window the row is resolved, so poll only to see whether the
-# worker is still alive and still owns the slot.
+# past the watch window the row is resolved, so poll only to see whether the worker is alive and still owns the slot
 _TIMED_OUT_POLL_S = 60.0
 _RETRY_AFTER_S = 30
-# Long enough for a client honouring Retry-After to come back and be told, short
-# enough that one that never returns cannot hold the slot.
+# long enough for a client honouring Retry-After to come back and be told, short enough that one that never returns
+# cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
 
@@ -76,8 +75,9 @@ class _Active:
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
     started_at: float = 0.0
-    # Set when the worker failed. Held until a retry surfaces it: Retry-After is far
-    # longer than the watcher poll, so the client would restart the same failing download.
+    # held until a retry surfaces it: Retry-After is far longer than the watcher poll
+    # Set when the worker failed. Held until a retry surfaces it: Retry-After is far longer than the watcher poll, so
+    # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
 
@@ -99,16 +99,17 @@ def _public_label(repo_id: str, variant: Optional[str]) -> str:
 def split_model_ref(requested: str) -> tuple[str, Optional[str]]:
     """``org/repo:QUANT`` -> ``("org/repo", "QUANT")``; no suffix -> variant None.
 
-    Splits on the last colon. A slash-bearing suffix is only a variant when a real
-    Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key the catalog
-    advertises, while "C:/models/x.gguf" leaves a drive letter that is no repo id.
+    Splits on the last colon. A suffix bearing either separator is only a variant
+    when a real Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key
+    the catalog advertises, while "C:/models/x.gguf" -- and the native Windows
+    "C:\\models\\x.gguf" -- leaves a drive letter that is no repo id.
     """
     text = (requested or "").strip()
     base, sep, suffix = text.rpartition(":")
     if not sep or not base or not suffix:
         return text, None
     stripped = base.strip()
-    if "/" in suffix:
+    if "/" in suffix.replace("\\", "/"):
         from hub.utils.paths import is_valid_repo_id
         if "/" not in stripped or not is_valid_repo_id(stripped):
             return text, None
@@ -133,6 +134,27 @@ def is_downloadable_ref(requested: str) -> bool:
     return True
 
 
+def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
+    """Whether *repo_id* names an Unsloth catalog entry, not a LiteLLM/OpenRouter label.
+
+    Namespaced ids without a GGUF suffix are foreign routing labels (``openai/gpt-4o``).
+    ``-GGUF`` and the ``unsloth/`` namespace mark ids clients pick from this server's
+    model list (GGUF and Transformers-backed entries alike); a mistyped one must 404
+    instead of being answered by another loaded model.
+    """
+    text = (repo_id or "").strip()
+    if "/" not in text:
+        return False
+    from hub.utils.paths import is_valid_repo_id
+
+    if not is_valid_repo_id(text):
+        return False
+    name = text.rsplit("/", 1)[-1]
+    if name.lower().endswith("-gguf"):
+        return True
+    return text.lower().startswith("unsloth/")
+
+
 def looks_like_quant(variant: Optional[str]) -> bool:
     """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 
@@ -142,18 +164,18 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     """
     import re
 
+    from hub.utils.gguf import is_h3_denoiser_variant_key
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
     if not variant:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
-    # A path-qualified variant key (``distilled/model-Q6_K``) is one of OUR advertised rows: a
-    # repo with several checkpoints at one quant keys each on its path. No foreign tag has that
-    # shape -- Ollama's is ``:latest``, LiteLLM's namespace sits before the colon -- so it must
-    # be read as an explicit checkpoint request and MISS when absent. Falling through instead
-    # served the caller a different checkpoint under the model id they asked for.
-    if "/" in label.replace("\\", "/"):
+    # A qualified key is one of OUR advertised rows: a path (``distilled/model-Q6_K``) or an H3 root stem
+    # (``minimax_h3_ref2va_pruned-Q6_K``). Explicit, so it must MISS when absent; falling through served the caller a
+    # different checkpoint under the requested id.
+    normalized = label.replace("\\", "/")
+    if "/" in normalized or is_h3_denoiser_variant_key(normalized):
         return True
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
@@ -233,25 +255,33 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     return False
 
 
-def _gguf_variants(siblings) -> dict[str, int]:
+def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
-    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
-    and big-endian builds are not quants, and sharded quants sum across shards.
+    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP),
+    calibration imatrices and big-endian builds are not quants, and sharded quants sum across shards.
     Bytes come from the download plan, which folds companions back into every
     quant, so the disk reserve is measured against what the worker fetches.
     """
     from hub.utils.gguf import extract_quant_label as canonical_quant_label
-    from hub.utils.gguf import gguf_variant_key
+    from hub.utils.gguf import _is_selectable_repo_gguf, gguf_variant_key
     from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mmproj,
         _is_mtp_drafter,
     )
 
-    siblings = list(siblings or [])
+    from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+    # Plans and advertised variants are derived separately, so both are filtered here.
+    siblings = [
+        sibling
+        for sibling in drop_shadowed_appledouble_siblings(list(siblings or []))
+        if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
+    ]
     plans = build_gguf_variant_plans(siblings)
     sizes: dict[str, int] = {}
     for sibling in siblings:
@@ -259,17 +289,22 @@ def _gguf_variants(siblings) -> dict[str, int]:
         if not name.lower().endswith(".gguf"):
             continue
         label = _extract_quant_label(name)
-        # The identity the PLAN is keyed on. A repo holding several checkpoints at one quant
-        # advertises a qualified key per checkpoint, and keying this map on the bare label left
-        # every one of those rows a hard miss here: a 404 instead of the download.
+        # The identity the PLAN is keyed on. A repo holding several checkpoints at one quant advertises a qualified key
+        # per checkpoint, and keying this map on the bare label left every one of those rows a hard miss here: a 404
+        # instead of the download.
         quant = gguf_variant_key(name)
         if not looks_like_quant(quant):
-            # With no recognized quant token the extractors part ways: this one takes
-            # the last hyphenated segment ("7b" of llama-7b) while the plan and worker
-            # key the whole stem, so advertising ours dispatches an unresolvable variant.
+            # With no recognized quant token the extractors part ways: this one takes the last hyphenated segment ("7b"
+            # of llama-7b) while the plan and worker key the whole stem, so advertising ours dispatches an unresolvable
+            # variant.
             quant = canonical_quant_label(name) or quant
-        # The endian test reads a quant TOKEN, so it gets the label, not the path-qualified key.
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, label):
+        # the endian test reads a quant TOKEN, so it gets the label, not the path-qualified key
+        if (
+            _is_mmproj(name)
+            or _is_mtp_drafter(name)
+            or _is_imatrix_path(name)
+            or _is_big_endian_gguf_path(name, label)
+        ):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:
@@ -371,9 +406,11 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
                 if timed_out:
-                    # A running worker still owns the slot: releasing on the clock alone
-                    # would admit a second multi-GB download beside it. "unknown" cannot
-                    # confirm it is alive, so release then, or a broken probe wedges us.
+                    # a running worker still owns the slot, and releasing on the clock alone would admit a second
+                    # multi-GB download beside it
+                    # A running worker still owns the slot: releasing on the clock alone would admit a second multi-GB
+                    # download beside it. "unknown" cannot confirm it is alive, so release then, or a broken probe
+                    # wedges us.
                     if state == "unknown":
                         return
                     continue
@@ -394,17 +431,15 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                 api_monitor.finish(active.monitor_id, status = "cancelled")
                 return
             if state == "complete":
-                # No invalidate here: finalize_worker_exit already dropped the cache and
-                # warmed it; a second would mark that fresh scan stale and push a
-                # synchronous rescan onto the client's retry.
+                # No invalidate here: finalize_worker_exit already dropped the cache and warmed it; a second would mark
+                # that fresh scan stale and push a synchronous rescan onto the client's retry.
                 api_monitor.finish(active.monitor_id, status = "completed")
             elif state == "idle":
                 # The job vanished without a terminal state (worker killed).
                 api_monitor.fail_open(active.monitor_id, "Download did not complete")
             else:
                 api_monitor.fail_open(active.monitor_id, error or f"Download {state}")
-                # Keep the slot so the next retry is told it failed instead of
-                # silently restarting the same download.
+                # keep the slot so the next retry is told it failed instead of silently restarting the same download
                 active.error = error or f"Download {state}"
                 active.failed_at = time.monotonic()
                 return
@@ -447,10 +482,10 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
         info = await asyncio.to_thread(_probe)
     except Exception:
         return False
-    # The same filter admission uses, not a bare .gguf test: mmproj, MTP drafters and
-    # big-endian builds are companions, not quants. Answering otherwise would hold an
-    # ordinary foreign label at model_download_busy for an unrelated download.
-    servable = bool(_gguf_variants(getattr(info, "siblings", None)))
+    # The same filter admission uses, not a bare .gguf test: mmproj, MTP drafters and big-endian builds are companions,
+    # not quants. Answering otherwise would hold an ordinary foreign label at model_download_busy for an unrelated
+    # download.
+    servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
         _mark_not_servable(repo_id, hf_token)
     return servable
@@ -474,7 +509,7 @@ async def maybe_auto_download(
     only ever sees an already-downloaded model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
-    opens: the same /v1 endpoints serve Studio's own chat on a session JWT, so the
+    opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
     download is not API-key traffic unless the request that asked for it was.
     """
     global _active
@@ -485,7 +520,7 @@ async def maybe_auto_download(
     if _is_not_servable(repo_id, hf_token) and not looks_like_quant(wanted_variant):
         return None
 
-    # Settle the single-flight slot before the network, so retries during a download stay cheap.
+    # settle the single-flight slot before the network, so retries during a download stay cheap
     busy: Optional[_Active] = None
     with _lock:
         current = _active
@@ -504,9 +539,9 @@ async def maybe_auto_download(
             _active = provisional
 
     if busy is not None:
-        # Refusing before the probe blocks ordinary drop-in traffic: a namespaced label
-        # that is no downloadable GGUF repo (LiteLLM/OpenRouter style) would be told to
-        # wait out a multi-hour download. Only a downloadable label is a 2nd download.
+        # Refusing before the probe blocks ordinary drop-in traffic: a namespaced label that is no downloadable GGUF
+        # repo (LiteLLM/OpenRouter style) would be told to wait out a multi-hour download. Only a downloadable label is
+        # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
         return AutoDownloadRefusal(
@@ -540,7 +575,6 @@ async def maybe_auto_download(
                 code = "model_download_failed",
                 message = f"Downloading '{requested_model}' failed: {error or 'unknown error'}",
             )
-        # complete/idle/cancelled: the watcher is about to free the slot, so retry once more.
         return _downloading_refusal(
             _public_label(adopted.repo_id, adopted.variant),
             100.0 if state == "complete" else None,
@@ -600,10 +634,8 @@ async def _admit_and_start(
             return _gated_refusal(repo_id)
         if status == 404:
             _mark_not_servable(repo_id, hf_token)
-            # Unknown to the Hub reads as a foreign label; only an explicit quant makes it ours.
             if not looks_like_quant(wanted_variant):
                 return None
-            # A private repo reads as absent without a token; don't confirm either way.
             return AutoDownloadRefusal(
                 status = 404,
                 code = "model_not_found",
@@ -624,11 +656,10 @@ async def _admit_and_start(
     if getattr(info, "gated", False) and await _bounded_probe(
         _auth_denied, repo_id, hf_token, timeout = _MODEL_INFO_TIMEOUT_S, default = False
     ):
-        # Metadata for a gated repo is not file access; unchecked, the config read below lies.
         _release(active)
         return _gated_refusal(repo_id)
 
-    variants = _gguf_variants(getattr(info, "siblings", None))
+    variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
         _mark_not_servable(repo_id, hf_token)
@@ -646,9 +677,9 @@ async def _admit_and_start(
     # trust_remote_code gate: _config_has_auto_map is tri-state, so refuse on True and on None.
     from utils.security.consent import _config_has_auto_map
 
-    # _hub_token, not the raw token: None lets huggingface_hub fall back to a cached
-    # server login, so a caller-named repo would be probed with this server's identity.
-    # Defaults to None on timeout, which refuses: unchecked is not cleared.
+    # _hub_token, not the raw token: None lets huggingface_hub fall back to a cached server login, so a caller-named
+    # repo would be probed with this server's identity. Defaults to None on timeout, which refuses: unchecked is not
+    # cleared.
     has_auto_map = await _bounded_probe(
         _config_has_auto_map,
         repo_id,
@@ -740,7 +771,7 @@ def preferred_quant(labels) -> Optional[str]:
     """
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf".
+    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf"
     synthetic: dict[str, str] = {}
     for name in labels:
         synthetic.setdefault(f"{name.upper()}.gguf", name)
@@ -760,6 +791,9 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
+    # PATH-qualified keys only: an H3 root stem's bare quant names both partitions
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions,
+    # so it must miss rather than serve one of them.
     matches = [
         name
         for key, name in lowered.items()
@@ -777,26 +811,24 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     manual load, matching what the local resolver does with the same tag.
     """
     if wanted:
-        # Exact first, whatever shape: a repo of generically named GGUFs has real
-        # variants like "llama-13b" that are valid worker keys but not quant-shaped,
-        # and defaulting past one would fetch a model nobody asked for.
+        # Exact first, whatever shape: a repo of generically named GGUFs has real variants like "llama-13b" that are
+        # valid worker keys but not quant-shaped, and defaulting past one would fetch a model nobody asked for.
         lowered = {name.lower(): name for name in variants}
         exact = lowered.get(wanted.strip().lower())
         if exact is None:
-            # Same bare-quant fallback the plan lookup makes, and it has to be made HERE too:
-            # admission rejects against this map first, so a repo that files every quant under
-            # one shared container answered a legacy org/repo:Q4_K_M with a 404 and the worker's
-            # fallback was never reached. Unambiguous only, for the same reason.
+            # Same bare-quant fallback the plan lookup makes, and it has to be made HERE too: admission rejects against
+            # this map first, so a repo that files every quant under one shared container answered a legacy
+            # org/repo:Q4_K_M with a 404 and the worker's fallback was never reached. Unambiguous only, for the same
+            # reason.
             exact = _bare_quant_alias(wanted, lowered)
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked
-    # against it: preferred_quant is order-sensitive, and once the map carried a key per
-    # checkpoint a repo with distilled/model-Q6_K beside model-Q6_K could serve the sibling for
-    # a bare id -- the same id that resolves to the root locally. Same filter
-    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way.
-    # A repo with nothing at the root falls back to the whole set rather than refusing.
+    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant
+    # is order-sensitive, and once the map carried a key per checkpoint a repo with distilled/model-Q6_K beside
+    # model-Q6_K could serve the sibling for a bare id -- the same id that resolves to the root locally. Same filter
+    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way. A repo with nothing at
+    # the root falls back to the whole set rather than refusing.
     unqualified = {name: size for name, size in variants.items() if "/" not in name}
     return preferred_quant(unqualified or variants)
 
@@ -835,7 +867,6 @@ async def _dispatch(
         _release(active)
         status = getattr(exc, "status_code", None)
         if status == 409:
-            # A manual load or hub download already owns this repo.
             return busy
         logger.warning("auto-download: could not start %r: %s", label, exc)
         return AutoDownloadRefusal(
@@ -844,17 +875,17 @@ async def _dispatch(
             message = f"Could not start downloading '{requested_model}'.",
         )
 
-    # accepted=False means no worker launched, so report the conflict instead of taking the slot.
+    # accepted=False means no worker launched, so report the conflict instead of taking the slot
     if isinstance(dispatched, dict) and not dispatched.get("accepted", True):
         _release(active)
         logger.info("auto-download: dispatch refused for %s (%s)", label, dispatched.get("state"))
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # Reason "api" since only /v1 reaches auto-download, but that is not API-key
-        # traffic: Studio's chat calls /v1 on a JWT, and marking its download would pop
-        # the overlay mid-chat. So attribution comes from the request, plus its caller,
-        # since the row is shared.
+        # only /v1 reaches auto-download, but that is not API-key traffic
+        # Reason "api" since only /v1 reaches auto-download, but that is not API-key traffic: Unsloth's chat calls /v1
+        # on a JWT, and marking its download would pop the overlay mid-chat. So attribution comes from the request, plus
+        # its caller, since the row is shared.
         event = "download",
         model = label,
         reason = "api",

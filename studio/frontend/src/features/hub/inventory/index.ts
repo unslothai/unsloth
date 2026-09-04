@@ -11,7 +11,6 @@ export {
 } from "./constants";
 export {
   addScanFolder,
-  browseFolders,
   listCachedDatasets,
   listCachedGguf,
   listCachedModels,
@@ -25,7 +24,6 @@ export {
   listLocalModels,
   listScanFolders,
   removeScanFolder,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -51,8 +49,11 @@ export {
   normalizeCapabilities,
   normalizeModelFormat,
   normalizeRuntime,
-  normalizeTimestamp,
 } from "./view-models";
+export {
+  epochMillisecondsToSeconds,
+  normalizeTimestamp,
+} from "./inventory-timestamps";
 export {
   resolveInventoryResource,
   type InventoryResourceFormatHint,
@@ -61,6 +62,7 @@ export {
 export {
   dedupeSameSourceHubCacheRows,
   findCompleteHfCacheLocalRow,
+  partialSetFromRows,
 } from "./inventory-dedupe";
 export {
   fetchInventorySource,
@@ -71,6 +73,7 @@ export {
   type DeviceInventorySource,
   type DeviceInventorySourceState,
 } from "./use-device-inventory";
+export { INVENTORY_FRESHNESS_WINDOW_MS } from "./inventory-freshness";
 export {
   useHubInventory,
   type HubInventoryKind,

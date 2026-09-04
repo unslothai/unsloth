@@ -12,7 +12,7 @@ The same three tables are hand-copied into up to seven places each:
 
   GPU name -> gfx           install.sh (_infer_amd_gfx_arch_from_gpu_name)
                             install.sh (case "$_gpu_disp_mkt", detection banner + env tip)
-                            studio/setup.sh (case "$_setup_mkt")
+                            studio/setup.sh (_setup_supported_gfx_from_name)
                             install.ps1 ($nameArchTable)
                             studio/setup.ps1 ($nameArchTable)
                             studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
@@ -292,6 +292,10 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
+    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307. Its name holds neither
+    # "9070" nor "9080", so every table returned None and a host without the HIP SDK, where
+    # name inference is the only path left, got CPU torch ("not detected", PR #8398).
+    ("AMD Radeon AI PRO R9700", "gfx120X-all"),
     ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
     ("AMD Ryzen AI Max+ 395 w/ Radeon 8060S Graphics", "gfx1151"),
@@ -334,6 +338,9 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 9070": "gfx1201",
     "AMD Radeon RX 9060 XT": "gfx1200",
     "AMD Radeon RX 9060": "gfx1200",
+    # Navi 48 again, as the R9000 series workstation card. Sourced from the reporters'
+    # own rocminfo output (#7624, #7307), not from these tables.
+    "AMD Radeon AI PRO R9700": "gfx1201",
     # RDNA 3 -- Navi 31 / 32 / 33.
     "AMD Radeon RX 7900 XTX": "gfx1100",
     "AMD Radeon PRO W7900": "gfx1100",
@@ -371,12 +378,39 @@ def _name_tables() -> dict[str, object]:
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
         "studio/setup.sh": _name_table_sh_case(
-            _SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"', "_setup_gfx"
+            _SETUP_SH.read_text(encoding = "utf-8"), '"$_sup_gfx_in"', "_sup_gfx_out"
         ),
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
         "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
+        # The backend carries the seventh copy: it decides whether a Windows adapter the
+        # DirectX registry did not give an AdapterFamily is one a repair could help, and
+        # answering that from a stale table would offer the repair to a card no wheel
+        # index covers (or withhold it from one that is covered).
+        "studio/backend/utils/hardware/hardware.py": _name_table_py_literal(
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py",
+            "_GPU_NAME_GFX_TABLE",
+        ),
     }
+
+
+def _name_table_py_literal(path: Path, name: str) -> list:
+    """A module-level list-of-pairs literal, read without importing the module."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    for node in tree.body:
+        targets = (
+            [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else node.targets
+            if isinstance(node, ast.Assign)
+            else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                return [tuple(pair) for pair in ast.literal_eval(node.value)]
+    raise AssertionError(f"{name} not found in {path}")
 
 
 def _spoof_profiles() -> dict[str, str]:
@@ -470,6 +504,23 @@ class TestGpuNameArchParity:
             got = _resolve(where, rows, "NVIDIA GeForce RTX 4090")
             assert got is None, f"{where}: RTX 4090 matched {got!r}"
 
+    @pytest.mark.parametrize(
+        "gpu_name",
+        [
+            "ATI Radeon 9700 PRO",
+            "ATI Radeon 9800 PRO",
+            "AMD Radeon R9 Fury X",
+            "AMD Radeon Pro WX 9100",
+        ],
+    )
+    def test_the_r9700_arm_does_not_swallow_older_cards(self, gpu_name):
+        """The arm is spelled "R9700", not a bare "9700": ATI shipped a Radeon 9700 PRO in
+        2002 and the loose token would hand that card RDNA 4 wheels. None of these pre-RDNA
+        names may resolve to anything."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
+
     def test_inferred_arch_always_has_an_index_family(self):
         """Every arch a name table can produce must be routable to an AMD wheel
         index, else detection succeeds and the install still lands on CPU torch."""
@@ -553,6 +604,7 @@ _REGISTERED_TABLE_FILES = {
     "studio/setup.sh",
     "studio/setup.ps1",
     "studio/install_python_stack.py",
+    "studio/backend/utils/hardware/hardware.py",
     "tests/_zoo_rocm_spoof.py",
 }
 
@@ -564,13 +616,32 @@ _REGISTERED_TABLE_FILES = {
 _TABLE_LINE_THRESHOLD = 3
 
 
-def _files_carrying_a_name_arch_table() -> dict[str, int]:
+def _under_cargo_output(path: Path, root: Path) -> bool:
+    """Whether `path` sits inside a Cargo `target/` directory.
+
+    Not in _SCAN_SKIP_DIRS because "target" is too generic to skip by name alone, so
+    the pairing with a sibling Cargo.toml is what identifies build output. tauri copies
+    install.sh into studio/src-tauri/target/debug/, so without this the guard fails for
+    anyone who ran `cargo build` before pytest, on their own build output rather than on
+    a real copy. CI never saw it because it builds and tests in separate jobs.
+    """
+    for parent in path.parents:
+        if parent == root.parent:
+            break
+        if parent.name == "target" and (parent.parent / "Cargo.toml").is_file():
+            return True
+    return False
+
+
+def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, int]:
     found: dict[str, int] = {}
-    for path in PACKAGE_ROOT.rglob("*"):
+    for path in root.rglob("*"):
         if path.suffix not in {".sh", ".ps1", ".py"} or not path.is_file():
             continue
-        rel = path.relative_to(PACKAGE_ROOT).as_posix()
-        if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(PACKAGE_ROOT).parts):
+        rel = path.relative_to(root).as_posix()
+        if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if _under_cargo_output(path, root):
             continue
         # Tests that *assert* on the tables quote card names next to gfx ids by
         # nature. Fixtures like _zoo_rocm_spoof.py do not start with test_ and so
@@ -609,6 +680,25 @@ class TestNoUnregisteredArchTable:
             f"_name_tables() (or the spoof check) and add it to "
             f"_REGISTERED_TABLE_FILES, so drift there fails CI too."
         )
+
+    def test_cargo_build_output_is_skipped_but_a_plain_target_dir_is_not(self, tmp_path):
+        """The skip is narrow on purpose: `target/` next to a Cargo.toml is build output,
+        `target/` anywhere else is source and a copy hiding there still has to fail."""
+        table = "\n".join(f"# RX 7{n}00 gfx1100" for n in range(1, 6)) + "\n"
+        (tmp_path / "src-tauri" / "target" / "debug").mkdir(parents = True)
+        (tmp_path / "src-tauri" / "Cargo.toml").write_text("[package]\n")
+        (tmp_path / "src-tauri" / "target" / "debug" / "install.sh").write_text(table)
+        (tmp_path / "scripts" / "target").mkdir(parents = True)
+        (tmp_path / "scripts" / "target" / "install.sh").write_text(table)
+
+        found = _files_carrying_a_name_arch_table(tmp_path)
+        assert "scripts/target/install.sh" in found, (
+            "a table under a plain target/ directory was skipped; the guard would miss "
+            f"a real copy there: {found}"
+        )
+        assert (
+            "src-tauri/target/debug/install.sh" not in found
+        ), f"cargo build output is still scanned: {found}"
 
 
 # ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────

@@ -11,7 +11,7 @@ import os
 import sqlite3
 import threading
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -855,6 +855,112 @@ def test_snapshot_copy_is_bounded_to_the_validated_size():
     assert target.getvalue() == b"validated"
 
 
+def _snapshot_metadata(document: Path, **overrides) -> dict:
+    stats = os.stat(document)
+    return {
+        "path": str(document),
+        "size_bytes": stats.st_size,
+        "mtime_ns": stats.st_mtime_ns,
+        "device": stats.st_dev,
+        "inode": stats.st_ino,
+    } | overrides
+
+
+def test_snapshot_copies_the_source_byte_for_byte(rag_home):
+    """CRLF runs and 0x1A bytes must survive: a text-mode read would eat both."""
+    source = rag_home / "binary-source"
+    source.mkdir()
+    document = source / "notes.md"
+    payload = b"first line\r\nsecond line\x1athird line\r\n"
+    document.write_bytes(payload)
+
+    snapshot = folder_sync._snapshot(str(source), _snapshot_metadata(document))
+
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
+def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
+    """os.scandir reports st_dev/st_ino as 0 on Windows, so every file failed there."""
+    source = rag_home / "identity-less"
+    source.mkdir()
+    document = source / "notes.md"
+    payload = b"windows scandir reports no identity\n"
+    document.write_bytes(payload)
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
+
+    snapshot = folder_sync._snapshot(str(source), metadata)
+
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
+def test_snapshot_still_rejects_a_changed_source_without_an_identity(rag_home):
+    source = rag_home / "identity-less-changed"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"original")
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
+    document.write_bytes(b"replaced with a longer body")
+
+    with pytest.raises(RuntimeError, match = "changed during reconciliation"):
+        folder_sync._snapshot(str(source), metadata)
+
+
+def test_snapshot_rejects_a_source_swapped_mid_copy_without_an_identity(rag_home, monkeypatch):
+    """The post-copy check compares fstat to fstat, so it still works with no scan identity."""
+    source = rag_home / "identity-less-swapped"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"stable body")
+    metadata = _snapshot_metadata(document, device = 0, inode = 0)
+    real_copy = folder_sync._copy_exact
+
+    def copy_then_touch(src, dst, size):
+        real_copy(src, dst, size)
+        with open(document, "ab") as handle:
+            handle.write(b" appended")
+
+    monkeypatch.setattr(folder_sync, "_copy_exact", copy_then_touch)
+
+    with pytest.raises(RuntimeError, match = "changed while it was copied"):
+        folder_sync._snapshot(str(source), metadata)
+
+
+def test_snapshot_compares_the_identity_when_the_scan_recorded_one(rag_home):
+    source = rag_home / "identity-kept"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"same size body")
+    metadata = _snapshot_metadata(document, inode = os.stat(document).st_ino + 1)
+
+    with pytest.raises(RuntimeError, match = "changed during reconciliation"):
+        folder_sync._snapshot(str(source), metadata)
+
+
+def test_snapshot_ignores_a_path_recovered_identity_os_fstat_disagrees_with(rag_home):
+    """Shared-folder and WebDAV drivers give os.lstat and os.fstat different ids for one file."""
+    source = rag_home / "identity-unstable"
+    source.mkdir()
+    document = source / "notes.md"
+    payload = b"the scan recovered an id os.fstat will not repeat\n"
+    document.write_bytes(payload)
+    metadata = _snapshot_metadata(
+        document, inode = os.stat(document).st_ino + 1, identity_from_path = True
+    )
+
+    snapshot = folder_sync._snapshot(str(source), metadata)
+
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
 @requires_sqlite_vec
 def test_linked_folders_cannot_overlap_within_a_scope(rag_home):
     parent = rag_home / "parent"
@@ -921,6 +1027,70 @@ def test_same_size_same_mtime_inode_replacement_is_reconciled(rag_home, stub_emb
                 "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
             ).fetchone()
         )
+        assert after["inode"] != before["inode"]
+        assert after["document_id"] != before["document_id"]
+        assert store.search_lexical(conn, folder["scope"], "other", 5)
+
+
+class _IdentitylessStat:
+    """DirEntry.stat as Windows returns it: FindFirstFileW carries no file index."""
+
+    st_dev = 0
+    st_ino = 0
+
+    def __init__(self, stats):
+        self._stats = stats
+
+    def __getattr__(self, name):
+        return getattr(self._stats, name)
+
+
+class _IdentitylessEntry:
+    def __init__(self, entry):
+        self._entry = entry
+
+    def stat(self, *, follow_symlinks = True):
+        return _IdentitylessStat(self._entry.stat(follow_symlinks = follow_symlinks))
+
+    def __getattr__(self, name):
+        return getattr(self._entry, name)
+
+
+@pytest.fixture
+def windows_scandir(monkeypatch):
+    """Strip the identity os.scandir cannot supply on Windows, leaving os.lstat intact."""
+    real_scandir = os.scandir
+
+    @contextmanager
+    def scandir(directory):
+        with real_scandir(directory) as entries:
+            yield [_IdentitylessEntry(entry) for entry in entries]
+
+    monkeypatch.setattr(folder_sync.os, "scandir", scandir)
+
+
+@requires_sqlite_vec
+def test_same_size_same_mtime_replacement_is_reconciled_without_a_scandir_identity(
+    rag_home, stub_embeddings, windows_scandir
+):
+    """The scan must recover the identity itself, or Windows indexes go stale forever."""
+    source, folder = _folder(rag_home)
+    path = source / "notes.txt"
+    path.write_text("first text", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    before = _mapping(folder)
+    assert before["inode"] not in (None, 0, "0")
+
+    replacement = source / "replacement.txt"
+    replacement.write_text("other text", encoding = "utf-8")
+    os.utime(replacement, ns = (path.stat().st_atime_ns, path.stat().st_mtime_ns))
+    replacement.replace(path)
+    assert path.stat().st_size == before["size_bytes"]
+    assert path.stat().st_mtime_ns == before["mtime_ns"]
+
+    assert _run(folder["id"])["changed"] == 1
+    with _connection() as conn:
+        after = _mapping(folder)
         assert after["inode"] != before["inode"]
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)

@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The pinned Diffusers revision has to survive a fresh install.sh, not just an update.
+"""The pinned Diffusers release has to survive a fresh install.sh, not just an update.
 
-MiniMax-H3 needs a Diffusers revision newer than any published release, and Studio
-refuses to load it otherwise. The pin originally lived in
-studio/backend/requirements/base.txt, which looks like the obvious home and is
-completely dead on the install path that matters: install.sh installs unsloth itself
-(which drags a diffusers RELEASE in from PyPI as a transitive dependency) and then runs
-install_python_stack.py with SKIP_STUDIO_BASE=1, where the base-packages step is a bare
-`pass`. A clean install therefore ended up on the release, every time, with no error.
+MiniMax-H3 and MiniMax Music 3 need Diffusers 0.40.0 or newer, and Unsloth refuses
+to load them otherwise. The pin originally lived in
+studio/backend/requirements/base.txt, which did not reach fresh install.sh installs at
+the time. base.txt now reaches those installs as an independent shared phase, but it
+still runs too early to hold this pin safely.
 
 These tests pin the shape that fixes it: exactly one file names diffusers, and the step
 that installs it sits outside every skip.
@@ -24,6 +22,11 @@ import re
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
+
+# The shape install_python_stack._filter_requirements writes: a dot, the source stem,
+# "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
+# [A-Za-z0-9_]{8}, so this cannot swallow a checked-in file that merely starts with a dot.
+_GENERATED_FILTER = re.compile(r"\.[\w.-]+-filtered-\w{8}\.txt")
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
 INSTALL_SH = REPO_ROOT / "install.sh"
 
@@ -38,17 +41,14 @@ def _requirements(path: pathlib.Path) -> list[str]:
     return out
 
 
-def test_the_pin_file_exists_and_names_an_exact_revision():
+def test_the_pin_file_exists_and_names_the_first_supported_release():
     assert PIN_FILE.is_file(), f"{PIN_FILE} is missing"
     lines = _requirements(PIN_FILE)
-    urls = [line for line in lines if "://" in line]
-    assert len(urls) == 1, f"expected exactly one pinned URL, got {urls}"
-    # A branch or tag would move under us; only a 40-char commit sha is reproducible.
-    assert re.search(
-        r"/archive/[0-9a-f]{40}\.zip", urls[0]
-    ), f"the diffusers pin must name a full commit sha, not a moving ref: {urls[0]}"
-    assert 'python_version >= "3.10"' in urls[0], (
-        "diffusers dropped Python 3.9 in 0.38, so the archive needs a >= 3.10 marker or "
+    modern = [line for line in lines if 'python_version >= "3.10"' in line]
+    assert modern == ['diffusers==0.40.0 ; python_version >= "3.10"'], modern
+    assert "://" not in modern[0], "the released dependency must not require a source build"
+    assert 'python_version >= "3.10"' in modern[0], (
+        "diffusers dropped Python 3.9 in 0.38, so the release needs a >= 3.10 marker or "
         "the resolver has no candidate at all on a 3.9 host"
     )
 
@@ -60,19 +60,28 @@ def test_only_the_pin_file_names_diffusers():
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path == PIN_FILE:
             continue
+        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt`
+        # BESIDE the source on purpose, so relative -r/-c includes still resolve, and it
+        # does not delete it. So a copy of the pin file can be sitting here while this
+        # runs -- transiently under pytest-xdist, where another worker is exercising that
+        # function, and durably on any machine that has run a real install. It is a
+        # generated temp, not a second source of the pin.
+        # Matched by that exact shape rather than by "starts with a dot": a checked-in
+        # hidden file such as .constraints.txt is a real requirements file and a real
+        # place the pin could be overridden from, so it stays in the scan.
+        if _GENERATED_FILTER.fullmatch(path.name):
+            continue
         named = [line for line in _requirements(path) if line.lower().startswith("diffusers")]
         if named:
             offenders[str(path.relative_to(REPO_ROOT))] = named
     assert not offenders, (
         f"diffusers is requirement-listed outside diffusers-pin.txt: {offenders}. "
-        f"Move it into the pin file; base.txt in particular is skipped entirely by install.sh."
+        f"Move it into the pin file so the dedicated late step remains authoritative."
     )
 
 
 def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
-    """The whole bug in one assertion. base.txt's step lives under `if skip_base: pass`,
-    so it never runs on install.sh; the pin's step has to sit at function top level,
-    outside every conditional, or it inherits the same hole."""
+    """The pin must sit at function top level so it reaches every install path."""
     tree = ast.parse(STACK.read_text(encoding = "utf-8"))
 
     def _installs_pin(node: ast.AST) -> bool:
@@ -95,8 +104,8 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
                 found = True
     assert found, (
         "no unconditional pip_install of diffusers-pin.txt found at the top level of any "
-        "function in install_python_stack.py. Nested under an `if`, the pin repeats the "
-        "base.txt bug: applied on `unsloth studio update`, skipped on a fresh install.sh."
+        "function in install_python_stack.py. Nested under an `if`, the pin can miss an "
+        "install path."
     )
 
 
@@ -121,11 +130,7 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
     assert not later, f"these requirements files are installed after the diffusers pin: {later}"
 
 
-def test_install_sh_still_skips_the_base_step():
-    """Guards the premise. If install.sh ever stops setting SKIP_STUDIO_BASE=1 this test
-    fails loudly and the comments above (and the pin's separate file) can be revisited,
-    rather than quietly describing an installer that no longer behaves that way."""
+def test_install_sh_still_delegates_the_core_package_skip():
+    """The handoff flag skips core packages while allowing other base entries through."""
     assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
     assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
-    stack = STACK.read_text(encoding = "utf-8")
-    assert "if skip_base:\n        pass" in stack

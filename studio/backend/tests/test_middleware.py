@@ -7,6 +7,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def _make_protected_app(
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
     upload_passthrough_exact_paths: tuple = (),
+    chunked_upload_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
@@ -53,6 +55,7 @@ def _make_protected_app(
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
         upload_passthrough_exact_paths = upload_passthrough_exact_paths,
+        chunked_upload_exact_paths = chunked_upload_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -114,9 +117,7 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             4096,
             main_module,
-            request_max_bytes_getter = lambda path: (
-                128 if path.endswith("/transcribe/raw") else 4096
-            ),
+            request_max_bytes_getter = lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
         )
         c = TestClient(app)
 
@@ -137,7 +138,9 @@ class TestMaxBodyMiddleware:
         from utils.upload_limits import (
             STT_AUDIO_JSON_MAX_BYTES,
             STT_AUDIO_RAW_MAX_BYTES,
+            upload_request_limit_bytes,
         )
+
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
             == STT_AUDIO_RAW_MAX_BYTES
@@ -145,6 +148,38 @@ class TestMaxBodyMiddleware:
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
+        )
+        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
+        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+            assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
+                STT_AUDIO_RAW_MAX_BYTES
+            ), path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+        from utils.upload_limits import (
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            VIDEO_INPUT_REFERENCE_MAX_BYTES,
+        )
+
+        for path in ("/v1/videos", "/api/inference/videos"):
+            expected = max(
+                upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+                VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            )
+            assert main_module._get_request_body_max_bytes(path) == expected, path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == expected, path
+            assert VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES > (
+                4 * ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3)
+            )
+        assert "/v1/videos/video_abc" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_request_body_max_bytes("/v1/videos/video_abc") == (
+            main_module.default_request_body_limit_bytes()
         )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
@@ -297,10 +332,12 @@ class TestMaxBodyMiddleware:
 
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1, and every /v1 POST must be body-capped via the blanket
-        # prefix or an unbounded prompt buffers outside the Studio request limit. Also confirms /v1 chat/completions stays protected.
+        # prefix or an unbounded prompt buffers outside the Unsloth request limit. Also confirms /v1 chat/completions stays protected.
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",
@@ -344,6 +381,64 @@ class TestMaxBodyMiddleware:
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
+
+    def test_exact_path_passthrough_without_content_length_is_capped_not_refused(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def small():
+            yield b"x" * 256
+            yield b"y" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = small(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200
+
+        def large():
+            yield b"x" * 1024
+            yield b"y" * 1024
+
+        r = c.post(
+            "/api/train/upload",
+            content = large(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+
+    def test_a_passthrough_outside_the_chunked_set_still_demands_a_length(self, main_module):
+        """Counting a body means holding it, and this runs before authentication.
+
+        Only paths explicitly opted in may omit Content-Length; the big ones (the
+        dataset cap reaches 8 GB) keep their 411 so an unauthenticated chunked POST
+        cannot make the server retain the whole allowance.
+        """
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = (),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def body():
+            yield b"x" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = body(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 411
 
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
         # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
@@ -453,22 +548,27 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_docs_csp_allows_swagger_cdn_and_stays_scoped(self, main_module):
+    def test_docs_csp_never_widens_script_src(self, main_module):
+        # The docs pages run vendored bundles off this origin, so the docs branch may relax
+        # style/font/worker only. A third party in script-src here would reach the tokens
+        # localStorage holds for the whole origin.
         docs = main_module._build_csp(docs = True)
         directives = {
             chunk.strip().split(" ", 1)[0]: chunk.strip()
             for chunk in docs.split(";")
             if chunk.strip()
         }
-        assert main_module._DOCS_CDN in directives["script-src"]
-        assert main_module._DOCS_CDN in directives["style-src"]
-        assert "'unsafe-inline'" in directives["script-src"]
+        assert directives["script-src"] == "script-src 'self'"
+        assert "'unsafe-inline'" not in directives["script-src"]
+        assert "cdn.jsdelivr.net" not in docs
+        nonced = main_module._build_csp("XYZ", docs = True)
+        assert "script-src 'self' 'nonce-XYZ';" in nonced
+
         assert "blob:" in directives["worker-src"]
         assert main_module._DOCS_FONT_CSS in directives["style-src"]
         assert main_module._DOCS_FONT_FILES in directives["font-src"]
 
         plain = main_module._build_csp()
-        assert main_module._DOCS_CDN not in plain
         assert main_module._DOCS_FONT_CSS not in plain
         assert main_module._DOCS_FONT_FILES not in plain
         assert "worker-src 'self';" in plain
@@ -493,11 +593,94 @@ class TestSecurityHeadersMiddleware:
 
         c = TestClient(app)
         relaxed = c.get("/docs").headers["content-security-policy"]
-        assert main_module._DOCS_CDN in relaxed
+        assert main_module._DOCS_FONT_CSS in relaxed
 
         for path in ("/docs/", "/plain"):
             strict = c.get(path).headers["content-security-policy"]
-            assert main_module._DOCS_CDN not in strict, path
+            assert main_module._DOCS_FONT_CSS not in strict, path
+
+    def test_docs_pages_load_no_third_party_script(self, main_module):
+        # FastAPI's built-in docs pages point at cdn.jsdelivr.net. They are re-registered on
+        # the same paths against assets/docs_ui so nothing off-origin executes where the
+        # tokens live, and the built-ins must stay off or they would win the path.
+        assert main_module.app.docs_url is None
+        assert main_module.app.redoc_url is None
+        assert main_module.app.swagger_ui_oauth2_redirect_url is None
+
+        paths = {getattr(route, "path", None) for route in main_module.app.routes}
+        assert {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"} <= paths
+
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            body = c.get(path).text
+            assert "cdn.jsdelivr.net" not in body, path
+            assert "fastapi.tiangolo.com" not in body, path
+
+    def test_docs_inline_script_runs_off_the_response_nonce(self, main_module):
+        # Swagger's init is inline, so a strict script-src needs the nonce spliced into the
+        # header to match the tag. A mismatch renders blank, which is what CDN-era /docs did.
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/docs/oauth2-redirect"):
+            r = c.get(path)
+            csp = r.headers["content-security-policy"]
+            nonce = re.search(r"'nonce-([^']+)'", csp)
+            assert nonce, f"{path} served no nonce"
+            assert f'<script nonce="{nonce.group(1)}">' in r.text, path
+            # The hand-off header is internal and must not reach the client.
+            assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers}
+
+        # ReDoc has no inline script, so it gets no nonce to leak.
+        assert (
+            "nonce-"
+            not in TestClient(main_module.app).get("/redoc").headers["content-security-policy"]
+        )
+
+    def test_docs_urls_follow_the_root_path(self, main_module):
+        # Behind a path-stripping proxy the browser sees a prefix the server never does, so
+        # every URL the pages emit has to carry it, as FastAPI's own docs routes do.
+        c = TestClient(main_module.app, root_path = "/studio")
+        docs = c.get("/docs").text
+        assert "'/studio/openapi.json'" in docs
+        assert "'/studio/docs/oauth2-redirect'" in docs
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "favicon-32x32.png"):
+            assert f"/studio/docs-assets/{name}" in docs, name
+
+        redoc = c.get("/redoc").text
+        assert 'spec-url="/studio/openapi.json"' in redoc
+        assert "/studio/docs-assets/redoc.standalone.js" in redoc
+
+        # Unprefixed deployments, which is every default Unsloth, stay unprefixed.
+        plain = TestClient(main_module.app).get("/docs").text
+        assert "/studio/" not in plain
+        assert "'/openapi.json'" in plain
+
+    def test_swagger_nonce_survives_a_reflowed_upstream_template(self, main_module):
+        # fastapi is unpinned, so the tag is matched by what follows it. A version that
+        # reflows the page or drops the comment must still get the nonce, not a 500.
+        reflowed = (
+            "<html><body><script src='/docs-assets/swagger-ui-bundle.js'></script>\n"
+            "<script>\n  const ui = SwaggerUIBundle({url: '/openapi.json'})\n</script>\n"
+            "</body></html>"
+        )
+        r = main_module._nonced_docs_response(reflowed, tag = main_module._SWAGGER_INIT_TAG)
+        nonce = r.headers[main_module._CSP_SCRIPT_NONCE_HEADER]
+        body = r.body.decode()
+        assert f'<script nonce="{nonce}">' in body
+        # The bundle's own tag keeps its src and gains nothing.
+        assert "<script src='/docs-assets/swagger-ui-bundle.js'></script>" in body
+
+        with pytest.raises(RuntimeError):
+            main_module._nonced_docs_response(
+                "<html><body>no inline script</body></html>",
+                tag = main_module._SWAGGER_INIT_TAG,
+            )
+
+    def test_docs_assets_are_served_from_this_origin(self, main_module):
+        c = TestClient(main_module.app)
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "redoc.standalone.js"):
+            r = c.get(f"{main_module._DOCS_ASSETS_URL}/{name}")
+            assert r.status_code == 200, name
+            assert len(r.content) > 10_000, name
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many
@@ -738,6 +921,18 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_setup_frontend_records_whether_a_catch_all_exists(self, tmp_path, main_module):
+        """The lifespan reads this to decide whether the engine paths still need their own
+        GET denial: without a catch-all they match on method alone and answer 405."""
+        app = FastAPI()
+        assert not main_module.setup_frontend(app, tmp_path / "missing")
+        assert not getattr(app.state, "frontend_mounted", False)
+
+        (tmp_path / "index.html").write_text("<!doctype html><title>x</title>")
+        mounted = FastAPI()
+        assert main_module.setup_frontend(mounted, tmp_path)
+        assert mounted.state.frontend_mounted is True
+
     def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"
@@ -839,6 +1034,11 @@ def health_app(tmp_path, monkeypatch):
 
     import main as _main
 
+    # This fixture exercises bearer redaction, not hardware startup. Keep the
+    # payload settled even on macOS while MLX self-repair holds the live verdict.
+    # (chat_only, chat_only_reason, chat_only_detail): health_check reads all three, so a
+    # two-tuple here raised IndexError once main added the detail field.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 

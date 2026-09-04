@@ -3,7 +3,7 @@
 
 """Rendered cancel/retry regression for staged diffusion downloads.
 
-The browser runs the real Studio UI against a deterministic API simulation of
+The browser runs the real Unsloth UI against a deterministic API simulation of
 the reported sequence:
 
 1. Start with the 2.6 GB Klein GGUF already cached.
@@ -31,6 +31,7 @@ from playwright_image_model_footprint import (
     REQUIRED_BYTES,
     _api_payload,
     _json,
+    klein_row,
 )
 
 
@@ -89,7 +90,7 @@ def _open_quant(page, *, navigate: bool) -> None:
     trigger = page.get_by_role("button", name = "Select image model")
     trigger.wait_for(state = "visible", timeout = 30_000)
     trigger.click()
-    page.get_by_text("FLUX.2-klein-4B-GGUF", exact = True).click()
+    klein_row(page).click()
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
         gguf.click()
@@ -195,7 +196,6 @@ def main() -> None:
         )
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
-            "localStorage.setItem('unsloth_onboarding_done', 'true');"
             "localStorage.setItem('unsloth_download_transport', 'http');"
         )
 

@@ -16,23 +16,27 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  estimateKvCache,
+  listLoras,
   listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
-  unloadModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
   type ChatAttachmentPage,
   type ChatAttachmentRecord,
+  type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
 export type {
+  ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
   InferenceStatusResponse,
@@ -41,6 +45,7 @@ export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
 } from "./lib/apply-inference-status-to-store";
+export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -50,10 +55,18 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
+  hydrateModelDisclaimerPreference,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
+} from "./sync-model-disclaimer-preference";
+export { useChatActive, useInComparePane } from "./runtime-provider";
+export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
   readPersistedGpuMemoryMode,
   reconcilePersistedGpuIds,
   reconcilePersistedGpuSelection,
@@ -62,7 +75,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -73,8 +85,35 @@ export {
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
+export type { ChatNavigationState } from "./stores/chat-navigation-store";
+export {
+  adjacentChatItem,
+  countUnreadRows,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  useChatNavigationStore,
+  visibleChatItems,
+} from "./stores/chat-navigation-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+export {
+  applyManualOrder,
+  dropEdgeFor,
+  moveIdBy,
+  showsInRecents,
+  PINNED_ORDER_SCOPE,
+  PROJECT_ORDER_SCOPE,
+  projectOrderScope,
+  RECENTS_ORDER_SCOPE,
+  reorderIds,
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+export type {
+  SidebarChatSort,
+  SidebarOrganizeBy,
+} from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
   usePromptQueueUI,
@@ -93,6 +132,7 @@ export {
 } from "./utils/prompt-queue-boundary";
 export {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -101,6 +141,24 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
+export { useChatProjectScope } from "./chat-project-scope";
+// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
+export {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "./utils/confirm-stop-running-chats";
+export {
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
+} from "./utils/prompt-queue-reorder";
+export {
+  PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+} from "./utils/prompt-queue-input";
 export {
   localPromptQueueModelBoundary,
   planLocalPromptQueueStop,
@@ -108,6 +166,7 @@ export {
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
   addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
@@ -126,6 +185,7 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { compareModelDisplayName } from "./lib/external-model-label";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -134,8 +194,20 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  assertDocumentAttachmentSize,
+  attachmentAudioSrc,
+  attachmentTextLanguage,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
+export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
@@ -144,17 +216,55 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
+export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
+export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
+export {
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentText,
+  attachmentsPastedText,
+  createPastedTextFile,
+  isPastedTextContent,
+  isPastedTextFile,
+  isPlainPasteChord,
+  pasteLongTextAsFile,
+  plainPasteStillCounts,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
+  pastedTextOf,
+  pastedTextPreview,
+  shouldAttachPastedText,
+} from "./utils/pasted-text";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatThread,
   isThreadIncognito,
+  listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  forkCountFor,
+  subscribeForkCounts,
+} from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,
@@ -179,25 +289,42 @@ export {
 export {
   clearNewChatDraft,
   composerDraftKey,
+  composerPasteDraftKey,
   readComposerDraft,
+  readPasteDraft,
   writeComposerDraft,
+  writePasteDraft,
 } from "./utils/composer-draft";
 export {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 export {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
   exportFineTuneJsonl,
-  importConversationsFromFile,
+  type ConvExportFormat,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
+  fileImportSource,
+  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportProgress,
+  type ImportResult,
+  type ImportSource,
+} from "./utils/chat-import";
+export {
   archiveAllChatItems,
   archiveChatItem,
+  archiveChatItems,
   deleteChatItem,
+  deleteChatItems,
   renameChatItem,
   unarchiveChatItem,
   useChatSidebarItems,
@@ -229,14 +356,18 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,
+  type SttEngine,
 } from "./adapters/studio-model-dictation-adapter";
 export {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";

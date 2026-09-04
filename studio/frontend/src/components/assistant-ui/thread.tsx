@@ -9,6 +9,11 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import {
+  compactionBoundary,
+  type ContextTruncation,
+} from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -16,10 +21,18 @@ import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
+import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
+import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
+import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  proplessSlot,
+  threadMessageKind,
+} from "@/components/assistant-ui/thread-message-slot";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -36,9 +49,26 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  PROMPT_QUEUE_DRAG_TYPE,
+  attachmentsPastedText,
+  hasPendingPromptQueueStart,
+  isPastedTextFile,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
   pasteClipboardFiles,
+  extractYoutubeVideoUrlFromClipboard,
+  pasteLongTextAsFile,
+  isPlainPasteChord,
+  plainPasteStillCounts,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
+  YoutubeTranscriptPrompt,
+  stripSearchImageTokens,
+  useChatActive,
+  useInComparePane,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -61,19 +91,17 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  CHAT_HISTORY_UPDATED_EVENT,
-  forkChatThread,
-  getForkCount,
-} from "@/features/chat/api/chat-api";
+import { forkChatThread } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
+  resolveProjectId,
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
@@ -100,8 +128,14 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+} from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
+import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
@@ -109,19 +143,38 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
+  forgetAutoContinue,
+  recordAutoContinue,
+  shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
+import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
+import { create } from "zustand";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  settleThreadScopedSettingsForCopy,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
+import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+} from "@/features/chat/utils/prompt-queue-events";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
-  PROMPT_QUEUE_RUN_FAILED_EVENT,
-  PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -135,10 +188,17 @@ import {
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  claimThreadCreation,
+  useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
+  composerPasteDraftKey,
+  createPastedTextFile,
+  pastedTextOf,
+  readPasteDraft,
+  writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
   type PromptQueueRunFailedEventDetail,
@@ -151,17 +211,35 @@ import {
   type PromptQueueUIItemStatus,
   type PromptQueueUIState,
   usePromptQueueUI,
+  forkCountFor,
+  subscribeForkCounts,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
+import {
+  applySentTextGuard,
+  armSentTextGuard,
+  isGuardRetiringKey,
+  markSentTextGuardUserInput,
+  sentTextGuardBlocksDraft,
+  type SentTextGuard,
+} from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { updateStoredChatThread } from "@/features/chat/utils/chat-history-storage";
+import {
+  getStoredChatThread,
+  updateStoredChatThread,
+} from "@/features/chat/utils/chat-history-storage";
 import {
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
-import { listThreadDocuments } from "@/features/rag/api/rag-api";
+import {
+  isRagClientError,
+  listProjectDocuments,
+  listThreadDocuments,
+  projectWorkCount,
+} from "@/features/rag/api/rag-api";
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -172,6 +250,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -194,6 +273,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  BookOpen01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -213,14 +293,16 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
   CornerDownRightIcon,
-  GitBranchIcon,
   FastForwardIcon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
+  Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -237,15 +319,19 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type FocusEvent as ReactFocusEvent,
   type ReactNode,
+  type RefObject,
   Fragment,
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -261,6 +347,10 @@ const PageDragContext = createContext(false);
 // instead of aui.thread() so queues can keep advancing in the background.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
+  /** The project this queue was started in, for a chat with no row to read. */
+  getQueueProjectId: () => string | null;
+  /** A knowledge base replaces every other scope, project sources included. */
+  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: string) => void | Promise<void>;
@@ -270,6 +360,8 @@ type PromptQueueTarget = {
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
+  /** Whether a research run now holds this queue's thread. */
+  researchStarted: () => boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
 };
@@ -418,7 +510,13 @@ function consumePromptQueueDeepResearch(
   run: PromptQueueRun,
   item: PromptQueueItem,
 ) {
-  if (run.deepResearchConsumed || !item.target.usesDeepResearch) {
+  // The model decides whether an armed prompt becomes research, so the queue's one research
+  // is spent only once a run actually started, not on the first prompt that was merely armed.
+  if (
+    run.deepResearchConsumed ||
+    !item.target.usesDeepResearch ||
+    !item.target.researchStarted()
+  ) {
     return;
   }
   run.deepResearchConsumed = true;
@@ -448,22 +546,58 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   schedulePromptQueueTargetStatePoll(run);
 }
 
+const indexingDocument = (doc: { status: string }) =>
+  doc.status === "pending" || doc.status === "running";
+
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
   if (item.target.isIndexing()) {
     return true;
   }
-  if (!item.target.usesThreadDocuments) {
-    return false;
-  }
   const threadId = item.target.getDocumentThreadId();
-  if (!threadId) {
-    return false;
-  }
   try {
-    const documents = await listThreadDocuments(threadId);
-    return documents.some(
-      (doc) => doc.status === "pending" || doc.status === "running",
-    );
+    if (threadId && item.target.usesThreadDocuments) {
+      const documents = await listThreadDocuments(threadId);
+      if (documents.some(indexingDocument)) {
+        return true;
+      }
+    }
+    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
+    // project's sources cannot reach this run and waiting on them only delays it.
+    if (item.target.usesKnowledgeBase) {
+      return false;
+    }
+    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
+    // rag_scope), and isIndexing() above only answers while the bar that watches
+    // them is mounted, which a background queue has not. So ask directly, and
+    // for a chat with no row yet use the project the queue was started in.
+    // Rethrowing: a row this probe could not read is not a chat with no project,
+    // and the catch below is what holds the prompt and asks again. The queue's
+    // own project is the fallback wherever the row is still missing, so a poll
+    // landing mid-navigation cannot probe the project the user moved to.
+    const queueProjectId = item.target.getQueueProjectId();
+    const projectId = threadId
+      ? await resolveProjectId(threadId, undefined, {
+          rethrowReadFailure: true,
+          composerProjectId: queueProjectId,
+        })
+      : queueProjectId;
+    if (!projectId) {
+      return false;
+    }
+    if (projectWorkCount(projectId) > 0) {
+      return true;
+    }
+    try {
+      const projectDocuments = await listProjectDocuments(projectId);
+      return projectDocuments.some(indexingDocument);
+    } catch (error) {
+      // A project the server will not list (deleted, or a server predating the
+      // route) is not one to wait for: the retry below never ends.
+      if (isRagClientError(error)) {
+        return false;
+      }
+      throw error;
+    }
   } catch {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching
@@ -867,6 +1001,54 @@ function removePromptQueueItem(itemId: string) {
     if (next) {
       scheduleQueuedPromptDispatch(run, next, 50);
     }
+  }
+  return true;
+}
+
+/**
+ * Move a queued prompt into another's slot. Both must still be pending: a
+ * dispatched item is already on its way out, and a run mid-dispatch would race
+ * the pump. Insert index is read off the pre-splice array, so a downward drag
+ * lands after the target and an upward drag lands before it.
+ */
+function movePromptQueueItem(itemId: string, targetItemId: string) {
+  if (itemId === targetItemId) {
+    return false;
+  }
+  const match = findPromptQueueRunByItemId(itemId);
+  const target = findPromptQueueRunByItemId(targetItemId);
+  if (!match || !target || match.run !== target.run) {
+    return false;
+  }
+  const { run, itemIndex, item } = match;
+  if (item.dispatched || target.item.dispatched) {
+    return false;
+  }
+  if (promptQueueDispatchingRunIds.has(run.id)) {
+    return false;
+  }
+  const activeIndex = Math.max(run.index, 0);
+  const before = run.items;
+  const after = reorderPromptQueueItems(
+    before,
+    itemIndex,
+    target.itemIndex,
+    activeIndex,
+  );
+  if (!after) {
+    return false;
+  }
+  const activeChanged = promptQueueActiveItemChanged(before, after, run.index);
+  run.items = after;
+  syncPromptQueueUI();
+
+  // A move across the active slot changes what dispatches next, so retarget the
+  // pending send the way a removal does.
+  const nowActive = run.items[run.index];
+  if (run.index >= 0 && !run.waitingForTargetIdle && nowActive && activeChanged) {
+    clearPromptQueueRetryTimer(run);
+    run.prevStoreRunning = false;
+    scheduleQueuedPromptDispatch(run, nowActive, 50);
   }
   return true;
 }
@@ -1327,11 +1509,36 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+// One message, picked from its role and edit state rather than from a `components` map. See
+// thread-message-slot.ts for why the map form costs a full-thread re-render on every delete.
+// The selectors are ThreadMessageComponent's own, so what a message subscribes to is unchanged.
+const ThreadMessage: FC = () => {
+  const role = useAuiState(({ message }) => message.role);
+  const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  switch (threadMessageKind(role, isEditing)) {
+    case "edit":
+      return <EditComposer />;
+    case "user":
+      return <UserMessage />;
+    case "assistant":
+      return <AssistantMessage />;
+    default:
+      return null;
+  }
+};
+
+// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
+// inline arrow changes identity each time, invalidating the memo that keeps the message array from
+// being rebuilt, and the bail-out below it would never get to run.
+const renderThreadMessage = proplessSlot(ThreadMessage);
+
+// Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
+// would otherwise reconcile the whole message list.
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
   targetThreadId?: string;
-}> = ({ hideComposer, hideWelcome, targetThreadId }) => {
+}> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -1347,6 +1554,7 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
+  useThreadForkCounts();
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -1360,13 +1568,27 @@ export const Thread: FC<{
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
+  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
+  // because the Compare panes each mount their own Thread.
+  const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
+      viewportElRef.current = node;
       setViewportEl(node);
       viewportRef(node);
     },
     [viewportRef],
   );
+
+  // Copying a selection out of the thread writes the plain text itself rather than letting the
+  // browser serialise the selection, which spends over 99% of a long thread's copy building the
+  // styled clipboard flavour. thread-fast-copy.ts holds the rule for when that substitution is
+  // provably invisible, and hands the event back to the browser whenever it is not.
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachThreadFastCopy(viewportEl);
+  }, [viewportEl]);
 
   // Bottom spacer sizing. Invariant: chat never moves on its own on composer
   // resize.
@@ -1562,7 +1784,10 @@ export const Thread: FC<{
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
+                : // + the chat-model notice, which is an opaque absolute bar
+                  // directly under the header. 0px whenever it is not showing,
+                  // so every other surface keeps the padding it had.
+                  "pt-[calc(var(--studio-content-top-inset,0px)+48px+var(--studio-chat-notice-height,0px))]",
             )}
           >
             {!hideWelcome && (
@@ -1573,12 +1798,16 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                EditComposer,
-                AssistantMessage,
-              }}
+            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+            the tail and mounts the rest over the following frames. Nothing unmounts and the
+            document converges to the tree this rendered before; consumers that cannot wait call
+            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+            reason: React's bail-out needs one shared element per row. See
+            progressive-mount-controller.ts. */}
+            <ProgressiveMessages
+              renderMessage={renderThreadMessage}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
             />
 
             {/* Bottom slack so the last message has room above the sticky
@@ -1642,7 +1871,8 @@ export const Thread: FC<{
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
-};
+});
+Thread.displayName = "Thread";
 
 const GeneratedImageViewportOverlay: FC<{
   hideComposer?: boolean;
@@ -1654,7 +1884,9 @@ const GeneratedImageViewportOverlay: FC<{
     if (!overlay) {
       return;
     }
-    document.querySelector<HTMLTextAreaElement>(".aui-composer-input")?.focus();
+    document
+      .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+      ?.focus();
   }, [overlay]);
 
   if (!overlay) {
@@ -2010,6 +2242,16 @@ const PendingAudioChip: FC = () => {
   );
 };
 
+/** Keep a drop on a portaled child, such as a dialog or its overlay, from also
+ * attaching to the composer. React routes portal events through the composer,
+ * whose dropzone attaches in the capture phase before the dialog sees them. */
+function claimPortaledDrop(event: ReactDragEvent): void {
+  const target = event.target as Element | null;
+  if (!target?.closest?.(".aui-composer-attachment-dropzone")) {
+    event.preventDefault();
+  }
+}
+
 const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
@@ -2041,25 +2283,22 @@ const Composer: FC<{
   const researchThreadClaimed = useResearchRunStore((state) =>
     researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
   );
-  const activeResearchRun = useResearchRunStore((state) => {
+  const liveResearchRunId = useResearchRunStore((state) =>
+    researchThreadId ? state.latestRunByThreadId[researchThreadId] : undefined,
+  );
+  // Derive in the selector, as useThreadResearchActive does: a bare run selector re-renders the
+  // composer on every streamed research delta.
+  const isResearchActive = useResearchRunStore((state) => {
     const runId = researchThreadId
       ? state.latestRunByThreadId[researchThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
   });
-  const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
-  );
   const hasResearchMessage = useAuiState(({ thread }) =>
-    thread.messages.some((message) => {
-      const custom = (
-        message.metadata as
-          | { custom?: { researchRunId?: unknown } }
-          | undefined
-      )?.custom;
-      return typeof custom?.researchRunId === "string";
-    }),
+    threadHasResearchMessage(thread.messages, liveResearchRunId),
   );
   const researchUsed = researchThreadClaimed || hasResearchMessage;
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
@@ -2094,10 +2333,112 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  const pastedTextMinChars = useChatPreferencesStore(
+    (state) => state.pastedTextMinChars,
+  );
+  // Set by Cmd/Ctrl+Enter and read once by the handleSubmit that requestSubmit
+  // reaches synchronously. Armed only when that call will happen: with no form,
+  // or no requestSubmit, it would stay armed and queue whatever submit came
+  // next.
+  const forceQueueRef = useRef(false);
+  const queueOnModEnter = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      const form = event.currentTarget.form;
+      if (typeof form?.requestSubmit !== "function") {
+        return;
+      }
+      forceQueueRef.current = true;
+      try {
+        form.requestSubmit();
+      } catch {
+        forceQueueRef.current = false;
+      }
+    },
+    [],
+  );
+  // Read by both writers that could put the sent text back, the input handlers
+  // and the draft restore. Armed by every path that clears the composer.
+  const justSentRef = useRef<SentTextGuard | null>(null);
+  // Thread on screen, so the guard can tell whether a write belongs to the
+  // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
+  const draftKeyRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true });
+    useImeComposerInputHandlers({
+      submitOnEnter: true,
+      onModEnter: queueOnModEnter,
+      justSentRef,
+      draftKeyRef,
+    });
+  // A pasted YouTube link offers a transcript attachment above the composer.
+  const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
+  // Paste without formatting asks for the clipboard in the field, so the paste
+  // it makes stays inline however long it is. A paste event carries no
+  // modifiers, so the chord is read from the keydown before it, and the flag
+  // lasts only as long as the keys are down: the paste is the keydown's own
+  // default action, while a menu the user might reach for instead cannot be
+  // opened without letting go first.
+  const plainPasteAtRef = useRef(0);
+  const notePlainPasteChord = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      plainPasteAtRef.current = isPlainPasteChord(event)
+        ? performance.now()
+        : 0;
+    },
+    [],
+  );
+  // Any release ends it, whichever key of the chord goes first, as does losing
+  // the field. The time cap behind them is for a release that never lands,
+  // which is what tabbing away mid-chord used to leave behind.
+  const endPlainPasteChord = useCallback(() => {
+    plainPasteAtRef.current = 0;
+  }, []);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Read once and cleared here, so a paste with no chord before it, from
+      // the menu or a script, is never taken for the plain one.
+      const plainPaste = plainPasteStillCounts(
+        plainPasteAtRef.current,
+        performance.now(),
+      );
+      plainPasteAtRef.current = 0;
+      const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+      const pastedYoutubeUrl = extractYoutubeVideoUrlFromClipboard(
+        event.clipboardData,
+      );
+      // Bulk text pastes attach as a file instead of filling the input, except
+      // in image-edit mode, whose submit path takes an inline instruction only.
+      const input = event.currentTarget;
+      const { selectionStart, selectionEnd, value } = input;
+      // An attachment is serialised after all inline text, so only a paste that
+      // was already heading to the end can become one. Mid-text pastes stay
+      // inline, where the order the user typed them in survives.
+      const pasteGoesLast = input.selectionEnd === input.value.length;
+      // Swallowing the paste also swallowed the replacement the browser would
+      // have made. Only once the attachment is in, and only if the composer is
+      // still the one that was pasted into, or a failed paste eats the text.
+      const dropReplacedSelection = () => {
+        if (selectionStart === selectionEnd) return;
+        const composer = aui.composer();
+        if (composer.getState().text !== value) return;
+        composer.setText(value.slice(0, selectionStart) + value.slice(selectionEnd));
+      };
+      const attachedPastedText =
+        !overlay &&
+        !plainPaste &&
+        pasteGoesLast &&
+        pasteLongTextAsFile(
+        event,
+        async (file) => {
+          await aui.composer().addAttachment(file);
+          dropReplacedSelection();
+        },
+        () =>
+          toast.error("Could not attach the pasted text.", {
+            description: "Paste it again, or paste it in smaller pieces.",
+          }),
+        pastedTextMinChars,
+      );
+      if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
         async (files) => {
@@ -2110,11 +2451,52 @@ const Composer: FC<{
             description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
+      if (event.defaultPrevented) return;
+      if (pastedYoutubeUrl) {
+        setYoutubeLink(pastedYoutubeUrl);
+        if (!pastedText.includes(pastedYoutubeUrl)) {
+          event.preventDefault();
+          const youtubePasteText =
+            pastedText.length === 0
+              ? pastedYoutubeUrl
+              : `${pastedText}${pastedText.endsWith("\n") ? "" : "\n"}${pastedYoutubeUrl}`;
+          const caret = selectionStart + youtubePasteText.length;
+          aui
+            .composer()
+            .setText(
+              value.slice(0, selectionStart) +
+                youtubePasteText +
+                value.slice(selectionEnd),
+            );
+          requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+          if (justSentRef.current?.draftKey === draftKeyRef.current) {
+            justSentRef.current = null;
+          }
+          return;
+        }
+      }
+      // A paste is a gesture, so it retires the guard and re-pasting the sent
+      // prompt goes through. Last, and only when the browser will really insert
+      // the text: a payload carrying files is preventDefaulted above, so
+      // retiring for it would just free the next queued write to refill.
+      if (
+        pastedText.length > 0 &&
+        !event.defaultPrevented &&
+        justSentRef.current?.draftKey === draftKeyRef.current
+      ) {
+        justSentRef.current = null;
+      }
     },
-    [aui],
+    [aui, overlay, pastedTextMinChars],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
+  // Derived, not cleared in an effect: the offer retracts as soon as the link
+  // leaves the draft, which also covers sending.
+  const youtubeOfferUrl =
+    youtubeLink !== null && composerText.includes(youtubeLink)
+      ? youtubeLink
+      : null;
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2154,6 +2536,19 @@ const Composer: FC<{
       (attachment) => attachment.status.type === "running",
     ),
   );
+  const attachmentsAreAllPastedText = useAuiState(
+    ({ composer }) =>
+      composer.attachments.length > 0 &&
+      composer.attachments.every((attachment) =>
+        isPastedTextFile((attachment as { file?: File }).file),
+      ),
+  );
+  // Identities only: paste autosave keys off this, and the bodies behind it can
+  // be megabytes. Every attachment counts, not just pasted ones, so removing an
+  // ordinary file also releases the paste restore waiting on it.
+  const composerAttachmentSignature = useAuiState(({ composer }) =>
+    composer.attachments.map((attachment) => attachment.id).join(","),
+  );
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
@@ -2166,11 +2561,22 @@ const Composer: FC<{
         (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const hasPendingOpenDocumentAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingOpenDocumentAttachments[nativeAttachmentTargetKey]?.length ??
+          0) > 0,
+    ),
+  );
   const registeringImageDrops = useNativeIntentStore(
     (s) => s.registeringImageDrops > 0,
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
+  const [
+    materializingDroppedOpenDocuments,
+    setMaterializingDroppedOpenDocuments,
+  ] = useState(false);
   const hasPendingAudioAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -2181,6 +2587,17 @@ const Composer: FC<{
     (s) => s.registeringAudioDrops > 0,
   );
   const [materializingDroppedAudio, setMaterializingDroppedAudio] =
+    useState(false);
+  const hasPendingVideoAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingVideoAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  const registeringVideoDrops = useNativeIntentStore(
+    (s) => s.registeringVideoDrops > 0,
+  );
+  const [materializingDroppedVideo, setMaterializingDroppedVideo] =
     useState(false);
   // A parked send must not fire on a failed drop: the user is owed the toast and
   // their text, not a send of the text alone. Assigned below, once the callback exists.
@@ -2208,6 +2625,16 @@ const Composer: FC<{
     seenAudioDropFailuresRef.current = audioDropFailures;
     cancelQueuedSendRef.current?.();
   }, [audioDropFailures]);
+  const videoDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.videoDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenVideoDropFailuresRef = useRef(videoDropFailures);
+  // Cancel the parked send before `endVideoDropRegistration` reopens the gate.
+  useEffect(() => {
+    if (seenVideoDropFailuresRef.current === videoDropFailures) return;
+    seenVideoDropFailuresRef.current = videoDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [videoDropFailures]);
   // Registering and reading a dropped clip is async, so hold the send gate:
   // the composer sees nothing until `addAttachment` lands.
   useEffect(() => {
@@ -2321,6 +2748,123 @@ const Composer: FC<{
     return () => {
       disposed = true;
       setMaterializingDroppedAudio(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+
+  // Same drain as audio, one queue over: one clip per message, and the send
+  // gate has to hold across the read either way.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimVideoAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    // A re-key follows the same composer; a thread switch parks the clip back.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    // A remount hides the new key, so tag the batch; the next instance claims it.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addVideoAttachments(key, intents);
+      store.noteVideoDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingVideo = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedVideo(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeVideoAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped video", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              // Do not let a send parked on this clip go out as bare text.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            // The read is async; a chat switch in that window must not steal the clip.
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              // Chat-wide, not per file (no video mmproj, no ffmpeg, too large,
+              // already attached), and every adapter path toasted: stop quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        // A drain for a target already left must not touch the flag; cleanup
+        // cleared it, and the live target may have set it again.
+        if (!disposed) {
+          // The early returns requeue mid-batch, and a drop can land while
+          // `draining` gated the subscription.
+          const pending =
+            useNativeIntentStore.getState().pendingVideoAttachments[targetKey]
+              ?.length ?? 0;
+          // Only the instance still owning this composer re-drains; otherwise
+          // the batch stays parked rather than looping here forever.
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingVideo();
+          } else {
+            setMaterializingDroppedVideo(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // A predecessor's requeue can land after setup, so keep watching.
+      const orphaned = Object.entries(state.videoDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimVideoAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if ((state.pendingVideoAttachments[targetKey]?.length ?? 0) > 0) {
+        void drainPendingVideo();
+      }
+    });
+    void drainPendingVideo();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedVideo(false);
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
@@ -2458,14 +3002,123 @@ const Composer: FC<{
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimImageAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addOpenDocumentAttachments(key, intents);
+      store.noteImageDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingOpenDocuments = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedOpenDocuments(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeOpenDocumentAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped document", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        if (!disposed) {
+          const pending =
+            useNativeIntentStore.getState().pendingOpenDocumentAttachments[
+              targetKey
+            ]?.length ?? 0;
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingOpenDocuments();
+          } else {
+            setMaterializingDroppedOpenDocuments(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      const orphaned = Object.entries(state.imageDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimImageAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if (
+        (state.pendingOpenDocumentAttachments[targetKey]?.length ?? 0) > 0
+      ) {
+        void drainPendingOpenDocuments();
+      }
+    });
+    void drainPendingOpenDocuments();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedOpenDocuments(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||
-    materializingDroppedImages;
+    materializingDroppedImages ||
+    hasPendingOpenDocumentAttachments ||
+    materializingDroppedOpenDocuments;
   const hasMaterializingAudioAttachments =
     registeringAudioDrops ||
     hasPendingAudioAttachments ||
     materializingDroppedAudio;
+  const hasMaterializingVideoAttachments =
+    registeringVideoDrops ||
+    hasPendingVideoAttachments ||
+    materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2474,6 +3127,9 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  // Read at Send time, so a send that materializes after a project switch is still filed
+  // where it was made.
+  const projectScope = useChatProjectScope();
   const promptQueueThreadIds = compactIds([
     threadListItemId,
     threadListItemRemoteId,
@@ -2499,16 +3155,21 @@ const Composer: FC<{
   );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  const canQueueCurrentPrompt =
-    composerText.trim().length > 0 &&
-    !hasAttachments &&
+  const composerAcceptsQueueing =
     !hasPendingAudio &&
     !isComposing &&
     !hasPendingAttachments &&
     !hasMaterializingImageAttachments &&
     !hasMaterializingAudioAttachments &&
+    !hasMaterializingVideoAttachments &&
     !disabled &&
     !overlay;
+  const canQueueCurrentPrompt =
+    composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
+  // A long paste is text the composer parked in a chip, so it queues like the
+  // same text did before it attached, rather than being refused as a file.
+  const canQueuePastedTextPrompt =
+    attachmentsAreAllPastedText && composerAcceptsQueueing;
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -2517,15 +3178,86 @@ const Composer: FC<{
   // previous thread's composer contents.
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
+  // A pasted attachment is a File held in memory only, so without its own slot
+  // an unsent paste is the one draft a reload throws away.
+  const pasteDraftKey = draftThreadId
+    ? composerPasteDraftKey(draftThreadId)
+    : null;
   const lastDraftKeyRef = useRef(draftKey);
+  // Which key the paste restore has finished for. The save effect writes only
+  // for that key, so a draft is never cleared before it has been put back.
+  const restoredPasteKeyRef = useRef<string | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
-    if (composer.getState().isEditing) {
-      composer.setText(draft);
+    if (!composer.getState().isEditing) return;
+    // A save that raced the send still holds the sent text, so restoring it
+    // would undo the clear. Keyed on the sending thread, so another thread's
+    // identical draft still restores. Clear rather than return early, which
+    // would leave the previous thread's text on screen under this one.
+    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
+      // Written inline rather than via clearStoredDraft, which is declared
+      // below this effect. Cancel the pending save too, or it rewrites the key.
+      if (draftSaveTimerRef.current !== null) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      if (draftKey) writeComposerDraft(draftKey, "");
+      composer.setText("");
+      return;
     }
+    composer.setText(draft);
   }, [draftKey, aui]);
+  // The saved-prompt menu and the prompt storage dialog fill the composer
+  // directly, bypassing the guard. Text appearing while the sending thread is
+  // on screen was put there deliberately, so retire; the draftKey check keeps
+  // another thread's restored draft from doing the same. Read live, or a
+  // pending render retires it on stale text. Must stay after the restore
+  // above, which clears the raced draft this would otherwise retire on.
+  useEffect(() => {
+    const guard = justSentRef.current;
+    if (guard === null || guard.draftKey !== draftKey) return;
+    if (aui.composer().getState().text.length === 0) return;
+    justSentRef.current = null;
+  }, [composerText, draftKey, aui]);
+  // Separate from the text restore above, which must stay keyed on the draft
+  // alone: this one retries on attachment changes, and rewriting the composer
+  // text on those would drop whatever had been typed since the last autosave.
+  useEffect(() => {
+    const composer = aui.composer();
+    if (!composer.getState().isEditing) return;
+    if (restoredPasteKeyRef.current === pasteDraftKey) return;
+    // The composer outlives a thread switch, so restore only into an empty one
+    // rather than mixing this thread's draft with whatever the last one left.
+    // Changing attachments re-runs this effect, which is how the retry happens.
+    if (composer.getState().attachments.length > 0) return;
+    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
+    if (stored.length === 0) {
+      restoredPasteKeyRef.current = pasteDraftKey;
+      return;
+    }
+    // Claim the key only once the attachments are in, so the save effect
+    // cannot write an empty composer over the draft still being restored.
+    void Promise.all(
+      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+    ).finally(() => {
+      restoredPasteKeyRef.current = pasteDraftKey;
+    });
+  }, [pasteDraftKey, composerAttachmentSignature, aui]);
+  // Keyed on the paste identities, never their bodies, so typing beside a
+  // megabyte paste does not rewrite it to localStorage every 300ms.
+  useEffect(() => {
+    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
+    const pastes = aui
+      .composer()
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    writePasteDraft(pasteDraftKey, pastes);
+  }, [composerAttachmentSignature, pasteDraftKey, aui]);
   useEffect(() => {
     // After a thread switch composerText can still hold the previous
     // thread's text; skip that cycle so it isn't saved under the new key.
@@ -2540,12 +3272,15 @@ const Composer: FC<{
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Without this the restore effect above puts the sent text back when the
-  // runtime rebinds on the first message.
-  const draftKeyRef = useRef(draftKey);
+  const pasteDraftKeyRef = useRef(pasteDraftKey);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-  }, [draftKey]);
+    pasteDraftKeyRef.current = pasteDraftKey;
+  }, [draftKey, pasteDraftKey]);
+  // Call wherever the composer is emptied because its text left as a message.
+  const armJustSent = useCallback((...texts: string[]) => {
+    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+  }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -2554,6 +3289,10 @@ const Composer: FC<{
     const key = draftKeyRef.current;
     if (key) {
       writeComposerDraft(key, "");
+    }
+    const pasteKey = pasteDraftKeyRef.current;
+    if (pasteKey) {
+      writePasteDraft(pasteKey, []);
     }
   }, []);
   // react-textarea-autosize re-measures only on value change or window resize,
@@ -2609,8 +3348,26 @@ const Composer: FC<{
       {
         temporary: boolean;
         cancelled: boolean;
+        threadId: string | null;
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
+      }
+    >(),
+  );
+  // Reading a pasted-text attachment happens before the queue start is
+  // registered, so the intent is recorded here for the length of the read.
+  // Keyed like a reservation so a submit during the read cannot start a second
+  // read of the same attachment, and carrying the boundaries the read predates.
+  const pastedTextQueuePendingRef = useRef(
+    new Map<
+      string,
+      {
+        temporary: boolean;
+        cancelled: boolean;
+        threadId: string | null;
+        localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
+        historyClearGeneration: number;
       }
     >(),
   );
@@ -2625,9 +3382,17 @@ const Composer: FC<{
       const detail =
         (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
       const state = aui.threadListItem().getState();
+      const aliases = compactIds([state.id, state.remoteId, referenceThreadId]);
       cancelPendingPromptQueueFactoriesForStop(
         promptQueueStartPendingRef.current,
-        compactIds([state.id, state.remoteId, referenceThreadId]),
+        aliases,
+        detail,
+      );
+      // A read in flight has no reservation yet, so it needs cancelling here
+      // too or Clear all lets it queue a prompt and recreate the chat.
+      cancelPendingPromptQueueFactoriesForStop(
+        pastedTextQueuePendingRef.current,
+        aliases,
         detail,
       );
     };
@@ -2644,7 +3409,16 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
+  // Whether the parked send is a queue gesture. A chord pressed while this
+  // chat's settings load parks like any other send, and the release path would
+  // otherwise send the prompt the user asked to stack.
+  const pendingSendForceQueueRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
+  // This chat's own settings are still on their way; a send now would run on the
+  // installation defaults showing in their place.
+  const threadScopedSettingsPending = useChatRuntimeStore(
+    (s) => s.threadScopedSettingsPending,
+  );
 
   const handleIndexingChange = useCallback((active: boolean) => {
     indexingActiveRef.current = active;
@@ -2679,9 +3453,17 @@ const Composer: FC<{
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
+    // A chat with no row yet has no project to look up, and the store holds
+    // whichever project is on screen when the queue polls. Read it here.
+    const projectIdAtQueueStart = incognitoAtQueueStart
+      ? null
+      : (chatStateAtQueueStart.activeProjectId ?? null);
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
+    const usesKnowledgeBaseAtQueueStart =
+      chatStateAtQueueStart.ragEnabled &&
+      chatStateAtQueueStart.ragSource.type === "kb";
     const runSettingsAtQueueStart =
       snapshotQueuedChatRunSettings(chatStateAtQueueStart);
     const getThreadListItemState = () => {
@@ -2809,6 +3591,18 @@ const Composer: FC<{
           }
           shouldCorrectPersistedModel ??= !state.remoteId;
           const initializingFreshThread = !state.remoteId;
+          // Stamp it with what the queue was STARTED under. This path initializes without
+          // going through the composer, and by dispatch time the adapter may be showing a
+          // different project, so the chat was filed wherever the user is now.
+          if (initializingFreshThread) {
+            claimThreadCreation([state.id, state.remoteId], {
+              projectId: projectIdAtQueueStart,
+              incognito: incognitoAtQueueStart,
+              modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
+              createdAt: Date.now(),
+            });
+          }
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
@@ -2835,6 +3629,7 @@ const Composer: FC<{
             // before any later navigation or compatibility check can observe it.
             await updateStoredChatThread(remoteId, {
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
             });
             shouldCorrectPersistedModel = false;
             if (
@@ -2885,10 +3680,16 @@ const Composer: FC<{
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
+      getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
+      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
+      researchStarted: () => {
+        const claimed = useResearchRunStore.getState().claimedThreadIds;
+        return getQueueThreadIds().some((id) => Boolean(claimed[id]));
+      },
       temporary: incognitoAtQueueStart,
       consumeDeepResearch: () => {
         runSettingsAtQueueStart.deepResearchEnabled = false;
@@ -2896,27 +3697,72 @@ const Composer: FC<{
     };
   }, [aui, referenceThreadId]);
 
+  // Whether a pending start is already going to be refused when it resolves,
+  // so a retry replaces it rather than being turned away as a duplicate and
+  // leaving neither gesture to queue anything. Only the checks that need no
+  // queue target are here; the model boundary stays with the reservation,
+  // where usesLocalModel is known, so this can never be the stricter of the
+  // two and start a second queue for the same prompt.
+  const pendingQueueStartIsStale = useCallback(
+    (pending: {
+      cancelled: boolean;
+      temporary: boolean;
+      queuedSettingsEpoch: number;
+      historyClearGeneration?: number;
+    }): boolean => {
+      if (pending.cancelled) return true;
+      if (
+        pending.historyClearGeneration !== undefined &&
+        chatHistoryClearBoundary.capture() !== pending.historyClearGeneration
+      ) {
+        return true;
+      }
+      const chatState = useChatRuntimeStore.getState();
+      return shouldAbortPendingQueueForSettingsChange({
+        capturedEpoch: pending.queuedSettingsEpoch,
+        currentEpoch: chatState.queuedSettingsEpoch,
+        capturedTemporary: pending.temporary,
+        currentTemporary: chatState.incognito,
+      });
+    },
+    [],
+  );
+
   const startHydratedPromptQueue = useCallback(
     (
       items: string[],
       waitForCurrentRun = false,
       onStarted?: () => void,
       onAborted?: () => void,
+      // Captured before an awaited step that precedes this call, so a boundary
+      // or setting changed during that step still invalidates the queue.
+      capturedAt?: {
+        localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
+        temporary: boolean;
+      },
     ) => {
       const reservationKey = JSON.stringify([
         referenceThreadId,
         items,
         waitForCurrentRun,
       ]);
-      if (promptQueueStartPendingRef.current.has(reservationKey)) {
+      // A reservation that is still going to start owns this prompt. One that
+      // is already invalid is replaced, so the retry is the one that queues.
+      const existing = promptQueueStartPendingRef.current.get(reservationKey);
+      if (existing && !pendingQueueStartIsStale(existing)) {
         return false;
       }
       const reservation = {
-        temporary: useChatRuntimeStore.getState().incognito,
+        temporary:
+          capturedAt?.temporary ?? useChatRuntimeStore.getState().incognito,
         cancelled: false,
+        threadId: referenceThreadId,
         localModelBoundaryGeneration:
+          capturedAt?.localModelBoundaryGeneration ??
           localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch:
+          capturedAt?.queuedSettingsEpoch ??
           useChatRuntimeStore.getState().queuedSettingsEpoch,
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
@@ -2948,7 +3794,12 @@ const Composer: FC<{
           ) {
             startPromptQueue(items, target, waitForCurrentRun);
             onStarted?.();
-          } else {
+          } else if (
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+            reservation
+          ) {
+            // Superseded reservations stay quiet: the one that replaced this
+            // is still going, so nothing has been lost to report.
             onAborted?.();
           }
         })
@@ -2969,7 +3820,172 @@ const Composer: FC<{
         });
       return true;
     },
-    [createPromptQueueTarget, referenceThreadId],
+    [createPromptQueueTarget, pendingQueueStartIsStale, referenceThreadId],
+  );
+
+  // The queue carries text, and a long paste is text the composer parked in a
+  // chip, so fold it back in rather than refusing to queue it as a file.
+  const queuePastedTextPrompt = useCallback(
+    (waitForCurrentRun: boolean): boolean => {
+      const composer = aui.composer();
+      const attachments = composer.getState().attachments;
+      const files: File[] = [];
+      for (const attachment of attachments) {
+        const file = (attachment as { file?: File }).file;
+        if (file === undefined || !isPastedTextFile(file)) return false;
+        files.push(file);
+      }
+      if (files.length === 0) return false;
+
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      const textAtQueue = composer.getState().text.trim();
+      const queueTexts = (
+        texts: string[],
+        // Captured before an awaited read, when there was one.
+        capturedAt?: {
+          localModelBoundaryGeneration: number;
+          queuedSettingsEpoch: number;
+          temporary: boolean;
+        },
+      ) => {
+        const queuedPrompt = [textAtQueue, ...texts]
+          .filter((part) => part.trim().length > 0)
+          .join("\n\n");
+        if (queuedPrompt.length === 0) return;
+        startHydratedPromptQueue(
+          [queuedPrompt],
+          waitForCurrentRun,
+          () => {
+            const state = composer.getState();
+            // Only clear the composer this prompt was queued from.
+            if (
+              state.text.trim() !== textAtQueue ||
+              state.attachments.length !== attachmentIds.length ||
+              !state.attachments.every(
+                (attachment, index) => attachment.id === attachmentIds[index],
+              )
+            ) {
+              return;
+            }
+            void composer.clearAttachments();
+            flushResourcesSync(() => {
+              composer.setText("");
+            });
+            clearStoredDraft();
+            armJustSent(state.text);
+          },
+          () => {
+            toast.info("Pasted text was not queued", {
+              description: "The chat settings changed. Send it again.",
+            });
+          },
+          capturedAt,
+        );
+      };
+
+      // createPastedTextFile records the body under the File identity matched
+      // above, so read it from there: a gesture that awaits the File joins the
+      // queue behind any later one that does not, reversing the two.
+      const cachedTexts: string[] = [];
+      for (const file of files) {
+        const text = pastedTextOf(file);
+        if (text === undefined) break;
+        cachedTexts.push(text);
+      }
+      if (cachedTexts.length === files.length) {
+        queueTexts(cachedTexts);
+        return true;
+      }
+
+      // Registered before the read, or a submit during it takes the send path
+      // and this queues the same text again once the read finishes.
+      const pendingKey = pastedTextQueueKey(
+        referenceThreadId,
+        textAtQueue,
+        attachmentIds,
+      );
+      // The same intent as a read already running: report it handled rather
+      // than queue a duplicate. A read whose baselines have gone stale will
+      // abort, so it must not absorb the retry either.
+      const inFlight = pastedTextQueuePendingRef.current.get(pendingKey);
+      if (inFlight && !pendingQueueStartIsStale(inFlight)) return true;
+      // Every baseline the reservation would otherwise take after the read, so
+      // a setting or boundary changed during it still aborts the queue.
+      const chatState = useChatRuntimeStore.getState();
+      const pendingRead = {
+        temporary: chatState.incognito,
+        cancelled: false,
+        threadId: referenceThreadId,
+        // The chat the read began in. The target is anchored after the read,
+        // so a switch mid-read would otherwise dispatch into the new chat.
+        composerIdentity: composerIdentityRef.current,
+        localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
+        queuedSettingsEpoch: chatState.queuedSettingsEpoch,
+        historyClearGeneration: chatHistoryClearBoundary.capture(),
+      };
+      // Replaces a stale read under the same key. That read still resolves, but
+      // it no longer owns the key, so its own start is skipped and only this
+      // one can queue.
+      pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
+      void Promise.all(files.map((file) => file.text()))
+        .then((texts) => {
+          // Stopped, cleared, replaced, or aimed at another chat while the
+          // read was in flight.
+          if (
+            pendingQueueStartIsStale(pendingRead) ||
+            composerIdentityRef.current !== pendingRead.composerIdentity ||
+            pastedTextQueuePendingRef.current.get(pendingKey) !== pendingRead
+          ) {
+            return;
+          }
+          queueTexts(texts, pendingRead);
+        })
+        .catch(() => {
+          toast.error("Could not queue the pasted text.", {
+            description: "Show it in the text field, then send it again.",
+          });
+        })
+        .finally(() => {
+          if (pastedTextQueuePendingRef.current.get(pendingKey) === pendingRead) {
+            pastedTextQueuePendingRef.current.delete(pendingKey);
+          }
+        });
+      return true;
+    },
+    [
+      armJustSent,
+      aui,
+      clearStoredDraft,
+      pendingQueueStartIsStale,
+      referenceThreadId,
+      startHydratedPromptQueue,
+    ],
+  );
+
+  // Queue whatever the composer holds. Hoisted out of handleSubmit because the
+  // parked-send release needs it too and cannot reach that closure. Reads the
+  // live composer, not the rendered text, which at release time can be a commit
+  // behind.
+  const queueComposerText = useCallback(
+    (waitForCurrentRun: boolean) => {
+      const queuedPrompt = aui.composer().getState().text.trim();
+      if (!queuedPrompt) {
+        return;
+      }
+      startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
+        // Guard the untrimmed text too: that is what a late write carries.
+        const cleared = aui.composer().getState().text;
+        if (cleared.trim() !== queuedPrompt) {
+          return;
+        }
+        flushResourcesSync(() => {
+          aui.composer().setText("");
+        });
+        clearStoredDraft();
+        armJustSent(queuedPrompt, cleared);
+      });
+    },
+    [armJustSent, aui, clearStoredDraft, startHydratedPromptQueue],
   );
 
   const dismissWaitToast = useCallback(() => {
@@ -2986,6 +4002,7 @@ const Composer: FC<{
 
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
+    pendingSendForceQueueRef.current = false;
     setPendingSend(false);
     // A dictation send held behind the same block would otherwise fire alone.
     sendAfterDictationRef.current = false;
@@ -2995,7 +4012,14 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" = "indexing") => {
+    (
+      waitingOn:
+        | "indexing"
+        | "images"
+        | "audio"
+        | "video"
+        | "settings" = "indexing",
+    ) => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
@@ -3004,7 +4028,11 @@ const Composer: FC<{
           ? "Waiting for dropped images"
           : waitingOn === "audio"
             ? "Waiting for dropped audio"
-            : "Waiting for documents to finish indexing";
+            : waitingOn === "video"
+              ? "Waiting for dropped video"
+              : waitingOn === "settings"
+                ? "Loading this chat's settings"
+                : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -3020,19 +4048,30 @@ const Composer: FC<{
     if (
       disabled ||
       overlay ||
-      (!hasMaterializingImageAttachments && !hasMaterializingAudioAttachments) ||
+      (!hasMaterializingImageAttachments &&
+        !hasMaterializingAudioAttachments &&
+        !hasMaterializingVideoAttachments) ||
       !hasSendableContent ||
       isComposingRef.current ||
       hasPendingAttachments
     ) {
       return;
     }
-    enqueueSend(hasMaterializingImageAttachments ? "images" : "audio");
+    // Name what is actually being waited on, or a parked video drop reports
+    // itself as audio.
+    enqueueSend(
+      hasMaterializingImageAttachments
+        ? "images"
+        : hasMaterializingAudioAttachments
+          ? "audio"
+          : "video",
+    );
   }, [
     disabled,
     overlay,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     hasSendableContent,
     hasPendingAttachments,
     isComposingRef,
@@ -3045,9 +4084,11 @@ const Composer: FC<{
       isComposingRef.current ||
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     [
       hasMaterializingAudioAttachments,
+      hasMaterializingVideoAttachments,
       hasMaterializingImageAttachments,
       hasPendingAttachments,
       hasSendableContent,
@@ -3055,7 +4096,9 @@ const Composer: FC<{
     ],
   );
 
-  const sendReservedComposer = useCallback(() => {
+  // alsoGuard: text the composer showed before this path rewrote it, so a late
+  // write carrying what the user actually typed is refused too.
+  const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
     const assistantRuntime =
       aui.threads().__internal_getAssistantRuntime?.();
     let reservationToken: symbol | null = null;
@@ -3084,7 +4127,21 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      const sentText = aui.composer().getState().text;
+      // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
+      // send reaches initialize() seconds later, by which time navigation may have moved the
+      // project and cleared the temporary flag. See utils/chat-thread-creation-claim.ts.
+      const chatStateAtSend = useChatRuntimeStore.getState();
+      claimThreadCreation(preStreamThreadIds, {
+        projectId: projectScope,
+        incognito: chatStateAtSend.incognito,
+        modelId: chatStateAtSend.params.checkpoint ?? "",
+        modelGgufVariant: chatStateAtSend.activeGgufVariant,
+        createdAt: Date.now(),
+      });
       aui.composer().send();
+      // Empty texts are dropped, so an attachment-only send still clears.
+      armJustSent(sentText, ...alsoGuard);
     } catch (error) {
       if (releasePreStreamRunReservation(reservationToken)) {
         notifyPromptQueueRunFailed(referenceThreadId);
@@ -3095,7 +4152,7 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, preStreamThreadIds, referenceThreadId]);
+  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -3111,6 +4168,15 @@ const Composer: FC<{
         enqueueSend();
         return true;
       }
+      // This chat's own settings have been asked for and have not arrived, so the store
+      // is showing the installation defaults and the run would be captured with them:
+      // a chat stored as "ask" could run tools without asking. Park it like any other
+      // wait, so the click still counts and the send fires once the snapshot lands.
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
+        return true;
+      }
       return false;
     },
     [
@@ -3118,6 +4184,7 @@ const Composer: FC<{
       shouldBlockSend,
       indexingActive,
       overlay,
+      threadScopedSettingsPending,
       enqueueSend,
       parkIfWaitingOnAttachments,
     ],
@@ -3134,34 +4201,107 @@ const Composer: FC<{
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
+      threadScopedSettingsPending ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments
     ) {
       return;
     }
     const { text, attachments } = aui.composer().getState();
+    const forceQueue = pendingSendForceQueueRef.current;
     pendingSendRef.current = false;
+    pendingSendForceQueueRef.current = false;
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
+      // Wait mode read now, not carried from the parked submit: a run can
+      // start while the settings load, and ignoring it would dispatch on top
+      // of the response already streaming.
+      const waitForCurrentRun =
+        aui.thread().getState().isRunning ||
+        hasPreStreamRunReservation(preStreamThreadIds);
+      // A parked send is a submit arriving late, so mirror handleSubmit's
+      // branches. Sending regardless is how a message vanished: on a throttled
+      // browser a follow-up parked 786 ms in was released 236 ms later with
+      // the first turn still streaming, went to sendReservedComposer(), and
+      // was refused by the runtime -- neither queued nor sent, and the wait
+      // toast already dismissed above, so nothing on screen said so.
+      //
+      // Research refuses every submit and swaps Send for Stop research, so a
+      // release here would start a turn from a state where input is disabled.
+      if (isResearchActive) {
+        return;
+      }
+      if (waitForCurrentRun) {
+        // Queueing on the project new-chat composer binds the follow-up to a
+        // thread that does not exist yet.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
+        // queueComposerText clears the draft from its onStarted callback, so a
+        // queue that never starts leaves the text recoverable.
+        if (canQueueCurrentPrompt) {
+          queueComposerText(true);
+          return;
+        }
+        // A long paste lives in an attachment, so queueing the text alone
+        // queues nothing when that is all there is.
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(true)) {
+          return;
+        }
+        // Nothing queueable while a run is live: keep it and say why. Sending
+        // would push the attachment into the running thread.
+        if (overlay || hasAttachments || hasPendingAudio) {
+          toast.error("Wait for the current response to finish", {
+            description:
+              "Only text prompts can be queued while a response is running or the prompt queue is active.",
+          });
+        }
+        return;
+      }
+      // Nothing running: the chord still queues up front, as it does live.
+      if (forceQueue && !disableQueue) {
+        if (canQueueCurrentPrompt) {
+          queueComposerText(false);
+          return;
+        }
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(false)) {
+          return;
+        }
+      }
       clearStoredDraft();
       sendReservedComposer();
     }
   }, [
     pendingSend,
     indexingActive,
+    threadScopedSettingsPending,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     aui,
+    canQueueCurrentPrompt,
+    canQueuePastedTextPrompt,
     clearStoredDraft,
     dismissWaitToast,
+    queueComposerText,
+    queuePastedTextPrompt,
     sendReservedComposer,
+    preStreamThreadIds,
+    disableQueue,
+    isResearchActive,
+    overlay,
+    hasAttachments,
+    hasPendingAudio,
   ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
     () => () => {
       pendingSendRef.current = false;
+      pendingSendForceQueueRef.current = false;
       if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
     },
     [],
@@ -3178,9 +4318,9 @@ const Composer: FC<{
     formRef.current = node;
     setComposerEl(node);
   }, []);
-  // The composer docks to the bottom of the viewport once a thread has turns,
-  // in the same column the corner overlay stack occupies. Published so the
-  // stack lifts above it rather than covering the Send button.
+  // Docked under a thread, the composer sits in the corner the API monitor
+  // panel opens in. Published so that panel opens clear of Send. The
+  // notification rail does not read this; it is anchored in CSS.
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
@@ -3190,6 +4330,19 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  // Keep the mic clickable: if the engine can't run here, explain and point to
+  // the local model instead of disabling the button.
+  const startDictation = useCallback(() => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    try {
+      aui.composer().startDictation();
+    } catch {
+      notifyStudioDictationUnavailable();
+    }
+  }, [aui]);
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -3203,7 +4356,8 @@ const Composer: FC<{
     uploading:
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
@@ -3211,6 +4365,54 @@ const Composer: FC<{
     hasAttachments,
     hasPendingAudio,
   });
+  // Both chords live here, not with the controls below: the recording bar
+  // replaces those while dictation runs, so a chord registered there could
+  // start dictation and never stop it.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      // Stopping first and ungated: the recording bar replaces the input, so
+      // the gate's selector is gone for exactly as long as there is something
+      // to stop.
+      if (isDictating) {
+        aui.composer().stopDictation();
+        return;
+      }
+      // A dialog over Chat leaves this registered, and a microphone opened
+      // behind one is neither visible nor stoppable from where the user is.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      startDictation();
+    },
+    { enabled: chatActive },
+  );
+  useShortcut(
+    "sendMessage",
+    () => {
+      // While recording, the bar's own send: it stops dictation first and lets
+      // the final transcript land, where submitting here would send the text
+      // so far and leave the rest of the sentence in an empty composer.
+      if (isDictating) {
+        if (!dictationBlocked) sendAfterDictation();
+        return;
+      }
+      // A dialog over Chat leaves this registered, and the draft behind it is
+      // not what the user is typing. Sending is not undoable, so it asks here.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      // requestSubmit, not the runtime's send: it runs handleSubmit first,
+      // which parks a send behind indexing, queues it behind a run, or
+      // refuses it.
+      formRef.current?.requestSubmit();
+    },
+    {
+      enabled: chatActive && !disabled,
+      // The model picker is a non-modal popover, so the composer stays the
+      // foreground while its search box has focus. Every text field but the
+      // composer keeps this chord.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
   const wasDictatingRef = useRef(false);
   useEffect(() => {
     if (isDictating) {
@@ -3272,6 +4474,9 @@ const Composer: FC<{
       preventDefault: () => void;
       stopPropagation?: () => void;
     }) => {
+      // Read once per submit: a rejected send must not leave it armed.
+      const forceQueue = forceQueueRef.current;
+      forceQueueRef.current = false;
       if (isResearchActive) {
         event.preventDefault();
         return;
@@ -3279,6 +4484,18 @@ const Composer: FC<{
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
+        return;
+      }
+      // Before the queue branch below, not after it: a prompt queued while this chat's
+      // own settings are still on their way is snapshotted from the installation
+      // defaults on screen, so a chat stored as "ask" would queue as "off".
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        // The intent rides with the parked send; the release reads it back.
+        if (forceQueue) {
+          pendingSendForceQueueRef.current = true;
+        }
+        enqueueSend("settings");
         return;
       }
 
@@ -3289,6 +4506,14 @@ const Composer: FC<{
         threadIsRunning || aui.thread().getState().isRunning;
       const livePromptQueueActive =
         promptQueueActive ||
+        hasPendingPromptQueueStart(
+          promptQueueStartPendingRef.current.values(),
+          referenceThreadId,
+        ) ||
+        hasPendingPromptQueueStart(
+          pastedTextQueuePendingRef.current.values(),
+          referenceThreadId,
+        ) ||
         Boolean(
           findPromptQueueEntry(
             usePromptQueueUI.getState(),
@@ -3310,6 +4535,12 @@ const Composer: FC<{
           return;
         }
         if (!canQueueCurrentPrompt) {
+          if (
+            canQueuePastedTextPrompt &&
+            queuePastedTextPrompt(liveThreadIsRunning || livePreStreamRunActive)
+          ) {
+            return;
+          }
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
               liveThreadIsRunning
@@ -3323,21 +4554,25 @@ const Composer: FC<{
           }
           return;
         }
-        const queuedPrompt = composerText.trim();
-        startHydratedPromptQueue(
-          [queuedPrompt],
-          liveThreadIsRunning || livePreStreamRunActive,
-          () => {
-            if (aui.composer().getState().text.trim() !== queuedPrompt) {
-              return;
-            }
-            flushResourcesSync(() => {
-              aui.composer().setText("");
-            });
-            clearStoredDraft();
-          },
-        );
+        queueComposerText(liveThreadIsRunning || livePreStreamRunActive);
         return;
+      }
+
+      // Cmd/Ctrl+Enter queues even with nothing running, so prompts can be
+      // stacked up front. The queue dispatches this one immediately; the next
+      // Cmd/Ctrl+Enter lands behind it.
+      if (forceQueue && !disableQueue) {
+        if (canQueueCurrentPrompt) {
+          event.preventDefault();
+          queueComposerText(false);
+          return;
+        }
+        if (canQueuePastedTextPrompt) {
+          event.preventDefault();
+          if (queuePastedTextPrompt(false)) {
+            return;
+          }
+        }
       }
 
       if (interceptSend(event)) return;
@@ -3375,6 +4610,9 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
+        // Live, not composerText: a late DOM write carries exactly what the
+        // textarea held, whitespace and all, and that is what must be armed.
+        const visibleBeforeWrap = aui.composer().getState().text;
         flushResourcesSync(() => {
           aui
             .composer()
@@ -3384,7 +4622,8 @@ const Composer: FC<{
         });
         closeOverlay();
         event.preventDefault();
-        sendReservedComposer();
+        // The wrapper replaced what the user typed, so guard that text as well.
+        sendReservedComposer(visibleBeforeWrap, trimmed);
         return;
       }
 
@@ -3401,18 +4640,22 @@ const Composer: FC<{
     [
       aui,
       canQueueCurrentPrompt,
+      canQueuePastedTextPrompt,
+      queueComposerText,
+      queuePastedTextPrompt,
       clearStoredDraft,
       closeOverlay,
       composerText,
-      startHydratedPromptQueue,
       disabled,
       disableQueue,
       hasAttachments,
       hasPendingAudio,
+      enqueueSend,
       interceptSend,
       isResearchActive,
       overlay,
       parkIfWaitingOnAttachments,
+      threadScopedSettingsPending,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,
@@ -3533,6 +4776,10 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              // Capture, so inputProps keeps the handlers it already owns.
+              onKeyDownCapture={notePlainPasteChord}
+              onKeyUpCapture={endPlainPasteChord}
+              onBlurCapture={endPlainPasteChord}
               addAttachmentOnPaste={false}
               onPaste={handleFilePaste}
             />
@@ -3545,9 +4792,20 @@ const Composer: FC<{
               }
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
-              queueDisabled={disableQueue || !canQueueCurrentPrompt}
+              queueDisabled={
+                disableQueue ||
+                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+              }
               onQueueClick={() => {
                 if (disableQueue) return;
+                // Same pasted-text path the Enter key takes, or the button
+                // would refuse what submitting the form accepts.
+                if (
+                  canQueuePastedTextPrompt &&
+                  queuePastedTextPrompt(true)
+                ) {
+                  return;
+                }
                 const queuedPrompt = composerText.trim();
                 if (queuedPrompt.length === 0) {
                   return;
@@ -3556,15 +4814,15 @@ const Composer: FC<{
                   [queuedPrompt],
                   true,
                   () => {
-                    if (
-                      aui.composer().getState().text.trim() !== queuedPrompt
-                    ) {
+                    const cleared = aui.composer().getState().text;
+                    if (cleared.trim() !== queuedPrompt) {
                       return;
                     }
                     flushResourcesSync(() => {
                       aui.composer().setText("");
                     });
                     clearStoredDraft();
+                    armJustSent(queuedPrompt, cleared);
                   },
                 );
               }}
@@ -3572,6 +4830,7 @@ const Composer: FC<{
               // submitting the form, so run the complete queue/capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
+              onDictateClick={startDictation}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
               queueThreadIds={promptQueueThreadIds}
@@ -3590,11 +4849,25 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       ref={attachComposer}
+      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
+      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
+      // on the toolbar instead of on the conversation.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {youtubeOfferUrl && !isDictating && !disabled ? (
+        // Keyed by URL: pasting a second link while the first is still fetching
+        // remounts the prompt, so its cleanup aborts the request that is no
+        // longer the one on offer.
+        <YoutubeTranscriptPrompt
+          key={youtubeOfferUrl}
+          url={youtubeOfferUrl}
+          onClose={() => setYoutubeLink(null)}
+        />
+      ) : null}
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.
@@ -3602,7 +4875,12 @@ const Composer: FC<{
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
+        <ComposerPrimitive.AttachmentDropzone
+          className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10"
+          onDragEnterCapture={claimPortaledDrop}
+          onDragOverCapture={claimPortaledDrop}
+          onDropCapture={claimPortaledDrop}
+        >
           {composerContent}
           {/* Gemini-style drop affordance, shown while a file is dragged over
               the composer. Absolute + pointer-events-none so the outline adds
@@ -3633,6 +4911,44 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
+// differ from what was sent, so equality alone would let it through.
+function isTextReplacement(event: Event | undefined) {
+  return inputTypeOf(event) === "insertReplacementText";
+}
+
+// An IME composition write. Finalisation converts the text, so equality never
+// matches it, and it is stale only when the composition began before the send:
+// one begun after raises compositionstart, which records user input.
+// compositionend counts because onCompositionEnd applies that value itself and
+// the browser raises no input event for it.
+function isCompositionWrite(event: Event | undefined) {
+  return (
+    inputTypeOf(event) === "insertCompositionText" ||
+    event?.type === "compositionend" ||
+    (event !== undefined && isNativeComposing(event))
+  );
+}
+
+// Input types only a gesture produces, so they apply even when they carry the
+// sent text. Drag and drop and yank have no event to hook the way paste does.
+const DELIBERATE_INPUT_TYPES = new Set([
+  "historyUndo",
+  "historyRedo",
+  "insertFromPaste",
+  "insertFromDrop",
+  "insertFromYank",
+]);
+
+function isDeliberateWrite(event: Event | undefined) {
+  return DELIBERATE_INPUT_TYPES.has(inputTypeOf(event) ?? "");
+}
+
+function inputTypeOf(event: Event | undefined): string | undefined {
+  if (event === undefined || !("inputType" in event)) return undefined;
+  return (event as InputEvent).inputType;
+}
+
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
 // a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
@@ -3643,8 +4959,18 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  onModEnter,
+  justSentRef,
+  draftKeyRef,
 }: {
   submitOnEnter?: boolean;
+  /** Cmd/Ctrl+Enter without Shift, claimed before the plain-Enter submit. */
+  onModEnter?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  // Guard armed by the last send or queue. See setComposerText below.
+  justSentRef?: RefObject<SentTextGuard | null>;
+  // Thread on screen. The composer outlives a thread switch, so this is what
+  // says whether the armed guard belongs to the thread being typed into.
+  draftKeyRef?: RefObject<string | null>;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -3688,22 +5014,50 @@ function useImeComposerInputHandlers({
 
   useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
+  // False when refused, so the caller can preventDefault and stop
+  // ComposerPrimitive.Input's own handler applying the same value.
   const setComposerText = useCallback(
-    (value: string) => {
+    (value: string, nativeEvent?: Event): boolean => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) {
-        return;
+        return false;
+      }
+      // Refuse a write that is the sent message coming back, but only for the
+      // thread that sent: typing in another thread must not retire a guard it
+      // does not own, or its raced draft returns.
+      const guardOwnsThread =
+        justSentRef?.current == null ||
+        draftKeyRef === undefined ||
+        justSentRef.current.draftKey === draftKeyRef.current;
+      if (justSentRef && guardOwnsThread) {
+        const result = applySentTextGuard(justSentRef.current, {
+          value,
+          replacesText: isTextReplacement(nativeEvent),
+          isDeliberate: isDeliberateWrite(nativeEvent),
+          isComposition: isCompositionWrite(nativeEvent),
+          composerIsEmpty: composer.getState().text.length === 0,
+        });
+        justSentRef.current = result.guard;
+        if (!result.accept) {
+          return false;
+        }
       }
       flushResourcesSync(() => {
         composer.setText(value);
       });
+      return true;
     },
-    [aui],
+    [aui, draftKeyRef, justSentRef],
   );
 
   const onCompositionStart = useCallback(() => {
+    // Dictation and handwriting insert without a keydown, and a composition
+    // starting after the send cannot be a write the send queued.
+    if (justSentRef) {
+      justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
+    }
     setCompositionState(true);
-  }, [setCompositionState]);
+  }, [justSentRef, setCompositionState]);
 
   const onCompositionUpdate = useCallback(() => {
     refreshStuckTimer();
@@ -3712,7 +5066,9 @@ function useImeComposerInputHandlers({
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
-      setComposerText(e.currentTarget.value);
+      if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
@@ -3720,7 +5076,9 @@ function useImeComposerInputHandlers({
   const onChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
       setCompositionState(isNativeComposing(e.nativeEvent));
-      setComposerText(e.target.value);
+      if (!setComposerText(e.target.value, e.nativeEvent)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
@@ -3735,9 +5093,15 @@ function useImeComposerInputHandlers({
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        // Deliberately NOT user input: picking a candidate in a composition the
+        // send left open is that composition continuing. One begun after the
+        // send is marked by compositionstart instead.
         composingRef.current = true;
         refreshStuckTimer();
         return;
+      }
+      if (justSentRef && isGuardRetiringKey(e)) {
+        justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
       }
       if (composingRef.current) {
         // Candidate-confirming Enter can arrive as non-composing; keep it gated.
@@ -3755,12 +5119,23 @@ function useImeComposerInputHandlers({
         // rather than waiting for the 2500ms watchdog.
         setCompositionState(false);
       }
+      if (onModEnter && isPromptQueueChord(e)) {
+        e.preventDefault();
+        onModEnter(e);
+        return;
+      }
       if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.currentTarget.form?.requestSubmit();
       }
     },
-    [refreshStuckTimer, setCompositionState, submitOnEnter],
+    [
+      justSentRef,
+      onModEnter,
+      refreshStuckTimer,
+      setCompositionState,
+      submitOnEnter,
+    ],
   );
 
   // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea
@@ -3787,22 +5162,6 @@ function useImeComposerInputHandlers({
 }
 
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
 // svgrepo.com lightbulb (filled, with base).
 const BulbIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -3950,7 +5309,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -4383,18 +5742,18 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
-  if (audioEnabled || accept === "*") {
-    return accept;
-  }
-  const filtered = accept
-    .split(",")
-    .map((token) => token.trim())
-    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
-    .join(",");
-  return filtered || accept;
+  const enabledAccept =
+    audioEnabled || accept === "*"
+      ? accept
+      : accept
+          .split(",")
+          .map((token) => token.trim())
+          .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+          .join(",") || accept;
+  return pickerAcceptForTextBasenames(enabledAccept);
 }
 
 const ComposerToolsMenu: FC<{
@@ -4471,7 +5830,13 @@ const ComposerToolsMenu: FC<{
   const mcpDisabled = modelLoaded && !supportsTools;
   // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
-    !researchAvailable || Boolean(externalSelection) || incognito;
+    !researchAvailable ||
+    (Boolean(externalSelection) &&
+      providerModelSupportsStudioTools(
+        selectedExternalProvider?.providerType,
+        externalSelection?.modelId,
+      ) !== true) ||
+    incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -4532,6 +5897,21 @@ const ComposerToolsMenu: FC<{
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
+  // Straight to the picker, skipping the "+" menu the item lives in. Off-route
+  // the chat pane is hidden rather than unmounted, so the chords gate on it
+  // being the visible tab; a window listener does not care about `inert`.
+  const chatActive = useChatActive();
+  useShortcut(
+    "attachFiles",
+    () => {
+      // `chatActive` is the visible tab, not the foreground, so a dialog over
+      // Chat left this live, and the OS file chooser is the least dismissable
+      // thing a chord can raise.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      pickAttachment();
+    },
+    { enabled: chatActive && composerCanAddAttachments },
+  );
   // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;
@@ -4639,7 +6019,17 @@ const ComposerToolsMenu: FC<{
               });
             }}
           >
-            Raw JSONL
+            Training JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            Message JSONL
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -4910,6 +6300,11 @@ function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
   }
 }
 
+// dataTransfer.getData is blocked during dragover, but types is always readable.
+function isPromptQueueDrag(event: ReactDragEvent): boolean {
+  return isPromptQueueDragTypes(event.dataTransfer?.types);
+}
+
 const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   queueThreadIds,
 }) => {
@@ -4919,6 +6314,8 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   const items = usePromptQueueUI((s) => s.items);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
   const visibleItems = queueEntry
     ? items.filter((item) => item.runId === queueEntry.runId)
@@ -4960,6 +6357,19 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
     setEditingItemId(null);
     setDraftPrompt("");
   };
+  const endDrag = () => {
+    setDraggingItemId(null);
+    setDragOverItemId(null);
+  };
+  // Keyboard equivalent of a drag, since HTML5 drag events never fire for keys.
+  const moveByOffset = (index: number, offset: number) => {
+    const target = visibleItems[index + offset];
+    if (!target) {
+      return;
+    }
+    movePromptQueueItem(visibleItems[index].id, target.id);
+  };
+  const reorderable = visibleItems.length > 1;
 
   return (
     <div
@@ -4973,7 +6383,47 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
           return (
             <div
               key={item.id}
-              className={cn("min-h-10", isEditing ? "h-auto" : "h-10")}
+              className={cn(
+                "min-h-10",
+                isEditing ? "h-auto" : "h-10",
+                draggingItemId === item.id && "opacity-40",
+                dragOverItemId === item.id &&
+                  draggingItemId !== item.id &&
+                  "rounded-md ring-1 ring-ring/60",
+              )}
+              draggable={reorderable && !isEditing}
+              onDragStart={(event) => {
+                setDraggingItemId(item.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData(PROMPT_QUEUE_DRAG_TYPE, item.id);
+              }}
+              onDragEnd={endDrag}
+              onDragOver={(event) => {
+                // Own type only: a file dragged over a row must reach the page
+                // dropzone, which skips events already prevented here.
+                if (!isPromptQueueDrag(event) || draggingItemId === item.id) {
+                  return;
+                }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverItemId(item.id);
+              }}
+              onDragLeave={() => {
+                setDragOverItemId((id) => (id === item.id ? null : id));
+              }}
+              onDrop={(event) => {
+                if (!isPromptQueueDrag(event)) {
+                  return;
+                }
+                event.preventDefault();
+                const sourceId =
+                  event.dataTransfer.getData(PROMPT_QUEUE_DRAG_TYPE) ||
+                  draggingItemId;
+                if (sourceId) {
+                  movePromptQueueItem(sourceId, item.id);
+                }
+                endDrag();
+              }}
               aria-label={`${promptQueueStatusLabel(item.status)} prompt ${visiblePosition} of ${visibleItems.length}: ${item.prompt}`}
             >
               {isEditing ? (
@@ -5022,7 +6472,27 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
               ) : (
                 <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_2rem] items-center gap-2.5">
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
+                    {reorderable ? (
+                      <button
+                        type="button"
+                        className="shrink-0 cursor-grab text-muted-foreground/50 outline-none hover:text-muted-foreground focus-visible:text-foreground active:cursor-grabbing"
+                        aria-label={`Reorder queued prompt ${visiblePosition} of ${visibleItems.length}`}
+                        onKeyDown={(event) => {
+                          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+                            return;
+                          }
+                          event.preventDefault();
+                          moveByOffset(
+                            visibleIndex,
+                            event.key === "ArrowUp" ? -1 : 1,
+                          );
+                        }}
+                      >
+                        <CornerDownRightIcon className="size-4" />
+                      </button>
+                    ) : (
+                      <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
+                    )}
                     <div className="truncate text-sm text-muted-foreground">
                       {item.prompt}
                     </div>
@@ -5068,6 +6538,7 @@ const ComposerRightControls: FC<{
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
+  onDictateClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
@@ -5077,6 +6548,7 @@ const ComposerRightControls: FC<{
   onQueueClick,
   onSendClick,
   onStopClick,
+  onDictateClick,
   pendingSend,
   menuSide,
   queueThreadIds,
@@ -5086,47 +6558,52 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const activeResearchRun = useResearchRunStore((state) => {
+  // Id and status, not the run: run identity changes on every streamed research delta.
+  const activeResearchRunId = useResearchRunStore((state) =>
+    activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
+  );
+  const activeResearchRunStatus = useResearchRunStore((state) => {
     const runId = activeThreadId
       ? state.latestRunByThreadId[activeThreadId]
       : undefined;
-    return runId ? state.sessions[runId]?.run : undefined;
+    return runId ? state.sessions[runId]?.run.status : undefined;
   });
   const isResearchActive = Boolean(
-    activeResearchRun &&
-      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+    activeResearchRunStatus &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRunStatus),
   );
   const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
     string | null
   >(null);
   const stoppingResearchRunIdRef = useRef<string | null>(null);
   const researchStopping = Boolean(
-    activeResearchRun &&
-      (activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunId === activeResearchRun.id),
+    activeResearchRunStatus &&
+      (activeResearchRunStatus === "cancelling" ||
+        (activeResearchRunId !== undefined &&
+          stoppingResearchRunId === activeResearchRunId)),
   );
   useEffect(() => {
     if (
       !isResearchActive ||
       (stoppingResearchRunIdRef.current &&
-        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+        stoppingResearchRunIdRef.current !== activeResearchRunId)
     ) {
       stoppingResearchRunIdRef.current = null;
       setStoppingResearchRunId(null);
     }
-  }, [activeResearchRun?.id, isResearchActive]);
+  }, [activeResearchRunId, isResearchActive]);
   const stop = () => {
-    if (isResearchActive && activeResearchRun) {
+    if (isResearchActive && activeResearchRunId) {
       if (
-        activeResearchRun.status === "cancelling" ||
-        stoppingResearchRunIdRef.current === activeResearchRun.id
+        activeResearchRunStatus === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRunId
       ) {
         return;
       }
       if (isQueueRunning) onStopClick?.();
-      stoppingResearchRunIdRef.current = activeResearchRun.id;
-      setStoppingResearchRunId(activeResearchRun.id);
-      void cancelResearchRun(activeResearchRun.id)
+      stoppingResearchRunIdRef.current = activeResearchRunId;
+      setStoppingResearchRunId(activeResearchRunId);
+      void cancelResearchRun(activeResearchRunId)
         .then((run) => ingestResearchUpdate(run))
         .catch((error) => {
           stoppingResearchRunIdRef.current = null;
@@ -5138,20 +6615,6 @@ const ComposerRightControls: FC<{
       return;
     }
     if (isQueueRunning) onStopClick?.();
-  };
-  const aui = useAui();
-  // Keep the mic clickable: if the engine can't run here, explain and point to
-  // the local model instead of disabling the button.
-  const startDictation = () => {
-    if (!isStudioDictationAvailable()) {
-      notifyStudioDictationUnavailable();
-      return;
-    }
-    try {
-      aui.composer().startDictation();
-    } catch {
-      notifyStudioDictationUnavailable();
-    }
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
@@ -5165,7 +6628,7 @@ const ComposerRightControls: FC<{
           type="button"
           variant="ghost"
           className="size-8 rounded-full text-foreground"
-          onClick={startDictation}
+          onClick={onDictateClick}
         >
           {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
           <MicIcon className="unsloth-dictate-icon size-[22px]" />
@@ -5361,6 +6824,23 @@ function assistantMessageText(content: readonly unknown[] | undefined): string {
  * Retry keeps its old meaning: drop the partial and start over.
  */
 const ContinueMessageBar: FC = () => {
+  // One subscription, not ten, on every message that is not the newest.
+  //
+  // The bar mounts under every assistant message and returns null unless it is the last, but the
+  // ten `useAuiState` calls below ran first, each a subscription whose selector re-runs on EVERY
+  // store update -- one per character typed (220 messages, 300K characters: 10,193 subscriptions,
+  // 10,258 selector runs per keystroke).
+  //
+  // `isLast` is the same condition the body below already gates on, asked before the work rather
+  // than after it, so nothing that used to render stops rendering.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueMessageBarForLastMessage />;
+};
+
+const ContinueMessageBarForLastMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isLast = useAuiState(({ message }) => message.isLast);
@@ -5392,9 +6872,6 @@ const ContinueMessageBar: FC = () => {
     const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
-  // Research armed after the cut owns no run yet, so the gates above stay clear.
-  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
-
   // Cancelled comes through status (the adapter yields nothing after an abort); the
   // other two are stamped on metadata so they survive a reload.
   const stamped = readIncompleteInfo(metadata);
@@ -5402,23 +6879,188 @@ const ContinueMessageBar: FC = () => {
     status?.type === "incomplete" && status?.reason === "cancelled";
   const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
 
-  // Newest turn only: appending to an older one would strand the replies after it.
-  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
-  if (
-    !reason ||
-    !isLast ||
-    isRunning ||
-    researchRunId ||
-    researchActive ||
-    !continuable ||
-    !modeAllowsContinuation({
+  // Every gate the bar itself answers to. Resuming without asking has to clear the same
+  // ones, or it would resume a turn the bar would have refused to offer.
+  const resumable =
+    Boolean(reason) &&
+    isLast &&
+    !isRunning &&
+    !researchRunId &&
+    !researchActive &&
+    continuable &&
+    modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
-      deepResearchArmed,
-    }) ||
-    !partial.trim()
-  ) {
+    }) &&
+    Boolean(partial.trim());
+
+  // The parent is what every round of one logical turn shares; the message id changes
+  // each round, because a continuation runs as a sibling.
+  const parentId = useAuiState(({ thread, message }) => {
+    const index = thread.messages.findIndex((m) => m.id === message.id);
+    return index > 0 ? thread.messages[index - 1].id : null;
+  });
+
+  const startContinuation = useCallback(() => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return;
+    }
+    // Sibling of the truncated turn, so the branch picker can still reach the partial.
+    const parent = index > 0 ? messages[index - 1].id : null;
+    aui.thread().startRun({
+      parentId: parent,
+      runConfig: {
+        custom: {
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+        },
+      },
+    });
+  }, [aui, messageId, partial, thoughtSignature]);
+
+  // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
+  // which the fit protects, so a partial too big to sit beside the system turn makes the
+  // request irreducible and every further round fails identically.
+  const truncation = useAuiState(({ message }) => {
+    const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    return (custom?.contextTruncation ?? null) as ContextTruncation | null;
+  });
+
+  // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
+  // user made, so it resumes on its own and the bar never appears. Bounded, and only for
+  // `length`: see `shouldAutoContinue`. Asked per MESSAGE, not just per turn: the round
+  // budget belongs to the turn and one spent round out of three still says yes, so
+  // arriving at a message the claim below has already taken -- the branch picker back to
+  // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
+  // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  //
+  // Another tab won the message. The claim resolves after this component has already
+  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
+  // so the answer has to come back as state: without it this tab keeps a spinner for a
+  // run it never started, with the manual Continue button hidden behind it.
+  //
+  // Remembered as the message the answer was decided for, not as a bare flag: rows are
+  // mounted by INDEX (`<MessageByIndexProvider key={index}>` in progressive-messages.tsx),
+  // so selecting a different truncated branch at the same index re-renders THIS component
+  // instead of remounting it. A boolean survived that and suppressed the automatic
+  // continuation of a message no other tab had claimed, for as long as the row lived.
+  // Comparing ids re-answers per message while still refusing the one that really lost.
+  const [heldElsewhereFor, setHeldElsewhereFor] = useState<string | null>(null);
+  const claimHeldElsewhere = heldElsewhereFor === messageId;
+  // The runtime this bar belongs to, so its keeper renews and releases this claim and no
+  // other pane's.
+  // The thread this run will file itself under, which is what the lease belongs to and
+  // what its lifetime is read from. `remoteId`, not `id`: it is the value assistant-ui
+  // passes the adapter as `unstable_threadId` and the key the run appears under in
+  // `runningByThreadId`, and an uninitialized thread has an `id` but no `remoteId`.
+  const runThreadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const autoContinuing =
+    !claimHeldElsewhere &&
+    resumable &&
+    shouldAutoContinueMessage(messageId, reason, parentId, {
+      fits: truncation?.fits,
+      // The same cheap estimator the backend fit uses, which is all that is needed to
+      // spot a partial that has already eaten the whole budget.
+      partialTokens: Math.ceil(partial.length / 4),
+      promptTarget: truncation?.prompt_target,
+    });
+  useEffect(() => {
+    if (!autoContinuing || !parentId) {
+      return;
+    }
+    let mounted = true;
+    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
+    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
+    // so nothing inside would have differed, and rechecking the round budget would not
+    // help either: one recorded round still leaves the limit unspent. A ref fixed the
+    // replay but not a real remount, so leaving the chat with a truncated branch selected
+    // and returning fired it again, creating another sibling and another paid request.
+    // A module claim survived both but not a second TAB, which has its own module scope
+    // and its own empty claim; the lease behind this one is shared and settles that.
+    void claimAutoContinue(messageId, runThreadId ?? "").then((claim) => {
+      if (claim === "started") {
+        // Is there still a message to resume? `aui.thread()` follows the SELECTION, not
+        // the thread this bar belongs to, so a chat or branch switch inside the window the
+        // Web Lock is pending leaves `startContinuation` looking at a different list, where
+        // it finds nothing and issues no run at all.
+        //
+        // Asked BEFORE anything is held, because a hold whose run never appears is renewed
+        // forever on purpose -- preflight has no upper bound, so no deadline can separate
+        // "never coming" from "still on its way". A hold taken for a run that was never
+        // issued therefore renews its lease for the life of the tab, and every other tab
+        // reads that lease as live and refuses the message for just as long.
+        //
+        // Not the preflight case, and it cannot become it: this is `startRun` never having
+        // been called, decided synchronously off the same store `startContinuation` reads a
+        // line later in the same tick. A run that HAS been issued and is merely slow to
+        // begin passes here and keeps its hold and its renewals.
+        const stillThere = aui
+          .thread()
+          .getState()
+          .messages.some((message) => message.id === messageId);
+        if (!stillThere) {
+          // Nothing held and nothing recorded, so the lease this claim took runs out its
+          // own TTL -- the same thing a tab that closed mid-claim leaves behind -- and the
+          // turn keeps the round no request was ever made for.
+          //
+          // The claim itself is given back, and only inside this tab: it is what makes
+          // `claimAutoContinue` answer "skipped" for a message it has already continued,
+          // and a message nothing was issued for has not been continued at all. Left in,
+          // returning to this branch found the message skipped for the life of the tab.
+          // The lease stays, so no second tab may start while this one is still deciding.
+          forgetAutoContinue(messageId);
+          return;
+        }
+        // Held for as long as THIS thread's run generates, wherever the user navigates
+        // to meanwhile. The bar cannot hold it itself: the continuation's sibling becomes
+        // the selected branch and unmounts this component almost at once.
+        holdAutoContinueRun(messageId, runThreadId);
+        // Started whether or not this component is still mounted: the run belongs to the
+        // thread, not to the bar, and a claim taken and then dropped would leave the
+        // message continued by nobody.
+        //
+        // Recorded BEFORE the run, so a round that produces nothing still spends its
+        // budget instead of re-firing this effect forever.
+        recordAutoContinue(parentId);
+        startContinuation();
+        return;
+      }
+      // `skipped` is this tab's own duplicate call, where the run is coming from the
+      // other one and nothing on screen should move.
+      if (claim === "held-elsewhere" && mounted) {
+        setHeldElsewhereFor(messageId);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [
+    aui,
+    autoContinuing,
+    parentId,
+    messageId,
+    startContinuation,
+    runThreadId,
+  ]);
+
+  // Newest turn only: appending to an older one would strand the replies after it.
+  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
+  // `reason` is repeated rather than left to `resumable`, which is a boolean and so
+  // narrows nothing: the label below needs it proven non-undefined.
+  if (!resumable || !reason) {
     return null;
+  }
+  if (autoContinuing) {
+    // The run is starting this tick; showing the bar first would flash a question that is
+    // already being answered.
+    return (
+      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
+        <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
+        Continuing automatically.
+      </div>
+    );
   }
 
   const handleContinue = () => {
@@ -5471,6 +7113,35 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
+/**
+ * At module scope on purpose. The memo comparator in
+ * `MessagePrimitivePartByIndex` checks `components.tools` by identity, so an
+ * inline literal handed it a fresh object every render, failed the comparator
+ * and rebuilt every already-finished part of a streaming reply on each chunk.
+ *
+ * Anything added here must stay referentially stable; an entry that really
+ * depends on props or state belongs in a `useMemo`, not inline in the JSX.
+ */
+const ASSISTANT_PART_COMPONENTS = {
+  Text: MarkdownText,
+  Reasoning: Reasoning,
+  ReasoningGroup: ReasoningGroup,
+  Source: Sources,
+  ToolGroup: ToolGroup,
+  tools: {
+    by_name: {
+      web_search: WebSearchToolUIConfirmable,
+      search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      python: PythonToolUIConfirmable,
+      terminal: TerminalToolUIConfirmable,
+      code_execution: CodeExecutionToolUIConfirmable,
+      image_generation: ImageGenerationToolUIConfirmable,
+      render_html: RenderHtmlToolUIConfirmable,
+    },
+    Fallback: ToolFallbackConfirmable,
+  },
+} as const;
+
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
 // out of noise. Transient (store-only, cleared on run end), so the finished message
@@ -5510,6 +7181,154 @@ const DiffusionCanvas: FC = () => {
 };
 
 /**
+ * Mounts an autohidden action bar while focus is inside the message, the way hovering it does.
+ *
+ * `autohide="not-last"` UNMOUNTS every bar but the newest reply's, so Copy, Edit, Refresh,
+ * Delete, Read aloud and More leave the tab order on older messages and a keyboard or screen
+ * reader user has no way back: `:focus-within` in CSS cannot help, there is nothing to style.
+ * The reveal has to be JS, and it drives `message.setIsHovering`, the same flag the library's
+ * own `mouseenter`/`mouseleave` (MessagePrimitive.Root) writes and the only input to
+ * `useActionBarFloatStatus` besides the More menu's interaction lock. Reusing it rather than
+ * layering a second visibility source is what keeps the two from disagreeing.
+ *
+ * One flag, two writers, so the two clobber each other unless this hook covers both crossings:
+ *   - pointer leaves while focus is inside (a Tab that scrolls the message under a parked
+ *     cursor does exactly this): the library clears the flag, which would unmount the element
+ *     that currently has focus. `reassert` below sets it back inside the same event.
+ *   - focus leaves while the pointer is still over the message: clearing would unmount a bar
+ *     the user is pointing at, and no second `mouseenter` is coming. The `:hover` test defers
+ *     to the library's own `mouseleave` instead.
+ */
+function useActionBarFocusReveal() {
+  const aui = useAui();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const focusWithinRef = useRef(false);
+  const clearFrameRef = useRef<number | null>(null);
+
+  // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
+  // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
+  // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
+  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
+  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
+  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
+  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
+  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
+  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
+  const openPopupTrigger = useCallback(
+    () =>
+      rootRef.current?.querySelector(
+        '.aui-assistant-action-bar-root [aria-expanded="true"]',
+      ) ?? null,
+    [],
+  );
+
+  const isEngaged = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return false;
+    const active = document.activeElement;
+    if (active && el.contains(active)) return true;
+    return openPopupTrigger() !== null;
+  }, [openPopupTrigger]);
+
+  const cancelPendingClear = useCallback(() => {
+    if (clearFrameRef.current !== null) {
+      cancelAnimationFrame(clearFrameRef.current);
+      clearFrameRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
+   *
+   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
+   * browser chrome and for focus entering a portal, and it says nothing at all when the
+   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
+   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
+   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
+   * the user is on, so late is the safe direction.
+   */
+  const scheduleClear = useCallback(
+    (restart: boolean) => {
+      if (clearFrameRef.current !== null) {
+        if (!restart) return;
+        cancelAnimationFrame(clearFrameRef.current);
+      }
+      const decide = () => {
+        clearFrameRef.current = null;
+        const el = rootRef.current;
+        if (!el || !focusWithinRef.current) return;
+        const active = document.activeElement;
+        if (active && el.contains(active)) return;
+        if (openPopupTrigger()) {
+          // Focus is in this message's own portaled menu, whose interaction lock is holding
+          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
+          // bar open for good, so ask again next frame; the loop lasts only as long as the
+          // menu is open on this one message.
+          clearFrameRef.current = requestAnimationFrame(decide);
+          return;
+        }
+        focusWithinRef.current = false;
+        if (!el.matches(":hover")) {
+          aui.message().setIsHovering(false);
+        }
+      };
+      clearFrameRef.current = requestAnimationFrame(decide);
+    },
+    [aui, openPopupTrigger],
+  );
+
+  // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
+  const handleFocus = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>) => {
+      const el = rootRef.current;
+      const target = event.target as Node | null;
+      if (el && target && !el.contains(target)) {
+        // React bubbles focus events out of PORTALS along the React tree, so this is this
+        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
+        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
+        // that removal fires no focusout to wake us up again.
+        scheduleClear(false);
+        return;
+      }
+      cancelPendingClear();
+      if (focusWithinRef.current) return;
+      focusWithinRef.current = true;
+      aui.message().setIsHovering(true);
+    },
+    [aui, cancelPendingClear, scheduleClear],
+  );
+
+  const handleBlur = useCallback(() => {
+    if (!focusWithinRef.current) return;
+    scheduleClear(true);
+  }, [scheduleClear]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    // From an effect on purpose: MessagePrimitive.Root binds its own mouseleave from a ref
+    // callback, which commits before effects run, so this listener is registered second and
+    // runs second on the same element. Both writes land in one dispatch, the store settles on
+    // `true`, and React never renders the intermediate `false` -- so the bar does not unmount
+    // and the focused control is not destroyed under the user.
+    const reassert = () => {
+      if (focusWithinRef.current && isEngaged()) {
+        aui.message().setIsHovering(true);
+      }
+    };
+    el.addEventListener("mouseleave", reassert);
+    return () => {
+      el.removeEventListener("mouseleave", reassert);
+      cancelPendingClear();
+    };
+  }, [aui, isEngaged, cancelPendingClear]);
+
+  return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
+}
+
+const ResearchMessageRunIdContext = createContext<string | null>(null);
+
+/**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
  * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
@@ -5518,17 +7337,57 @@ const DiffusionCanvas: FC = () => {
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
+  const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const researchRunId = useAuiState(({ message }) => {
+  const metadataResearchRunId = useAuiState(({ message }) =>
+    getResearchRunId(message.metadata),
+  );
+  const boundResearchAssistantMessageId = useResearchRunStore((state) =>
+    metadataResearchRunId
+      ? state.sessions[metadataResearchRunId]?.run?.assistantMessageId
+      : undefined,
+  );
+  const researchRunId =
+    metadataResearchRunId &&
+    researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
+      ? metadataResearchRunId
+      : null;
+  // Persisted on the assistant turn that compacted, so the notice survives a reload.
+  const contextTruncation = useAuiState(({ message }) => {
     const custom = (
       message.metadata as
-        | { custom?: { researchRunId?: unknown } }
+        | { custom?: { contextTruncation?: unknown } }
         | undefined
     )?.custom;
-    return typeof custom?.researchRunId === "string"
-      ? custom.researchRunId
+    const value = custom?.contextTruncation;
+    return value && typeof value === "object"
+      ? (value as ContextTruncation)
       : null;
+  });
+  // Once a thread outgrows the window every request runs the fit, so "this turn
+  // compacted" is true of every later reply and would put a notice on all of them. What
+  // matters is when MORE of the conversation fell out of view: the eviction boundary
+  // rising above the last turn that reported one. Between moves the model sees the same
+  // history, so there is nothing new to say.
+  const showsNotice = useAuiState(({ thread }) => {
+    let previousDropped = 0;
+    for (const message of thread.messages) {
+      if (message.role !== "assistant") continue;
+      const value = (
+        message.metadata as
+          | { custom?: { contextTruncation?: unknown } }
+          | undefined
+      )?.custom?.contextTruncation as ContextTruncation | undefined;
+      const dropped = compactionBoundary(value);
+      if (dropped > previousDropped) {
+        if (message.id === messageId) return true;
+        previousDropped = dropped;
+      } else if (message.id === messageId) {
+        return false;
+      }
+    }
+    return false;
   });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
@@ -5585,11 +7444,29 @@ const AssistantMessage: FC = () => {
   };
 
   return (
-    <MessagePrimitive.Root
+    <ResearchMessageRunIdContext.Provider value={researchRunId}>
+      <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
+      // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
+      // whose body is plain prose -- no link, no image, no code fence and so not even
+      // Streamdown's per-fence Copy button -- contains nothing focusable once `autohide` has
+      // unmounted its action bar, and Tab has no way into the message at all: Copy, Edit,
+      // Delete and More are unreachable for the whole thread except its newest reply.
+      // A tabIndex rather than a visually hidden button on purpose: it adds no DOM node (this
+      // PR exists to cut per-message weight) and it draws nothing at rest. The app's own
+      // `:focus-visible` rule in index.css gives it the same soft 1px keyboard indicator every
+      // other focusable container gets, and `:focus-visible` means a mouse click on a reply
+      // still draws nothing.
+      tabIndex={0}
+      ref={focusReveal.ref}
+      onFocus={focusReveal.onFocus}
+      onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        {contextTruncation && showsNotice && !isEditing && (
+          <CompactionNotice truncation={contextTruncation} />
+        )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea
@@ -5631,27 +7508,7 @@ const AssistantMessage: FC = () => {
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-                <MessagePrimitive.Parts
-              components={{
-                Text: MarkdownText,
-                Reasoning: Reasoning,
-                ReasoningGroup: ReasoningGroup,
-                Source: Sources,
-                ToolGroup: ToolGroup,
-                tools: {
-                  by_name: {
-                    web_search: WebSearchToolUIConfirmable,
-                    search_knowledge_base: KnowledgeBaseToolUIConfirmable,
-                    python: PythonToolUIConfirmable,
-                    terminal: TerminalToolUIConfirmable,
-                    code_execution: CodeExecutionToolUIConfirmable,
-                    image_generation: ImageGenerationToolUIConfirmable,
-                    render_html: RenderHtmlToolUIConfirmable,
-                  },
-                  Fallback: ToolFallbackConfirmable,
-                },
-              }}
-                />
+                <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
                 <RagSourcesGroup />
                 <MessageHtmlArtifacts />
@@ -5667,41 +7524,80 @@ const AssistantMessage: FC = () => {
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
-    </MessagePrimitive.Root>
+      {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
+      <MessagePrimitive.If last={true}>
+        <ForkChatShortcut />
+      </MessagePrimitive.If>
+
+      {/*
+        The same reveal, for the other traversal direction.
+
+        The tabIndex on the root above only works going FORWARD. A container is reached before its
+        own descendants, so Shift+Tab arriving from the message below lands on the last tabbable
+        thing in this message -- and with the bar unmounted that is the root, which sits BEFORE
+        the bar in DOM order. Focusing it mounts the controls and then the next Shift+Tab steps
+        past them to the previous message, so Copy, Edit, Delete and More are reachable going
+        forward and unreachable going backward.
+
+        A sentinel AFTER the bar is what makes the backward pass land inside the message: focus
+        stops here, the bar mounts, and the next Shift+Tab goes into the last control rather than
+        out of the message. Deliberately not a focus redirect to that control, which would trap
+        the forward pass in a loop between the last button and this element.
+
+        A span with no content rather than a visually hidden button: it is one node with no text,
+        which matters in a PR whose point is per-message weight, and it draws nothing at rest for
+        the same :focus-visible reason as the root.
+
+        No onFocus/onBlur of its own: React's onFocus is focusin and bubbles, so focus landing
+        here already reaches the root's handler and mounts the bar. Duplicating them would run
+        the same handler twice per focus change for no effect. No role either -- it performs no
+        action, so labelling it as a button would misdescribe it; the aria-label is what stops it
+        being an unannounced stop for a screen reader.
+      */}
+      <span
+        className="aui-assistant-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
+      </MessagePrimitive.Root>
+    </ResearchMessageRunIdContext.Provider>
   );
 };
 
 const COPY_RESET_MS = 2000;
 
-const ForkCountBadge: FC = () => {
-  const aui = useAui();
-  const messageId = useAuiState(({ message }) => message.id);
-  const [count, setCount] = useState(0);
-
+/**
+ * One fork-count subscription for as long as the thread is on screen.
+ *
+ * The badges below sit inside action bars that autohide, so at rest at most the newest reply
+ * has one, and none at all while the thread is running or while its last message is a prompt.
+ * Left to them, the last badge leaving would drop the thread's counts and the next hover would
+ * fetch them all again -- one whole-thread request per message the pointer crosses, with the
+ * badge arriving a round trip after the bar it sits in.
+ */
+const useThreadForkCounts = (): void => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
   useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      const remoteId = aui.threadListItem().getState().remoteId;
-      if (!remoteId) {
-        if (!cancelled) setCount(0);
-        return;
-      }
-      void getForkCount(remoteId, messageId)
-        .then((n) => {
-          if (!cancelled) setCount(n);
-        })
-        .catch(() => {
-          /* swallow: badge is non-critical */
-        });
-    };
-    refresh();
-    const handler = () => refresh();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    };
-  }, [aui, messageId]);
+    if (!remoteId) return;
+    return subscribeForkCounts(remoteId, () => {});
+  }, [remoteId]);
+};
+
+const ForkCountBadge: FC = () => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
+  const messageId = useAuiState(({ message }) => message.id);
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      remoteId ? subscribeForkCounts(remoteId, onChange) : () => {},
+    [remoteId],
+  );
+  const getSnapshot = useCallback(
+    () => (remoteId ? forkCountFor(remoteId, messageId) : 0),
+    [remoteId, messageId],
+  );
+  const count = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   if (count <= 0) return null;
   return (
@@ -5715,14 +7611,34 @@ const ForkCountBadge: FC = () => {
   );
 };
 
+/**
+ * One fork at a time, across every caller of the hook below.
+ *
+ * The chord and the button each hold their own instance, so a `useState` flag
+ * only disables the one that was used: pressing the chord and then clicking
+ * Fork before the first request lands would post two, each with its own new
+ * thread id, and race their navigations. A store is what both of them read.
+ */
+const useForkInFlight = create<{
+  forking: boolean;
+  setForking: (forking: boolean) => void;
+}>((set) => ({
+  forking: false,
+  setForking: (forking) => set({ forking }),
+}));
+
 const useForkMessageAction = () => {
   const aui = useAui();
   const navigate = useNavigate();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [pending, setPending] = useState(false);
+  const pending = useForkInFlight((s) => s.forking);
+  const setPending = useForkInFlight((s) => s.setForking);
 
   const handleFork = async () => {
+    // Read, do not trust the render: two handlers can run in one tick, before
+    // either sees the other's state.
+    if (useForkInFlight.getState().forking) return;
     const remoteId = aui.threadListItem().getState().remoteId;
     if (!remoteId) {
       toast.error("Cannot fork an unsaved chat");
@@ -5730,6 +7646,22 @@ const useForkMessageAction = () => {
     }
     setPending(true);
     try {
+      // The fork copies settings_json inside its own transaction, so anything not yet
+      // in the row is not in the copy: a pill toggled moments ago and still in the
+      // 400ms debounce, or one held because this chat's own read has not landed. The
+      // fork would otherwise open on the modes the chat had before, not the ones on
+      // screen when it was made.
+      try {
+        await settleThreadScopedSettingsForCopy(remoteId);
+      } catch {
+        // The row does not hold what is on screen, so a fork made now would carry the
+        // pre-edit modes and look like it had lost the change. Better to say so.
+        toast.error("Could not fork this chat", {
+          description:
+            "Its settings could not be saved, so the fork would not match. Please retry.",
+        });
+        return;
+      }
       const result = await forkChatThread(remoteId, {
         messageId,
         newThreadId: crypto.randomUUID(),
@@ -5764,6 +7696,37 @@ const useForkMessageAction = () => {
   };
 };
 
+/**
+ * The chord's registration, which no action bar can hold.
+ *
+ * The button below is the user bar's, and that bar is `autohide="always"`, so
+ * ActionBarPrimitive.Root returns null and takes the registration with it on
+ * every message that is not hovered. The assistant bar has its own fork call
+ * and never mounts the button at all, so on a thread that ended the ordinary
+ * way, with a reply, no message carried the chord.
+ *
+ * Mounted from both message roots under `If last`, so it exists once, for
+ * whichever message is last, whatever its role and wherever the pointer is.
+ */
+const ForkChatShortcut: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  const chatActive = useChatActive();
+  // Compare mounts a thread in each pane, and the chord would go to whichever
+  // registered first. Fork from the button there.
+  const inComparePane = useInComparePane();
+  useShortcut(
+    "forkChat",
+    () => {
+      // `chatActive` is the visible tab, not the foreground, so a dialog over
+      // Chat would otherwise fork the conversation behind it.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      void forkMessage();
+    },
+    { enabled: chatActive && !inComparePane && !forkDisabled },
+  );
+  return null;
+};
+
 const ForkMessageButton: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
 
@@ -5794,23 +7757,31 @@ const getResearchRunId = (metadata: unknown): string | null => {
 };
 
 const useResearchMessageRunId = () => {
-  return useAuiState(({ message }) => getResearchRunId(message.metadata));
+  return useContext(ResearchMessageRunIdContext);
 };
+
+// Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
+// counted as "no research reply" before. Keeping that stops an empty id hiding a message's edit
+// and delete controls.
+const hasResearchRunId = (metadata: unknown): boolean =>
+  Boolean(getResearchRunId(metadata));
 
 const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const messages = useAuiState(({ thread }) => thread.messages);
-  if (messages.length === 0) {
-    return false;
-  }
-  return aui
-    .thread()
-    .export()
-    .messages.some(
-      ({ parentId, message }) =>
-        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
-    );
+  // The ANSWER is selected, not the message array: selecting the array subscribed every user
+  // message's action bar (and its tooltips) to every thread change, so one delete re-rendered all
+  // of them even when the answer had not moved. The export is shared across one revision.
+  return useAuiState(({ thread }) => {
+    if (thread.messages.length === 0) {
+      return false;
+    }
+    return researchReplyOwners(
+      thread.messages,
+      () => aui.thread().export().messages,
+      hasResearchRunId,
+    ).has(messageId);
+  });
 };
 
 // Whether the active thread has a non-terminal durable research run. After a reload the
@@ -5906,7 +7877,13 @@ const CopyButton: FC = () => {
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleCopy = async () => {
-    const text = aui.message().getCopyText();
+    // getCopyText reads content only, and a long paste sits in an attachment.
+    const pasted = attachmentsPastedText(aui.message().getState().attachments);
+    // The image tokens are renderer markup, not prose: strip them or the clipboard
+    // gets `[[img:0123456789ab]]` where the picture was.
+    const text = [stripSearchImageTokens(aui.message().getCopyText()), pasted]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
     if (await copyToClipboard(text)) {
       setCopied(true);
       if (resetTimeoutRef.current) {
@@ -5957,7 +7934,9 @@ const EditAssistantMessageButton: FC = () => {
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
-      content,
+      // Same rule as the copy button and the whole-chat export: the tokens are
+      // renderer markup, so a saved answer must not carry them as prose.
+      stripSearchImageTokens(content),
       `message-${Date.now()}.md`,
       "text/markdown",
     );
@@ -5970,9 +7949,12 @@ async function exportMessageMarkdown(content: string): Promise<void> {
   }
 }
 const AssistantActionBar: FC = () => {
+  const aui = useAui();
+  const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -5983,6 +7965,21 @@ const AssistantActionBar: FC = () => {
     <>
       <ActionBarPrimitive.Root
         hideWhenRunning={!speaking}
+        // Unmounts the bar on every message that is not hovered, as the user bar already does.
+        // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
+        // every menu open fanned out across the whole thread.
+        //
+        // "not-last", not "always": an unmounted bar is out of the tab order too, and these are
+        // the only Copy, Refresh, Read aloud and More controls a message has. The newest reply
+        // keeps its bar, so a keyboard user still reaches the message they are acting on, and
+        // the other N-1 still go: 8 tooltip subscriptions on a 500-message thread instead of
+        // ~250. "never" while speaking because this bar carries the only Stop reading control,
+        // which neither hover nor a later reply must take away.
+        //
+        // The older N-1 are deferred, not lost: useActionBarFocusReveal on the message root
+        // remounts a bar when focus enters that message, so tabbing brings back what hovering
+        // brings back and the controls return to the accessibility tree with it.
+        autohide={speaking ? "never" : "not-last"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
@@ -6018,9 +8015,13 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ActionBarMorePrimitive.Root>
+        {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
+            that is an INHERITED property, so every open invalidates style for the whole
+            document. On a long thread that recalc is the bulk of the open+close cost. */}
+        <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
+              ref={moreMenuTriggerRef}
               tooltip="More"
               className="data-[state=open]:bg-accent"
             >
@@ -6033,6 +8034,8 @@ const AssistantActionBar: FC = () => {
             onCloseAutoFocus={(e) => e.preventDefault()}
             className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
+            {/* Prevent an outside dismissal from triggering Delete. */}
+            <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
@@ -6054,6 +8057,59 @@ const AssistantActionBar: FC = () => {
                 Export as markdown
               </ActionBarMorePrimitive.Item>
             </ActionBarPrimitive.ExportMarkdown>
+            {activeProjectId && (
+              <ActionBarMorePrimitive.Item
+                onSelect={() => {
+                  // Not getCopyText: it joins text parts alone, so a reply's
+                  // reasoning, tool calls and citations would be dropped and a
+                  // tool-only reply would read as empty. Same conversion the
+                  // whole-chat save runs.
+                  // Stripped: a project source is retrieved back into context, so
+                  // saved tokens would teach the model ids that resolve to nothing.
+                  const text = stripSearchImageTokens(
+                    replySourceMarkdown(
+                      aui.message().getState().content,
+                      toolResultModelText,
+                    ),
+                  );
+                  if (!text.trim()) {
+                    toast.info("No content to save.");
+                    return;
+                  }
+                  const state = aui.threadListItem().getState();
+                  // The list item's title belongs to the whole chat, so mark the
+                  // reply apart or saving both lists two identical names.
+                  const title = state.title ? `${state.title} - reply` : "reply";
+                  // activeProjectId can lag a thread switch while the stored
+                  // thread loads; resolve the destination from this thread.
+                  const remoteId =
+                    state.remoteId ||
+                    useChatRuntimeStore.getState().activeThreadId;
+                  void (async () => {
+                    const thread = remoteId
+                      ? await getStoredChatThread(remoteId).catch(() => null)
+                      : null;
+                    if (!thread?.projectId) {
+                      toast.info("This chat isn't in a project.");
+                      return;
+                    }
+                    await saveMarkdownAsProjectSource(
+                      thread.projectId,
+                      text,
+                      title,
+                    );
+                  })();
+                }}
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+              >
+                <HugeiconsIcon
+                  icon={BookOpen01Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                Save to project sources
+              </ActionBarMorePrimitive.Item>
+            )}
             <ActionBarMorePrimitive.Item
               onSelect={() => setDetailsOpen(true)}
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
@@ -6112,6 +8168,11 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-0.5" />
         </div>
       </div>
+      {/* The other half of the pair: last is a user message while a reply is
+          still to come, or once one has been deleted. */}
+      <MessagePrimitive.If last={true}>
+        <ForkChatShortcut />
+      </MessagePrimitive.If>
     </MessagePrimitive.Root>
   );
 };

@@ -243,7 +243,7 @@ def _ready_card_html(
     has_cloudflare_link: bool = False,
     cloudflare_requested: bool = False,
 ) -> str:
-    """Branded ready card for the in-notebook Studio view.
+    """Branded ready card for the in-notebook Unsloth view.
 
     Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and 404 when opened as a
     top-level tab or on another device, so never ``window.open`` them. On real Colab the
@@ -253,12 +253,12 @@ def _ready_card_html(
     if _is_colab_runtime() or _is_colab_proxy_url(url, port):
         if has_cloudflare_link:
             embed_note = (
-                "Open Studio with the Cloudflare link above. In-cell proxy previews on "
+                "Open Unsloth with the Cloudflare link above. In-cell proxy previews on "
                 "current Colab often stay blank, so the tunnel link is the supported path."
             )
         elif cloudflare_requested:
             embed_note = (
-                "Could not open a Cloudflare tunnel, so Studio may be unreachable on Colab. "
+                "Could not open a Cloudflare tunnel, so Unsloth may be unreachable on Colab. "
                 "Check the logs above and re-run this cell. Pass "
                 '<code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">'
                 "cloudflare=True</code> after fixing any tunnel errors."
@@ -347,7 +347,7 @@ def _warn_colab_cloudflare_missing(*, use_cloudflare: bool, cloudflare_url: "str
     if not use_cloudflare or cloudflare_url or not _is_colab_runtime():
         return
     logger.warning(
-        "Colab Cloudflare tunnel unavailable — Studio is unlikely to be reachable in this "
+        "Colab Cloudflare tunnel unavailable — Unsloth is unlikely to be reachable in this "
         "notebook. Check the logs above for tunnel or auth errors, then re-run start()."
     )
 
@@ -482,7 +482,7 @@ _COLAB_IFRAME_HEIGHT = 900
 
 
 def _embed_kernel_port_iframe(port: int) -> bool:
-    """Embed Studio via Colab's native kernel-port iframe helper.
+    """Embed Unsloth via Colab's native kernel-port iframe helper.
 
     Only trusted on a real Colab runtime: colabtools can import ``google.colab`` and
     queue browser-side JS without appending an iframe, so callers outside Colab must use

@@ -43,7 +43,7 @@ Everything here fails CLOSED for the same reason. ``apply_activation_rotation`` 
 it cannot find, on a module that is not a Linear, on an ``in_features`` the group does not
 divide, and on a rotation kind it does not implement. Its caller (the prequant loader) turns that
 into a refused checkpoint and a dense fallback, which is slow but correct. Rotated artifacts also
-carry their own format tag, so a Studio old enough to predate this module rejects them outright
+carry their own format tag, so an Unsloth old enough to predate this module rejects them outright
 instead of running them unrotated.
 
 torch is imported inside the functions, matching the other lazily-loaded inference helpers, so
@@ -52,25 +52,30 @@ reading the metadata contract costs no import.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Iterable, Optional
 
+# the rotation KIND; an unimplemented value is refused
+# ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ────────── The rotation KIND. A
+# value this module does not implement is refused, so a future scheme can be added without a released Unsloth silently
+# treating it as this one.
 # ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ──────────
-# The rotation KIND. A value this module does not implement is refused, so a future scheme can be
-# added without a released Studio silently treating it as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
-# Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` /
-# ``curve_grid``): a form tag plus the parameters needed to reproduce the form.
+# mirrors the adaLN curve contract next door: a form tag plus the parameters to reproduce the form
+# Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` / ``curve_grid``): a form tag
+# plus the parameters needed to reproduce the form.
 ROTATION_KEY = "activation_rotation"
 ROTATION_GROUP_KEY = "activation_rotation_group"
 ROTATION_FQNS_KEY = "activation_rotation_fqns"
 
-# The group size the denoiser artifact ships at, and the one the hosted conditioner already uses.
-# 256 beat 64 in weight space on MiniMax-H3 (mean relative quantization error -19.9% vs -17.3%
-# over 200 layers) and is the largest power of 4 that divides every quantized H3 input axis.
+# 256 beat 64 in weight space on MiniMax-H3 (-19.9% vs -17.3% mean relative quantization error over 200 layers)
+# The group size the denoiser artifact ships at, and the one the hosted conditioner already uses. 256 beat 64 in weight
+# space on MiniMax-H3 (mean relative quantization error -19.9% vs -17.3% over 200 layers) and is the largest power of 4
+# that divides every quantized H3 input axis.
 DEFAULT_CONVROT_GROUPSIZE = 256
 
-# Marker set on a transformer whose rotation is installed, so a caller can tell a rotated module
-# from an unrotated one without re-deriving anything. Diagnostic only.
+# Marker set on a transformer whose rotation is installed, so a caller can tell a rotated module from an unrotated one
+# without re-deriving anything. Diagnostic only.
 CONVROT_ATTR = "_unsloth_activation_rotation"
 
 
@@ -85,14 +90,16 @@ def is_power_of_four(size: Any) -> bool:
     n = size
     if n < 4 or n & (n - 1):
         return False
-    # A power of two is a power of four exactly when its single set bit sits at an even index.
+    # a power of two is a power of four exactly when its single set bit sits at an even index
     return (n.bit_length() - 1) % 2 == 0
 
 
-# ── the rotation itself ───────────────────────────────────────────────────────────────────────
-# Mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a
-# few lines of torch rather than a dependency on a wheel Studio does not ship.
+# mirrors comfy-kitchen's _build_hadamard / _rotate_activation / _rotate_weight, without the wheel dependency
 
+# ── the rotation itself ─────────────────────────────────────────────────────────────────────── Mirrors comfy-kitchen's
+# ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a few lines of torch rather than a dependency on
+# a wheel Unsloth does not ship.
+# ── the rotation itself ───────────────────────────────────────────────────────────────────────
 _HADAMARD_CACHE: dict = {}
 
 
@@ -163,9 +170,18 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
     module.weight.data = rotated.to(weight.dtype)
 
 
+@lru_cache(maxsize = None)
 def convrot_linear_class() -> Any:
     """The ``nn.Linear`` subclass that rotates its input, built lazily so importing this module
-    never imports torch.
+    never imports torch, and built exactly ONCE.
+
+    The cache is not a micro-optimisation, it is the difference between one compiled graph and
+    dozens. A class defined inside a function is a NEW class object on every call, and
+    ``torch.compile`` guards each frame on ``___check_type_id`` of the modules it closes over. So
+    handing every rotated projection its own ConvRotLinear made each one look like a different
+    type and retraced the block it lives in: measured 23 recompiles against bfloat16's 1 on the
+    same job, 178 s of first-call compile against 14 s, on a denoiser with 350 rotated
+    projections. Sharing one class collapses that back to a single trace.
 
     A CLASS SWAP rather than a wrapper module, and that is load-bearing twice over: the module
     stays an ``nn.Linear``, so torchao's filter and ``quantize_`` treat it exactly as they treat
@@ -179,8 +195,8 @@ def convrot_linear_class() -> Any:
     class ConvRotLinear(nn.Linear):
         """``nn.Linear`` whose input is block-Hadamard rotated before the matmul."""
 
-        # Set per instance by ``_install_rotation``; the class default exists only so a
-        # half-constructed instance cannot silently rotate at some other group.
+        # set per instance by _install_rotation; the class default exists so a half-constructed instance cannot silently
+        # rotate at some other group
         convrot_groupsize: int = DEFAULT_CONVROT_GROUPSIZE
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -236,8 +252,8 @@ def rotation_metadata_error(metadata: Any) -> Optional[str]:
         )
     fqns = metadata.get(ROTATION_FQNS_KEY)
     if not isinstance(fqns, (list, tuple)) or not fqns:
-        # An empty list is refused rather than read as "rotate nothing": a builder that failed to
-        # record its set would otherwise emit an artifact that loads clean and renders garbage.
+        # An empty list is refused rather than read as "rotate nothing": a builder that failed to record its set would
+        # otherwise emit an artifact that loads clean and renders garbage.
         return f"activation rotation records no fqns ({ROTATION_FQNS_KEY} is {fqns!r})"
     if not all(isinstance(fqn, str) and fqn for fqn in fqns):
         return f"activation rotation {ROTATION_FQNS_KEY} has non-string entries"
@@ -355,9 +371,7 @@ def apply_activation_rotation(
                 f"activation rotation target {fqn!r} has in_features {module.in_features}, "
                 f"which the recorded group {group_size} does not divide"
             )
-    # Every target is validated before ANY is swapped. A partial install is the one outcome worse
-    # than either end state: the rotated half still renders, just wrongly, so there is nothing to
-    # notice and nothing to fall back from.
+    # validate every target before swapping ANY: a partial install still renders, just wrongly
     for fqn in fqns:
         _install_rotation(modules[fqn], group_size)
     try:

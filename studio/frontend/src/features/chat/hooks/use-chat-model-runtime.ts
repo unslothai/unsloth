@@ -2,24 +2,50 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  type ServerTuningValues,
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  type TransferSample,
+  appendSample,
+  computeTransferStats,
+} from "@/lib/transfer-stats";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { defaultInferenceParams } from "../presets/preset-policy";
+import {
+  type ReloadHint,
+  serverWideReloadRequired,
+} from "../lib/server-wide-reload";
+import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
+import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
+import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
-import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
-  notifyNative,
-  primeNativeNotificationPermission,
-  safeNotificationLabel,
-  sanitizeNotificationBody,
-} from "@/lib/native-notifications";
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+import {
+  beginServerModelWait,
+  serverModelWaitOutstanding,
+  statusPollSignal,
+} from "../lib/server-model-wait";
+// eslint-disable-next-line no-restricted-imports -- The hub barrel imports chat; this lifecycle leaf does not.
+import { dismissStartToastsForModelSelection } from "@/features/hub/download-manager";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
   getDownloadProgress,
@@ -42,9 +68,12 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
+  noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
+  readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -57,26 +86,60 @@ import {
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
+  tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import {
+  isIdleUnloadedStatus,
+  isSpeechOnlyStatus,
+} from "../lib/speech-only-status";
+import {
+  residentRuntimeMatchesConfig,
+  residentSpeculativeNeedsRepair,
+} from "../lib/resident-config-match";
+import { residentModelMatchesPick } from "../lib/resident-model-match";
+import {
+  loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
+  unpinnedDefaultRequest,
+  unpinnedLoadContext,
   resolveLoadMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveExplicitCtxPin,
+  loadRequestContextPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
+import {
+  type CpuFallbackReason,
+  type MmprojFallbackReason,
+  type InferenceStatusResponse,
+  isMultimodalResponse,
+} from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
+  residentIsServedByMlx,
+  resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
+import {
+  invalidateLlamaFlagCatalog,
+  loadManagedLlamaFlags,
+} from "@/features/model-picker/api/llama-flags";
+import { usePlatformStore } from "@/config/env";
 import type {
   ChatLoraSummary,
-  ChatModelSummary,
+  ChatModelRow,
 } from "../types/runtime";
 
 export type SelectedModelInput = {
@@ -85,8 +148,8 @@ export type SelectedModelInput = {
   loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
-  /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
-   *  whether an uncached repo should download via the Hub manager. */
+  /** Where the pick came from ("hub", "local", "external"). Decides whether an uncached repo
+   *  should download via the Hub manager. */
   source?: string;
   /** Uncached non-GGUF HF repo staged for a snapshot download (variant null). */
   isHubRepo?: boolean;
@@ -96,21 +159,56 @@ export type SelectedModelInput = {
   forceReload?: boolean;
   nativePathToken?: string;
   nativePathExpiresAtMs?: number | null;
-  /** Direct local .gguf file (no HF variant / native token) — still a GGUF
-   *  source, so the staging flow treats it as one. */
+  /** Direct local .gguf file (no HF variant / native token), still a GGUF source, so the staging
+   *  flow treats it as one. */
   isGguf?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
   throwOnError?: boolean;
-  /** Keep the current speculative-decoding choice across the model switch
-   *  instead of resetting it to the standing preference. */
+  /** Keep the current speculative-decoding choice across the model switch instead of resetting it
+   *  to the standing preference. */
   keepSpeculative?: boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
 
-// Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
-// the pinned approval the worker requires instead of being blocked.
+// Approved fingerprints by checkpoint, so a rollback after a failed switch can resend the pinned
+// approval the worker requires.
+/** An absent route is not a failed read: only the second one withholds an answer. */
+async function readReloadHint(
+  read: () => Promise<{ reloadRequired: boolean } | null>,
+): Promise<ReloadHint> {
+  try {
+    return (await read()) ?? "unsupported";
+  } catch (error) {
+    return isSettingsRouteAbsent(error) ? "unsupported" : "unknown";
+  }
+}
+
+/** The two settings reads `serverWideReloadRequired` judges, fetched together. */
+async function readServerWideReloadHints(): Promise<boolean> {
+  const [modelMemory, vramBudget] = await Promise.all([
+    // Forced, like the budget below: a read that started before a save answers about the policy it
+    // replaced, and a false from that would suppress the reload the save was made for.
+    readReloadHint(() => loadModelMemorySettings({ force: true })),
+    // Rethrow, or a failed read is indistinguishable from an absent route: this reader answers null for both.
+    readReloadHint(() =>
+      loadVramBudgetSettings({ force: true, rethrow: true }),
+    ),
+  ]);
+  return serverWideReloadRequired({ modelMemory, vramBudget });
+}
+
+/** Placement is a set: the backend narrows and reorders it at fit time. */
+function sameGpuSelection(
+  left: readonly number[] | null | undefined,
+  right: readonly number[] | null | undefined,
+): boolean {
+  const a = [...(left ?? [])].sort((x, y) => x - y);
+  const b = [...(right ?? [])].sort((x, y) => x - y);
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 const approvedRemoteCodeFingerprints = new Map<string, string>();
 function rememberApprovedRemoteCode(
   checkpoint: string,
@@ -130,6 +228,53 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
+
+const CLI_LOAD_POLL_IDLE_MS = 60_000;
+const CLI_LOAD_POLL_MAX_MS = 600_000;
+
+async function waitForServerModel(signal?: AbortSignal): Promise<void> {
+  const started = Date.now();
+  let sawLoad = false;
+
+  while (
+    !signal?.aborted &&
+    !useChatRuntimeStore.getState().params.checkpoint &&
+    !useChatRuntimeStore.getState().modelLoading
+  ) {
+    let status: InferenceStatusResponse | null = null;
+    // Capped, or a half-open read parks the loop past both caps below and past the
+    // unmount that aborted it, with the settlement gate still up behind it.
+    const poll = statusPollSignal(signal);
+    try {
+      status = await getInferenceStatus(poll.signal);
+    } catch {
+      // A later poll can recover from a transient status failure.
+    } finally {
+      poll.dispose();
+    }
+    if (
+      signal?.aborted ||
+      useChatRuntimeStore.getState().params.checkpoint ||
+      useChatRuntimeStore.getState().modelLoading
+    ) {
+      return;
+    }
+
+    if (status) {
+      const loading = (status.loading?.length ?? 0) > 0;
+      sawLoad ||= loading;
+      if (!loading && status.active_model) {
+        await tryAdoptServerActiveModel({ status });
+        return;
+      }
+      if (!loading && sawLoad) return;
+    }
+    const elapsed = Date.now() - started;
+    if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
+    if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
 
 function parseTrailingEpoch(input: string): number | undefined {
   const match = input.match(LORA_SUFFIX_RE);
@@ -158,6 +303,7 @@ function describeModel(model: {
   is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
@@ -178,7 +324,7 @@ function describeModel(model: {
   return tags.join(" · ");
 }
 
-function toChatModelSummary(model: {
+function toChatModelRow(model: {
   id: string;
   name?: string | null;
   is_lora?: boolean;
@@ -188,7 +334,8 @@ function toChatModelSummary(model: {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
-}): ChatModelSummary {
+  has_video_input?: boolean;
+}): ChatModelRow {
   return {
     id: model.id,
     name: model.name || model.id,
@@ -200,14 +347,13 @@ function toChatModelSummary(model: {
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
+    hasVideoInput: Boolean(model.has_video_input),
   };
 }
 
-// Merge capability flags from a load/status response into the matching
-// models[] entry. /api/models/list omits audio capability for default and
-// active-GGUF entries, so the attach gates (`activeModel?.hasAudioInput`)
-// would otherwise stay false. Mirrors the compare composer's sync.
-// Exported for tests.
+// Merge capability flags from a load/status response into the matching models[] entry:
+// /api/models/list omits audio capability for default and active-GGUF entries, so the attach
+// gates would stay false. Mirrors the compare composer's sync.
 export function syncModelCapabilities(
   modelId: string,
   resp: {
@@ -215,9 +361,11 @@ export function syncModelCapabilities(
     is_vision?: boolean;
     is_lora?: boolean;
     is_gguf?: boolean;
+    is_mlx?: boolean;
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
+    has_video_input?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -225,9 +373,15 @@ export function syncModelCapabilities(
   const synced = {
     isVision: Boolean(resp.is_vision),
     isGguf: Boolean(resp.is_gguf),
+    // A locally scanned model is in no /api/models/list row, so this is the only place its summary
+    // learns it is served by MLX.
+    isMlx: Boolean(resp.is_mlx),
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
+    // /api/models/list omits this for the active GGUF row, so without it the video adapter reads
+    // false after every load and status hydration.
+    hasVideoInput: Boolean(resp.has_video_input),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {
@@ -235,8 +389,8 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        // Label like the catalog entry that replaces this on the next /api/models/list;
-        // the fallback keeps a cached GGUF's snapshot path out of the bar.
+        // Label like the catalog entry that replaces this on the next /api/models/list; the fallback
+        // keeps a cached GGUF's snapshot path out of the bar.
         name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
@@ -255,6 +409,7 @@ function toLoraSummary(lora: {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  audio_type?: string | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -267,6 +422,7 @@ function toLoraSummary(lora: {
     updatedAt,
     source: lora.source ?? undefined,
     exportType: lora.export_type ?? undefined,
+    audioType: lora.audio_type ?? null,
   };
 }
 
@@ -286,53 +442,98 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
-// Bumped by every call. Two refreshes can be in flight at once -- a media load
-// announces itself before its POST and again once the backend has committed the
-// eviction -- and they read the status at different moments. Completion order is
-// not the order they were issued in, so without this the older one could land
-// last and re-pin the model the newer one had just seen released, leaving chat
-// claiming a model that 400s on send until the load finally settled.
+// Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
+let loraSyncGeneration = 0;
+let lastIdleUnloadArmed = false;
+
+async function readIdleUnloadArmed(): Promise<boolean> {
+  try {
+    const settings = await loadOpenAIAutoSwitchSettings();
+    lastIdleUnloadArmed = settings.idleUnloadActive;
+  } catch {
+    // Preserve the last answer: treating a settings blip as disarmed would discard the pick.
+  }
+  return lastIdleUnloadArmed;
+}
 
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
+  /** A TTS load owns the chat slot even though Chat did not start the load. */
+  externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
-  // Last issued wins: it read the freshest status, whichever answers first.
   const generation = ++syncGeneration;
+  const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
+  const loraSuperseded = () =>
+    loraGeneration !== null && loraGeneration !== loraSyncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const [listRes, statusRes, lorasRes] = await Promise.all([
+    const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
+    const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(),
-      includeLoras ? listLoras() : Promise.resolve(null),
+      getInferenceStatus(signal),
+      // Settled from this request alone. Read out of the aggregate below, a sibling
+      // rejection discarded a good list yet still marked the inventory settled, so a
+      // resident LoRA classified as a base model and pinned a new pair generalized.
+      includeLoras
+        ? listLoras().then(
+            (lorasRes) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                setLoras(lorasRes.loras.map(toLoraSummary));
+              }
+              return lorasRes;
+            },
+            (error) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                useChatRuntimeStore.setState({ loraInventorySettled: true });
+              }
+              throw error;
+            },
+          )
+        : Promise.resolve(null),
+      options?.preserveIdleUnloaded
+        ? readIdleUnloadArmed()
+        : Promise.resolve(false),
     ]);
 
-    // Cancellation can land while the requests above are in flight. Bail
-    // before writing backend state back -- cancelLoading already cleared it.
-    // Same for a refresh that a later one has already superseded: its answer
-    // describes a moment that has passed.
     if (signal?.aborted || superseded()) return;
 
-    setModels(listRes.models.map(toChatModelSummary));
-    if (lorasRes) {
-      setLoras(lorasRes.loras.map(toLoraSummary));
-    }
+    setModels(listRes.models.map(toChatModelRow));
+
+    const statusLoading = (statusRes.loading?.length ?? 0) > 0;
+    // A replacement names the outgoing model active and the incoming one loading. Adopting
+    // the outgoing one sets the checkpoint the observer needs empty, so it writes this alone.
+    if (statusLoading && serverModelWaitOutstanding()) return;
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    if (statusRes.active_model && !isExternalSelectionActive) {
+    const selectionChanged = selectedCheckpoint !== selectedAtStart;
+    // The local selection is re-derived from this status on every mount, so adopting a
+    // TTS model made it the chat model without the user picking it. Read the slot as
+    // empty and the eviction branch below clears the stale pick, as it does for an
+    // image or video load.
+    const chatActiveModel =
+      statusRes.active_model &&
+      !isSpeechOnlyStatus(statusRes) &&
+      !(statusLoading && options?.externalChatSlotLoad);
+    if (
+      chatActiveModel &&
+      !isExternalSelectionActive &&
+      !selectionChanged
+    ) {
       const checkpointId = resolveInferenceCheckpointId(statusRes);
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
-        // A model loaded outside this tab replaces the resident one, and the pin belonged to the
-        // old one: keeping it reloads that one from another's settings.
+        // A model loaded outside this tab replaces the resident one, and the pin belonged to the old
+        // one: keeping it reloads that one from another's settings.
         if (
           checkpointId !== selectedCheckpoint ||
           (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
@@ -343,60 +544,72 @@ async function syncInferenceStatusToStore(options?: {
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,
           previousGgufVariant,
+          // With no prior selection this is Studio discovering the server's
+          // resident model, so its global-only snapshot belongs to this
+          // checkpoint and is safe to migrate.
+          adoptingExistingServerModel: selectedCheckpoint === "",
         });
-        // setModels(listRes...) above used catalog data, which omits audio
-        // capability. Re-apply live status so attach gates survive a refresh.
+        // setModels(listRes...) above used catalog data, which omits audio capability. Re-apply live
+        // status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against an already-resident GGUF: history can load before this first
-        // status refresh has a checkpoint or window, so its own recount never runs. A null thread
-        // would publish an empty count, hence the mounted-thread guard.
+        // Against an already-resident model, history can load before this first status
+        // has a checkpoint, so its own recount never runs. The thread guard stops a null
+        // thread publishing an empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&
           hydrated.contextUsage == null &&
           hydrated.activeThreadId != null &&
-          hydrated.ggufContextLength != null &&
+          hydrated.loadedContextLength != null &&
           !isExternalModelId(checkpointId)
         ) {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
         }
       }
-    } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // Loading an image or video model evicts the chat one (the GPU arbiter
-      // allows a single owner), and nothing else here would say so: the picker
-      // keeps the selection, so the header would go on claiming it is loaded
+    } else if (
+      !chatActiveModel &&
+      !isExternalSelectionActive &&
+      !selectionChanged
+    ) {
+      if (isIdleUnloadedStatus(statusRes, idleUnloadArmed)) return;
+      // Loading an image, video or audio model evicts the chat one (one GPU owner), and nothing else
+      // here would say so: the picker keeps the selection, so the header would claim it is loaded
       // and the next prompt would come back a bare 400.
       const { residentCheckpoint: wasResident, modelLoading } =
         useChatRuntimeStore.getState();
-      // specFallbackReason survives here, so clearing activeModelIsLocal
-      // alone would flip a local model's warning to "download failed". Every
-      // load path and clearCheckpoint set it, so leave it consistent.
+      // specFallbackReason survives here, so clearing activeModelIsLocal alone would flip a local
+      // model's warning to "download failed".
       useChatRuntimeStore.setState({
         residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
+        loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
-      // Known resident a moment ago, and nothing loading now. Both matter: a
-      // load in flight has no active model yet either, and clearing there would
-      // wipe the pick the user just made.
-      if (wasResident && selectedCheckpoint && !modelLoading) {
-        // Already the clean id the header shows: resolveInferenceCheckpointId
-        // put it there, not a load path.
-        toast.info(`${wasResident} is no longer loaded`, {
-          description:
-            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
-        });
-        // Drop the pick too, which is what a server-side unload already does.
-        // Dimming the tick was not enough: the name alone reads as "this is my
-        // model" whatever the tick does, and sending to it returns a bare 400.
+      // A known prior resident or a definitive speech-only owner both prove the
+      // persisted Chat pick is stale. Do not clear for a Chat load that this tab
+      // started. TTS is different because it owns this same slot.
+      if (
+        (wasResident || isSpeechOnlyStatus(statusRes)) &&
+        selectedCheckpoint &&
+        (!modelLoading || options?.externalChatSlotLoad)
+      ) {
+        // Already the clean id the header shows: resolveInferenceCheckpointId put it there, not a load path.
+        if (wasResident) {
+          toast.info(`${wasResident} is no longer loaded`, {
+            description:
+              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+          });
+        }
+        // Drop the pick too, as a server-side unload does: the name alone reads as "this is my model"
+        // whatever the tick does, and sending to it returns a bare 400.
         useChatRuntimeStore.getState().clearCheckpoint();
       }
     }
   } catch (error) {
-    // A superseded refresh reports nothing, or a stale failure would raise a
-    // toast about a read whose answer would have been discarded anyway.
+    // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
+    // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
@@ -404,6 +617,28 @@ async function syncInferenceStatusToStore(options?: {
     toast.error("Failed to refresh models", {
       description: message,
     });
+  }
+}
+
+/**
+ * The mount handoff: hydrate from status, then observe until the server settles.
+ *
+ * The gate is up before the sync is issued, since a refresh issued later can answer first
+ * and adopt the outgoing model.
+ */
+async function refreshAndWaitForServerModel(options?: {
+  signal?: AbortSignal;
+  includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
+  externalChatSlotLoad?: boolean;
+}): Promise<void> {
+  const signal = options?.signal;
+  const release = beginServerModelWait(signal);
+  try {
+    await syncInferenceStatusToStore(options);
+    await waitForServerModel(signal);
+  } finally {
+    release();
   }
 }
 
@@ -420,6 +655,8 @@ async function syncInferenceStatusToStore(options?: {
  * the refresh below leaves it intact.
  */
 export async function resyncInferenceStatusAfterServerModelChange(): Promise<void> {
+  // Both llama.cpp update paths land here, and an update replaces the binary whose --help the flag catalogue describes.
+  invalidateLlamaFlagCatalog();
   if (!isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
     useChatRuntimeStore.getState().clearCheckpoint();
   }
@@ -466,7 +703,6 @@ export function useChatModelRuntime() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
-  const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
   const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
@@ -513,27 +749,47 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
-      syncInferenceStatusToStore(options),
+    async (options?: {
+      waitForServerModel?: boolean;
+      signal?: AbortSignal;
+      includeLoras?: boolean;
+      preserveIdleUnloaded?: boolean;
+      externalChatSlotLoad?: boolean;
+    }) => {
+      if (options?.waitForServerModel) {
+        await refreshAndWaitForServerModel(options);
+        return;
+      }
+      await syncInferenceStatusToStore(options);
+    },
     [],
   );
 
-  // Nothing here polls /status: refresh runs on mount and when the model lists
-  // change, never on a timer. So an image or video load evicting the chat model
-  // (the GPU arbiter allows one owner) went unseen, and the header went on
-  // showing the evicted model as loaded until something else happened to
-  // refresh. Re-read whenever another runtime finishes a load.
+  // Nothing here polls /status: refresh runs on mount and when the model lists change. So an image
+  // or video load evicting the chat model went unseen and the header showed it as loaded.
+  // Re-read whenever another runtime finishes a load.
   useEffect(
     () =>
       subscribeModelLifecycle(({ runtime }) => {
-        // Dictation is a sidecar and takes no GPU ownership, so it evicts
-        // nothing. Chat's own loads already reconcile themselves.
+        // Dictation is a sidecar and evicts nothing; chat's own loads reconcile themselves. A "tts" load
+        // does neither: it is the Audio page taking this very slot.
         if (runtime === "chat" || runtime === "stt") return;
         // Both edges, not only the settle. The arbiter evicts chat inside the
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
-        void refresh({ includeLoras: false });
+        void refresh({
+          includeLoras: false,
+          externalChatSlotLoad: runtime === "tts",
+        });
+      }),
+    [refresh],
+  );
+
+  useEffect(
+    () =>
+      subscribeResidentStatusRefresh(() => {
+        void refresh({ includeLoras: false, preserveIdleUnloaded: true });
       }),
     [refresh],
   );
@@ -562,12 +818,10 @@ export function useChatModelRuntime() {
     void (async () => {
       try {
         // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be killed by
-        // cancelling this load. Nothing to report, since the route runs its stop-loading fast
-        // path ahead of the active-chat refusal.
+        // cancelling this load. Nothing to report, since the route runs its stop-loading path first.
         await unloadModel({ model_path: model.id }).catch(() => {});
-        // clearCheckpoint above assumed nothing was left loaded, but a forced switch keeps the
-        // previous model resident until /load's teardown, and the stop-loading fast path leaves
-        // it there. Take the answer from the backend, which reports none once it was evicted.
+        // clearCheckpoint above assumed nothing was left loaded, but a forced switch keeps the previous
+        // model resident until /load's teardown. Take the answer from the backend.
         await syncInferenceStatusToStore().catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;
@@ -618,6 +872,8 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         return;
       }
+      dismissStartToastsForModelSelection();
+
       // A load is already in flight. If it's this exact pick (id + variant + token),
       // ignore the duplicate click. If it's a DIFFERENT model (including a different
       // GGUF variant of the same repo, which the old id+token guard wrongly treated
@@ -629,8 +885,8 @@ export function useChatModelRuntime() {
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
         if (!inFlightLoad) return false;
-        // The helper form, not an inline apply: it also carries the loaded
-        // diffusion flag, which the restored config needs to stay correct.
+        // The helper form, not an inline apply: it also carries the loaded diffusion flag, which the
+        // restored config needs.
         restorePreviousConfig();
         const loadingSamePick =
           inFlightLoad.id === modelId &&
@@ -648,55 +904,208 @@ export function useChatModelRuntime() {
       };
       if (bailIfLoadInFlight()) return;
 
-      // Picking an external provider leaves the local model resident and stops the status poll
-      // mirroring it, so params.checkpoint cannot tell whether this pick is that same model.
-      // Ask the backend before prompting: /load answers already_loaded ahead of its cancel
-      // hook, so the dialog would promise to stop chats this pick never interrupts. A staged
-      // config always carries forceReload, so Apply still reloads and prompts.
+      // Ask the backend, not params.checkpoint: an external pick leaves the local model resident, and
+      // a pinned cached row loads under a name its picker row never shows.
+      // A staged config always carries forceReload, so Apply still reloads and prompts.
       const selectedCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
-      if (!forceReload && isExternalModelId(selectedCheckpoint)) {
+      const pendingConfig =
+        typeof selection !== "string" ? selection.config : undefined;
+      // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
+      // completed load writes the lease, so adopting would keep a stale token.
+      if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
+        // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
+        // GPU hook mounted, and a cold cache passes the pick through unvalidated.
+        if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
+          await ensureGpuDeviceCache().catch(() => {});
+        }
+        // What /load would carry for a pick with no saved config, which is not always the live runtime:
+        // performLoad treats a different checkpoint or variant as a switch and clears the per-model
+        // fields first, so comparing the outgoing model's settings would both prompt for a load that
+        // dedupes and adopt one that does not. gpuMemoryMode and the dtypes still come from the store.
+        // gpuMemoryMode is standing, and kvCacheDtype and tensorParallel are not reset, so those three
+        // still come from the store.
+        const live = useChatRuntimeStore.getState();
+        const resetsPerModelSettings = Boolean(
+          live.params.checkpoint &&
+            (live.params.checkpoint !== modelId ||
+              (live.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
+            !keepSpeculative,
+        );
+        const comparedConfig =
+          pendingConfig ??
+          (resetsPerModelSettings
+            ? {
+                ...DEFAULT_PER_MODEL_CONFIG,
+                kvCacheDtype: live.kvCacheDtype ?? null,
+                tensorParallel: live.tensorParallel ?? false,
+                gpuMemoryMode: live.gpuMemoryMode,
+              }
+            : currentRuntimePerModelConfig());
+        // The slot count an unset --parallel resolves to. Session-cached, and 0 is the catalogue's own
+        // "unknown", which the comparison reads as a reload.
+        const managedFlags = residentStatus
+          ? await loadManagedLlamaFlags().catch(() => null)
+          : null;
+        // Hoisted so it can run twice: everything above was awaited, and in that window another tab can
+        // swap the resident model, which this one is never told about.
+        const adoptable = (status: InferenceStatusResponse) =>
+          (status.loading?.length ?? 0) === 0 &&
+          residentModelMatchesPick(status, {
+            id: modelId,
+            loadPath,
+            ggufVariant,
+          }) &&
+          // _reuse_loaded_gguf refuses its own already-loaded answer while the audio probe is outstanding,
+          // so load_model reaches its fast path and re-probes there. Skipping /load would leave audio
+          // capabilities undetected for as long as the server runs.
+          status.audio_probe_pending !== true &&
+          // A repairable speculative fallback is the one case where an identical request is not a no-op:
+          // _runtime_matches_intent answers False so the next load retries the drafter, and
+          // short-circuiting would strand the user with speculation off.
+          !residentSpeculativeNeedsRepair(
+            status,
+            normalizeSpeculativeType(pendingConfig?.speculativeType) ??
+              readPersistedSpeculativeType(),
+            // The route derives gguf_path from the identifier alone, and the drafter_not_found retry is
+            // guarded on its absence.
+            (loadPath ?? modelId).toLowerCase().endsWith(".gguf"),
+          ) &&
+          // The id names the weights, not how the server was invoked: a remembered context length,
+          // drafter, placement or extra arg the resident load does not run is a real reload. Not
+          // `pendingConfig`: with no saved record the caller has already reset the store to defaults,
+          // and performLoad reads the store for every field the config does not carry.
+          residentRuntimeMatchesConfig(status, comparedConfig, {
+            // What the applier fills an unset field with, so the comparison is against what /load would send
+            // rather than against silence.
+            speculativeType: readPersistedSpeculativeType(),
+            gpuMemoryMode: readPersistedGpuMemoryMode(),
+            gpuLayers: GPU_LAYERS_AUTO,
+            nCpuMoe: 0,
+            // The n_ctx /load would send, from performLoad's own inputs, so an unset
+            // length resolves the same way on both sides.
+            resolveContextLength: (customContextLength) => {
+              const live = useChatRuntimeStore.getState();
+              const platform = usePlatformStore.getState();
+              // Identity matched above, so the resident model is this pick.
+              const residentIsGguf = status.is_gguf ?? false;
+              return resolveLoadMaxSeqLength({
+                modelId,
+                ggufVariant,
+                isGguf: residentIsGguf,
+                customContextLength,
+                loadedContextLength: live.loadedContextLength,
+                currentCheckpoint: live.params.checkpoint,
+                activeGgufVariant: live.activeGgufVariant,
+                isMlx: isServedByMlx(
+                  residentIsGguf,
+                  platform.deviceType,
+                  platform.chatOnlyReason,
+                ),
+                pinnedMaxSeqLength: normalizeMaxSeqLength(
+                  pendingConfig
+                    ? pendingConfig.maxSeqLength
+                    : resolveInitialConfig(modelId, ggufVariant).config
+                        .maxSeqLength,
+                ),
+                defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
+                presetSource: live.activePresetSource,
+              });
+            },
+            parallelSlots: managedFlags?.defaultParallelSlots || null,
+            // Never a config field, so the store is the only place it can come from, and the reset clears it
+            // before the load reads it.
+            splitRatio: resetsPerModelSettings
+              ? null
+              : useChatRuntimeStore.getState().splitRatio,
+            // What /load sends: a pick saved in another index namespace, or naming GPUs that are gone, is
+            // reconciled to Automatic before it leaves.
+            reconcileGpuIds: (ids, savedIndexKind) =>
+              reconcilePersistedGpuIds(
+                ids,
+                savedIndexKind,
+                status.is_diffusion ?? false,
+              ),
+            normalizeSpeculative: normalizeSpeculativeType,
+          });
         if (
           residentStatus &&
-          resolveInferenceCheckpointId(residentStatus) === modelId &&
-          (residentStatus.gguf_variant ?? null) === (ggufVariant ?? null)
+          adoptable(residentStatus) &&
+          // Both are server-wide, so a save leaves the pick and its config identical while
+          // adopt_load_intent_if_matched forces a reload anyway; without them a policy or budget
+          // change between two picks would never reach the child.
+          !(await readServerWideReloadHints())
         ) {
-          // Same window as the confirm below: a rival load may have started during that GET,
-          // and it owns the resident model now.
-          if (bailIfLoadInFlight()) return;
-          // Roll back the config pre-applied for the load that is not happening BEFORE hydrating,
-          // so the resident model's status wins over the staged snapshot.
-          if (typeof selection !== "string" && selection.previousConfig) {
-            applyPerModelConfigToRuntime(selection.previousConfig);
+          // Read again, and judge again: a status fetched before those awaits describes the model that was
+          // resident then, and adopting it would leave the picker naming this model while prompts went
+          // to another. A failed read falls through to /load.
+          const confirmedStatus = await getInferenceStatus().catch(() => null);
+          if (confirmedStatus && adoptable(confirmedStatus)) {
+            // Same window as the confirm below: a rival load may have started during that GET, and it owns
+            // the resident model now.
+            if (bailIfLoadInFlight()) return;
+            // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
+            // resident status wins over the staged snapshot. The helper carries the diffusion flag.
+            restorePreviousConfig();
+            // ...except for maxSeqLength, which the rollback has the last word on: it is a client-side cap
+            // no status field echoes, so leaving it rolled back would hand this model the OUTGOING one's
+            // cap, and applyActiveModelStatus below cannot correct it. An absent cap is not silence
+            // either: applyPerModelConfigToRuntime resolves it to defaultInferenceParams.maxSeqLength,
+            // so leaving it unset kept the outgoing cap.
+            const pickedMaxSeqLength =
+              normalizeMaxSeqLength(pendingConfig?.maxSeqLength) ??
+              defaultInferenceParams.maxSeqLength;
+            const restored = useChatRuntimeStore.getState();
+            if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
+              restored.setParams({
+                ...restored.params,
+                maxSeqLength: pickedMaxSeqLength,
+              });
+            }
+            const previousGgufVariant =
+              useChatRuntimeStore.getState().activeGgufVariant;
+            // Adopt this pick's own pin, by the rule a completed load writes it: the poll skips its clearing
+            // while an external pick is active, so a pin taken for an earlier resident would survive and
+            // Apply would reload that old model.
+            useChatRuntimeStore.setState({
+              activeLoadId: loadPath === modelId ? null : loadPath,
+            });
+            useChatRuntimeStore
+              .getState()
+              .setCheckpoint(modelId, confirmedStatus.gguf_variant);
+            applyActiveModelStatusToStore(confirmedStatus, {
+              previousCheckpoint: selectedCheckpoint,
+              previousGgufVariant,
+            });
+            syncModelCapabilities(modelId, confirmedStatus);
+            // The pick's own GPU selection, which the hydration above would widen back:
+            // adopt_load_intent_if_matched records the incoming pool when it adopts on the fitted
+            // subset, and skipping /load skips that.
+            if (pendingConfig?.selectedGpuIds !== undefined) {
+              const picked = reconcilePersistedGpuIds(
+                pendingConfig.selectedGpuIds,
+                pendingConfig.selectedGpuIndexKind,
+                confirmedStatus.is_diffusion ?? false,
+              );
+              const hydrated = useChatRuntimeStore.getState();
+              if (!sameGpuSelection(hydrated.selectedGpuIds, picked)) {
+                useChatRuntimeStore.setState({
+                  selectedGpuIds: picked,
+                  loadedGpuIds: picked,
+                });
+              }
+            }
+            // setCheckpoint above blanked the bar, this path returns before the post-load recount, and a
+            // mounted thread does not rerun its history loader, so the bar would stay empty.
+            void refreshContextUsage({ afterModelLoad: true });
+            return;
           }
-          const previousGgufVariant =
-            useChatRuntimeStore.getState().activeGgufVariant;
-          // The poll skips its own clearing while an external pick is active, so a pin taken
-          // for an earlier resident can survive; Apply would then reload that old model.
-          if (useChatRuntimeStore.getState().activeLoadId !== modelId) {
-            useChatRuntimeStore.setState({ activeLoadId: null });
-          }
-          useChatRuntimeStore
-            .getState()
-            .setCheckpoint(modelId, residentStatus.gguf_variant);
-          applyActiveModelStatusToStore(residentStatus, {
-            previousCheckpoint: selectedCheckpoint,
-            previousGgufVariant,
-            // Id and variant matched above: same model, only the tab moved.
-            readoptingSameModel: true,
-          });
-          syncModelCapabilities(modelId, residentStatus);
-          // setCheckpoint above blanked the bar, this path returns before the post-load recount,
-          // and a mounted thread does not rerun its history loader, so the bar would stay empty.
-          void refreshContextUsage({ afterModelLoad: true });
-          return;
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot.
-      // A queue that appears while the dialog is open must not be stopped
-      // without having been included in the user's confirmation.
+      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
+      // the dialog is open must not be stopped without having been included in the confirmation.
       const lifecycleLease = useChatRuntimeStore
         .getState()
         .beginModelLoading();
@@ -736,8 +1145,7 @@ export function useChatModelRuntime() {
         }
         return;
       }
-      // Re-check the tracked picker for a load that was already starting when
-      // this lifecycle lease was acquired.
+      // Re-check the tracked picker for a load that was already starting when this lifecycle lease was acquired.
       try {
         if (bailIfLoadInFlight()) {
           releasePreflightLifecycleLease();
@@ -757,10 +1165,9 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
-      // A native path-token selection is a local GGUF by construction (the
-      // native model intents only grant .gguf files), but its id is a display
-      // label that need not end in ".gguf" -- without this, Manual + Auto
-      // layers would pin the UI context instead of letting --fit size it.
+      // A native path-token selection is a local GGUF by construction, but its id is a display label
+      // that need not end in ".gguf": without this, Manual + Auto layers would pin the UI context
+      // instead of letting --fit size it.
       const isGguf =
         explicitIsGguf ??
         (ggufVariant != null ||
@@ -771,10 +1178,6 @@ export function useChatModelRuntime() {
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
-      const loadAttemptId = ++loadAttemptRef.current;
-      primeNativeNotificationPermission().catch(() => undefined);
-      const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -822,20 +1225,41 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
+      let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
+        // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off
+        // loads that never reach the Hub: it validates over the network and can block on a
+        // dialog, and a stale Settings token must not gate a local or cached-LoRA load.
+        // An Ollama row's id is an opaque `ollama-manifest:` reference rather than a
+        // path, so isLocalModelPath does not recognise it even though the backend
+        // materialises the load entirely from the local Ollama store.
+        const mayReachHub =
+          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
+        if (mayReachHub) {
+          const preparedToken = await prepareHfTokenForUse(hfToken);
+          if (!preparedToken.proceed) {
+            // Lands in the outer catch (banner only); no load toast exists yet.
+            toast.error("Model load cancelled.");
+            throw new Error("Model load cancelled.");
+          }
+          hfToken = preparedToken.token;
+        }
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
-          // The outgoing model's slot INTENT (blank = follow the server
-          // default), which the resolved baseline cannot express. previousConfig
-          // is the snapshot the picker took before pre-applying the target's
-          // config, so the live control is only the outgoing one without it.
-          // Read before the staged-metadata await below so an in-flight change
-          // cannot perturb the outgoing snapshot.
+          // The outgoing model's slot INTENT (blank = follow the server default), which the resolved
+          // baseline cannot express. previousConfig is the snapshot taken before pre-applying the
+          // target's config. Read before the staged-metadata await so a change cannot perturb it.
+          // Unlike tensorParallel, vision does NOT survive a model switch: it is per-model config defaulting
+          // to vision on, so a target that saved none gets that default, not the outgoing model's setting.
+          // The dedupe above builds its own view of an unconfigured switch from DEFAULT_PER_MODEL_CONFIG,
+          // and resetsPerModelSettings cannot repair it, since this constant is captured before that block.
           const previousNParallel =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
@@ -848,6 +1272,12 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nUbatch ?? null)
               : useChatRuntimeStore.getState().nUbatch;
+          // The outgoing tuning intent, read the same way and for the same reason: a rollback restores the
+          // control, not the echo.
+          const previousServerTuning: ServerTuningValues =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig
+              : useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
           const previousMlxKvBits =
             typeof selection !== "string" && selection.previousConfig
@@ -859,17 +1289,11 @@ export function useChatModelRuntime() {
             // header with 401 even for a public repo, so sending the raw stored
             // token here would abort the load before the existing "continue
             // anonymously / replace token" recovery flow could run.
-            const preparedToken = await prepareHfTokenForUse(
-              useChatRuntimeStore.getState().hfToken || null,
-            );
-            if (!preparedToken.proceed) {
-              throw new Error("Model load cancelled.");
-            }
             isDiffusion = (
               await fetchGgufStagedMetadata({
                 model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
-                hf_token: preparedToken.token,
+                hf_token: hfToken,
                 nativePathToken: nativePathToken ?? null,
               })
             ).isDiffusion;
@@ -883,11 +1307,18 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
+          const platform = usePlatformStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
+          // A staged config carries its pin; one that applied the saved record and then
+          // selected carries none, so the pre-move field is where it survives.
+          const pinnedMaxSeqLength = normalizeMaxSeqLength(
+            pendingLoadConfig
+              ? pendingLoadConfig.maxSeqLength
+              : resolveInitialConfig(modelId, ggufVariant).config.maxSeqLength,
+          );
           const maxSeqLength =
-            normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
-            stateBeforeUnload.params.maxSeqLength;
+            pinnedMaxSeqLength ?? stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
           const previousActiveLoadId = stateBeforeUnload.activeLoadId;
@@ -896,36 +1327,48 @@ export function useChatModelRuntime() {
             || previousVariant != null
             || previousActiveNativePathToken != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
-          // Roll back to the previous model's own context. previousConfig was
-          // snapshotted before this load pre-applied the next model's config, so
-          // params.maxSeqLength may already be the next model's; use it only when
-          // no snapshot exists.
+          // Roll back to the previous model's own context: previousConfig was snapshotted before this load
+          // pre-applied the next model's config, so params.maxSeqLength may already be the next model's.
           const previousMaxSeqLength =
             (typeof selection !== "string"
               ? selection.previousConfig?.maxSeqLength
               : null) ?? maxSeqLength;
-          // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
-          // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
-          // not the positive context it picked (which the backend treats as a pin).
-          const rollbackMaxSeqLength = resolveFitMaxSeqLength(
+          // The intent the model had, not the length it ended up at: sending the
+          // resolved length would pin a model nobody pinned.
+          // The resident backend's own answer, so a native-audio checkpoint the worker
+          // served off the MLX path does not roll back at the sentinel.
+          const previousIsMlx = residentIsServedByMlx(
             previousIsGguf,
-            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-            stateBeforeUnload.loadedCustomContextLength,
-            previousIsGguf
-              ? (stateBeforeUnload.ggufContextLength ?? 0)
-              : previousMaxSeqLength,
+            platform.deviceType,
+            platform.chatOnlyReason,
+            stateBeforeUnload.loadedIsMlx,
           );
-          const hfToken = stateBeforeUnload.hfToken || null;
+          // What the outgoing model loaded with, not the control's value: a pin typed
+          // and never applied would change a window the failed switch never touched.
+          const previousPin = stateBeforeUnload.loadedCustomContextLength;
+          // It reloads at the pin it loaded with, whichever backend served it; only
+          // llama.cpp's placement rules override that, where they own sizing.
+          const rollbackMaxSeqLength = previousIsGguf
+            ? resolveFitMaxSeqLength(
+                previousIsGguf,
+                stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                stateBeforeUnload.loadedCustomContextLength,
+                stateBeforeUnload.loadedContextLength ?? 0,
+              )
+            : (previousPin ??
+              unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
+          // main's `const hfToken = stateBeforeUnload.hfToken` is deliberately not
+          // carried over: this branch prepares the credential once in the enclosing
+          // scope, and re-reading the raw stored token here would shadow it and undo
+          // the preparation for every load below.
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
             stateBeforeUnload.activeNativePathExpiresAtMs;
-          // Snapshot the load settings at click time, before the awaits below
-          // (validation, the trust dialog, unload). When the picker staged a
-          // config payload, prefer it over the store: React may not have
-          // flushed NumericValueInput's blur commit into state yet.
-          // Per-model: a template is written against one model's tokens.
+          // Snapshot the load settings at click time, before the awaits below. When the picker staged a
+          // config payload, prefer it over the store: React may not have flushed NumericValueInput's
+          // blur commit yet. Per-model, since a template is written against one model's tokens.
           let loadChatTemplateOverride =
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
@@ -935,17 +1378,37 @@ export function useChatModelRuntime() {
           // Per-model, not a standing preference: eligibility is decided per model.
           let loadMlxKvBits =
             pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
-          // gpuMemoryMode is a standing preference (kept across a model switch);
-          // the rest are per-model knobs the reset below clears, so they are
-          // re-baselined there in lock-step with the store.
+          // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
+          // they are re-baselined there in lock-step with the store.
+          // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass, unload,
+          // then have /load refuse it. Uses the click-time snapshot, so the two agree. A same-repo quant
+          // switch (different gguf_variant) is a different model for per-model knobs, so re-baseline them.
           let loadCustomContextLength =
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
-          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadContextLength = stateBeforeUnload.loadedContextLength;
           const loadTensorParallel = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.tensorParallel ??
               stateBeforeUnload.tensorParallel);
+          // The diffusion runner has no projector to skip, so the toggle is inert there. Unlike
+          // tensorParallel this does NOT survive a model switch: it is per-model config defaulting to
+          // vision on, and carrying it over loaded the new model text-only and silently, because the
+          // dedupe comparison builds its own view of an unconfigured switch. resetsPerModelSettings
+          // cannot repair it, since this constant is captured before that block runs.
+          const loadSwitchesModelOrVariant = Boolean(
+            currentCheckpoint &&
+              (currentCheckpoint !== modelId ||
+                (stateBeforeUnload.activeGgufVariant ?? null) !==
+                  (ggufVariant ?? null)) &&
+              !keepSpeculative,
+          );
+          const loadDisableVision = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.disableVision ??
+              (loadSwitchesModelOrVariant
+                ? DEFAULT_PER_MODEL_CONFIG.disableVision
+                : stateBeforeUnload.disableVision));
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -955,11 +1418,9 @@ export function useChatModelRuntime() {
           let loadNCpuMoe =
             pendingLoadConfig?.nCpuMoe ?? stateBeforeUnload.nCpuMoe;
           let loadSplitRatio = stateBeforeUnload.splitRatio;
-          // Reconcile the persisted pick against the GPUs present now, so a stale
-          // cross-host / now-hidden pick is dropped before /load rather than
-          // rejected there. Warm the device cache first: load-on-selection can
-          // run before any GPU hook mounted, and a cold cache would pass the
-          // pick through unvalidated. validateGpuIds derives from this too.
+          // Reconcile the persisted pick against the GPUs present now, so a stale cross-host pick is
+          // dropped before /load rather than rejected there. Warm the device cache first: a cold cache
+          // would pass the pick through unvalidated.
           if (
             pendingLoadConfig?.selectedGpuIds !== undefined ||
             stateBeforeUnload.selectedGpuIds != null
@@ -986,25 +1447,34 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          // No store fallback and no reset with the rest below: undefined means "this config never read
+          // them", and the route preserves the stored flags when the field is omitted, so a fallback
+          // would clear flags the user set elsewhere.
+          const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
             pendingLoadConfig?.nUbatch ?? stateBeforeUnload.nUbatch;
+          let loadServerTuning: ServerTuningValues = {
+            loadMode: pendingLoadConfig?.loadMode ?? stateBeforeUnload.loadMode,
+            specDraftCacheDtype:
+              pendingLoadConfig?.specDraftCacheDtype ??
+              stateBeforeUnload.specDraftCacheDtype,
+            ctxCheckpoints:
+              pendingLoadConfig?.ctxCheckpoints ??
+              stateBeforeUnload.ctxCheckpoints,
+            cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+          };
           try {
-            // Lightweight pre-flight validation: avoid unloading a working model
-            // if the new identifier is clearly invalid (e.g. bad HF id / path).
+            // Lightweight pre-flight validation: avoid unloading a working model if the new identifier is
+            // clearly invalid.
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
-            // Validate with the same effective context /load uses: a GGUF native
-            // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
-            // pass, unload, then have /load refuse it. Uses the click-time
-            // snapshot (same values loadModel uses below), so the two agree.
-            // Mirror /load on a cross-model switch: the reset below clears the
-            // per-model Auto-layers context pin + GPU pick; gpuMemoryMode is a
-            // standing preference kept across the switch. A same-repo quant switch
-            // (different gguf_variant) is a different model for per-model knobs
-            // (context/gpuLayers/pick/MoE are per variant), so re-baseline them too.
+            // Validate with the same effective context /load uses: a GGUF native context can exceed
+            // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it.
+            // Mirror /load on a cross-model switch, and treat a same-repo quant switch as a different
+            // model for the per-model knobs.
             const switchingModelOrVariant =
               currentCheckpoint !== modelId ||
               (loadActiveGgufVariant ?? null) !== (ggufVariant ?? null);
@@ -1031,6 +1501,16 @@ export function useChatModelRuntime() {
             const validateNUbatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nUbatch ?? null)
               : loadNUbatch;
+            const validateServerTuning: ServerTuningValues =
+              resetsPerModelSettings
+                ? {
+                    loadMode: pendingLoadConfig?.loadMode ?? null,
+                    specDraftCacheDtype:
+                      pendingLoadConfig?.specDraftCacheDtype ?? null,
+                    ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                    cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                  }
+                : loadServerTuning;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -1041,10 +1521,16 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf,
                 customContextLength: validateCustomContextLength,
-                ggufContextLength: loadGgufContextLength,
+                loadedContextLength: loadContextLength,
                 currentCheckpoint,
                 activeGgufVariant: loadActiveGgufVariant,
-                maxSeqLength,
+                isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+                pinnedMaxSeqLength,
+                defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
                 presetSource: loadActivePresetSource,
               }),
             );
@@ -1058,12 +1544,13 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf
                 ? {
                     gpu_memory_mode: loadGpuMemoryMode,
-                    // Sized like the follow-up /load: else a manual DiffusionGemma
-                    // split 409s during training even when it fits.
+                    // Sized like the follow-up /load: else a manual DiffusionGemma split 409s during training even
+                    // when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
                     // omitted when blank, like the load payload below
@@ -1072,6 +1559,15 @@ export function useChatModelRuntime() {
                       : {}),
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
+                      : {}),
+                    // Same omit-when-blank rule, and the same values: the preflight has to approve the command the
+                    // follow-up /load sends.
+                    ...serverTuningLoadPayload(validateServerTuning),
+                    // The same list the load below sends: a --ctx-size or cache override changes the memory this
+                    // preflight estimates, so omitting it approves a different command and /load then refuses
+                    // the target with the real arguments.
+                    ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
+                      ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
                   }
                 : {}),
@@ -1083,14 +1579,12 @@ export function useChatModelRuntime() {
                 upgrade: validation.transformers_upgrade,
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
-                // The install refuses while chats generate and takes no force flag of its own, so
-                // without this the "Stop and reload" the user just confirmed dies here: Retry hits
-                // the same 409, and this path leaves chats running.
+                // The install refuses while chats generate and takes no force flag of its own, so without this
+                // the "Stop and reload" the user just confirmed dies here and Retry hits the same 409.
                 forceCancelActive,
               });
-              // The install unloads the previous model before the swap (even when
-              // the swap then fails), so any exit after this point must roll back.
-              // False for the custom-code fallback, which resolves without installing.
+              // The install unloads the previous model before the swap even when the swap fails, so any exit
+              // after this point must roll back. False for the custom-code fallback, which installs nothing.
               if (
                 useTransformersUpgradeDialogStore
                   .getState()
@@ -1104,9 +1598,9 @@ export function useChatModelRuntime() {
               }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
-            // Open the consent dialog when the model needs custom-code consent or has a
-            // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
-            // worker requires a matching fingerprint that only the dialog produces.
+            // Open the consent dialog when the model needs custom-code consent or has a flagged unsafe file.
+            // Fires even when trustRemoteCode is preset on, since the worker requires a matching
+            // fingerprint only the dialog produces.
             if (
               validation.requires_trust_remote_code
               || validation.requires_security_review
@@ -1133,25 +1627,21 @@ export function useChatModelRuntime() {
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             if (currentCheckpoint) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
-              // preflight, so a rejected target truncates replies for a model that never loads
-              // (/load evicts past those checks itself). Idle, unload first and free VRAM early.
+              // preflight, so a rejected target truncates replies for a model that never loads. Idle,
+              // unload first and free VRAM early.
               if (!forceCancelActive) {
                 await unloadModel({ model_path: currentCheckpoint });
               }
-              // Set either way: /load can still leave no model resident, and an unneeded rollback
-              // hits already_loaded before the gate.
+              // Set either way: /load can still leave no model resident, and an unneeded rollback hits
+              // already_loaded before the gate.
               previousWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // On a model switch, fall back to the persisted standing
-            // preference rather than null so a per-session forced MTP mode
-            // can't follow the user onto a model without an MTP head.
-            // spec_draft_n_max is MTP-only and always resets. The loaded
-            // shadow is seeded too, preventing a transient dirty Apply state.
-            // keepSpeculative skips this for a staged Load: the user picked the
-            // mode for this model on the sidebar, so honor it (the backend still
-            // falls back at runtime if the model has no MTP head).
+            // On a model switch, fall back to the persisted standing preference rather than null so a
+            // per-session forced MTP mode cannot follow the user onto a model without an MTP head.
+            // spec_draft_n_max is MTP-only and always resets, and the loaded shadow is seeded to prevent
+            // a transient dirty Apply. keepSpeculative skips this for a staged Load.
             if (resetsPerModelSettings) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
@@ -1159,23 +1649,23 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
-                // Per-model too: a different model follows the server default
-                // unless its staged config overrides it.
+                // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
                 nBatch: null,
                 loadedNBatch: null,
                 nUbatch: null,
                 loadedNUbatch: null,
-                // Per-model GPU knobs must not follow onto a different model
-                // (gpuMemoryMode is a standing preference and is kept).
+                // Per-model too, and cleared in both halves: a baseline left from the model that just went would
+                // be re-sent by a later rollback.
+                ...clearedServerTuningState(),
+                // Per-model GPU knobs must not follow onto a different model (gpuMemoryMode is standing and is kept).
                 selectedGpuIds: null,
                 selectedGpuIndexKind: null,
                 gpuLayers: GPU_LAYERS_AUTO,
                 nCpuMoe: 0,
                 splitRatio: null,
-                // A Manual+Auto context pin is per-model; clear it so a different
-                // model loads at Auto/native, not the previous model's pin.
+                // A Manual+Auto context pin is per-model; clear it so a different model loads at Auto/native.
                 customContextLength: null,
               });
               loadSpeculativeType =
@@ -1186,17 +1676,22 @@ export function useChatModelRuntime() {
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
-              // Both payload-only. The store keeps its values: a width is dormant
-              // preset state off MLX, and a completed load rewrites both anyway.
+              loadServerTuning = {
+                loadMode: pendingLoadConfig?.loadMode ?? null,
+                specDraftCacheDtype:
+                  pendingLoadConfig?.specDraftCacheDtype ?? null,
+                ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                cacheRam: pendingLoadConfig?.cacheRam ?? null,
+              };
+              // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
+              // completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
                   : null;
-              // Keep the click-time snapshot in lock-step with the store reset so
-              // the load below sizes against the cleared per-model knobs, not the
-              // previous model's (gpuMemoryMode is standing, so left as captured).
-              // An explicit staged config from run-settings still wins.
+              // Keep the click-time snapshot in lock-step with the store reset so the load sizes against the
+              // cleared per-model knobs. An explicit staged config from run-settings still wins.
               loadCustomContextLength =
                 pendingLoadConfig?.customContextLength ?? null;
               loadSelectedGpuIds =
@@ -1212,12 +1707,27 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
+            // The Context Length the USER set for this load, captured before the
+            // clamp below can stand in for it. This, not the n_ctx that goes on
+            // the wire, is what the completed load pins: several send rules put a
+            // positive n_ctx on the wire with the control on Auto, and a pin read
+            // back out of one of those is a number the user never chose.
+            const targetIsMlx = isServedByMlx(
+              isGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+            );
+            const explicitCtxPin = loadRequestContextPin(
+              loadCustomContextLength,
+              targetIsMlx,
+              pinnedMaxSeqLength,
+            );
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
             // far larger than the sheet shows when the load was fit-sized (Default
             // or Manual + Auto layers may auto-reduce context to fit VRAM), a
-            // likely OOM. ggufContextLength is that resolved value; a model already
+            // likely OOM. loadedContextLength is that resolved value; a model already
             // at native reloads unchanged, so this is safe for any prior mode.
             if (
               isGguf &&
@@ -1225,19 +1735,25 @@ export function useChatModelRuntime() {
               loadGpuMemoryMode === "manual" &&
               loadGpuLayers >= 0 &&
               loadCustomContextLength == null &&
-              (loadGgufContextLength ?? 0) > 0
+              (loadContextLength ?? 0) > 0
             ) {
-              loadCustomContextLength = loadGgufContextLength;
+              loadCustomContextLength = loadContextLength;
             }
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              ggufContextLength: loadGgufContextLength,
+              loadedContextLength: loadContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
-              maxSeqLength,
+              isMlx: targetIsMlx,
+              pinnedMaxSeqLength,
+              defaultMaxSeqLength: unpinnedDefaultRequest(
+                  previousIsMlx,
+                  stateBeforeUnload.params.maxSeqLength,
+                  DEFAULT_MAX_SEQ_LENGTH,
+                ),
               presetSource: loadActivePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
@@ -1249,9 +1765,8 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // A queue can be created while the preliminary unload is pending.
-            // Stop a second time at the final boundary so no prompt captured
-            // against the outgoing checkpoint survives into the new backend.
+            // A queue can be created while the preliminary unload is pending, so stop a second time at the
+            // final boundary.
             requestLocalPromptQueueStop();
             const loadResponse = await loadModel({
               model_path: loadPath,
@@ -1270,57 +1785,97 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
+              // so neither a transformers load nor a diffusion GGUF carries them.
+              ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
+                ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
+                : {}),
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
               ...(isGguf && loadNUbatch != null
                 ? { n_ubatch: loadNUbatch }
                 : {}),
+              // llama-server's own, so gated like the extras above: GGUF, and not the diffusion runner.
+              ...(isGguf && !targetIsDiffusion
+                ? serverTuningLoadPayload(loadServerTuning)
+                : {}),
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
+
+              force_reload: forceReload,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
+            mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
 
-            // If cancelled while loading, don't update UI to show
-            // the model as active -- it's being unloaded.
+            // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            // The load applied this spec mode, so persist the user's standing
-            // preference now (the requested intent, not the resolved echo;
-            // saveSpeculativeType keeps only the universal auto/ngram/off).
-            // Skip for a per-model config (keepSpeculative): that choice is
-            // model-specific and must not overwrite the global default.
+            // The load applied this spec mode, so persist the user's standing preference now (the requested
+            // intent, not the resolved echo). Skipped for a per-model config, whose choice must not
+            // overwrite the global default.
+            // The requested intent, not the resolved echo: saveSpeculativeType keeps only the universal
+            // auto/ngram/off. Skip for a per-model config (keepSpeculative).
             if (!keepSpeculative) {
               saveSpeculativeType(loadSpeculativeType);
             }
-            // Persist the GPU Memory mode only on a successful load (not on
-            // dropdown change), so an abandoned selection doesn't stick.
+            // Persist the GPU Memory mode only on a successful load, so an abandoned selection does not stick.
             persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
-            setParams(
-              mergeBackendRecommendedInference({
-                current: currentParams,
-                response: loadResponse,
-                modelId,
-                presetSource: useChatRuntimeStore.getState().activePresetSource,
-              }),
+            const loadedFields = loadedContextFields(loadResponse);
+            // The reported window, or where nothing sized one the requested length.
+            // The request answers only for a backend that sizes nothing: a self-sizing
+            // one was sent the sentinel, which as a budget is zero.
+            const loadedContextCap = replayMaxTokensCap(
+              loadedFields.loadedContextLength ??
+                (!loadResponse.is_gguf && effectiveMaxSeqLength > 0
+                  ? effectiveMaxSeqLength
+                  : null),
             );
-            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
-            // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
-            // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't
-            // match first, and for "Qwen3.5-35B-A3B" the result is 35 (total
-            // params), not 3 (MoE active params).
+            setParams(
+              {
+                ...mergeBackendRecommendedInference({
+                  current: currentParams,
+                  response: loadResponse,
+                  modelId,
+                  presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  loadedContextLength: loadedFields.loadedContextLength,
+                }),
+                // The served window, as background and compare loads already record,
+                // or the active model reports a context it is not running at.
+                ...(isGguf
+                  ? {}
+                  : {
+                      maxSeqLength: loadedContextForParams(
+                        loadedFields.loadedContextLength,
+                        loadMaxSeqLength,
+                        currentParams.maxSeqLength,
+                      ),
+                    }),
+              },
+              // Lay this model's remembered settings back over its defaults,
+              // but not a budget larger than the context it just loaded with.
+              {
+                fromModelDefaults: true,
+                maxTokensCap: loadedContextCap,
+              },
+            );
+            // Qwen3.5/3.6 small models disable thinking by default. Anchored regex: the first "Xb" after
+            // start-of-string or [-_/.], so "Qwen3.5-35B-A3B" gives 35 rather than 3.
+            // Qwen3.5/3.6 small models are 0.8B, 2B, 4B and 9B. The regex matches the first "Xb" or "X.Xb"
+            // after start or [-_/.], so "Qwen3.5-35B-A3B" yields 35 (total), not 3 (MoE active).
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-                // Scan path segments right to left so the size nearest the leaf
-                // wins over a size-like parent dir; trailing boundary stops "8bit".
+                // Scan path segments right to left so the size nearest the leaf wins; the trailing boundary
+                // stops "8bit".
                 const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
                 const sizeMatch = mid
                   .replace(/\\/g, "/")
@@ -1341,9 +1896,8 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed. Non-GGUF never sends them and
-            // diffusion ignores --parallel, so a click-time count on either
-            // would mint a phantom override a saved preset carries onto a GGUF.
+            // Slots the load actually committed: non-GGUF never sends them and diffusion ignores --parallel,
+            // so a click-time count would mint a phantom override.
             const committedSlots =
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)
@@ -1360,30 +1914,25 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
-            const nativeCtx = loadResponse.is_gguf
-              ? (loadResponse.context_length ?? 131072)
-              : null;
-            const reportedMaxCtx = loadResponse.is_gguf
-              ? (loadResponse.max_context_length ?? null)
-              : null;
-            const reportedNativeCtx = loadResponse.is_gguf
-              ? (loadResponse.native_context_length ?? null)
-              : null;
-            // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
-            // revert it to Auto) and retain the user's requested context so
-            // re-open/re-save keeps the intended override, not the backend's
-            // auto-fit context; null stays null.
-            const keepCustomCtx = resolveManualAutoCtxPin(
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
+            const committedServerTuning =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? committedServerTuningState(loadServerTuning)
+                : clearedServerTuningState();
+            // The user's own Context Length (see explicitCtxPin), so an Auto load
+            // stays Auto whatever n_ctx the send rules resolved for it. MLX pins the
+            // same way, so it is admitted here rather than cleared as a non-GGUF.
+            const keepCustomCtx = resolveExplicitCtxPin(
+              loadResponse.is_gguf || targetIsMlx ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
+            const supportsPreserveThinking =
+              loadResponse.supports_preserve_thinking ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
-            // GLM-5.2-style models report their own effort levels (e.g.
-            // high|max); everything else keeps the default low/medium/high.
+            // GLM-5.2-style models report their own effort levels; everything else keeps the default low/medium/high.
+            // They report high|max.
             const reasoningEffortLevels =
               loadResponse.reasoning_effort_levels &&
               loadResponse.reasoning_effort_levels.length > 0
@@ -1398,7 +1947,6 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
@@ -1408,9 +1956,7 @@ export function useChatModelRuntime() {
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
-              ggufContextLength: nativeCtx,
-              ggufMaxContextLength,
-              ggufNativeContextLength: reportedNativeCtx,
+              ...loadedContextFields(loadResponse),
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,
@@ -1420,7 +1966,11 @@ export function useChatModelRuntime() {
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
               reasoningEffortLevels,
               reasoningEffort: clampedReasoningEffort,
-              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
+              supportsPreserveThinking,
+              preserveThinking:
+                reloadingSameModel && supportsPreserveThinking
+                  ? stateBeforeUnload.preserveThinking
+                  : resolvePreserveThinkingOnLoad(loadResponse),
               supportsTools,
               ...(reloadingSameModel && supportsTools
                 ? {
@@ -1433,17 +1983,41 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              loadedDisableVision: loadResponse.disable_vision ?? false,
+              // Repaired from the echo like the knob above: loadDisableVision forces the flag off for a
+              // diffusion target without writing the store, so a Vision-off GGUF followed by a diffusion
+              // load would leave the switch off over a load that never sent it.
+              disableVision: loadResponse.disable_vision ?? false,
+              // Set alongside loadedIsMultimodal so the composer can say WHY images are unavailable.
+              loadedVisionDisabledByUser:
+                loadResponse.vision_disabled_by_user ?? false,
               ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
-              // Keep the click-time value: the echo is the resolved count, and
-              // adopting it would pin a blank "server default" control.
+              // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
+              // "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
+              ...committedServerTuning,
+              // What this model is running, for the rollback below: an omitted field inherited the resident
+              // process's list, so the last thing we knew still holds unless this was a different model.
+              // An explicit empty list is recorded as empty, not null, since omitting the field is what
+              // makes /load inherit. The server's echo comes first, as the only account of what the launch
+              // carried: a reload that omits the field but sets max_seq_length is stripped of its
+              // inherited --ctx-size, and the status refresh that would notice runs while
+              // modelLoading is still true and reseeds nothing.
+              loadedLlamaExtraArgs:
+                loadResponse.requested_llama_extra_args !== undefined
+                  ? (loadResponse.requested_llama_extra_args ?? [])
+                  : loadLlamaExtraArgs !== undefined
+                    ? (loadLlamaExtraArgs ?? [])
+                    : resetsPerModelSettings
+                      ? null
+                      : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
               nUbatch: committedNUbatch,
               loadedNUbatch: committedNUbatch,
               customContextLength: keepCustomCtx,
@@ -1452,6 +2026,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              mmprojFallbackReason: loadResponse.mmproj_fallback_reason ?? null,
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeLoadId: loadPath === modelId ? null : loadPath,
@@ -1460,38 +2035,27 @@ export function useChatModelRuntime() {
                 ? nativePathExpiresAtMs
                 : null,
             });
+            // fromLoad: this browser performed the load, so the mode it chose
+            // outranks a persisted toggle describing the previous model.
+            noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
-            // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
+            // Qwen3-family: apply thinking-mode-specific params after load.
+            const p = resolveQwenThinkingParams(
+              modelId,
+              nextReasoningEnabled,
+            );
             if (
-              modelId.toLowerCase().includes("qwen3") &&
+              p !== null &&
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
               if (store.activePresetSource === "builtin-default") {
-                const mid = modelId.toLowerCase();
-                const needsPresencePenalty =
-                  mid.includes("qwen3.5") || mid.includes("qwen3.6");
-                const p = nextReasoningEnabled
-                  ? {
-                      temperature: 0.6,
-                      topP: 0.95,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    }
-                  : {
-                      temperature: 0.7,
-                      topP: 0.8,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    };
-                store.setParams({ ...store.params, ...p });
+                // Same rule as the load response: defaults first, this model's remembered settings over them.
+                store.setParams({ ...store.params, ...p }, {
+                  fromModelDefaults: true,
+                  maxTokensCap: loadedContextCap,
+                });
               }
             }
             await refresh({ signal: abortCtrl.signal });
@@ -1499,9 +2063,8 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
-            // Remembered so auto-load re-picks what the user ran, not the
-            // smallest. Native file-picker paths need a signed, expiring lease,
-            // so they stay out.
+            // Remembered so auto-load re-picks what the user ran, not the smallest. Native file-picker paths
+            // need a signed, expiring lease, so they stay out.
             const indexedLocalPick =
               typeof selection !== "string" && selection.source === "local";
             if (
@@ -1521,7 +2084,7 @@ export function useChatModelRuntime() {
               });
             }
           } catch (error) {
-            // Skip rollback if user cancelled -- model is already being unloaded.
+            // Skip rollback if the user cancelled: the model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
             // If we unloaded a previous model and the new load failed, attempt a rollback.
             if (previousWasUnloaded && previousCheckpoint) {
@@ -1568,14 +2131,30 @@ export function useChatModelRuntime() {
                   ...(stateBeforeUnload.loadedNUbatch != null
                     ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
                     : {}),
-                  // Restore the previous model in the split mode it was running,
-                  // not the default layer split.
+                  ...serverTuningLoadPayload({
+                    loadMode: stateBeforeUnload.loadedLoadMode,
+                    specDraftCacheDtype:
+                      stateBeforeUnload.loadedSpecDraftCacheDtype,
+                    ctxCheckpoints: stateBeforeUnload.loadedCtxCheckpoints,
+                    cacheRam: stateBeforeUnload.loadedCacheRam,
+                  }),
+                  // Explicit, unlike the batch pair above: the failed switch left the TARGET resident, so an
+                  // omitted field here inherits across models, which the route refuses.
+                  ...(stateBeforeUnload.loadedLlamaExtraArgs != null
+                    ? { llama_extra_args: stateBeforeUnload.loadedLlamaExtraArgs }
+                    : {}),
+                  // Restore the previous model in the split mode it was running, not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  // What the PREVIOUS server was loaded with. Not the control field, which
+                  // applyPerModelConfigToRuntime has already overwritten with the TARGET's setting, and not
+                  // loadedVisionDisabledByUser, which is narrowed to models that can do images. Same
+                  // separately tracked baseline tensor_parallel uses.
+                  disable_vision: stateBeforeUnload.loadedDisableVision ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-                  // A recovered Vulkan model needs its staged CPU-only runtime back
-                  // after the failed target load unloaded the live server.
+                  // A recovered Vulkan model needs its staged CPU-only runtime back after the failed target load
+                  // unloaded the live server.
                   cpu_fallback: stateBeforeUnload.loadedCpuFallback,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
@@ -1590,13 +2169,13 @@ export function useChatModelRuntime() {
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
-                  // Restore the previous token's lease together with the token so a
-                  // rollback never pairs restored token A with failed load B's expiry.
+                  // Restore the previous token's lease together with the token so a rollback never pairs restored
+                  // token A with failed load B's expiry.
                   activeNativePathExpiresAtMs: previousActiveNativePathToken
                     ? (previousActiveNativePathExpiresAtMs ?? null)
                     : null,
-                  // Restore the editable speculative knobs to the rolled-back
-                  // model's; the loaded baselines below come from its reload echo.
+                  // Restore the editable speculative knobs to the rolled-back model's; the loaded baselines come
+                  // from its reload echo.
                   speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
@@ -1606,13 +2185,26 @@ export function useChatModelRuntime() {
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
                   loadedNUbatch: stateBeforeUnload.loadedNUbatch ?? null,
+                  // Same split: the controls keep the outgoing model's intent and the baselines come from what
+                  // that model was launched with.
+                  loadMode: previousServerTuning.loadMode ?? null,
+                  loadedLoadMode: stateBeforeUnload.loadedLoadMode ?? null,
+                  specDraftCacheDtype:
+                    previousServerTuning.specDraftCacheDtype ?? null,
+                  loadedSpecDraftCacheDtype:
+                    stateBeforeUnload.loadedSpecDraftCacheDtype ?? null,
+                  ctxCheckpoints: previousServerTuning.ctxCheckpoints ?? null,
+                  loadedCtxCheckpoints:
+                    stateBeforeUnload.loadedCtxCheckpoints ?? null,
+                  cacheRam: previousServerTuning.cacheRam ?? null,
+                  loadedCacheRam: stateBeforeUnload.loadedCacheRam ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
-                  // After the spread, which seeds the control from the echo; the
-                  // control keeps its intent, like nParallel above.
+                  // After the spread, which seeds the control from the echo; the control keeps its intent, like
+                  // nParallel above.
                   mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
@@ -1620,6 +2212,14 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  loadedDisableVision:
+                    rollbackResponse.disable_vision ?? false,
+                  // The rolled-back model's own loaded value, matching the request above field for field. Not
+                  // stateBeforeUnload.disableVision, which holds the TARGET's value by now, and not the echo
+                  // either, since the replayed request is gated on the model having a projector.
+                  disableVision: stateBeforeUnload.loadedDisableVision ?? false,
+                  loadedVisionDisabledByUser:
+                    rollbackResponse.vision_disabled_by_user ?? false,
                   customContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:
@@ -1665,51 +2265,35 @@ export function useChatModelRuntime() {
         );
         loadToastIdRef.current = toastId;
 
-        // Poll download progress for non-cached models, then (after download
-        // or for cached models) poll the llama-server mmap phase so "Starting
-        // model..." doesn't look frozen for minutes on large MoE models.
+        // Poll download progress for non-cached models, then poll the llama-server mmap phase so
+        // "Starting model..." does not look frozen on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
           typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
 
-        // Rolling window of byte samples for rate/ETA estimation, shared
-        // across download + mmap phases so it survives phase flips.
-        type Sample = { t: number; b: number };
-        const MIN_SAMPLES = 3;
-        const MIN_WINDOW = 3_000; // ms
-        const MAX_WINDOW = 15_000; // ms
-        const dlSamples: Sample[] = [];
-        const mmapSamples: Sample[] = [];
+        // One buffer per phase, so a flip cannot price the new phase against the old one's clock. Was a
+        // private copy of the shared estimator, so fixes never reached this toast. Takes SECONDS.
+        const dlSamples: TransferSample[] = [];
+        const mmapSamples: TransferSample[] = [];
 
         function estimate(
-          samples: Sample[],
+          samples: TransferSample[],
           bytes: number,
           total: number,
         ): { rate: number; eta: number; stable: boolean } {
-          const now = Date.now();
-          // Drop samples if the counter reset (e.g. phase flipped).
-          if (samples.length > 0 && bytes < samples[samples.length - 1].b) {
+          if (typeof document !== "undefined" && document.hidden) {
+            // This 2s interval is clamped to about once a minute while hidden, and the estimator reads gaps
+            // as the burst cadence.
             samples.length = 0;
-          }
-          samples.push({ t: now, b: bytes });
-          const cutoff = now - MAX_WINDOW;
-          while (samples.length > 2 && samples[0].t < cutoff) {
-            samples.shift();
-          }
-          if (samples.length < MIN_SAMPLES) {
             return { rate: 0, eta: 0, stable: false };
           }
-          const first = samples[0];
-          const last = samples[samples.length - 1];
-          const dt = (last.t - first.t) / 1000;
-          const db = last.b - first.b;
-          if (dt * 1000 < MIN_WINDOW || db <= 0) {
-            return { rate: 0, eta: 0, stable: false };
-          }
-          const rate = db / dt;
-          const eta =
-            total > 0 && bytes < total && rate > 0 ? (total - bytes) / rate : 0;
-          return { rate, eta, stable: true };
+          appendSample(samples, Date.now() / 1000, bytes);
+          const stats = computeTransferStats(samples, total);
+          return {
+            rate: stats.stable ? stats.rateBytesPerSecond : 0,
+            eta: stats.stable ? stats.etaSeconds : 0,
+            stable: stats.stable,
+          };
         }
 
         function composeProgressLabel(
@@ -1717,7 +2301,7 @@ export function useChatModelRuntime() {
           totalGb: number,
           bytes: number,
           total: number,
-          samples: Sample[],
+          samples: TransferSample[],
         ): string {
           const base =
             totalGb > 0
@@ -1742,8 +2326,13 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                    hfToken,
+                  )
+                : await getDownloadProgress(modelId, hfToken);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {
@@ -1758,11 +2347,9 @@ export function useChatModelRuntime() {
                 prog.expected_bytes,
                 dlSamples,
               );
-              // loadProgress state is only read by the dismissed-toast inline
-              // status. Writing it while the toast is visible re-renders the
-              // whole chat page every poll — cheap in Chrome, janky in the
-              // desktop WebView2 (laggy typing). Feed the toast directly and
-              // only touch state when the inline view is actually live.
+              // loadProgress state is only read by the dismissed-toast inline status, and writing it while the
+              // toast is visible re-renders the whole chat page every poll (janky in WebView2). Feed the
+              // toast directly instead.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: pct,
@@ -1792,7 +2379,7 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
-              // Inline-status-only state; skip the chat-page re-render unless it's shown.
+              // Inline-status-only state; skip the chat-page re-render unless it is shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: null,
@@ -1821,12 +2408,6 @@ export function useChatModelRuntime() {
                   ),
                 });
               }
-              notifyNative({
-                key: `model-downloaded:${notificationModelKey}`,
-                title: "Model downloaded",
-                body: `${safeModelName} finished downloading and is loading into memory.`,
-                requestPermission: false,
-              }).catch(() => undefined);
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
@@ -1844,14 +2425,12 @@ export function useChatModelRuntime() {
             if (!loadingModelRef.current) return;
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
-              // Loaded. The chat flow will flip loadingModelRef shortly;
-              // just stop polling.
+              // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
               if (progressInterval) clearInterval(progressInterval);
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render
-            // Decimal GB (1e9) so the total matches the file size Hugging Face
-            // reports and the model-picker shows, not the smaller base-1024 GiB.
+            // Decimal GB (1e9) so the total matches the file size Hugging Face reports, not the smaller base-1024 GiB.
             const loadedGb = prog.bytes_loaded / 1e9;
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
@@ -1862,9 +2441,8 @@ export function useChatModelRuntime() {
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
                 }`
               : base;
-            // Inline-status-only state (see pollDownload): while the toast is
-            // up, skip the state write so the chat page doesn't re-render every
-            // poll during "Starting model" — the desktop WebView2 typing-lag fix.
+            // Inline-status-only state (see pollDownload): while the toast is up, skip the state write so
+            // the chat page does not re-render every poll.
             if (loadToastDismissedRef.current) {
               setLoadProgress({
                 percent: pct,
@@ -1905,13 +2483,16 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
-          const loadedTitle = cpuFallbackReason
-            ? `${toastDisplayName} loaded on CPU`
-            : `${toastDisplayName} loaded`;
-          const loadedDescription = cpuFallbackReason
-            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : undefined;
-          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+          // Same composition as the auto-load path, through the same helper, so the two cannot describe an
+          // identical failure differently.
+          const notice = loadFallbackNotice(
+            `${toastDisplayName} loaded`,
+            cpuFallbackReason,
+            mmprojFallbackReason,
+          );
+          const loadedTitle = notice.title;
+          const loadedDescription = notice.description;
+          const showLoadedToast = notice.degraded ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,
@@ -1928,12 +2509,6 @@ export function useChatModelRuntime() {
               onDismiss: undefined,
             });
           }
-          notifyNative({
-            key: `model-loaded:${notificationModelKey}`,
-            title: "Model ready",
-            body: `${safeModelName} is loaded and ready to chat.`,
-            requestPermission: false,
-          }).catch(() => undefined);
         } catch (err) {
           if (!abortCtrl.signal.aborted) {
             const message =
@@ -1951,12 +2526,6 @@ export function useChatModelRuntime() {
                 onDismiss: undefined,
               });
             }
-            notifyNative({
-              key: `model-load-failed:${notificationModelKey}`,
-              title: "Model failed to load",
-              body: sanitizeNotificationBody(message, "The model failed to load."),
-              requestPermission: false,
-            }).catch(() => undefined);
           }
           throw err;
         } finally {
@@ -2015,15 +2584,14 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Block queue materialization before taking the confirmation snapshot.
-      // Otherwise a queue can appear while the dialog is open and be stopped
-      // by the unload even though the user never confirmed stopping it.
+      // Block queue materialization before taking the confirmation snapshot, or a queue can appear
+      // while the dialog is open and be stopped without the user confirming it.
       lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
         return false;
       }
-      // Ejecting tears down llama-server, so every chat stops. Same prompt, but it
-      // leaves no model loaded, so it must not be worded as a reload.
+      // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
+      // loaded, so it must not be worded as a reload.
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         "Unloading the model",
         "unload",

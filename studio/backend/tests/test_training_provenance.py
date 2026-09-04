@@ -16,6 +16,8 @@ from core.training.provenance import (
     RESOURCE_PROVENANCE_KEY,
     attest_loaded_dataset,
     build_worker_provenance_event,
+    effective_training_load_in_4bit,
+    exact_resume_requires_current_4bit,
     exact_resume_resource_requirements,
     exact_dataset_snapshot_path,
     exact_model_snapshot_path,
@@ -102,6 +104,49 @@ def test_exact_direct_snapshots_produce_complete_resumable_provenance(tmp_path):
     assert updates["dataset_snapshot_path"] == str(dataset.resolve())
     assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
     assert resource_provenance_allows_resume(persisted) is True
+
+
+def test_a_4bit_run_declares_that_the_latest_sidecar_would_strand_it(tmp_path):
+    """The question the upgrade gate asks before it offers an install ahead of a resume.
+
+    Installing the latest transformers is not undoable: the sidecar is a persistent
+    overlay, and from then on ``effective_training_load_in_4bit`` refuses this
+    checkpoint outright. So the gate has to know beforehand, from the STORED config --
+    which is exactly where ``require_exact_resume_resources`` and
+    ``require_exact_model_resource`` do not exist, because ``_sanitize_db_config``
+    strips both before the row is written.
+    """
+    config, event, model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
+    persisted = {**config, **normalize_worker_provenance_event(event, config)}
+    assert "require_exact_resume_resources" not in persisted
+    assert "require_exact_model_resource" not in persisted
+
+    assert exact_resume_requires_current_4bit(persisted) is True
+    # And the refusal it is predicting, from the flags routes/training.py rebuilds.
+    with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
+        with pytest.raises(ExactResumeResourcesUnavailable):
+            effective_training_load_in_4bit(
+                {**persisted, "require_exact_model_resource": True}, str(model), None
+            )
+
+
+def test_a_16bit_run_has_no_4bit_load_mode_to_lose(tmp_path):
+    config, event, _model, _dataset = _complete_event(tmp_path, load_in_4bit = False)
+    persisted = {**config, **normalize_worker_provenance_event(event, config)}
+    assert exact_resume_requires_current_4bit(persisted) is False
+
+
+def test_an_unresumable_provenance_is_not_made_worse_by_the_install(tmp_path):
+    # Already refused, so there is no working resume for the install to take away.
+    config, event, _model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
+    persisted = {**config, **normalize_worker_provenance_event(event, config)}
+    persisted[RESOURCE_PROVENANCE_KEY] = {
+        **persisted[RESOURCE_PROVENANCE_KEY],
+        "model_status": "incomplete",
+    }
+    with pytest.raises(ExactResumeResourcesUnavailable):
+        exact_resume_resource_requirements(persisted)
+    assert exact_resume_requires_current_4bit(persisted) is False
 
 
 @pytest.mark.parametrize(

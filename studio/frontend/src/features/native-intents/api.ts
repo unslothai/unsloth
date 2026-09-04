@@ -40,11 +40,6 @@ export async function drainNativeIntents(): Promise<NativeIntent[]> {
   return invokeNative<NativeIntent[]>("drain_native_intents");
 }
 
-export async function pickNativeModel(): Promise<NativeIntent | null> {
-  if (!isTauri) return null;
-  return invokeNative<NativeIntent | null>("pick_native_model");
-}
-
 export async function pickHuggingFaceCacheDir(): Promise<string | null> {
   if (!isTauri) return null;
   return invokeNative<string | null>("pick_hugging_face_cache_dir");

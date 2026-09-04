@@ -14,23 +14,34 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
 
+def _fallback_range(lines):
+    """The half-open line range of install.sh's "GPU detection failed" fallback.
+
+    The end is the `fi` that closes the branch, which means counting nesting
+    rather than taking the first `fi` that appears. Any `if` inside the branch
+    contributes one, and so does a `case`: it closes with `esac`, so a version
+    that only counted `if`/`fi` would still be off by one from the `fi` of an
+    `if` nested inside a case arm.
+    """
+    start = next(i for i, line in enumerate(lines) if "GPU detection failed" in line)
+    depth = 0
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+        if re.match(r"^(if|case)\b", stripped):
+            depth += 1
+        elif stripped in ("fi", "esac") or stripped.startswith(("fi ", "esac ")):
+            if depth == 0:
+                return range(start, i + 1)
+            depth -= 1
+    raise AssertionError("install.sh's GPU-detection fallback branch is never closed")
+
+
 class TestNoTorchBackendAutoInInstallSh:
     """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
-        # Fallback block: from "GPU detection failed" to the next "fi".
-        fallback_start = None
-        fallback_end = None
-        for i, line in enumerate(lines):
-            if fallback_start is None and "GPU detection failed" in line:
-                fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
-                fallback_end = i
-                break
-        fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
-        )
+        fallback_range = _fallback_range(lines)
 
         matches = [
             (i + 1, line)
@@ -43,6 +54,26 @@ class TestNoTorchBackendAutoInInstallSh:
             f"install.sh contains --torch-backend=auto outside the fallback block at lines: "
             f"{[m[0] for m in matches]}"
         )
+
+    def test_the_fallback_range_reaches_the_end_of_the_branch(self):
+        """A range that stops early makes the assertion above fire on correct code.
+
+        It did. #8670 put a `case` with a nested `if`/`fi` in this branch to pick
+        the desktop install spec, and the previous "first `fi` after the comment"
+        scan then ended the block four lines short of the install call it exists
+        to permit -- reporting the fallback's own line as a primary path.
+        """
+        lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+        block = _fallback_range(lines)
+        body = "\n".join(lines[block.start : block.stop])
+        # Both arms of the branch, so neither an early stop nor a runaway passes.
+        assert "STUDIO_LOCAL_INSTALL" in body, "the fallback block stops before its own first if"
+        assert body.count("--torch-backend=auto") == 2, (
+            "the fallback runs --torch-backend=auto once per arm; the detected block "
+            f"contains {body.count('--torch-backend=auto')}"
+        )
+        # And it must not have swallowed the rest of the file.
+        assert "_installed_package_version" not in body, "the fallback block ran past its `fi`"
 
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
@@ -484,30 +515,42 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound BOTH companions on EVERY
-        index, cu<digits> families included: torchaudio 2.11 dropped its exact torch
-        pin from the wheel metadata, so a bare companion beside torch<2.11 can
-        resolve a mismatched 2.11.0 build (Codex P2, then unconditional per the
-        torchaudio 2.11 unpinning)."""
+        """install.ps1's pinned-torch install must bound the whole trio on EVERY
+        index with the default torch 2.11 line (<2.12 trio, matching install.sh's
+        ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
+        dropped its exact torch pin from the wheel metadata, so a bare companion
+        beside a capped torch can resolve a mismatched build."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
-            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
-        ), "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
+            '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
+        ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
         assert (
-            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
-        ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
+            '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
+        ), "install.ps1 must pair torchvision <0.27.0 with torch <2.12"
+        assert (
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
+        ), "install.ps1 must pair torchaudio <2.12.0 with torch <2.12"
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # The bounded companions must actually be passed to the install command.
+        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments,
+        # not a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
+        for _stale in (
+            '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
+            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$_torchSpecs = @("torch>=2.4,<2.11.0"',
+        ):
+            assert (
+                _stale not in text
+            ), f"install.ps1 must not retain the <2.11.0 default torch line: {_stale}"
         # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
-            '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
-        ), "install.ps1 custom-pin install must build the bounded spec list"
+            "$_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)" in text
+        ), "install.ps1 pinned install must build the bounded trio spec list"
         assert (
             "@_torchSpecs --default-index $TorchIndexUrl" in text
-        ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
+        ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
         # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.
@@ -688,6 +731,56 @@ class TestPinnedIndexClearsUvEnvParity:
             "finally"
         ), "pip fallback must run before the scrub is restored"
 
+    def test_windows_installers_probe_uv_before_replacing_an_incumbent(self):
+        """A host can have a working older uv while AppLocker, WDAC or endpoint
+        protection refuses the one we just downloaded. Both PowerShell installers must
+        run the extracted uv.exe where it landed BEFORE anything at the destination is
+        touched, and must restore the incumbent if the published copy will not run."""
+        for path, probe in (
+            (INSTALL_PS1, "Get-UvExecutableVerdict"),
+            (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
+        ):
+            text = path.read_text(encoding = "utf-8")
+            assert f"function {probe}" in text, f"{path.name} must define {probe}"
+            # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
+            # binary is exactly how an unattended install hangs.
+            assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
+            probe_at = text.index(f"({probe} -Path $stagedUv)")
+            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
+            # verdict, and treating that as a broken binary turned three clean-machine CI legs
+            # into hard install failures: Start-Process -NoNewWindow with redirected streams
+            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
+            # the binary answering non-zero may block the install.
+            body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
+            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
+            # code is cached, which is how arm64 and the Windows containers reported "exited ."
+            # and had a working uv read as broken.
+            assert (
+                "try { $proc.WaitForExit() } catch {}" in body
+            ), f"{path.name} must settle the exit code before reading it"
+            assert (
+                '$null -eq $code -or "$code" -eq ""' in body
+            ), f"{path.name} must treat a missing exit code as inconclusive"
+            assert (
+                body.count('return "unknown"') == 3
+            ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
+            assert (
+                'return "failed"' in body and 'return "ok"' in body
+            ), f"{path.name}'s probe must report a real answer as well"
+            assert (
+                f'({probe} -Path $stagedUv) -eq "failed"' in text
+            ), f"{path.name} must gate only on a failed verdict"
+            copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
+            assert probe_at < copy_at, (
+                f"{path.name} must probe the extracted uv.exe before copying over the "
+                "destination"
+            )
+            # The publish is not a transaction: a locked or ACL-denied destination fails the
+            # install rather than being skipped, which is what the caller's fallback is for.
+            assert (
+                "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
+            ), f"{path.name} must copy each executable under -ErrorAction Stop"
+
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
         (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
@@ -746,9 +839,9 @@ class TestPinnedIndexClearsUvEnvParity:
         # The custom-leaf branch bounds torch AND both companions (parity with the
         # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
-            '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
-            '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
-            '$cudaAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$cudaTorchSpec = "torch>=2.4,<2.12.0"',
+            '$cudaVisionSpec = "torchvision>=0.19,<0.27.0"',
+            '$cudaAudioSpec = "torchaudio>=2.4,<2.12.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
         assert (
@@ -925,7 +1018,7 @@ class TestNoTorchPersistenceParity:
 class TestAmdBnbFloorParity:
     """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
     4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
-    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    install.sh and the Unsloth stack resolve bitsandbytes independently, so all three
     must carry the same floor or an unreachable pre-release wheel silently reinstates
     the broken range."""
 

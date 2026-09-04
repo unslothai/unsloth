@@ -11,6 +11,7 @@ import pytest
 from core.inference import tools
 from core.inference.tool_loop_controller import is_tool_error
 from core.inference.web_access_policy import (
+    _normalized_domain_tuple,
     check_url_access,
     normalize_website_policy,
     scope_search_query,
@@ -88,6 +89,26 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
     }
     with pytest.raises(ValueError, match = "without schemes or ports|Invalid website domain"):
         normalize_website_policy({"allowedDomains": ["https://arxiv.org"]})
+
+
+def test_oversized_raw_domains_normalize_without_entering_the_cache():
+    # Nameprep deletes U+00AD, so 100k soft hyphens still normalise to a valid domain. The
+    # memo key is the caller's raw tuple, so caching one would pin it for the life of the
+    # process; it must normalise on the uncached path instead.
+    normalize_website_policy({})  # warm the empty-list key so the counts below are exact
+    padded = "a" + "\u00ad" * 100_000 + ".com"
+    before = _normalized_domain_tuple.cache_info().currsize
+    assert normalize_website_policy({"allowedDomains": [padded]}) == {
+        "allowedDomains": ["a.com"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before
+    # A domain of a plausible length still takes the cached path.
+    assert normalize_website_policy({"allowedDomains": ["cached.example"]}) == {
+        "allowedDomains": ["cached.example"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before + 1
 
 
 def test_policy_is_injected_into_prompts_and_search_queries():

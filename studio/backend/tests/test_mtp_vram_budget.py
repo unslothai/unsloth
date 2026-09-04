@@ -355,6 +355,74 @@ class TestOverheadTotal:
         pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
         assert pred == pytest.approx(measured_draft_kv_mib, abs = 2)
 
+    @pytest.mark.parametrize(
+        "ctx,target_kv_mib,draft_kv_mib",
+        [
+            (4096, 256, 16),
+            (16384, 1024, 64),
+            (65536, 4096, 256),
+            (131072, 8192, 512),
+        ],
+    )
+    def test_hybrid_mtp_matches_target_and_draft_context_across_lengths(
+        self, ctx, target_kv_mib, draft_kv_mib
+    ):
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        target = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = 4)
+        draft_kv = b._mtp_draft_kv_bytes(ctx, n_parallel = 4)
+
+        assert base / MIB == pytest.approx(598.5)
+        assert target == base + target_kv_mib * MIB
+        assert draft_kv == draft_kv_mib * MIB
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                ctx,
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+
+    def test_a_separate_drafter_pays_the_same_target_rollback_state(self, monkeypatch):
+        # The rollback copies live in the TARGET context, and llama.cpp sizes them
+        # from --spec-draft-n-max for every draft-model type (need_n_rs_seq), so a
+        # sidecar drafter costs the Hybrid Mamba target exactly what an embedded
+        # head does. draft-simple is the one engaged mode that gets none, which is
+        # what the caller reports through target_rollback.
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        stub = _StubDrafter(kv_per_token = 2000)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        draft_kv = stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+        assert base > 0
+
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+                target_rollback = False,
+            )
+            == draft_kv
+        )
+
 
 # ---------------------------------------------------------------------------
 # _fit_context_to_vram: MTP reserve lowers the chosen context
@@ -598,17 +666,20 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A SEPARATE drafter offloaded to CPU (--spec-draft-ngl 0 /
         # --spec-draft-device none) consumes no GPU, so it must be dropped from the
-        # budget and get no flat reserve (Finding F2). But an embedded head is on
-        # GPU regardless of those draft-only flags, so the flat reserve is only
-        # suppressed when there is no embedded head (Finding G5).
+        # budget and get no flat reserve (Finding F2). An embedded head is on GPU
+        # regardless of those draft-only flags (Finding G5) -- but only when it is
+        # the head that runs: llama.cpp loads the draft model on has_dft(), so a
+        # separate sidecar wins over one, and an unused head must not keep the
+        # reserve alive. Hence "no embedded head OR a separate drafter was chosen".
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
         assert (
             "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
-        # flat reserve suppressed only for a CPU drafter with no embedded head
-        assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
+        # flat reserve suppressed for a CPU drafter that is the one being launched
+        assert "_draft_cpu_no_embedded=_draft_on_cpuand(" in compact
+        assert "ornotself._nextn_predict_layers)" in compact
         assert "not_draft_cpu_no_embedded" in compact
 
     def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
@@ -622,10 +693,13 @@ class TestExtraArgsMtpDetection:
     def test_load_model_ranks_subsets_by_active_pin_fraction(self):
         # Auto/cap subset ranking uses the active budget fraction (lowered by the
         # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
-        # the fit budget that is then tested (Finding G4).
+        # the fit budget that is then tested (Finding G4). _vram_frac is that
+        # fraction resolved once per load: the user's budget, else the constant.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "_gpu_usable(g,_vram_frac-_flat_mtp_reserve)" in compact
+        # Resolved once, so a mid-load save cannot split ranking from fitting.
+        assert "_vram_frac=_active_vram_fraction()" in compact
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -914,8 +988,9 @@ class TestExtraArgsMtpDetection:
 
     def test_env_main_cache_type_for_budget(self):
         # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Unsloth emits no
-        # --cache-type when neither param nor extras set it -> a heavier env
-        # main KV (f32) must be adopted so the reserve matches the child.
+        # --cache-type when neither param nor extras set it -> an env type that
+        # budgets differently from f16 must be adopted so the reserve matches
+        # the child.
         assert _env_main_cache_type_for_budget(env = {}) is None
         # f32 exceeds the f16 default -> adopt it (lower-cased so the launch
         # re-emits it via _valid_cache_types).
@@ -928,9 +1003,35 @@ class TestExtraArgsMtpDetection:
             )
             == "f32"
         )
-        # Quantized env types are <= f16 -> already over-reserved by the default.
+        # Quantized env types now launch and flip the scratch pricing, so adopt them,
+        # but only when the PAIR is heavier-different from f16. One quantized axis
+        # leaves the other at the f16 default, so the heavier axis IS f16 and its
+        # reserve is already safe; adopting q4_0 would price that untouched axis as
+        # quantized and under-reserve it, worst when key_length > value_length puts
+        # the cheap type on the larger tensor. The scratch term reads the pair per
+        # axis, so leaving the KV scalar at the default loses nothing.
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "q4_0"}
+            )
+            == "q4_0"
+        )
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
+            )
+            == "q8_0"
+        )
+        # Heavier-axis rule as for extras: a set f16/f32 beside a quantized axis
+        # wins, keeping the KV reserve safe for the heavier axis.
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+            )
+            == "f32"
+        )
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
         # Unknown env type self-neutralizes (treated as f16 by _kv_bytes_per_elem).
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
@@ -1012,36 +1113,21 @@ class TestExtraArgsMtpDetection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_extra_args_main_cache_type_for_budget(extra_args)" in load
 
-    def test_load_model_tensor_drops_any_quantized_cache_axis(self):
-        # The heavier-by-bytes budget type can mask a quantized axis (an f16
-        # budget hides a paired q4_0), so the tensor-safety drop must test each
-        # --cache-type-k/-v extra, not just cache_type_kv -- else the quantized
-        # axis survives into tensor mode and crashes the load (#6312).
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_ck_extra,_cv_extra=parse_cache_override_per_axis(extra_args)" in load
-        assert "forcin(cache_type_kv,_ck_extra,_cv_extra)" in load
-        assert "iftensor_paralleland_cache_non_tensor_safe:" in load
-
-    def test_load_model_layer_downgrade_restores_original_cache_extras(self):
-        # Tensor mode strips asymmetric --cache-type-k/-v (it rejects quantized),
-        # but layer split supports them, so a downgrade must restore the ORIGINAL
-        # extras, not just the scalar heavier type (else q4_0/f16 silently becomes
-        # f16/f16 on the layer fallback) (#6312).
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_tensor_dropped_extra_args=list(extra_args)" in load
-        # The original extras are restored via one shared closure, called at all
-        # three tensor->layer downgrade points.
-        assert "strip_split_mode_only(_tensor_dropped_extra_argsif" in load
-        assert load.count("_restore_after_tensor_downgrade()") >= 3
-
     def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
         # tensor reserve must be suppressed like the layer path -- else tensor mode
         # subtracts a phantom flat MTP reserve and under-advertises context (#6312).
+        # The flat fraction is the part that must stay suppressed outright; the
+        # byte reserve now has one exception, a Hybrid Mamba target's own rollback
+        # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_mtp_will_engageandnot_draft_cpu_no_embedded" in load
-        assert "ifnot_mtp_reserves_gpu:" in load
+        assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
+        assert "_mtp_reserves_gpu=_mtp_will_engageandnot_draft_cpu_no_embedded" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
+        # The tensor floor asks the narrower question, so the target state it keeps
+        # is held there without also re-charging the CPU-resident draft graph.
+        assert "_mtp_gpu_bytes_remain=_mtp_reserves_gpuormtp_overhead_fnisnotNone" in load
+        assert "ifnot_mtp_gpu_bytes_remain:" in load
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,
@@ -1075,16 +1161,6 @@ class TestExtraArgsMtpDetection:
         assert '_inherited_sm!="layer"' in compact
         assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
         assert 'env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
-
-    def test_load_model_clears_quantized_kv_env_for_tensor(self):
-        # Cluster B: tensor mode aborts on quantized KV. An inherited quantized
-        # LLAMA_ARG_CACHE_TYPE_K/_V must be popped from the child env so it cannot
-        # crash the tensor child (and matches the tensor-safe budget).
-        # Whitespace-stripped for formatter.
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert '("LLAMA_ARG_CACHE_TYPE_K","LLAMA_ARG_CACHE_TYPE_V")' in compact
-        assert "_ct_rawnotinself._TENSOR_PARALLEL_KV_TYPES" in compact
-        assert "env.pop(_ct_var,None)" in compact
 
     def test_load_model_clears_tensor_split_env_in_tensor_mode(self):
         # review run3 #2: Unsloth owns the tensor split. When it emits no
@@ -1167,3 +1243,118 @@ def test_mtp_draft_budget_prefers_user_extras_drafter():
     assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
     # The env must not be consulted before Unsloth's resolved drafter.
     assert "_extra_args_mtp_draft_path(extra_args)ormtp_draft_path" not in compact
+
+
+class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
+    """A type llama.cpp's kv_cache_type_from_str does not know is never emitted
+    (_VALID_CACHE_TYPES), so the child inherits LLAMA_ARG_CACHE_TYPE_K/_V instead.
+
+    Before ggml-org/llama.cpp#23792 Unsloth's tensor gate happened to cover this:
+    it dropped any type outside {f16,bf16,f32} -- including an unknown one -- and
+    then re-adopted the heavier env type for the reserve, with the comment "Else
+    the child allocates f32 KV against an f16 budget." Removing the gate removed
+    that re-adoption too, so the budget has to notice on its own.
+    """
+
+    @staticmethod
+    def _budget_type(cache_type_kv, env):
+        """The cache type load_model resolves for the reserve, via the same
+        precedence chain: extras, then the field, then a heavier inherited env."""
+        from core.inference.llama_cpp import (
+            _VALID_CACHE_TYPES,
+            _env_main_cache_type_for_budget,
+        )
+
+        resolved = cache_type_kv
+        if resolved is not None and resolved.strip().lower() not in _VALID_CACHE_TYPES:
+            resolved = None
+        if resolved is None:
+            resolved = _env_main_cache_type_for_budget(env)
+        return resolved
+
+    def test_an_unknown_type_does_not_shadow_a_heavier_inherited_env(self):
+        """q3_K is not emittable, so the child really runs the inherited f32.
+        Budgeting "q3_K" prices it at _kv_bytes_per_elem's 2.0 unknown default --
+        a clean 2x under-reservation, in the one mode with no --fit valve."""
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+        assert self._budget_type("q3_K", env) == "f32"
+
+    def test_an_emittable_type_still_wins_over_the_env(self):
+        """q8_0 IS emitted, so it overrides the env on both axes and must be what
+        the budget prices -- the whole point of #8939."""
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
+        assert self._budget_type("q8_0", env) == "q8_0"
+
+    def test_an_unknown_type_with_no_env_is_left_at_the_f16_default(self):
+        assert self._budget_type("q3_K", {}) is None
+
+    def test_the_loader_applies_the_guard_before_the_env_adoption(self):
+        """Source-pinned: the order is what makes it work. Adopting the env first
+        would leave the unemittable string in place."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        guard = load.find("notin_VALID_CACHE_TYPES")
+        adopt = load.find("cache_type_kv=_env_main_cache_type_for_budget()")
+        assert guard != -1, "the unemittable-type guard is gone"
+        assert adopt != -1
+        assert guard < adopt, (guard, adopt)
+
+
+class TestAnUnsetInheritedCacheAxisIsStillF16:
+    """_env_main_cache_type_for_budget takes the heavier axis, so an axis that is
+    not set has to take part in that max at its real default, f16. Dropping it
+    lets one quantized axis carry the whole scalar, and the caller then prices the
+    OTHER axis as quantized too."""
+
+    @staticmethod
+    def _budget(env):
+        from core.inference.llama_cpp import _env_main_cache_type_for_budget
+        return _env_main_cache_type_for_budget(env)
+
+    @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
+    def test_one_quantized_axis_alone_does_not_adopt_a_lighter_scalar(self, var):
+        """The effective pair is (q4_0, f16) either way round, whose heavier axis
+        is f16 -- the f16 default reserve, which is already conservative."""
+        assert self._budget({var: "q4_0"}) is None
+        assert self._budget({var: "q8_0"}) is None
+
+    @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
+    def test_one_heavier_axis_alone_is_still_adopted(self, var):
+        """f32 on one axis is heavier than the f16 default on the other, so it
+        must still be budgeted -- the case the helper exists for."""
+        assert self._budget({var: "f32"}) == "f32"
+
+    def test_both_axes_quantized_is_adopted(self):
+        assert (
+            self._budget(
+                {
+                    "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+                }
+            )
+            == "q4_0"
+        )
+
+    def test_an_asymmetric_quantized_pair_takes_the_heavier_axis(self):
+        assert (
+            self._budget(
+                {
+                    "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+                }
+            )
+            == "q8_0"
+        )
+
+    def test_nothing_set_is_still_none(self):
+        assert self._budget({}) is None
+        assert self._budget({"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
+
+    def test_the_under_reservation_it_prevents(self):
+        """On an arch with key_length > value_length the swap lands the cheap type
+        on the LARGER tensor. Driven through the real estimator."""
+        from core.inference.llama_cpp import _effective_main_cache_types
+
+        env = {"LLAMA_ARG_CACHE_TYPE_V": "q4_0"}
+        assert _effective_main_cache_types(None, env) == ("f16", "q4_0")
+        # The scalar the loader adopts must not be the quantized one.
+        assert self._budget(env) is None

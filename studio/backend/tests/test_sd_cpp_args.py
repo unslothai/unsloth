@@ -28,6 +28,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
+    device_backend_flags,
     is_ggml_unsupported_op_abort,
     metal_text_encoder_flags,
     native_speed_flags,
@@ -247,7 +248,7 @@ def test_build_appends_offload_and_extra_args_last():
     assert "--offload-to-cpu" in cmd
     assert _pair(cmd, "--threads") == "8"
     assert "-v" in cmd
-    # extra args come after everything Studio set (last-wins for power users)
+    # extra args come after everything Unsloth set (last-wins for power users)
     assert cmd[-2:] == ["--rng", "cuda"]
 
 
@@ -657,7 +658,7 @@ def test_video_build_appends_extra_args_verbatim_and_last():
     )
     assert cmd[-2:] == ["--rng", "cuda"]
     assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
-    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    # Unsloth's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
     assert cmd.count("--rng") == 2
 
 
@@ -741,3 +742,35 @@ def test_minimax_h3_video_command_carries_the_video_flow_shift():
     assert "--flow-shift" not in _h3_video_cmd()
     assert _pair(_h3_video_cmd(flow_shift = 8.5), "--flow-shift") == "8.5"
     assert _pair(_h3_video_cmd(flow_shift = 12.0), "--flow-shift") == "12"
+
+
+def test_device_backend_flags_pin_all_three_graphs():
+    # sd.cpp defaults to ordinal 0 unless told otherwise, so a selection only takes effect through --backend.
+    assert device_backend_flags("CUDA1") == ["--backend", "diffusion=CUDA1,te=CUDA1,vae=CUDA1"]
+    # No selection keeps sd.cpp's own choice rather than pinning ordinal 0 explicitly.
+    assert device_backend_flags(None) == []
+    assert device_backend_flags("") == []
+
+
+def test_device_backend_flags_leave_the_offloaded_modules_on_the_cpu():
+    # --clip-on-cpu / --vae-on-cpu ARE te=cpu / vae=cpu and the parser is last-wins, so pinning them would undo low_vram.
+    low_vram = offload_flags(OFFLOAD_MODEL)
+    assert "--clip-on-cpu" in low_vram and "--vae-on-cpu" in low_vram
+    assert device_backend_flags("CUDA1", low_vram) == [
+        "--backend",
+        "diffusion=CUDA1,te=cpu,vae=cpu",
+    ]
+    # The group policy offloads parameters but runs both on the device, so both are pinned.
+    assert device_backend_flags("CUDA1", offload_flags(OFFLOAD_GROUP)) == [
+        "--backend",
+        "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
+    ]
+
+
+def test_device_backend_flags_are_appended_not_folded_into_the_policy():
+    # The pin is built per binary at the point the flags are handed over, so the policy list it
+    # reads must stay unchanged: a deferred install can replace the build after this is computed.
+    policy = offload_flags(OFFLOAD_GROUP)
+    before = list(policy)
+    device_backend_flags("CUDA1", policy)
+    assert policy == before

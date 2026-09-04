@@ -83,6 +83,12 @@ if ($rc -ne 0) {
         if (Test-Path -LiteralPath $cli) { Write-Host "unsloth CLI: $cli" }
         else { $failures += "installer exited 0 but left no unsloth CLI at $cli" }
     }
+    # issue #8490: the generated .exe launchers above are unsigned, so Application
+    # Control can deny them. The .cmd shim runs the managed interpreter instead and
+    # is the escape hatch a locked-down machine has, so its absence is a failure.
+    $cmdShim = Join-Path $env:UNSLOTH_STUDIO_HOME 'bin\unsloth.cmd'
+    if (Test-Path -LiteralPath $cmdShim) { Write-Host "unsloth CLI shim: $cmdShim" }
+    else { $failures += "installer exited 0 but left no policy-safe CLI shim at $cmdShim" }
 }
 
 Section 'assert: torch imports'

@@ -7,6 +7,9 @@ import atexit
 import base64
 import contextlib
 import errno
+import functools
+import hashlib
+import http.client
 import json
 import os
 import re
@@ -28,6 +31,10 @@ import click
 import typer
 from typer.core import TyperCommand
 
+from studio.backend.utils.coding_agents import (
+    deepseek_harness_executables_on_path,
+    is_deepseek_harness_executable,
+)
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -48,6 +55,25 @@ start_app = typer.Typer(
 
 _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
+# Codex treats an SSE stream with no bytes for this long as lost, cancels it, and
+# reconnects. Its default is 300000 (5 minutes), which is measured against the WHOLE
+# quiet period -- and llama-server sends nothing at all while it processes the prompt.
+#
+# That is not a corner case on the hardware Unsloth is for. A local CPU host chews
+# through a prompt at low tens of tokens a second, and Codex's own preamble is several
+# thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core
+# box means ~460s of silence for a ~7300-token first turn, so the default trips before
+# the first token exists. The reconnect is worse than the wait, because llama-server
+# hands the retry a different parallel slot whose KV cache shares no prefix, so each
+# attempt restarts prompt processing from zero and the five retries can never converge.
+# Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and
+# no turn ever finishing.
+#
+# 20 minutes. Sized to be longer than a slow local first turn rather than to any
+# server-side budget: nothing here bounds generation, and a genuinely dead stream is
+# still caught, just later. Same reason the Codex docs' own local-model example raises
+# it for Ollama.
+_CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs
@@ -77,6 +103,14 @@ _HERMES_POSIX_INSTALL_HINT = (
 # overrides in config.yaml. write_hermes_config claims this value for smaller
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
+_DSH_PROVIDER = "unsloth"
+_DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PACKAGE = "@deepseek-ai/dsh"
+# dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it
+# would inherit a danger-full-access exported in the parent shell, and "" is not unset
+# to ??. Pin the mode in both directions instead of only setting it for --yolo.
+_DSH_SAFE_PERMISSION_MODE = "workspace-write"
+_DSH_YOLO_PERMISSION_MODE = "danger-full-access"
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -98,6 +132,7 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
     "to the parent agent. Do not modify files."
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -143,7 +178,20 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
+_CLAUDE_ENV_UNSET = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_UNIX_SOCKET",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+)
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -236,8 +284,18 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
+    ),
+)
+_REASONING_EFFORT_OPTION = typer.Option(
+    None,
+    "--reasoning-effort",
+    rich_help_panel = _PANEL_SERVER,
+    help = (
+        "Reasoning effort for an auto-started coding-agent server, e.g. 'medium'. The "
+        "levels are the model's own, so pass one its chat template accepts. Default: "
+        "unset, which keeps the template's level."
     ),
 )
 # Sampling overrides pin a value on the auto-started server (winning over the client and the
@@ -325,7 +383,7 @@ _PERSIST_OPTION = typer.Option(
     rich_help_panel = _PANEL_SESSION,
     help = (
         "Keep this agent's Unsloth-managed session dir so you can resume it later. "
-        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "codex/openclaw/hermes/pi/dsh have their whole home relocated into an Unsloth dir "
         "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
         "lives under the Unsloth agents dir and survives, so their own resume can reopen "
         "it. claude and opencode keep sessions in your own stores (~/.claude, "
@@ -366,17 +424,30 @@ _OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
     "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
     "models stats export import github pr session plugin plug db console generate".split()
 )
+_OPENCODE_V2_SUBCOMMANDS = frozenset(
+    "acp api debug console auth mcp plugin models export import mini run service pair serve".split()
+)
+_OPENCODE_V2_STANDALONE_SUBCOMMANDS = frozenset("api models export import mini run".split())
 _OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
-    "-h --help -v --version --print-logs --pure --mdns".split()
+    "-h --help -v --version --print-logs --pure --mdns --standalone --wizard".split()
 )
 _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
-    "--log-level --port --hostname --mdns-domain --cors".split()
+    "--log-level --port --hostname --mdns-domain --cors --server --completions --cpu-profile".split()
 )
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_supports_native_auto() -> bool:
-    executable = _which_with_install_dirs("opencode")
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    return "opencode", False
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
     if executable is None:
         # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
         # current release on launch -- either way assume native --auto is available.
@@ -385,6 +456,8 @@ def _opencode_supports_native_auto() -> bool:
         output = subprocess.check_output(
             [executable, "--version"],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             stderr = subprocess.DEVNULL,
             env = _probe_env(),
@@ -397,13 +470,13 @@ def _opencode_supports_native_auto() -> bool:
     )
 
 
-def _opencode_subcommand(args: list[str]) -> Optional[str]:
-    """Return an explicit OpenCode subcommand after supported global options."""
+def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
+    """Return an explicit OpenCode subcommand and its index after global options."""
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
-            return None
+            return None, None
         if arg in _OPENCODE_GLOBAL_BOOLEAN_OPTIONS:
             index += 1
             continue
@@ -416,17 +489,25 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
         # A non-global option (e.g. --session) is a TUI flag; stop before its value is
         # mistaken for a subcommand.
         if arg.startswith("-"):
-            return None
-        return arg
-    return None
+            return None, None
+        return arg, index
+    return None, None
 
 
-def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], bool]:
+def _opencode_native_auto_args(
+    args: list[str],
+    yolo: bool,
+    *,
+    v2: bool = False,
+) -> tuple[list[str], bool]:
     """Add OpenCode's native --auto when the selected command supports it."""
     routed = list(args)
     if not yolo:
         return routed, False
-    if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
+    subcommand, _ = _opencode_subcommand(routed)
+    if v2 and subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand != "run":
+        return routed, False
+    if not v2 and subcommand in _OPENCODE_NON_AUTO_SUBCOMMANDS:
         return routed, False
     separator = routed.index("--") if "--" in routed else len(routed)
     # --mini's runMini TUI forces auto=false and never forwards --auto, so appending it is
@@ -436,6 +517,30 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
     if "--auto" not in routed[:separator]:
         routed.insert(separator, "--auto")
     return routed, True
+
+
+def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
+    """Keep session-only config on the V2 server that consumes it."""
+    routed = list(args)
+    separator = routed.index("--") if "--" in routed else len(routed)
+    head = routed[:separator]
+    if (
+        "--standalone" in head
+        or "--server" in head
+        or any(arg.startswith("--server=") for arg in head)
+    ):
+        return routed
+    subcommand, subcommand_index = _opencode_subcommand(routed)
+    if (
+        subcommand in _OPENCODE_V2_SUBCOMMANDS
+        and subcommand not in _OPENCODE_V2_STANDALONE_SUBCOMMANDS
+    ):
+        return routed
+    insert_at = (
+        subcommand_index + 1 if subcommand in _OPENCODE_V2_STANDALONE_SUBCOMMANDS else separator
+    )
+    routed.insert(insert_at, "--standalone")
+    return routed
 
 
 def _hermes_install_hint() -> str:
@@ -485,6 +590,14 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
             raise typer.BadParameter(
                 "Hermes cannot resume a one-shot session with --usage-file; remove that option."
             )
+        # `chat -Q -q` is the only mode that can resume a session, but it does not
+        # inherit hermes' one-shot approval semantics: `-z` itself sets
+        # HERMES_YOLO_MODE=1 and HERMES_ACCEPT_HOOKS=1 for the call (hermes_cli/
+        # oneshot.py in _HERMES_INSTALL_COMMIT), because a one-shot has no user at
+        # the terminal to answer a prompt. Re-add the equivalent flags so a resumed `-z` keeps behaving like a
+        # plain `-z` instead of stalling on an approval nobody can answer. This is
+        # parity with the flag the user already typed, not the --yolo option: a
+        # resumed *interactive* session still prompts as usual.
         prefix = ["chat", "-Q"]
         if "--yolo" not in rewritten:
             prefix.append("--yolo")
@@ -495,6 +608,18 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
     return args
 
 
+_DSH_LAUNCHER_ARGS = frozenset(
+    "--profile --patch --dump-config --dump-default-config -V --version plugin web".split()
+)
+
+
+def _dsh_command(args: list[str]) -> list[str]:
+    head = args[0] if args else ""
+    if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
+        return ["dsh", *args]
+    return ["dsh", "web", *args]
+
+
 class LoadOptions(NamedTuple):
     """Model-load knobs forwarded to /api/inference/load when --model triggers a load."""
 
@@ -503,6 +628,71 @@ class LoadOptions(NamedTuple):
     load_in_4bit: bool = True
     tensor_parallel: bool = False
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
+    # Names the user actually typed: --context-length 0 equals the declared default yet
+    # is a reset the server must hear. Appended last to keep positional callers working.
+    supplied: frozenset = frozenset()
+
+    def overrides(self) -> frozenset:
+        """Fields that must reach the load: typed explicitly, or differing from default."""
+        differing = {
+            name
+            for name, default in (
+                ("gguf_variant", None),
+                ("max_seq_length", 0),
+                ("load_in_4bit", True),
+                ("tensor_parallel", False),
+                ("gpu_memory_mode", None),
+            )
+            if getattr(self, name) != default
+        }
+        # Internal callers never populate `supplied`, so a non-default value counts too.
+        return frozenset(differing) | frozenset(self.supplied)
+
+
+_LOAD_OPTION_PARAMS = (
+    "gguf_variant",
+    "max_seq_length",
+    "load_in_4bit",
+    "tensor_parallel",
+    "gpu_memory_mode",
+)
+
+
+def _supplied_load_params(ctx) -> frozenset:
+    """Which load knobs Click saw on the command line.
+
+    The context must be PASSED IN: Typer invokes callbacks with no active click context,
+    so click.get_current_context() is None. Unaskable -> empty set, and `overrides()`
+    falls back to comparing values.
+    """
+    getter = getattr(ctx, "get_parameter_source", None)
+    if getter is None:
+        return frozenset()
+    supplied = set()
+    for name in _LOAD_OPTION_PARAMS:
+        try:
+            source = getter(name)
+        except Exception:
+            continue
+        # By member NAME, not identity or ordering: Typer vendors its own click, so this
+        # is typer._click's ParameterSource, and click 8.3 reordered the IntEnum.
+        if getattr(source, "name", None) == "COMMANDLINE":
+            supplied.add(name)
+    return frozenset(supplied)
+
+
+def _load_options(
+    ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+) -> LoadOptions:
+    """Build LoadOptions for an agent command, recording what was typed."""
+    return LoadOptions(
+        gguf_variant,
+        max_seq_length,
+        load_in_4bit,
+        tensor_parallel,
+        gpu_memory_mode,
+        _supplied_load_params(ctx),
+    )
 
 
 class ServerOptions(NamedTuple):
@@ -512,6 +702,7 @@ class ServerOptions(NamedTuple):
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
     reasoning: Optional[Literal["on", "off", "auto"]] = None
+    reasoning_effort: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -625,7 +816,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -1021,14 +1212,25 @@ def _start_studio_server(
 ) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
-    unsloth = shutil.which("unsloth") or "unsloth"
+    # Windows goes through this interpreter, not the launcher on PATH: shutil.which
+    # resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of
+    # the .cmd shim (issue #8490). Without this, a user who reached the CLI through
+    # unsloth.cmd would still fail here. sys.executable is the interpreter already
+    # running this command, so the child inherits the same environment.
+    if sys.platform == "win32":
+        # Local import: unsloth_cli.commands.studio imports at package init after
+        # this module, so a top-level import would be circular.
+        from unsloth_cli.commands.studio import _managed_cli_argv
+        launch_head = _managed_cli_argv(Path(sys.executable))
+    else:
+        launch_head = [shutil.which("unsloth") or "unsloth"]
     parsed = urlparse(base)
     # Tools default off = passthrough mode (relay the agent's own tools); --no-cloudflare =
     # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging
     # travel via the child env below (version-agnostic) rather than new run flags that an
     # older re-exec'd run could mistake for llama-server args.
     command = [
-        unsloth,
+        *launch_head,
         "run",
         "-H",
         parsed.hostname or "127.0.0.1",
@@ -1064,13 +1266,17 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
+    # Always written, like the line above: an inherited value would otherwise pin
+    # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
+    # own sentinel for "keep the chat template's level".
+    child_env["LLAMA_ARG_REASONING_EFFORT"] = server.reasoning_effort or "default"
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
-    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # flags are omitted, so this works even if run re-execs into an older Unsloth venv.
     # Only write when the operator set the flag explicitly; otherwise keep whatever they
     # already exported (child_env is a copy of os.environ), falling back to the start
     # defaults (healing on, nudging on) when nothing was inherited.
@@ -1205,10 +1411,18 @@ def _require_studio(
                 "and re-run to apply them.",
                 err = True,
             )
-        if server_options.reasoning is not None:
+        _reasoning_pins = [
+            f"{_flag} {_value}"
+            for _flag, _value in (
+                ("--reasoning", server_options.reasoning),
+                ("--reasoning-effort", server_options.reasoning_effort),
+            )
+            if _value is not None
+        ]
+        if _reasoning_pins:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}; "
-                f"--reasoning {server_options.reasoning} applies only when this command starts "
+                f"{', '.join(_reasoning_pins)} takes effect only when this command starts "
                 "the server, so the running server keeps its current reasoning mode. Stop it "
                 "with `unsloth studio stop` and re-run to apply the override.",
                 err = True,
@@ -1295,6 +1509,20 @@ def _write_private_text(path: Path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(text)
+
+
+def _read_yaml_object(path: Path) -> Optional[dict]:
+    import yaml
+
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding = "utf-8"))
+    except (yaml.YAMLError, OSError):
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
@@ -1524,12 +1752,214 @@ def _model_id_matches(
     return str(actual).casefold() == str(requested).casefold()
 
 
+def _inference_status(base: str, key: str) -> dict:
+    """Runtime state of the resident model. {} means "cannot prove anything" (older
+    server), never "nothing is set"."""
+    try:
+        return _http_json("GET", f"{base}/api/inference/status", key)
+    except Exception:
+        return {}
+
+
+def _resident_load_target(models: list, status: dict, allow_casefold: bool):
+    """(identifier to post, id it is advertised as) for the running model.
+
+    /v1/models shows only the sanitized basename while _same_loaded_identifier compares
+    resident paths exactly, so the load must carry the identifier status reports.
+    """
+    if status.get("is_diffusion"):
+        # An image runtime answers with an active_model like any other, but it cannot
+        # serve chat: targeting it would tear down the diffusion server and then point
+        # the agent at a model that can never answer it.
+        _fail(
+            "Unsloth is serving an image model, which cannot serve chat, so there are no "
+            "settings to apply. Re-run with --model naming the chat model to load."
+        )
+    active_id = status.get("active_model")
+    entry = None
+    if active_id:
+        entry = next(
+            (
+                m
+                for m in models
+                if _model_id_matches(m.get("id"), active_id, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
+            ),
+            None,
+        )
+    if entry is None and not status:
+        # Only when there is no status at all (older server). A status that ANSWERED with
+        # active_model null is stating there is no chat resident.
+        # Catalog ORDER is not evidence either: /v1/models lists loaded speech sidecars
+        # too, so the first entry can be one. Answer only when the catalog is unambiguous.
+        loaded = [m for m in models if m.get("loaded") is not False]
+        if len(loaded) == 1:
+            entry = loaded[0]
+        elif loaded:
+            _fail(
+                "This Unsloth cannot say which model is serving chat, and more than one is "
+                "loaded. Re-run with --model naming the one these settings are for."
+            )
+    public_id = active_id or (entry or {}).get("id")
+    if not public_id:
+        if status:
+            # Status answered and named no chat model. Returning empty here would drop
+            # the knobs silently, which is the bug this path exists to fix.
+            _fail(
+                "No chat model is currently loaded, so there are no settings to apply. "
+                "Re-run with --model naming the model to load."
+            )
+        return None, None
+    identifier = status.get("model_identifier")
+    if identifier:
+        return identifier, public_id
+    # A native path lease redacts the internal path; inventing one from the basename
+    # would address the wrong file, so only a hub id can be posted back.
+    if _is_hub_model_id(public_id):
+        return public_id, public_id
+    _fail(
+        f"Unsloth is serving '{public_id}' from a local path it does not expose, so these "
+        "settings cannot be applied by attaching. Re-run with --model naming that path."
+    )
+
+
+# /api/inference/status field -> the /api/inference/load field that reproduces it. The
+# "requested_" values are what the load was INVOKED with, which is what has to be resent;
+# the bare names are the resolved ones and would pin a value the user never chose.
+_RESIDENT_RUNTIME_FIELDS = {
+    "cache_type_kv": "cache_type_kv",
+    "chat_template_override": "chat_template_override",
+    "disable_vision": "disable_vision",
+    "gpu_memory_mode": "gpu_memory_mode",
+    "gpu_layers": "gpu_layers",
+    "n_cpu_moe": "n_cpu_moe",
+    "tensor_split": "tensor_split",
+    "tensor_parallel": "tensor_parallel",
+    "speculative_type": "speculative_type",
+    "spec_draft_n_max": "spec_draft_n_max",
+    # The applied value is null when the runtime refused the request.
+    "mlx_kv_bits_requested": "mlx_kv_bits",
+    # LoadRequest defaults this to True, so omitting it would reload a full-precision
+    # model in 4-bit. Null on GGUF, which has no such setting.
+    "load_in_4bit": "load_in_4bit",
+    # Same trap: max_seq_length defaults to 0, which _gguf_request_intent copies into
+    # n_ctx, so changing another knob would reset a custom context to automatic.
+    "requested_context_length": "max_seq_length",
+    "requested_gpu_ids": "gpu_ids",
+    "requested_parallel_slots": "n_parallel",
+    "requested_n_batch": "n_batch",
+    "requested_n_ubatch": "n_ubatch",
+    "requested_load_mode": "load_mode",
+    "requested_ctx_checkpoints": "ctx_checkpoints",
+    "requested_cache_ram": "cache_ram",
+    "requested_spec_draft_cache_type": "spec_draft_cache_type",
+    "requested_llama_extra_args": "llama_extra_args",
+}
+
+
+def _resident_runtime_payload(status: dict, payload: dict) -> dict:
+    """The resident's own settings for knobs this load did not name.
+
+    None means "never set" for every one of these, so it is dropped rather than sent:
+    omitting a field is what lets the server inherit, while sending null would pin the
+    absence. An explicit empty list is kept, since that is a real "launch with none".
+    """
+    if not status:
+        return {}
+    carried = {}
+    for field, load_field in _RESIDENT_RUNTIME_FIELDS.items():
+        if load_field in payload:
+            continue
+        value = status.get(field)
+        if value is None:
+            continue
+        carried[load_field] = value
+    return carried
+
+
+def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
+    """Whether applying these settings can restart the resident. Unproven equality
+    counts as a difference: a silent restart is worse than a spurious warning."""
+    if not status:
+        return True
+    # _runtime_matches_intent rejects an identical intent while a spec probe, a DFlash
+    # drafter or a changed speculative binary is waiting to be retried, so the server
+    # reloads regardless of what the CLI asked for. Equality of the overrides is then no
+    # proof of a no-op, and claiming one would skip the gate and the warning.
+    if any(
+        status.get(field)
+        for field in (
+            "spec_probe_retry_pending",
+            "spec_dflash_retry_pending",
+            "spec_fallback_binary_changed",
+        )
+    ):
+        return True
+    for name in overrides:
+        if name == "gguf_variant":
+            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM
+            # would read as equal here yet still really reload on the server. The preload
+            # gate below already compares this way, and the two have to agree.
+            if (
+                not resident
+                or str(resident).strip().lower() != str(load.gguf_variant).strip().lower()
+            ):
+                return True
+        elif name == "max_seq_length":
+            # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
+            resident = status.get("requested_context_length")
+            if resident is None or int(resident) != int(load.max_seq_length):
+                return True
+        elif name == "load_in_4bit":
+            # GGUF has no 4-bit setting and reports null, which would read as "differs"
+            # and warn about an unload the server is not going to perform.
+            if status.get("is_gguf"):
+                continue
+            resident = status.get("load_in_4bit")
+            if resident is None or bool(resident) != bool(load.load_in_4bit):
+                return True
+        elif name == "tensor_parallel":
+            # llama.cpp only. The standard load never forwards it, so a restart would
+            # apply nothing.
+            if not status.get("is_gguf"):
+                continue
+            # The architecture gate can normalize a tensor request to layer mode and say
+            # so. Asking for it AGAIN is the request already applied, not a difference,
+            # and the backend dedupes exactly this state. Asking to turn it OFF is the
+            # opposite: the backend keeps the tensor intent behind that fallback and does
+            # not read a bare false as an explicit drop (the UI sends false routinely), so
+            # only a real reload can clear it.
+            if status.get("tensor_parallel_dropped_by_arch_gate"):
+                if load.tensor_parallel:
+                    continue
+                return True
+            if bool(status.get("tensor_parallel")) != bool(load.tensor_parallel):
+                return True
+        elif name == "gpu_memory_mode":
+            if not status.get("is_gguf"):
+                continue
+            # A paravirtual host pins every placement request to the same runtime, and a
+            # CPU fallback is preserved across reloads by _preserve_cpu_fallback_intent, so
+            # in both cases the raw mode cannot tell two requests apart. resident-config-
+            # match.ts skips placement on exactly these two for the same reason.
+            if status.get("gpu_placement_paravirtual") or status.get("cpu_fallback_reason"):
+                continue
+            if status.get("gpu_memory_mode") != load.gpu_memory_mode:
+                return True
+            # Manual to manual is a real no-op: the payload only sends the implicit
+            # gpu_layers = -1 when switching INTO manual, so a resident already pinned to
+            # a layer count keeps it through the round-trip and nothing changes.
+    return False
+
+
 def _resolve_model(
     base: str,
     key: str,
     requested: Optional[str],
     load: LoadOptions = LoadOptions(),
     preload_check = None,
+    infer_resident: bool = True,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -1542,13 +1972,22 @@ def _resolve_model(
     # /api/inference/load: the server's already-loaded dedup answers "already_loaded"
     # without reloading when the variant AND settings match, so a second session running
     # the same command still attaches without evicting the first.
-    load_has_overrides = bool(
-        load.gguf_variant
-        or load.max_seq_length
-        or not load.load_in_4bit
-        or load.tensor_parallel
-        or load.gpu_memory_mode is not None
-    )
+    overrides = load.overrides()
+    load_has_overrides = bool(overrides)
+    # Inferred-attach path only: `requested` becomes the resident's internal identifier
+    # (possibly a server path), so this is the id to show and to match on.
+    attach_public_id = None
+    status_snapshot = None
+    # Whether the inferred settings can restart the resident. Computed once: the preload
+    # gate, the warning, the consent refusal and force_reload must all agree, and asking
+    # twice against a snapshot taken at different times is how they drift apart.
+    inferred_differs = False
+    if requested is None and load_has_overrides and infer_resident:
+        status_snapshot = _inference_status(base, key)
+        requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
+        inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
+        # preload_check deliberately survives: it is the only gate before the load evicts
+        # the shared model (_require_gguf_for_codex runs after _connect returns).
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
     # model that is not resident, so only attach to an entry that is actually loaded.
@@ -1571,17 +2010,27 @@ def _resolve_model(
         # resident model already satisfies (a path-loaded GGUF shown as a bare basename
         # can collide with a non-GGUF unsloth/<name>).
         active = next((m for m in models if m.get("loaded") is not False), None)
+        # On the inferred path the target came from status, so catalog order can name a
+        # different entry (a speech sidecar listed first). Using it would make the
+        # survivor probe below report the wrong model as still serving.
+        if attach_public_id is not None:
+            active = next(
+                (
+                    m
+                    for m in models
+                    if _model_id_matches(
+                        m.get("id"), attach_public_id, allow_casefold = allow_casefold
+                    )
+                    and m.get("loaded") is not False
+                ),
+                None,
+            ) or {"id": attach_public_id}
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can
             # answer already_loaded; gating it would reject a second session for the model
             # already serving, whose file may have moved. Only the quant is checked below:
             # any other run knob changes the runtime intent, a real reload nothing dedupes.
-            other_overrides = bool(
-                load.max_seq_length
-                or not load.load_in_4bit
-                or load.tensor_parallel
-                or load.gpu_memory_mode is not None
-            )
+            other_overrides = bool(overrides - {"gguf_variant"})
             # /v1/models shows a path-loaded GGUF under its basename, so match that spelling
             # too, or a second session reruns the gate.
             wanted_ids = {requested, _public_model_id(requested)} - {None}
@@ -1593,6 +2042,11 @@ def _resolve_model(
                 )
                 for m in models
             )
+            # A proven no-op evicts nothing, so the gate has nothing to protect, and
+            # running it would reject an attach the disk-free already-loaded path can
+            # still serve (a direct .gguf the server has mapped but that has since moved).
+            if attach_public_id is not None and not inferred_differs:
+                resident_serves_request = True
             # /v1/models shows only the basename, so confirm a path request against the
             # identifier the server loaded -- else /new/foo.gguf reads as resident because
             # /old/foo.gguf is.
@@ -1628,7 +2082,14 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
-        if active_id and not _model_id_matches(
+        if attach_public_id is not None:
+            # An inferred attach never switches model, so the comparison below would
+            # misreport a switch and print the server's path.
+            if inferred_differs:
+                typer.echo(f"Applying new load settings to {attach_public_id}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+        elif active_id and not _model_id_matches(
             active_id,
             requested,
             allow_casefold = allow_casefold,
@@ -1652,20 +2113,83 @@ def _resolve_model(
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
-        # model_path so a bare `--model` load is unchanged.
+        # model_path so a bare `--model` load is unchanged. Membership decides, not
+        # truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
-        if load.gguf_variant:
-            payload["gguf_variant"] = load.gguf_variant
-        if load.max_seq_length:
+        if "gguf_variant" in overrides and load.gguf_variant:
+            direct_file = attach_public_id is not None and str(requested).lower().endswith(".gguf")
+            if direct_file:
+                # from_identifier consults a variant only for a DIRECTORY, so a DIFFERENT
+                # quant cannot be selected: posting one would reload the very same file and
+                # label it with a quant that does not describe its weights. Restating the
+                # one already running asks for no change, so drop the inapplicable field
+                # and let the other overrides through.
+                resident_variant = status_snapshot.get("gguf_variant")
+                same = (
+                    bool(resident_variant)
+                    and str(resident_variant).strip().lower()
+                    == str(load.gguf_variant).strip().lower()
+                )
+                if not same:
+                    _fail(
+                        f"'{attach_public_id}' was loaded from a single .gguf file, so "
+                        f"--gguf-variant {load.gguf_variant} cannot select a different quant. "
+                        "Re-run with --model naming the repository to switch quants."
+                    )
+            else:
+                payload["gguf_variant"] = load.gguf_variant
+        elif attach_public_id is not None and status_snapshot.get("is_gguf"):
+            # Re-send the running quant: a repo id carries none, so from_identifier would
+            # auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the
+            # context would evict a chosen Q8_0 to download a different quant. Skip a
+            # .gguf path, which loads as itself -- the server gates on the same suffix.
+            resident_variant = status_snapshot.get("gguf_variant")
+            if resident_variant and not str(requested).lower().endswith(".gguf"):
+                payload["gguf_variant"] = resident_variant
+        if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
-        if not load.load_in_4bit:
-            payload["load_in_4bit"] = False
-        if load.tensor_parallel:
-            payload["tensor_parallel"] = True
-        if load.gpu_memory_mode is not None:
+        if "load_in_4bit" in overrides:
+            payload["load_in_4bit"] = load.load_in_4bit
+        if "tensor_parallel" in overrides:
+            payload["tensor_parallel"] = load.tensor_parallel
+        if "gpu_memory_mode" in overrides and load.gpu_memory_mode is not None:
             payload["gpu_memory_mode"] = load.gpu_memory_mode
-            if load.gpu_memory_mode == "manual":
+            # -1 means "pick the layers", which is right when the user is switching INTO
+            # manual, but on an inferred attach to a resident already in manual it would
+            # throw away the layer count it was pinned to. Leave it for the round-trip.
+            already_manual = (
+                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
+            )
+            if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
+        if (
+            attach_public_id is not None
+            and inferred_differs
+            and status_snapshot.get("requires_trust_remote_code")
+        ):
+            # The reload cannot reproduce the consent: the payload has no
+            # trust_remote_code and no approval fingerprint, and the standard backend
+            # tears the worker down BEFORE the replacement is accepted, so a rejected
+            # custom-code load leaves nothing resident. Refuse while the model is still
+            # serving; naming it with --model goes through the normal consent path.
+            _fail(
+                f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
+                "cannot re-authorize. Re-run with --model naming it to apply these settings."
+            )
+        if attach_public_id is not None:
+            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies
+            # every defaulted LoadRequest field into the new intent, so a knob we leave out
+            # is reset rather than kept. Carry the resident's own values for the ones the
+            # user did not name, or changing the context alone would drop their KV dtype,
+            # slot count, batch sizes and GPU placement.
+            payload.update(_resident_runtime_payload(status_snapshot, payload))
+            # The server cannot tell an explicit `--context-length 0` reset from the 0 that
+            # every UI load sends, so it treats 0 as "no preference" and would answer
+            # already_loaded. Say outright that this one is a reload, but only when status
+            # PROVED a difference: on an older server _load_settings_differ cannot tell,
+            # and forcing there would evict on every attach.
+            if status_snapshot and inferred_differs:
+                payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -1676,12 +2200,16 @@ def _resolve_model(
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
             raise
         if loaded.get("status") == "already_loaded":
-            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
+            # Show the public id on the inferred path; `requested` may be a server path.
+            shown = attach_public_id or requested
+            typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested, _public_model_id(requested)} - {None}
+        # attach_public_id: our _public_model_id only strips a basename, while the
+        # server also maps an HF cache path to its repo id, so the two can disagree.
+        wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -2033,7 +2561,16 @@ def _answer_offers_variant(
     return False
 
 
-def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
+class _GgufAgent(NamedTuple):
+    label: str
+    command: str
+
+
+_CODEX_GGUF_AGENT = _GgufAgent("Codex", "codex")
+_CLAUDE_GGUF_AGENT = _GgufAgent("Claude Code", "claude")
+
+
+def _fail_gguf_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
     offered = [
         row.get("quant")
         for row in variants
@@ -2045,23 +2582,26 @@ def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> 
     _fail(message)
 
 
-def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
-    message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
+def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
+    message = (
+        f"{agent.label} needs a GGUF model served by llama-server, " f"but {model_id} is not one."
+    )
     guess = f"{model_id}-GGUF"
     if "gguf" not in model_id.lower() and _is_hub_model_id(guess) and _hub_gguf_files(guess):
-        message += f" Try: unsloth start codex --model {guess}"
+        message += f" Try: unsloth start {agent.command} --model {guess}"
     _fail(message)
 
 
-def _preflight_codex_gguf(
+def _preflight_agent_gguf(
+    agent: _GgufAgent,
     model: Optional[str],
     *,
     serve: bool = True,
     launch: bool = True,
 ) -> None:
     # Hub-listing preflight for the auto-start path only: with a server running, identifiers
-    # resolve against its cwd/cache/token, so _attach_gguf_check_for_codex asks the server
-    # instead. Only a complete listing with no .gguf files rejects; unknown defers to the
+    # resolve against its cwd/cache/token, so _attach_gguf_check asks the server instead.
+    # Only a complete listing with no .gguf files rejects; unknown defers to the
     # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
     # possible its "no running server" error comes first, without a hub probe.
     if not (serve and launch and model):
@@ -2086,10 +2626,11 @@ def _preflight_codex_gguf(
         return
     files = _hub_gguf_files(repo)
     if files is not None and not files:
-        _fail_codex_needs_gguf(repo)
+        _fail_agent_needs_gguf(agent, repo)
 
 
-def _attach_gguf_check_for_codex(
+def _attach_gguf_check(
+    agent: _GgufAgent,
     base: str,
     key: str,
     model: Optional[str],
@@ -2129,7 +2670,7 @@ def _attach_gguf_check_for_codex(
         # consults it only for a DIRECTORY), though an explicit one still reaches the probe.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused:
-            _fail_codex_needs_gguf(repo)
+            _fail_agent_needs_gguf(agent, repo)
         # A drafter folder further up is the server's call.
         uncertain = _direct_gguf_companion_is_uncertain(repo)
         # The variant does not exempt this: a direct file is loaded as itself, so a complete
@@ -2165,11 +2706,14 @@ def _attach_gguf_check_for_codex(
                     except OSError:
                         missing = False
                     if missing:
-                        _fail(f"{repo} does not exist. Check the path before pointing Codex at it.")
+                        _fail(
+                            f"{repo} does not exist. Check the path before "
+                            f"pointing {agent.label} at it."
+                        )
                     if not _direct_gguf_file_is_ready(repo):
                         _fail(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
-                            "re-download or re-copy it before pointing Codex at it."
+                            f"re-download or re-copy it before pointing {agent.label} at it."
                         )
                     # Only a spelling this OS can judge is settled here: a Windows path read
                     # from WSL skipped the absence check above and reads as ready, so returning
@@ -2221,18 +2765,18 @@ def _attach_gguf_check_for_codex(
             # the variantless verdict decides. Only a server omitting the field falls through.
             if variant and offered is None and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_codex_needs_gguf(candidate)
+                    _fail_agent_needs_gguf(agent, candidate)
                 return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()
                 if not any(
                     isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
                 ):
-                    _fail_codex_variant_missing(candidate, variant, variants)
+                    _fail_gguf_variant_missing(candidate, variant, variants)
                 return
             if not variant and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_codex_needs_gguf(candidate)
+                    _fail_agent_needs_gguf(agent, candidate)
                 return
         if isinstance(variants, list) and variants:
             # llama.cpp kills the resident model before resolving the quant, so a quant this
@@ -2259,7 +2803,7 @@ def _attach_gguf_check_for_codex(
             ):
                 _fail(
                     f"{candidate} has only incomplete GGUF weights on the server; "
-                    "finish or re-copy the download before pointing Codex at it."
+                    f"finish or re-copy the download before pointing {agent.label} at it."
                 )
             # A variantless local load picks from the directory's top level, so rows living
             # only in quant subdirectories need the variant that resolves them -- else this
@@ -2288,7 +2832,7 @@ def _attach_gguf_check_for_codex(
                     + (f" (available: {offered})." if offered else ".")
                 )
             if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
-                _fail_codex_variant_missing(candidate, variant, variants)
+                _fail_gguf_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
             # Explicit local syntax resolves locally on every server version, so its live empty
@@ -2306,40 +2850,61 @@ def _attach_gguf_check_for_codex(
                         return
                 except OSError:
                     return
-            _fail_codex_needs_gguf(candidate)
+            _fail_agent_needs_gguf(agent, candidate)
 
 
-def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
-    # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
+def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
+    # Only a definite "no" rejects: the callers wrap this in `except BaseException:
+    # _shutdown_auto_served()`, so guessing kills a server that may have just loaded a GGUF.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return  # older server without the endpoint; don't block the launch
-        raise
-    if status.get("is_gguf"):
+    except urllib.error.HTTPError:
+        # Not evidence: get_status 500s from its own probes with a GGUF resident.
         return
-    _fail_codex_needs_gguf(model_id)
+    except (OSError, ValueError, http.client.HTTPException):
+        # Named explicitly, not `except Exception`, so typer.Exit and real bugs still surface.
+        return
+    if not isinstance(status, dict):
+        return
+    is_gguf = status.get("is_gguf")
+    # InferenceStatusResponse declares is_gguf non-optional under a response_model, so a
+    # current server always sends it. Absent means "not that endpoint", never "non-GGUF".
+    if is_gguf is None or is_gguf:
+        return
+    # is_gguf carries a False default, so an idle server answers False while naming no
+    # model. The request that follows gets the server's own "No GGUF model loaded" anyway.
+    if not (status.get("active_model") or status.get("model_identifier")):
+        return
+    _fail_agent_needs_gguf(agent, model_id)
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str) -> str:
-    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, keep every subagent on the served model (a user
-    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
-    # endpoint), and pin availableModels to the served model so a user allowlist can't
-    # reject it. The pin must be non-empty; [] is ignored.
+def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+    # Command-tier pins beat user/project settings, which Claude applies after the process env.
+    settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
+    settings_env.update(local_env or {})
+    settings_env.update(
+        {
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+        }
+    )
     return json.dumps(
         {
-            "env": {
-                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
-            },
+            "env": settings_env,
             "availableModels": [model_id],
         }
     )
+
+
+def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env)
+    digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
+    settings = path / f"settings-{digest}.json"
+    _write_private_text(settings, overlay)
+    return settings
 
 
 def _claude_version() -> Optional[tuple]:
@@ -2350,7 +2915,13 @@ def _claude_version() -> Optional[tuple]:
         return None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10, env = _probe_env()
+            [executable, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            env = _probe_env(),
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token.
         # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
@@ -2362,14 +2933,49 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags(model_id: str) -> list:
+def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
-    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
-    # printout for another machine, so assume a current build.
+    # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
+    # supports --settings; no local binary means a printout for another machine, so assume
+    # a current build.
     version = _claude_version()
+    settings_flags = ["--settings", settings or _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+        return settings_flags
+    return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
+
+
+def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough: list) -> list:
+    local_args = [
+        "--model",
+        model_id,
+        *_claude_flags(model_id, settings),
+        *_yolo_command_flags("claude", yolo),
+    ]
+    forwarded = list(passthrough)
+    separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    before_separator = forwarded[:separator]
+    forwarded_settings = []
+    remaining = []
+    index = 0
+    while index < len(before_separator):
+        arg = before_separator[index]
+        if arg == "--settings" and index + 1 < len(before_separator):
+            forwarded_settings.extend(before_separator[index : index + 2])
+            index += 2
+            continue
+        if arg.startswith("--settings="):
+            forwarded_settings.append(arg)
+        else:
+            remaining.append(arg)
+        index += 1
+    return [
+        "claude",
+        *forwarded_settings,
+        *local_args,
+        *remaining,
+        *forwarded[separator:],
+    ]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
@@ -2386,6 +2992,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
@@ -2411,6 +3020,7 @@ def _merge_codex_config(existing: str, base: str) -> str:
         f'env_key = "{_CODEX_ENV_KEY}"\n'
         'wire_api = "responses"\n'
         "requires_openai_auth = false\n"
+        f"stream_idle_timeout_ms = {_CODEX_STREAM_IDLE_TIMEOUT_MS}\n"
     )
 
 
@@ -2418,6 +3028,24 @@ def _merge_codex_config(existing: str, base: str) -> str:
 # Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
+
+
+def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"],
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            stderr = subprocess.DEVNULL,
+            env = _probe_env(),
+        )
+    except Exception:
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return tuple(int(part) for part in match.groups()) if match else None
 
 
 def _codex_supports_model_catalog() -> bool:
@@ -2425,20 +3053,17 @@ def _codex_supports_model_catalog() -> bool:
     if executable is None:
         # A --no-launch recipe may be copied to another machine; assume a current Codex.
         return True
-    try:
-        output = subprocess.check_output(
-            [executable, "--version"],
-            text = True,
-            timeout = 10,
-            stderr = subprocess.DEVNULL,
-            env = _probe_env(),
-        )
-    except Exception:
-        return False
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _CODEX_MODEL_CATALOG_MIN_VERSION
-    )
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_MODEL_CATALOG_MIN_VERSION
+
+
+def _codex_supports_patch_line_endings() -> bool:
+    executable = _which_with_install_dirs("codex")
+    if executable is None:
+        # A normal launch installs Codex after this check; no-launch may run elsewhere.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION
 
 
 def _codex_model_catalog(model: dict) -> dict:
@@ -2461,7 +3086,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
         "default_verbosity": None,
-        "apply_patch_tool_type": None,
+        "apply_patch_tool_type": "freeform",
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": False,
         "experimental_supported_tools": [],
@@ -2489,6 +3114,11 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_patch_line_endings():
+        profile_text += (
+            "suppress_unstable_features_warning = true\n"
+            "features.apply_patch_preserve_line_endings = true\n"
+        )
     if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
         catalog = home / "model-catalog.json"
         catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
@@ -2534,9 +3164,17 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             profile = subprocess.check_output(
                 ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
                 text = True,
+                encoding = "utf-8",
+                # The path is the value: a corrupted home is worse than a loud failure.
+                errors = "strict",
                 stderr = subprocess.DEVNULL,
                 cwd = str(Path(executable).parent),
             ).strip()
+        except UnicodeDecodeError as exc:
+            _fail(
+                f"Could not read the Windows user profile for Codex ({exc}); "
+                "set USERPROFILE in the WSL environment, for example through WSLENV."
+            )
         except (OSError, subprocess.CalledProcessError) as exc:
             _fail(f"Could not find the Windows user profile for Codex: {exc}")
     if not profile or profile == "%USERPROFILE%":
@@ -2547,6 +3185,8 @@ def _wsl_windows_user_profile(executable: str) -> Path:
         translated = subprocess.check_output(
             ["wslpath", "-u", profile],
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             stderr = subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -2565,6 +3205,8 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
                     configured = subprocess.check_output(
                         ["wslpath", "-u", configured],
                         text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
                         stderr = subprocess.DEVNULL,
                     ).strip()
                 except (OSError, subprocess.CalledProcessError) as exc:
@@ -2598,6 +3240,8 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
             ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 30,
             check = False,
         )
@@ -2707,7 +3351,12 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
-def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+def _opencode_subagent_inline_config(
+    path: Path,
+    permission: dict,
+    command: str = "opencode",
+    v2: bool = False,
+) -> dict:
     """Keep the local provider visible without hiding the parent's allowed providers."""
     inline: dict = {}
     inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
@@ -2738,25 +3387,40 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
                 provider for provider in disabled if provider != _OPENCODE_PROVIDER
             ]
 
-    # The inherited inline layer is already highest priority. Merge it even when
-    # OpenCode is not installed yet, as in fresh-install and --no-launch flows.
+    # Keep an inherited inline allowlist usable by the local provider. V2 turns these
+    # filters into policies where global/project rules still intentionally outrank this
+    # content; the message at launch makes that boundary explicit.
     merge_provider_filters(inline)
     effective = inline
 
-    executable = _which_with_install_dirs("opencode")
-    if executable is None:
+    executable = None if v2 else _which_with_install_dirs(command)
+    if v2:
+        legacy_depth = inline.pop("subagent_depth", None)
+        if (
+            isinstance(legacy_depth, int)
+            and not isinstance(legacy_depth, bool)
+            and legacy_depth > 0
+        ):
+            experimental = inline.get("experimental")
+            if not isinstance(experimental, dict):
+                experimental = {}
+            experimental.setdefault("subagent_depth", legacy_depth)
+            inline["experimental"] = experimental
+    elif executable is None:
         typer.echo(
             f"Warning: OpenCode is not installed, so provider filters could not be checked. "
             f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
             err = True,
         )
     else:
-        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, ["opencode"]))
+        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, [command]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 15,
                 env = env,
             )
@@ -2774,10 +3438,11 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
 
         merge_provider_filters(effective)
 
-    depth = effective.get("subagent_depth")
-    inline["subagent_depth"] = (
-        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
-    )
+    if not v2:
+        depth = effective.get("subagent_depth")
+        inline["subagent_depth"] = (
+            depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+        )
     if permission:
         inline["permission"] = permission
     return inline
@@ -2815,6 +3480,18 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    base = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
+    key = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
+    model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
+    if base and key and model_id:
+        entry = {
+            "id": model_id,
+            "context_length": int(
+                server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
+            ),
+        }
+        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
+        mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
         args = [
@@ -2827,7 +3504,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         ]
         mcp_env["WSLENV"] = _merge_wslenv(
             os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
+            (
+                *_wsl_bridge_names(server_env, ()),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
+            ),
         )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
@@ -2953,7 +3633,9 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
 
 def _wsl_windows_path(path: Path) -> str:
     try:
-        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+        translated = subprocess.check_output(
+            ["wslpath", "-w", str(path)], text = True, encoding = "utf-8", errors = "replace"
+        ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate WSL path {path}: {exc}")
     if not translated:
@@ -3130,7 +3812,7 @@ def _augment_path_with_install_dirs() -> None:
         home = Path.home()
     except (RuntimeError, OSError):
         home = None
-    candidates = [home / ".local" / "bin"] if home is not None else []
+    candidates = [home / ".local" / "bin", home / ".opencode" / "bin"] if home is not None else []
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
@@ -3169,7 +3851,7 @@ def _augment_path_with_install_dirs() -> None:
 def _probe_env(**extra: str) -> dict:
     """Environment for probes that RUN a resolved shim.
 
-    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Unsloth's
     managed Node would not find that node when executed.
     """
     original = os.environ.get("PATH")
@@ -3183,6 +3865,32 @@ def _probe_env(**extra: str) -> dict:
     return env
 
 
+def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
+    """Prefer the sibling .cmd when Windows resolved an extensionless npm/pnpm shim.
+
+    cmd-shim writes ``to``, ``to.cmd`` and ``to.ps1``, and shutil.which can return
+    the extensionless POSIX shim, which CreateProcess rejects with WinError 193.
+    Measured on windows-latest: 3.12.0 probes the bare name before PATHEXT
+    (gh-109590), and 3.12.1 onwards do not. A PATHEXT holding "." reaches the same
+    place on any version. Substituted only when the file opens with a shebang, so a
+    real PE keeps priority over a stale wrapper beside it; matched on
+    not-a-Windows-suffix so a dotted bin name is caught too.
+    """
+    if executable is None or os.name != "nt":
+        return executable
+    if Path(executable).suffix.lower() in {".exe", ".com", ".cmd", ".bat", ".ps1"}:
+        return executable
+    with contextlib.suppress(OSError):
+        with open(executable, "rb") as resolved_file:
+            if resolved_file.read(2) == b"#!":
+                # .CMD only matters on case-sensitive volumes; no writer emits .bat.
+                for extension in (".cmd", ".CMD"):
+                    sibling = Path(executable + extension)
+                    if sibling.is_file():
+                        return str(sibling)
+    return executable
+
+
 def _which_with_install_dirs(name: str) -> Optional[str]:
     # shutil.which(name), but searching the known agent install dirs too, so a version probe
     # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
@@ -3192,7 +3900,26 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
     original = os.environ.get("PATH")
     _augment_path_with_install_dirs()
     try:
-        return shutil.which(name)
+        # Callers spawn this result directly, so the shim rescue is needed here
+        # too, not only in _resolved_launch_command.
+        return _prefer_windows_cmd_sibling(shutil.which(name))
+    finally:
+        if original is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = original
+
+
+def _which_deepseek_harness_with_install_dirs() -> Optional[str]:
+    """Find the first valid DeepSeek Harness even when another ``dsh`` shadows it."""
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    try:
+        for executable in deepseek_harness_executables_on_path():
+            executable = _prefer_windows_cmd_sibling(executable)
+            if executable is not None and is_deepseek_harness_executable(executable):
+                return executable
+        return None
     finally:
         if original is None:
             os.environ.pop("PATH", None)
@@ -3219,13 +3946,13 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
 def _npm_executable() -> Optional[str]:
     managed_node = _managed_node_tools()
     if not (managed_node and managed_node[2]):
-        executable = shutil.which("npm")
+        executable = _prefer_windows_cmd_sibling(shutil.which("npm"))
         if executable and not _wsl_windows_executable([executable]):
             return executable
         if executable:
             # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
-                candidate = shutil.which("npm", path = directory)
+                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path = directory))
                 if candidate and not _wsl_windows_executable([candidate]):
                     return candidate
 
@@ -3347,10 +4074,32 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
 
 
 def _resolve_or_install_agent(name: str, install_hint: str, resolver) -> str:
-    executable = resolver(name) or _install_agent(name, install_hint)
-    if executable is None:
-        _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
-    return executable
+    executable = resolver(name)
+    invalid_executable = None
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
+
+    executable = _install_agent(name, install_hint)
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+    if name == "dsh":
+        executable = _which_deepseek_harness_with_install_dirs()
+        if executable is not None:
+            return executable
+
+    if invalid_executable is not None:
+        _fail(
+            f"`{invalid_executable}` is not DeepSeek Harness. Install DeepSeek Harness "
+            f"with: {install_hint}"
+        )
+    _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
 
 
 def _require_agent_for_launch(name: str, install_hint: str, launch: bool) -> Optional[str]:
@@ -3499,6 +4248,9 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    # _launch resolves with raw shutil.which, so rescue here too; the sibling
+    # then enters the parser below.
+    executable = _prefer_windows_cmd_sibling(executable)
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match
@@ -3616,6 +4368,9 @@ def _connect(
             None if server is not None else model,
             load,
             preload_check = None if server is not None else preload_check,
+            # That server was started FROM these knobs, so inferring a target here would
+            # reload what was just loaded.
+            infer_resident = server is None,
         )
     except BaseException:
         _shutdown_auto_served()
@@ -3692,7 +4447,7 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # Nothing else prunes Unsloth's auth tree, so reuse the locked session helper: the next
     # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
@@ -3700,7 +4455,7 @@ def _temporary_agent_config(prefix: str):
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # Attaching to a remote or running Unsloth needs no local auth tree, so it may be
             # absent or unwritable. Fall back to the system temp dir, as before: no
             # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
@@ -3870,7 +4625,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Unsloth's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:
@@ -4244,6 +4999,43 @@ def write_pi_subagent_config(
     )
 
 
+def write_dsh_config(base: str, model: dict, path: Path) -> None:
+    import yaml
+
+    config = _read_yaml_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    model_entry = {"id": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        model_entry["contextWindow"] = window
+        model_entry["maxTokens"] = min(window // 4, 8192)
+    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
+        "displayName": "Unsloth Studio",
+        "api": "openai-completions",
+        "baseURL": f"{base}/v1",
+        "apiKeyEnv": _DSH_ENV_KEY,
+        # pi-ai reads an unknown base URL as OpenAI itself.
+        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+        "models": [model_entry],
+    }
+    _subdict(config, "agent-default-model").update(
+        provider = _DSH_PROVIDER,
+        model = model["id"],
+    )
+    text = yaml.safe_dump(config, sort_keys = False)
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+
+
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -4259,6 +5051,7 @@ def claude(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4278,18 +5071,25 @@ def claude(
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
+    _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
+        preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4298,6 +5098,12 @@ def claude(
             presence_penalty = presence_penalty,
         ),
     )
+    # Before the launch owns the server, so a rejection tears it down, not atexit.
+    try:
+        _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
+    except BaseException:
+        _shutdown_auto_served()
+        raise
     model_id = entry["id"]
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -4318,8 +5124,9 @@ def claude(
                 "--plugin-dir",
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
-                "--allowedTools",
-                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
+                # `=` form: --allowedTools is variadic, so a detached value swallows
+                # the first forwarded positional.
+                f"--allowedTools={_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]
@@ -4346,23 +5153,23 @@ def claude(
     # claude keeps its history in ~/.claude/projects, which --settings/env never
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
-    command = [
-        "claude",
-        "--model",
-        model_id,
-        *_claude_flags(model_id),
-        *_yolo_command_flags("claude", yolo),
-        *ctx.args,
-    ]
-    _run(
-        base,
-        entry,
-        env,
-        command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
-    )
+    with _session_config("claude", launch, persist = persist) as config:
+        settings = _write_claude_settings(config, model_id, env)
+        command = _claude_local_command(
+            model_id,
+            _agent_config_path(settings, ["claude"]),
+            yolo,
+            ctx.args,
+        )
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CLAUDE_ENV_UNSET,
+        )
 
 
 @start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -4380,6 +5187,7 @@ def codex(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4395,20 +5203,25 @@ def codex(
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
+    # Before the install prompt: _install_agent runs a remote installer, and this can
+    # refuse outright, so asking first fetches a tool the run cannot use.
+    _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
-    _preflight_codex_gguf(model, serve = serve, launch = launch)
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
-        preload_check = _attach_gguf_check_for_codex,
+        preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4421,7 +5234,7 @@ def codex(
     # takes over its lifecycle, so tear the server down here if it rejects the model
     # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
-        _require_gguf_for_codex(base, key, entry["id"])
+        _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -4485,6 +5298,7 @@ def openclaw(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4508,7 +5322,9 @@ def openclaw(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4516,6 +5332,7 @@ def openclaw(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4576,6 +5393,7 @@ def opencode(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4590,12 +5408,15 @@ def opencode(
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
-    install_hint = _npm_install_hint("opencode-ai")
-    _require_agent_for_launch("opencode", install_hint, launch)
+    command_name, opencode_v2 = _opencode_command()
+    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    _require_agent_for_launch(command_name, install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4603,6 +5424,7 @@ def opencode(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4611,14 +5433,26 @@ def opencode(
             presence_penalty = presence_penalty,
         ),
     )
+    if opencode_v2:
+        typer.echo(
+            f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
         # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
-        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
+        route_native_auto = (
+            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+        )
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args, route_native_auto, v2 = opencode_v2
+        )
+        command = [command_name, *opencode_args]
         with _session_config("opencode-subagent", launch, persist = persist) as cfg:
             config_path = cfg / "opencode.json"
             session_permission = write_opencode_config(
@@ -4630,7 +5464,12 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
-            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            inline_config = _opencode_subagent_inline_config(
+                config_path,
+                session_permission,
+                command = command_name,
+                v2 = opencode_v2,
+            )
             # A project opencode.json outranks the session file and could field-merge its
             # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
             inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
@@ -4659,20 +5498,30 @@ def opencode(
     # subcommand such as `run <prompt>`; a leading --model would land before that
     # subcommand and break it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto()
+    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
     if ctx.args:
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
-    elif launch:
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
         opencode_args, native_auto = _opencode_native_auto_args(
-            ["--model", opencode_model],
-            route_native_auto,
+            opencode_args, route_native_auto, v2 = opencode_v2
         )
-        command = ["opencode", *opencode_args]
+        command = [command_name, *opencode_args]
+    elif launch:
+        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args,
+            route_native_auto,
+            v2 = opencode_v2,
+        )
+        command = [command_name, *opencode_args]
     else:
         # Append-safe base: `opencode --auto run ...` parses as the TUI with a project
         # "run", not the run subcommand. Command unknown here, so keep the config fallback.
-        command = ["opencode"]
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
+        command = [command_name, *opencode_args]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
     # already survives exit; reopen the last one by passing `opencode --continue` through.
     with _session_config("opencode", launch, persist = persist) as cfg:
@@ -4692,16 +5541,9 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only the config fallback carries a permission. Native --auto omits it (auto-approve
         # asks, keep explicit denies); a non-yolo session omits it too, honoring project rules.
-        # opencode filters every provider (a config-defined custom one included) through
-        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
-        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
-        # To guarantee the session model loads without reading or modifying the user's real
-        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
-        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
-        # setting them in the highest-priority inline overlay neutralizes any user allowlist
-        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
-        # for this invocation and never touches the user's config files, so their normal
-        # `opencode` is unchanged; only this session is limited to the Unsloth provider.
+        # V1 filters are ordinary overlays, so scope that session to our provider. V2 turns
+        # filters into security policies where global/project rules intentionally win; keep
+        # those policies intact and tell the user above that they must allow our provider.
         # small_model is opencode's separate model for lightweight tasks; pin it to the
         # session model too, or a user/project small_model on another (now filtered)
         # provider would resolve a not-found error mid-session. The session serves one
@@ -4709,9 +5551,10 @@ def opencode(
         inline_config: dict = {
             "model": opencode_model,
             "small_model": opencode_model,
-            "enabled_providers": [_OPENCODE_PROVIDER],
-            "disabled_providers": [],
         }
+        if not opencode_v2:
+            inline_config["enabled_providers"] = [_OPENCODE_PROVIDER]
+            inline_config["disabled_providers"] = []
         if session_permission:
             inline_config["permission"] = session_permission
         env = {
@@ -4736,6 +5579,7 @@ def hermes(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4757,7 +5601,9 @@ def hermes(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4765,6 +5611,7 @@ def hermes(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4796,6 +5643,7 @@ def pi(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4820,7 +5668,9 @@ def pi(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4828,6 +5678,7 @@ def pi(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4915,3 +5766,69 @@ def pi(
             install_hint = install_hint,
             clear_screen = True,
         )
+
+
+@start_app.command("dsh", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def dsh(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("dsh", ctx.args)
+    command = _dsh_command(ctx.args)
+    install_hint = _npm_install_hint(_DSH_PACKAGE)
+    _require_agent_for_launch("dsh", install_hint, launch)
+    base, key, entry = _connect(
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        serve = serve,
+        launch = launch,
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
+    )
+    with _session_config("dsh", launch, persist = persist) as home:
+        write_dsh_config(base, entry, home / "settings.yaml")
+        env = {
+            _DSH_ENV_KEY: key,
+            "DSH_HOME": str(home),
+            # dsh uploads session records once a user records /feedback.
+            "DSH_TELEMETRY_DISABLED": "1",
+            "DSH_PERMISSION_MODE": (
+                _DSH_YOLO_PERMISSION_MODE if yolo else _DSH_SAFE_PERMISSION_MODE
+            ),
+        }
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)

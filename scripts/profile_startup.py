@@ -220,7 +220,7 @@ def profile_launch(
 def python_version_of(python: str) -> str:
     """Version of the interpreter that runs the imports, not the one running us.
 
-    --python points at the installed Studio venv while this script runs under the
+    --python points at the installed Unsloth venv while this script runs under the
     runner's system python, so platform.python_version() would label it wrong.
     """
     if python == sys.executable:

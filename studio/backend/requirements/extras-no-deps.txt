@@ -1,9 +1,9 @@
 # Audio extras (installed with --no-deps --no-cache-dir)
-descript-audio-codec
-descript-audiotools
-julius
+descript-audio-codec==1.0.0
+descript-audiotools==0.7.2
+julius==0.2.8
 torchcodec==0.10.0
-snac
+snac==1.2.1
 
 # peft 0.19.0 causes export subprocess shutdown issues in Unsloth;
 # installing with --no-deps to avoid pulling in torch>=0.11.0
@@ -11,15 +11,26 @@ peft==0.18.1
 
 # TRL and related packages
 trl==0.23.1
-# executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
-torch-c-dlpack-ext
-sentence_transformers==5.2.0
+# executorch>=1.0.1              # 41.5 MB - no imports in unsloth/zoo/studio
+torch-c-dlpack-ext==0.1.5
+# 5.2 requires >=3.10. This file is applied after no-torch-runtime.txt, so an
+# unconditional pin here would reject 3.9 outright and undo that file's fallback.
+sentence_transformers==5.2.0; python_version >= "3.10"
+sentence_transformers==5.1.2; python_version < "3.10"
 transformers==5.5.0; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 # No macOS x86_64 wheel at any version, so uv falls back to an sdist that shells out to
 # cmake. Skipping it on Intel Macs keeps that install compiler-free.
-pytorch_tokenizers; sys_platform != "darwin" or platform_machine == "arm64"
+#
+# Capped rather than pinned, because which version is installable varies along two
+# axes PEP 508 markers cannot express. 1.4.1 has no musllinux wheel (1.1.0 is the
+# newest that does), and its arm64 wheel is macosx_14_0, so a macOS 13 host needs
+# 1.2.0 while macOS 14+ takes 1.4.1. An exact pin would force a musl host or an
+# older Mac onto the one release carrying an sdist and hand them the cmake build
+# this file is written to avoid. The cap keeps the resolver's fallback while
+# bounding it at the newest audited release.
+pytorch_tokenizers<=1.4.1; sys_platform != "darwin" or platform_machine == "arm64"
 kernels==0.12.1
 # kernels<3.11 imports tomli as its tomllib fallback; --no-deps skips its own
 # marker dep, so list it here (no-op on the 3.12/3.13 default installs).
-tomli; python_version < "3.11"
+tomli==2.4.1; python_version < "3.11"

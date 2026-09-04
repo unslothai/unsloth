@@ -24,8 +24,7 @@ logger = structlog.get_logger(__name__)
 
 # 24h TTL keeps the GitHub call off the hot path and within rate limits.
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
-# Briefly memoize failed lookups so recurring status reads do not retry an
-# unreachable GitHub endpoint on every request.
+# Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
 
 
@@ -37,7 +36,12 @@ def read_install_marker(
     log_message: str,
 ) -> Optional[dict]:
     """Walk up from binary_path to find the install marker JSON.
-    None = no marker (source build / custom path) or invalid JSON."""
+    None = no marker (source build / custom path) or unusable JSON.
+
+    "Unusable" includes JSON that parses but is not an object. A marker holding ``[]``
+    or ``123`` reaches every caller as something without ``.get``, and each of them --
+    the update planner, the backend picker, crash recovery -- then raises AttributeError
+    on what is only a corrupt file. Treat it exactly like unparseable JSON: no marker."""
     if not binary_path:
         return None
     cached = cache.get(binary_path)
@@ -54,6 +58,14 @@ def read_install_marker(
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug(log_message, path = str(candidate), error = str(exc))
                 marker = None
+            else:
+                if not isinstance(marker, dict):
+                    logger.debug(
+                        log_message,
+                        path = str(candidate),
+                        error = f"marker is {type(marker).__name__}, not an object",
+                    )
+                    marker = None
             break
     cache[binary_path] = marker
     return marker
@@ -94,6 +106,29 @@ def save_disk_cache(
 
 
 def _fetch_newest_published_release(
+    repo: str, timeout: float, *, log_message: str
+) -> Optional[dict]:
+    """Newest published release object for `repo`, bounded by a wall-clock deadline.
+
+    Not redundant with `timeout`: urllib applies that per address, so a host whose leading
+    addresses blackhole pays it once for each. /api/inference/status reads this, and that
+    multiplication becomes the route's response time.
+    """
+    from utils.utils import call_with_deadline
+    try:
+        return call_with_deadline(
+            lambda: _fetch_newest_published_release_blocking(
+                repo, timeout, log_message = log_message
+            ),
+            timeout + 1,
+            name = "prebuilt-freshness-fetch",
+        )
+    except TimeoutError as exc:
+        logger.debug(log_message, repo = repo, error = str(exc))
+        return None
+
+
+def _fetch_newest_published_release_blocking(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[dict]:
     """Newest published (non-draft/non-prerelease) release object for `repo`, by
@@ -343,7 +378,6 @@ def reset_caches(
     if drop_disk:
         import shutil
 
-        # cache_dir() is a dedicated freshness-only subdir, re-created on the next
-        # save_disk_cache. ignore_errors so a missing/locked dir is a no-op rather
-        # than breaking an otherwise successful install.
+        # cache_dir() is a freshness-only subdir re-created on the next save_disk_cache, and
+        # ignore_errors so a missing or locked dir cannot break an otherwise successful install.
         shutil.rmtree(cache_dir(), ignore_errors = True)

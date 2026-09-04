@@ -89,12 +89,42 @@ class _FakeProcess:
         return self._returncode
 
 
+# Every kit built here, kept alive past the end of the test that made it so the
+# fixture below, and not the dying test frame, decides when it is collected.
+_LIVE_KITS = []
+
+
 def _kit(stdout_capture, stderr_capture, process):
     kit = SyntheticDataKit.__new__(SyntheticDataKit)
     kit.stdout_capture = stdout_capture
     kit.stderr_capture = stderr_capture
     kit.vllm_process = process
+    _LIVE_KITS.append(kit)
     return kit
+
+
+@pytest.fixture(autouse = True)
+def _retire_kits_without_reaping_a_server():
+    """Stop `__del__` running a real server teardown against a fake process.
+
+    `SyntheticDataKit.__del__` calls `cleanup()`, which ends in
+    `for _ in range(10): torch.cuda.empty_cache(); gc.collect()`. Ten full
+    collections cost about 3s per test when this file runs alone, but scale with
+    the live heap: inside the whole repo suite they cost about 40s per test, which
+    is why 15 of the 16 slowest tests in the suite are in this file.
+
+    None of these tests have a server to reap, and none of them assert on
+    `cleanup()`. `cleanup()` returns immediately when `vllm_process` is absent, so
+    dropping the attribute retires the kit without the collections. The teardown
+    the tests do care about, `terminate_tree` on the failure path, is asserted
+    inside the tests themselves and is untouched.
+    """
+    yield
+    while _LIVE_KITS:
+        kit = _LIVE_KITS.pop()
+        for attribute in ("vllm_process", "_delete_vllm"):
+            if hasattr(kit, attribute):
+                delattr(kit, attribute)
 
 
 REAL_STDERR_TAIL = (
@@ -343,9 +373,9 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
     with pytest.raises(RuntimeError):
         kit._await_metrics_endpoint()
     spent = clock["now"] - started
-    assert spent <= 110, (
-        f"spent {spent:.0f}s of simulated time on a wait the message calls " f"100 seconds"
-    )
+    assert (
+        spent <= 110
+    ), f"spent {spent:.0f}s of simulated time on a wait the message calls 100 seconds"
 
 
 def test_an_unbounded_timeout_is_a_wait_not_a_type_error():

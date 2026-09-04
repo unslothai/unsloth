@@ -13,6 +13,19 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 
+_VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_gpu_mask(monkeypatch):
+    """These tests fake a torch host and then ask about GPU ordinal 0. A mask
+    inherited from the shell remaps that ordinal onto a physical id the fake
+    host does not have, so the answer flips to False and nine tests fail. CI
+    runners carry no mask, so it only ever bites locally. The tests that are
+    about a mask still set their own, after this."""
+    for _m in _VISIBLE_DEVICE_MASKS:
+        monkeypatch.delenv(_m, raising = False)
+
 
 def _fake_torch(
     hip,
@@ -339,3 +352,143 @@ class TestTheProbeTestsDoNotDependOnHostRam:
         capped = LlamaCppBackend._get_gpu_memory()
         assert rows == [(0, _B200_FREE_MIB - 1024, 0)]
         assert capped == [(0, 14_000 - 1024, 0)]
+
+
+class TestTheOptOutHelper:
+    """_unified_memory_opted_out, the #8651 escape hatch. ggml tests presence, not
+    value, so only ABSENCE is off and this decides when to make it absent."""
+
+    @pytest.mark.parametrize(
+        "env,expected",
+        [
+            ({}, False),  # nothing set: the default decides
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, False),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "2"}, False),  # any value is ON to ggml
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "true"}, False),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "0"}, True),  # the reported trap
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": ""}, True),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),  # trimmed, folded
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "no"}, True),
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "false"}, True),
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}, True),
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),  # exact "1", like the DC switch
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "yes"}, False),
+            # The switch has to beat a truthy value.
+            (
+                {
+                    "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1",
+                    "GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1",
+                },
+                True,
+            ),
+        ],
+    )
+    def test_opt_out_decisions(self, env, expected):
+        assert LlamaCppBackend._unified_memory_opted_out(env) is expected
+
+    def test_none_reads_the_process_env(self, monkeypatch):
+        """The default arg is the process env, so a shell export is honoured."""
+        monkeypatch.delenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", raising = False)
+        monkeypatch.setenv("UNSLOTH_DISABLE_UNIFIED_MEMORY", "1")
+        assert LlamaCppBackend._unified_memory_opted_out() is True
+
+    def test_a_hostile_env_fails_open(self):
+        """Fails open: a bad env must not block a load. False is pre-#8651."""
+
+        class _Exploding(dict):
+            def get(self, *_args, **_kwargs):
+                raise RuntimeError("no")
+
+        assert LlamaCppBackend._unified_memory_opted_out(_Exploding()) is False
+
+
+def _fake_torch_sized(specs, *, hip = "6.2.0"):
+    """Build fake ROCm devices from ``(arch, total_bytes)`` specs."""
+    t = types.ModuleType("torch")
+    t.version = types.SimpleNamespace(hip = hip)
+    t.cuda = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: len(specs),
+        get_device_properties = lambda i: types.SimpleNamespace(
+            gcnArchName = specs[i][0], total_memory = specs[i][1]
+        ),
+    )
+    return t
+
+
+_GIB = 1024**3
+
+
+class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
+    """Managed allocation is enabled only when host RAM is the larger pool."""
+
+    def _host(self, monkeypatch, specs, ram_mib):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized(specs))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_mib)
+        )
+
+    def test_a_small_carve_out_still_gets_it(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 16 * _GIB)], 117_000)
+        assert LlamaCppBackend._unified_memory_would_help() is True
+
+    def test_a_carve_out_larger_than_host_ram_does_not(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 64 * _GIB)], 58_880)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_an_exact_tie_does_not(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 32 * _GIB)], 32 * 1024)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_a_discrete_card_is_never_offered_it(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1100", 16 * _GIB)], 117_000)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_unreadable_host_ram_fails_closed(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 16 * _GIB)], None)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_an_unreported_pool_size_fails_closed(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
+        )
+        assert LlamaCppBackend._rocm_selected_pool_mib() is None
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_a_missing_torch_fails_closed(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", None)
+        assert LlamaCppBackend._rocm_selected_pool_mib() is None
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_two_apus_are_weighed_together(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 24 * _GIB)], 40_000)
+        assert LlamaCppBackend._rocm_selected_pool_mib() == 32 * 1024
+        assert LlamaCppBackend._unified_memory_would_help() is True
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 24 * _GIB)], 30_000)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_the_answer_is_scoped_to_the_selected_gpu(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 64 * _GIB)], 40_000)
+        assert LlamaCppBackend._unified_memory_would_help([0]) is True
+        assert LlamaCppBackend._unified_memory_would_help([1]) is False
+
+    def test_a_discrete_card_in_the_selection_fails_closed(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1100", 64 * _GIB)], 40_000)
+        assert LlamaCppBackend._rocm_selected_pool_mib() is None
+        assert LlamaCppBackend._unified_memory_would_help() is False
+
+    def test_the_same_mixed_host_pinned_to_the_apu_still_gains(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1100", 64 * _GIB)], 40_000)
+        assert LlamaCppBackend._rocm_selected_pool_mib([0]) == 8 * 1024
+        assert LlamaCppBackend._unified_memory_would_help([0]) is True
+
+    def test_an_id_this_host_does_not_enumerate_fails_closed(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB)], 117_000)
+        assert LlamaCppBackend._rocm_selected_pool_mib([0, 3]) is None
+        assert LlamaCppBackend._unified_memory_would_help([0, 3]) is False
+
+    def test_an_empty_selection_fails_closed(self, monkeypatch):
+        self._host(monkeypatch, [("gfx1151", 8 * _GIB)], 117_000)
+        assert LlamaCppBackend._rocm_selected_pool_mib([]) is None
+        assert LlamaCppBackend._unified_memory_would_help([]) is False

@@ -197,7 +197,7 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
     install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     setup_rows = _sh_name_arch_rows(
         (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
-        var = "_setup_gfx",
+        var = "_sup_gfx_out",
     )
     assert setup_rows, "no name->arch case table found in studio/setup.sh"
     assert install_rows == setup_rows, (
@@ -489,7 +489,11 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
-    window = text[i : i + 600]
+    # Slice up to the fallback's own install command, not a fixed byte count: the commentary
+    # grows and a byte window quietly stops covering the line it checks.
+    _end = text.find("--default-index", i)
+    assert _end != -1, "ROCm->CPU fallback install command not found in install.ps1"
+    window = text[i:_end]
     assert (
         "Invoke-InstallCommandRetry" in window
     ), "the ROCm->CPU fallback torch install must use Invoke-InstallCommandRetry"
@@ -793,9 +797,15 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         k == -1 or j > k
     ), "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
     window = text[i : i + 700]
+    # The trio is built just above the call now (win_arm64 drops torchaudio), but the
+    # requirement is unchanged: the PINNED companions, never bare names.
+    trio = text[max(0, i - 900) : i + 700]
     assert (
-        "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window
+        "_torch_pkg" in trio and "_vision_pkg" in trio and "_audio_pkg" in trio
     ), "Windows ROCm repair must pass the pinned companion trio, not bare names"
+    assert "*_rocm_trio" in window or (
+        "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window
+    ), "the trio the call receives must be the pinned one"
     assert (
         "keeping the existing torch build" in window
     ), "Windows ROCm repair must keep the existing build (nonfatal) when the index fails"

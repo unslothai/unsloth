@@ -19,7 +19,9 @@ def _locale_encoding() -> str:
     Empty on a UTF-8 host, where there is no codepage to attribute the file to.
     """
     try:
-        preferred = locale.getencoding()
+        # novermin -- 3.11, and the except below IS the guard. vermin reads names
+        # rather than control flow, so it cannot see that this is already handled.
+        preferred = locale.getencoding()  # novermin
     except AttributeError:  # Python < 3.11
         preferred = locale.getpreferredencoding(False)
     if preferred.lower().replace("-", "").replace("_", "") == "utf8":
@@ -71,9 +73,8 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
-    # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a
-    # 76 MB shard, and these reach gigabytes. Only a dict, since key lookup falls
-    # through to the codepage when UTF-8 yields none.
+    # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a 76 MB shard, and
+    # these reach gigabytes.
     if isinstance(as_utf8, dict):
         return _Reading(as_utf8, None)
     for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
@@ -88,11 +89,11 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
 class _Scan(NamedTuple):
     """What a pass over an existing shard established about it."""
 
-    legacy: bool  # enough evidence to trust the codepage reading's keys
+    legacy: bool
     readable: bool
-    saw_non_ascii: bool  # some line's meaning depends on the encoding
-    utf8_keys: set  # keys from lines UTF-8 could read
-    legacy_keys: set  # keys only the codepage reading yields
+    saw_non_ascii: bool
+    utf8_keys: set
+    legacy_keys: set
 
 
 class StateStore:
@@ -101,12 +102,10 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Read whole, and UTF-8 only unlike the shards below: a checkpoint holds
-        # nothing but base64 cursors and booleans, so a codepage retry could only ever
-        # add non-ASCII. That would resume on a mojibaked cursor, which GitHub rejects
-        # with INVALID_CURSOR_ARGUMENTS, and the empty page it returns marks the stream
-        # done and skips the rest for good. Dropping a damaged checkpoint re-scrapes
-        # from the first page, which the writers dedup.
+        # Read whole, and UTF-8 only unlike the shards below: a checkpoint holds nothing but base64
+        # cursors and booleans, so a codepage retry could only resume on a mojibaked cursor GitHub rejects
+        # with INVALID_CURSOR_ARGUMENTS, whose empty page marks the stream done. Dropping a damaged
+        # checkpoint re-scrapes from page one, which the writers dedup.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()
@@ -163,9 +162,8 @@ class JsonlWriter:
             if scan.legacy:
                 self._count_seen_keys |= scan.legacy_keys
             if scan.saw_non_ascii or not scan.readable:
-                # Never convert: the writing encoding is unrecoverable and guessing
-                # mojibakes the records. Pure ASCII appends store identically under
-                # every codepage, and json.loads turns the \uXXXX escapes back.
+                # Never convert: the writing encoding is unrecoverable and guessing mojibakes the records. Pure
+                # ASCII appends store identically under every codepage, and json.loads turns the escapes back.
                 encoding = "ascii"
                 self._ensure_ascii = True
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")

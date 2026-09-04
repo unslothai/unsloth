@@ -5,10 +5,11 @@ import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   perModelConfigsEqual,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/apply-per-model-config";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,
+  MAX_SEQ_LENGTH_MAX,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
   MLX_KV_BITS,
@@ -16,7 +17,13 @@ import {
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  canonicalizeLoadMode,
+  isServedByLlamaCpp,
+  isServedByMlx,
+  normalizeCacheRam,
+  normalizeCtxCheckpoints,
   normalizeMaxSeqLength,
+  savedContextPin,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
@@ -28,6 +35,8 @@ import {
   useChatRuntimeStore,
   normalizeSpeculativeType,
 } from "../stores/chat-runtime-store";
+import { usePlatformStore } from "@/config/env";
+import { capturedContextLength } from "./preset-policy";
 
 /** Load/runtime knobs saved in a chat preset (excludes per-model-only blobs). */
 export type PresetLoadConfig = Pick<
@@ -41,7 +50,12 @@ export type PresetLoadConfig = Pick<
   | "nParallel"
   | "nBatch"
   | "nUbatch"
+  | "loadMode"
+  | "specDraftCacheDtype"
+  | "ctxCheckpoints"
+  | "cacheRam"
   | "tensorParallel"
+  | "disableVision"
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
@@ -60,18 +74,42 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  loadMode: null,
+  specDraftCacheDtype: null,
+  ctxCheckpoints: null,
+  cacheRam: null,
   tensorParallel: false,
+  disableVision: false,
 };
 
 function toComparablePerModelConfig(
   config: PresetLoadConfig,
 ): PerModelConfig {
+  // Compared as a pin, not as whichever field the backend of the moment writes it in:
+  // the same preset replayed elsewhere holds that length in the other field.
+  const pin = savedContextPin(config);
   return {
     ...DEFAULT_PER_MODEL_CONFIG,
     ...config,
+    customContextLength: pin,
+    maxSeqLength: null,
     chatTemplateOverride: null,
     selectedGpuIds: null,
   };
+}
+
+/** A context as a preset may carry it, or null if it is not a length at all.
+ *
+ *  One bound for capture and for reading a saved preset back, since clamping only on the
+ *  way to storage would send one window on the first replay and another after saving. The
+ *  upper bound is what `/load` accepts; the lower is the control's own minimum, because a
+ *  pin the control cannot represent is one the user cannot undo.
+ */
+function requestableContextLength(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.min(MAX_SEQ_LENGTH_MAX, Math.max(CONTEXT_LENGTH_MIN, Math.floor(value)));
 }
 
 export function normalizePresetLoadConfig(
@@ -105,12 +143,7 @@ export function normalizePresetLoadConfig(
   }
 
   const normalized: PresetLoadConfig = {
-    customContextLength:
-      typeof partial.customContextLength === "number" &&
-      Number.isFinite(partial.customContextLength) &&
-      partial.customContextLength > 0
-        ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
-        : null,
+    customContextLength: requestableContextLength(partial.customContextLength),
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
     mlxKvBits:
       typeof partial.mlxKvBits === "number" &&
@@ -143,9 +176,23 @@ export function normalizePresetLoadConfig(
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
+    // Through the same normalizers the per-model store uses, so a hand-edited or older preset cannot
+    // smuggle in a mode or dtype the panel cannot show.
+    loadMode: canonicalizeLoadMode(partial.loadMode),
+    specDraftCacheDtype:
+      typeof partial.specDraftCacheDtype === "string" &&
+      VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
+        ? partial.specDraftCacheDtype
+        : null,
+    ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
+    cacheRam: normalizeCacheRam(partial.cacheRam),
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
+        : false,
+    disableVision:
+      typeof partial.disableVision === "boolean"
+        ? partial.disableVision
         : false,
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
@@ -175,16 +222,25 @@ export function isSamePresetLoadConfig(
 export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
   const store = useChatRuntimeStore.getState();
-  const isGguf =
-    store.activeGgufVariant != null ||
-    store.ggufContextLength != null ||
-    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
-  const effectiveContextLength =
-    snapshot.customContextLength ??
-    (isGguf ? store.ggufContextLength : null);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf: store.loadedIsGguf,
+    activeGgufVariant: store.activeGgufVariant,
+    activeNativePathToken: store.activeNativePathToken,
+    checkpoint: store.params.checkpoint,
+  });
+  const platform = usePlatformStore.getState();
+  const isMlx = isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason);
+  // The same bound a saved preset is read back under; this one replays from memory first.
+  const effectiveContextLength = requestableContextLength(
+    capturedContextLength({
+      isGguf,
+      controlPin: snapshot.customContextLength,
+      loadedContextLength: store.loadedContextLength,
+    }),
+  );
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
-    maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
+    maxSeqLength: isMlx ? null : normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
     mlxKvBits: snapshot.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
@@ -192,7 +248,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     nParallel: snapshot.nParallel ?? null,
     nBatch: snapshot.nBatch ?? null,
     nUbatch: snapshot.nUbatch ?? null,
+    loadMode: snapshot.loadMode ?? null,
+    specDraftCacheDtype: snapshot.specDraftCacheDtype ?? null,
+    ctxCheckpoints: snapshot.ctxCheckpoints ?? null,
+    cacheRam: snapshot.cacheRam ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
+    disableVision: snapshot.disableVision ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
       : {}),
@@ -250,7 +311,12 @@ export function applyPresetLoadConfig(
     nParallel: config.nParallel ?? null,
     nBatch: config.nBatch ?? null,
     nUbatch: config.nUbatch ?? null,
+    loadMode: config.loadMode ?? null,
+    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+    ctxCheckpoints: config.ctxCheckpoints ?? null,
+    cacheRam: config.cacheRam ?? null,
     tensorParallel: config.tensorParallel ?? false,
+    disableVision: config.disableVision ?? false,
     chatTemplateOverride: null,
     gpuMemoryMode: config.gpuMemoryMode,
     gpuLayers: config.gpuLayers,
@@ -288,6 +354,18 @@ export function formatPresetLoadConfigSummary(
   if (config.nUbatch != null) {
     parts.push(`uBatch ${config.nUbatch}`);
   }
+  if (config.loadMode) {
+    parts.push(`Load ${config.loadMode}`);
+  }
+  if (config.specDraftCacheDtype) {
+    parts.push(`Draft KV ${config.specDraftCacheDtype}`);
+  }
+  if (config.ctxCheckpoints != null) {
+    parts.push(`${config.ctxCheckpoints} checkpoints`);
+  }
+  if (config.cacheRam != null) {
+    parts.push(`Cache RAM ${config.cacheRam}`);
+  }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");
   }
@@ -296,6 +374,9 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.tensorParallel) {
     parts.push("TP");
+  }
+  if (config.disableVision) {
+    parts.push("No vision");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

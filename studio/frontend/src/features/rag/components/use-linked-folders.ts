@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { pickNativeDocumentFolder } from "@/features/native-intents";
+import {
+  pickNativeDocumentFolder,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  announceProjectSourcesUpdated,
   createLinkedFolder,
   deleteLinkedFolder,
   getFolderSyncJob,
   listLinkedFolders,
+  noteProjectWork,
   rebuildLinkedFolder,
   streamFolderSyncJobEvents,
   syncLinkedFolder,
+  watchProjectFolderJob,
 } from "../api/rag-api";
 import type {
   FolderSyncJob,
@@ -36,6 +42,7 @@ export function useLinkedFolders(
   const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const controllers = useRef(new Map<string, AbortController>());
   const refreshGate = useRef(
     createScopedSingleFlightRequest<
@@ -46,6 +53,32 @@ export function useLinkedFolders(
   const currentScopeKey = useRef(scopeKey);
   const folderSnapshot = useRef<LinkedFolder[] | null>(null);
   const notifiedJobs = useRef(new Set<string>());
+
+  // The backend starts the job before it answers, so the window before trackJob
+  // registers it is the project changing with nothing gating on it. trackJob
+  // takes its own lease inside this one, so the two overlap.
+  const projectWorkScopeId = scopeType === "project" ? scopeId : null;
+  const withProjectWork = useCallback(
+    async <T>(run: () => Promise<T>): Promise<T> => {
+      if (!projectWorkScopeId) return run();
+      noteProjectWork(projectWorkScopeId, 1);
+      try {
+        return await run();
+      } finally {
+        noteProjectWork(projectWorkScopeId, -1);
+      }
+    },
+    [projectWorkScopeId],
+  );
+
+  /** Count a job against the project it was started for, whatever this hook is
+   * showing by the time the response lands. */
+  const watchStartedJob = useCallback(
+    (jobId: string) => {
+      if (projectWorkScopeId) watchProjectFolderJob(projectWorkScopeId, jobId);
+    },
+    [projectWorkScopeId],
+  );
 
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
@@ -59,6 +92,12 @@ export function useLinkedFolders(
   const trackJob = useCallback(
     (initial: FolderSyncJob) => {
       if (controllers.current.has(initial.id)) return;
+      // A sync reports at start and completion only, so the composer has nothing
+      // to gate on in between. The count follows the job, not this component:
+      // leaving the Sources tab aborts the stream below but not the sync.
+      if (scopeType === "project" && scopeId) {
+        watchProjectFolderJob(scopeId, initial.id);
+      }
       setJobs((current) => ({ ...current, [initial.linkedFolderId]: initial }));
       setFolders((current) =>
         current.map((folder) =>
@@ -138,7 +177,7 @@ export function useLinkedFolders(
         }
       })();
     },
-    [notifySourcesChanged],
+    [notifySourcesChanged, scopeType, scopeId],
   );
 
   const refresh = useCallback(
@@ -225,17 +264,21 @@ export function useLinkedFolders(
   }, [refresh, scopeKey]);
 
   const link = useCallback(async () => {
-    if (!scopeType || !scopeId || !isTauri) return;
+    if (!scopeType || !scopeId || !isTauri || !nativePathLeasesSupported) return;
     const operationScopeKey = scopeKey;
     setMutating(true);
     try {
       const selected = await pickNativeDocumentFolder();
       if (!selected || currentScopeKey.current !== operationScopeKey) return;
-      const result = await createLinkedFolder(
-        { type: scopeType, id: scopeId },
-        selected.token,
-        selected.displayName,
-      );
+      const result = await withProjectWork(async () => {
+        const created = await createLinkedFolder(
+          { type: scopeType, id: scopeId },
+          selected.token,
+          selected.displayName,
+        );
+        watchStartedJob(created.job.id);
+        return created;
+      });
       if (currentScopeKey.current !== operationScopeKey) return;
       setStateScopeKey(operationScopeKey);
       setFolders((current) => [
@@ -251,16 +294,33 @@ export function useLinkedFolders(
     } finally {
       setMutating(false);
     }
-  }, [scopeKey, scopeType, scopeId, trackJob, onSourcesChanged]);
+  }, [
+    scopeKey,
+    scopeType,
+    scopeId,
+    nativePathLeasesSupported,
+    trackJob,
+    watchStartedJob,
+    withProjectWork,
+    onSourcesChanged,
+  ]);
 
   const run = useCallback(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        const { job } =
-          mode === "rebuild"
-            ? await rebuildLinkedFolder(folderId)
-            : await syncLinkedFolder(folderId);
+        // Inside the request's lease and before the scope guard: the job runs on
+        // the project it started for whatever this hook shows, and returning
+        // without a watcher drops that count to zero mid-sync. Deduped, so
+        // trackJob's own call is a no-op.
+        const { job } = await withProjectWork(async () => {
+          const started =
+            mode === "rebuild"
+              ? await rebuildLinkedFolder(folderId)
+              : await syncLinkedFolder(folderId);
+          watchStartedJob(started.job.id);
+          return started;
+        });
         if (currentScopeKey.current !== operationScopeKey) return;
         trackJob(job);
         onSourcesChanged?.();
@@ -270,7 +330,7 @@ export function useLinkedFolders(
         });
       }
     },
-    [scopeKey, trackJob, onSourcesChanged],
+    [scopeKey, trackJob, watchStartedJob, withProjectWork, onSourcesChanged],
   );
 
   const remove = useCallback(
@@ -289,8 +349,13 @@ export function useLinkedFolders(
       setFolders((current) =>
         current.filter((folder) => folder.id !== folderId),
       );
+      const unlinkedProjectId = projectWorkScopeId;
       try {
-        await deleteLinkedFolder(folderId, removeIndex);
+        await withProjectWork(() => deleteLinkedFolder(folderId, removeIndex));
+        // The rows are gone whatever this hook shows by now, and every other
+        // composer on that project still lists them. Announce for the project
+        // the unlink was for, not for the scope on screen.
+        if (unlinkedProjectId) announceProjectSourcesUpdated(unlinkedProjectId);
         if (currentScopeKey.current !== operationScopeKey) return;
         onSourcesChanged?.();
         setJobs((current) => {
@@ -314,7 +379,16 @@ export function useLinkedFolders(
         });
       }
     },
-    [scopeKey, folders, jobs, trackJob, refresh, onSourcesChanged],
+    [
+      scopeKey,
+      folders,
+      jobs,
+      trackJob,
+      refresh,
+      withProjectWork,
+      onSourcesChanged,
+      projectWorkScopeId,
+    ],
   );
 
   return {
@@ -322,7 +396,7 @@ export function useLinkedFolders(
     jobs: stateScopeKey === scopeKey ? jobs : {},
     loading: stateScopeKey === scopeKey ? loading : true,
     mutating,
-    desktopSupported: isTauri,
+    desktopSupported: isTauri && nativePathLeasesSupported,
     link,
     sync: (folderId: string) => run(folderId, "sync"),
     rebuild: (folderId: string) => run(folderId, "rebuild"),

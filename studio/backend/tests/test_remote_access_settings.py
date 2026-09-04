@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import sys
 import threading
@@ -26,12 +27,14 @@ def _state(
     intent = "unset",
     is_colab = False,
     launch_managed = False,
+    request_host = "127.0.0.1",
 ):
     return SimpleNamespace(
         remote_access_intent = intent,
         remote_access_is_colab = is_colab,
         remote_access_launch_managed = launch_managed,
         remote_access_port = 8888,
+        server_request_host = request_host,
         remote_access_ready = True,
     )
 
@@ -210,7 +213,8 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         "block_reason": None,
     }
 
-    def _start(*_args, **_kwargs):
+    def _start(*_args, **kwargs):
+        assert kwargs["origin_host"] == "::1"
         ready.set()
         return "https://example.trycloudflare.com"
 
@@ -226,12 +230,24 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
     )
 
     if trigger == "auto":
-        assert remote_access.maybe_auto_start_remote_access(_state())
+        assert remote_access.maybe_auto_start_remote_access(_state(request_host = "::1"))
     else:
-        remote_access.start_remote_access(_state())
+        remote_access.start_remote_access(_state(request_host = "::1"))
     assert ready.wait(1)
     remote_access._start_worker.join(1)
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
+
+
+def test_settings_start_fails_closed_without_a_bound_address(monkeypatch):
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_start_worker_admission", None)
+    status = {"state": "off", "managed_by": None, "can_start": True, "block_reason": None}
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _: status)
+    monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
+
+    with pytest.raises(RuntimeError, match = "server_address_unavailable"):
+        remote_access.start_remote_access(_state(request_host = None))
 
 
 @pytest.mark.parametrize("operation", ["start", "stop"])
@@ -268,8 +284,23 @@ def test_management_rejects_api_keys():
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
-    source = Path(routes.__file__).read_text(encoding = "utf-8")
-    assert source.count("_ui_session: None = Depends(_require_ui_session)") == 4
+    # Every /remote-access handler must carry the gate. Scoped to those routes
+    # because a file-wide count breaks whenever an unrelated endpoint adopts
+    # _require_ui_session, as the Settings > Logs log endpoints did.
+    tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
+    gated = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        routed = [ast.unparse(d) for d in node.decorator_list if "router." in ast.unparse(d)]
+        if not any("'/remote-access" in d for d in routed):
+            continue
+        args = node.args.args + node.args.kwonlyargs
+        gated[node.name] = any(a.arg == "_ui_session" for a in args)
+    assert len(gated) == 4, f"expected 4 remote-access handlers, found {sorted(gated)}"
+    assert all(
+        gated.values()
+    ), f"ungated remote-access handlers: {sorted(k for k, v in gated.items() if not v)}"
 
 
 def test_remote_stop_returns_terminal_state(monkeypatch):
@@ -469,7 +500,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
 
 def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(monkeypatch):
     # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
-    # and Studio only ever opens Quick Tunnels. Measured against a real tunnel: an
+    # and Unsloth only ever opens Quick Tunnels. Measured against a real tunnel: an
     # SSE endpoint answers 200 with text/event-stream but delivers zero events.
     monkeypatch.setattr(remote_access, "_start_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)

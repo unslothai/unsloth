@@ -9,8 +9,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadResponse,
@@ -21,9 +21,9 @@ from hub.schemas.downloads import (
     DownloadStartResponse,
     TransportStatusResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.inventory import (
     AddScanFolderRequest,
-    BrowseFoldersResponse,
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
@@ -32,7 +32,6 @@ from hub.schemas.inventory import (
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
-    RecommendedFoldersResponse,
     OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
@@ -43,7 +42,6 @@ from hub.services.models import (
     companion_cleanup,
     deletion,
     downloads,
-    folder_browser,
     gguf_variants,
     local_inventory,
 )
@@ -61,8 +59,8 @@ async def list_local_models(
     return await local_inventory.list_local_models_response(models_dir)
 
 
-# Plain `def` (not async): synchronous SQLite + filesystem work runs in
-# FastAPI's thread-pool instead of blocking the event loop.
+# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
+# of blocking the event loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     return local_inventory.get_scan_folders_response()
@@ -82,20 +80,6 @@ def remove_scan_folder_endpoint(
     return local_inventory.remove_scan_folder_response(folder_id)
 
 
-@router.get("/recommended-folders", response_model = RecommendedFoldersResponse)
-def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    return folder_browser.get_recommended_folders_response()
-
-
-@router.get("/browse-folders", response_model = BrowseFoldersResponse)
-def browse_folders(
-    path: Optional[str] = Query(None),
-    show_hidden: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
-):
-    return folder_browser.browse_folders_response(path, show_hidden)
-
-
 @router.get("/models-folder", response_model = ModelsFolderResponse)
 def get_models_folder(current_subject: str = Depends(get_current_subject)):
     return local_inventory.get_models_folder_response()
@@ -109,7 +93,7 @@ async def get_gguf_variants(
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await gguf_variants.get_gguf_variants_response(
@@ -125,9 +109,14 @@ async def get_gguf_variants(
 async def download_model(
     body: DownloadModelRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_model_response(body, hf_token)
+    return await downloads.download_model_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)
@@ -158,7 +147,7 @@ async def get_active_downloads(
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_model_transport_status_response(
@@ -177,7 +166,7 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_gguf_download_progress_response(
@@ -192,7 +181,7 @@ async def get_gguf_download_progress(
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_download_progress_response(
@@ -204,7 +193,7 @@ async def get_download_progress(
 
 @router.get("/cached-gguf", response_model = CachedGgufResponse)
 async def list_cached_gguf(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_gguf_response(hf_token)
@@ -212,7 +201,7 @@ async def list_cached_gguf(
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_models_response(hf_token)
@@ -260,7 +249,7 @@ async def delete_cached_model(
     cache_path: Optional[str] = Body(None),
     # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
     only_if_orphan: bool = Body(False),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await deletion.delete_cached_model_response(

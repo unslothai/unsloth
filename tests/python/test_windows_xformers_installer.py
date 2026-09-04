@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +54,10 @@ def _selector_harness() -> str:
 
 
 def _run_pwsh(script: str) -> str:
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: a pwsh killed by a signal never ran this script, and
+    # `check = True` would report that as a CalledProcessError carrying the whole excerpt,
+    # which reads as the selector being wrong. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
@@ -246,11 +250,17 @@ def test_installer_never_installs_an_unpinned_xformers():
 
 def test_xformers_step_runs_after_the_torch_flavor_repair():
     """The repair can reinstall torch from a different index; selecting the wheel before it
-    would pin against a torch build that is about to be replaced."""
+    would pin against a torch build that is about to be replaced.
+
+    Anchored on code, not on comment prose. The previous anchors were the section
+    headers, and a comment-tightening pass that inserted one word into
+    "Enforce the installed torch flavor" turned this red without changing any
+    behaviour, which is a failure of the test rather than of the installer.
+    """
     source = _source()
-    repair = source.index("Enforce the installed torch flavor matches the detected GPU build")
-    xformers = source.index("Pin xFormers to the wheel built for the torch")
-    overlay = source.index("CI only: overlay a source checkout")
+    repair = source.index("$expectedTorchTag = Get-ExpectedTorchFlavorTag")
+    xformers = source.index("xformers==$_xfVersion")
+    overlay = source.index("UNSLOTH_CI_SOURCE_OVERLAY")
     assert repair < xformers < overlay
 
 
@@ -279,7 +289,7 @@ def test_installed_build_probe_reads_cpp_lib_json():
 
 # Torch releases the exact tables cannot list, and the answer both selectors must give.
 # The two implementations resolve the same machine (install.ps1 during install, wheel_utils
-# on demand from Studio), so a fallback that lives in only one of them is a machine whose
+# on demand from Unsloth), so a fallback that lives in only one of them is a machine whose
 # answer changes depending on which one asked.
 STABLE_ABI_PARITY_CASES = [
     ("2.10.1+cu130", "13.0", "0.0.35"),

@@ -52,7 +52,11 @@ for (const [page, runtime, path] of PAGES) {
     const drop = SOURCE.slice(
       SOURCE.indexOf("const dropResidentState = useCallback("),
       // To the end of the callback, not a fixed window: the body grew a cancel fence.
-      SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+      // Anchored from the opening, so the deps can grow without silently widening this slice.
+      SOURCE.indexOf(
+        "}, [dismissLoadToast,",
+        SOURCE.indexOf("const dropResidentState = useCallback("),
+      ),
     );
     assert.match(drop, /clearTimeout\(pollTimer\.current\)/);
     assert.doesNotMatch(

@@ -22,6 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference import gallery_flags
 from loggers import get_logger
 from utils.paths import ensure_dir, studio_root
 
@@ -69,7 +70,9 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     image_id = uuid.uuid4().hex
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a truncated {id}.png in the listing.
+    # dotted temp (skipped by the *.png glob) then atomic rename
+    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
+    # truncated {id}.png in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(_png_bytes(image, meta))
@@ -83,11 +86,19 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     return _record(image_id, meta)
 
 
-def _record(image_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _record(
+    image_id: str,
+    meta: dict[str, Any],
+    flags: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     return {
         **meta,
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
+        **gallery_flags.flags_for(
+            flags if flags is not None else gallery_flags.read(gallery_dir()), image_id
+        ),
     }
 
 
@@ -96,7 +107,6 @@ def image_path(image_id: str) -> Optional[Path]:
     if not _ID_RE.match(image_id):
         return None
     path = gallery_dir() / f"{image_id}.png"
-    # Defence in depth: confirm the resolved path is still inside the gallery.
     try:
         path.resolve().relative_to(gallery_dir().resolve())
     except ValueError:
@@ -111,7 +121,9 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped or older-schema file cannot 500 the listing.
+# a PNG missing any is skipped as foreign, so a hand-dropped or older-schema file cannot 500 the listing
+# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped or
+# older-schema file cannot 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -135,7 +147,7 @@ def _read_meta(path: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_image_path(image_id: str) -> Optional[Path]:
-    """Resolve an id to its PNG only when it is a Studio-owned image (a readable recipe chunk),
+    """Resolve an id to its PNG only when it is an Unsloth-owned image (a readable recipe chunk),
     else None. The serve route uses this instead of image_path() so a guessed stem for a
     hand-dropped foreign PNG -- which list_images/delete/clear already treat as not ours -- can't
     be streamed out. Mirrors the delete/clear ownership guard."""
@@ -157,12 +169,17 @@ def list_images(
     offset: int = 0,
     *,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A newest-first window of images for infinite scroll.
+    """A window of images for infinite scroll: pinned first (most recently pinned leading), then
+    newest-first by file mtime.
 
-    Ordered by file mtime (a cheap stat ~= generation order), so a large gallery isn't opened in
-    full just to sort; only the window's recipes are read. limit=None returns everything from
-    ``offset`` on.
+    mtime is a cheap stat ~= generation order, so a large gallery isn't opened in full just to
+    sort; only the window's recipes are read. limit=None returns everything from ``offset`` on.
+
+    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
+    images, True lists only archived ones. The archived section needs its own scrollable page, so
+    a chat-style "include archived" flag would not do.
 
     ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
     all count over the accepted-record domain. Pass the route's schema validator: a record with
@@ -172,17 +189,25 @@ def list_images(
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
         return []
-    paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop valid images and make has_more
-    # wrong. Known limit: this re-reads headers from newest down to `offset+limit` per page, so a deep scroll is O(offset) header-opens.
+    flags = gallery_flags.read(gallery_dir())
+    # both run on file stems BEFORE any recipe is read
+    # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
+    # per file and leave the early break below intact.
+    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
+    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
+    # page over READABLE records: filtering a foreign PNG out of an already-sliced window would drop valid images and
+    # make has_more wrong.
+    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
+    # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
+    # page, so a deep scroll is O(offset) header-opens.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
         meta = _read_meta(path)
-        if meta is None:  # not one of ours (no recipe chunk)
+        if meta is None:
             continue
-        record = _record(path.stem, meta)
-        if valid is not None and not valid(record):  # present but schema-invalid
+        record = _record(path.stem, meta, flags)
+        if valid is not None and not valid(record):
             continue
         records.append(record)
         if want is not None and len(records) >= want:
@@ -190,36 +215,85 @@ def list_images(
     return records[offset:] if limit is None else records[offset : offset + limit]
 
 
+def set_flags(
+    image_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
+) -> Optional[dict[str, Any]]:
+    """Patch one image's pin/archive flags and return its updated record, or None when the id is
+    not an Unsloth-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped
+    foreign PNG must not become flaggable (and so listable under a shelf we own)."""
+    # Ownership check and write under one lock, so a concurrent clear cannot delete the file between them and leave this
+    # reporting success for an image that is already gone.
+    with gallery_flags.exclusive(gallery_dir()):
+        path = owned_image_path(image_id)
+        if path is None:
+            return None
+        gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned = pinned, archived = archived)
+        meta = _read_meta(path)
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(image_id, meta)
+
+
 def delete(image_id: str) -> bool:
     path = image_path(image_id)
     if path is None:
         return False
-    # Only delete files we own (a readable recipe chunk): a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it.
+    # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
     if _read_meta(path) is None:
         return False
     try:
         path.unlink()
-        return True
     except OSError as exc:
         logger.warning("image_gallery.delete_failed: %s", exc)
         return False
+    # drop the flags with the file, so the id cannot hand out a stale pin and the store cannot grow forever
+    gallery_flags.forget(gallery_dir(), [image_id])
+    return True
 
 
-def clear() -> int:
-    """Delete every Studio-owned gallery PNG (readable recipe chunk); return how many were removed.
+def clear(include_archived: bool = False) -> int:
+    """Delete Unsloth-owned gallery PNGs (readable recipe chunk); return how many were removed.
+
+    Archived images are SPARED by default: archiving is how a user sets something aside, so a
+    "clear the gallery" action that destroyed the archive would defeat it. Pass
+    include_archived=True to remove those too.
+
+    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
+    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
+    quietly delete the very archive this promises to keep.
 
     Foreign PNGs are preserved: list_images already hides them, so clear must not destroy them."""
     removed = 0
-    try:
-        paths = list(gallery_dir().glob("*.png"))
-    except OSError:
-        return 0
-    for path in paths:
-        if _read_meta(path) is None:  # foreign / not ours
-            continue
+    directory = gallery_dir()
+    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would otherwise be judged active
+    # from the stale snapshot and deleted, after its PATCH had already reported success.
+    with gallery_flags.exclusive(directory):
+        # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
+        flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
-            path.unlink()
-            removed += 1
+            paths = list(directory.glob("*.png"))
         except OSError:
-            continue
+            return 0
+        cleared: list[str] = []
+        for path in paths:
+            if _read_meta(path) is None:
+                continue
+            if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            try:
+                path.unlink()
+                removed += 1
+                cleared.append(path.stem)
+            except OSError:
+                continue
+        # once every image we own is gone an unreadable store protects nothing
+        # Nothing left for an unreadable store to protect once every image we own is gone, so this is where the escape
+        # hatch escapes: replace it, or every later default clear still refuses.
+        if include_archived and not gallery_flags.is_trusted(directory):
+            gallery_flags.reset_locked(directory)
+        else:
+            gallery_flags.forget_locked(directory, cleared)
     return removed

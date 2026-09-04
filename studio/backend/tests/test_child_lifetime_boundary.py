@@ -60,7 +60,7 @@ PARENT = textwrap.dedent(
     argv = _get_shell_cmd('"%s" -c "%s"' % (sys.executable, payload))
     kw = {}
     if sys.argv[3] == "job":
-        # The helper Studio's own spawns go through: PR_SET_PDEATHSIG on Linux,
+        # The helper Unsloth's own spawns go through: PR_SET_PDEATHSIG on Linux,
         # nothing on macOS, job inheritance on Windows.
         from utils.process_lifetime import child_popen_kwargs
         kw = child_popen_kwargs()
@@ -91,7 +91,15 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
         else:
             os.kill(parent.pid, 9)
         parent.wait(timeout = 30)
-        time.sleep(5)
+        # Poll the 5s reaping grace out instead of sleeping through it. The verdict
+        # is identical -- "still alive after 5s" is still "survived" -- but where the
+        # payload does die (Linux PR_SET_PDEATHSIG) it dies in milliseconds, so the
+        # answer is available long before the window ends. Only the platforms that
+        # genuinely leak the payload now pay the full 5s, and they are the ones the
+        # window was written for.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _alive(payload_pid):
+            time.sleep(0.05)
         survived = _alive(payload_pid)
         print(f"\n[{sys.platform}] mode={mode}: payload {payload_pid} survived = {survived}")
         return survived

@@ -617,17 +617,32 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 
 # Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
 # Blocking = public attack indicators (known-malicious version, IOC
-# string). Advisory = structural anomalies that warn but don't block.
-# --strict makes every finding blocking.
+# string) plus the provenance/integrity checks this gate must enforce
+# before `npm ci` / `cargo fetch` runs lifecycle scripts. Advisory =
+# incomplete-but-not-fetchable anomalies. --strict blocks everything.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
+        # A non-registry URL or an unverifiable tarball is the exact
+        # pre-install fetch this gate exists to stop.
+        "non-registry-resolved-url",
+        "missing-integrity-hash",
+        "non-registry-cargo-source",
+        "missing-cargo-checksum",
         # A structurally broken lockfile might hide a real attack.
         "malformed-lockfile",
         "missing-lockfile",
         "unreadable-lockfile",
         "missing-toml-parser",
+        # An unsupported lockfileVersion means the audit could not walk
+        # the dependency tree at all (the structural rules below only
+        # apply to npm v2/v3). Treating it as advisory would let a v1
+        # downgrade -- a known supply-chain attack shape -- silently
+        # pass CI: the scanner reports the kind, exits 0, and no
+        # blocking finding is raised. Keep this blocking so a checked-in
+        # lockfile cannot be downgraded out of audit coverage.
+        "unsupported-lockfile-version",
     }
 )
 
@@ -670,11 +685,13 @@ def main(argv: list[str] | None = None) -> int:
         action = "store_true",
         help = (
             "Treat every finding as blocking (exit 1). "
-            "Default mode only blocks on known-malicious versions, "
-            "indicator-of-compromise strings, or structurally broken "
-            "lockfiles; everything else is printed as an advisory "
-            "warning with exit 0. CI should use the default; local "
-            "audits aiming for zero noise can opt in via --strict."
+            "Default mode already blocks on known-malicious versions, "
+            "indicator-of-compromise strings, structurally broken "
+            "lockfiles, and dependency provenance/integrity failures "
+            "(non-registry npm URL or cargo source, missing integrity "
+            "hash or cargo checksum). Remaining anomalies, such as an "
+            "entry with no resolved URL, are printed as an advisory "
+            "warning with exit 0; --strict escalates those too."
         ),
     )
     args = parser.parse_args(argv)
@@ -686,17 +703,26 @@ def main(argv: list[str] | None = None) -> int:
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
+        # Both branches echo the user-supplied env var inside a
+        # ``::warning::`` GH Actions workflow command. The raw value can
+        # contain ``%``, ``\r``, ``\n`` or even another ``::error::``
+        # line (workflow-command injection); _gha_escape collapses each
+        # message onto a single annotation line per the GH workflow-
+        # commands spec.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
-                "::warning::Lockfile audit skip REQUIRES a justification "
-                f"value (>=5 chars, not '{_skip_raw}'). Proceeding with "
-                "audit. Use e.g. UNSLOTH_LOCKFILE_AUDIT_SKIP=ticket-1234.",
+                "::warning::"
+                + _gha_escape(
+                    "Lockfile audit skip REQUIRES a justification "
+                    f"value (>=5 chars, not '{_skip_raw}'). Proceeding with "
+                    "audit. Use e.g. UNSLOTH_LOCKFILE_AUDIT_SKIP=ticket-1234."
+                ),
                 file = sys.stderr,
                 flush = True,
             )
         else:
             print(
-                f"::warning::Lockfile audit skipped: reason='{_skip}'",
+                "::warning::" + _gha_escape(f"Lockfile audit skipped: reason='{_skip}'"),
                 file = sys.stderr,
                 flush = True,
             )
@@ -769,7 +795,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "[lockfile-audit] Refusing to proceed. Each blocking finding "
         "above is either a public indicator-of-compromise, a known-"
-        "malicious pinned version, or a structurally broken lockfile. "
+        "malicious pinned version, an unverifiable / non-registry "
+        "dependency source, or a structurally broken lockfile. "
         "Investigate before running `npm ci` or `cargo fetch`.",
         file = sys.stderr,
     )

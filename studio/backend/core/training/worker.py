@@ -11,8 +11,9 @@ version-switching. Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
-import structlog
 from loggers import get_logger
+import importlib
+import importlib.metadata
 import math
 import os
 import shutil
@@ -53,11 +54,20 @@ activate_native_tls()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
+
+# Light module on purpose: the MLX branch below runs on torch-less hosts, so it
+# cannot reach these through core.training.trainer.
+from core.training.dataset_bounds import (
+    bound_dataset_rows,
+    max_train_rows_for_config,
+    record_row_bound,
+    row_bound_for_resume,
+    world_size_from_env,
+)
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -69,6 +79,50 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
         return None
     path = Path(resume_from_checkpoint)
     return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
+def _data_parallel_world_size() -> int:
+    """Replicas that each draw a full batch of rows per optimizer step.
+
+    Two things multiply row consumption and only one of them is in the env: a
+    distributed launch (torchrun, accelerate, mpirun, mlx.launch), and plain
+    DataParallel, which transformers reaches for whenever a non-distributed run
+    sees more than one CUDA device -- it sets n_gpu to the visible device count and
+    scales the train batch by it, so an extra visible GPU eats rows exactly as an
+    extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
+
+    The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
+    load uses) forces it to 1 as well. Rounding up when the model turns out to be
+    sharded rather than replicated only tokenizes a larger subset of a corpus this
+    bound is orders of magnitude below anyway; rounding down means the run silently
+    re-reads rows it has already trained on.
+
+    torch is read out of sys.modules rather than imported: this also runs on the MLX
+    path, on hosts where no torch exists, and a process that never imported it has
+    no CUDA devices to count either.
+    """
+    sizes = [world_size_from_env()]
+    torch_module = sys.modules.get("torch")
+    if torch_module is not None:
+        try:
+            distributed = getattr(torch_module, "distributed", None)
+            if (
+                distributed is not None
+                and distributed.is_available()
+                and distributed.is_initialized()
+            ):
+                sizes.append(int(distributed.get_world_size()))
+        except Exception:
+            # A stubbed or half-initialised torch.distributed must not fail a run.
+            pass
+        try:
+            sizes.append(int(torch_module.cuda.device_count()))
+        except Exception:
+            # A CPU-only build answers 0, which the filter below drops; a broken or
+            # stubbed torch.cuda raises instead, and that must not fail a run either.
+            pass
+    return max([size for size in sizes if size > 0], default = 1)
 
 
 def _model_local_files_only(config: dict) -> bool:
@@ -681,6 +735,143 @@ def _pre_detect_training_model(
         local_files_only = local_files_only,
         model_revision = model_revision,
     )
+    _check_finetune_targets_after_detect(trainer, config)
+
+
+_NOTHING_TO_TRAIN = (
+    "Nothing to train: select at least one layer family (finetune_language_layers or "
+    "finetune_vision_layers) and at least one module type (finetune_attention_modules or "
+    "finetune_mlp_modules)."
+)
+
+
+def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
+    """(vision, language, attention, mlp), read exactly the way the consumers read them.
+
+    A guard that models the run differently from the code it guards rejects runs that would
+    have trained, so every default here is the CUDA consumer's own default for an omitted key.
+    Only the MLX consumer defaults vision False, and _check_mlx_finetune_targets discards the
+    vision element, so True is safe there too.
+    """
+    return (
+        bool(config.get("finetune_vision_layers", True)),
+        bool(config.get("finetune_language_layers", True)),
+        bool(config.get("finetune_attention_modules", True)),
+        bool(config.get("finetune_mlp_modules", True)),
+    )
+
+
+def _requests_all_linear(config: dict) -> bool:
+    """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
+
+    get_peft_model forces every selector True for the keyword, so all-linear with the
+    selectors off trains every linear layer today and rejecting it would break the very
+    requests the selectors are not consulted for. A list naming all-linear alongside other
+    leaves is not the keyword: the caller strips it and the rest take the scoped path.
+    """
+    target_modules = config.get("target_modules")
+    if isinstance(target_modules, str):
+        return target_modules == "all-linear"
+    if isinstance(target_modules, (list, tuple)):
+        return list(target_modules) == ["all-linear"]
+    return False
+
+
+def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
+    """Reject a LoRA run that selects no adapter layers, once detection has settled which
+    branch it takes. The request model cannot decide this: the codec/ASR branches ignore the
+    selectors that is_audio_vlm reads, is_vlm needs a vision-capable model and not just an
+    image-tagged dataset, and only the probe in pre_detect separates those. pre_detect is
+    config/tokenizer only, so this still fires before any weights load, instead of surfacing
+    as get_peft_regex's "No layers to finetune" with the model already in memory."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
+        return  # Full Finetuning / CPT build adapters from target_modules alone
+    if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
+        return  # the text branch ignores these four
+    if _requests_all_linear(config):
+        return  # get_peft_model turns all five selectors on for the keyword; see below
+    vision, language, attention, mlp = _finetune_selectors(config)
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
+    if not (vision or language) or not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+# Targets the MLX loader trains regardless of the layer-family flags: on the CPT path
+# embed_tokens becomes a full trainable module and lm_head its own adapter.
+_CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _names_a_cpt_target(target_modules) -> bool:
+    """Whether an explicit target list names something that trains on its own."""
+    if isinstance(target_modules, str):
+        return target_modules in _CPT_TARGET_NAMES
+    try:
+        return any(name in _CPT_TARGET_NAMES for name in target_modules)
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
+        return False
+
+
+def _check_mlx_finetune_targets(config: dict) -> None:
+    """MLX equivalent, called from the LoRA branch of the MLX worker.
+
+    Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
+    selectors for text models too, so there is no is_vlm gate. And the caller back-fills
+    finetune_language_layers whenever a module type is on, so only an empty module selection
+    can survive here.
+
+    Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
+    names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
+    all-linear survives with both module types off -- but the text branch then gates the LoRA
+    application on finetune_language_layers, and with all four selectors off the caller's
+    back-fill never fires. Those runs apply no adapters at all: the model warns and trains
+    nothing, and a VLM raises only once the weights are loaded.
+
+    The exception is a target the loader handles independently of the layer families: naming
+    embed_tokens or lm_head puts it on the CPT path, which trains whatever the flags say.
+
+    An explicit list that merely filters down to nothing still gets the loader's own message,
+    which names the two flags."""
+    targets = config.get("target_modules")
+    if targets:
+        if _names_a_cpt_target(targets):
+            return
+        _, language, attention, mlp = _finetune_selectors(config)
+        # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
+        # does: that helper carries the CUDA consumer's defaults, where an omitted vision
+        # selector means True, while MLX defaults it False and forces it False for a text
+        # model. Taking True from an omitted key would wave through every legacy config
+        # that never sent the selectors at all.
+        vision = bool(config.get("finetune_vision_layers", False))
+        # Any one of them leaves something that can train, or leaves the loader to say so
+        # with a better message. Vision counts because this runs BEFORE detection, so a VLM
+        # whose vision tower is the only selection must not be refused here;
+        # _check_mlx_effective_targets catches the text case once is_vlm is known.
+        if attention or mlp or language or vision:
+            return
+        raise ValueError(_NOTHING_TO_TRAIN)
+    _, _, attention, mlp = _finetune_selectors(config)
+    if not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_effective_targets(
+    config: dict, *, finetune_language: bool, finetune_vision: bool
+) -> None:
+    """The same refusal, re-asked with the values get_peft_model will actually receive.
+
+    ``_check_mlx_finetune_targets`` runs before the model is loaded, so it cannot tell a VLM
+    from a text model and has to let a vision-only selection through. The call site can: it
+    has forced vision to False for a text model and applied the language back-fill, so if
+    both layer families are still off here, no adapter is coming and the run would train
+    nothing but its own warning.
+
+    Later than the preflight deliberately: this is the first point the answer is knowable,
+    and it is still before the trainer is built and before a single step runs."""
+    if finetune_language or finetune_vision:
+        return
+    if _names_a_cpt_target(config.get("target_modules") or ()):
+        return
+    raise ValueError(_NOTHING_TO_TRAIN)
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -967,7 +1158,144 @@ def _hipcc_gcc_install_dir() -> str | None:
     return None
 
 
+def _is_importable(import_name: str) -> bool:
+    # Invalidate finder caches so a package installed earlier in this process is seen.
+    importlib.invalidate_caches()
+    try:
+        __import__(import_name)
+        return True
+    except Exception as exc:
+        # A wrong-arch/ABI wheel raises OSError/RuntimeError ("undefined symbol"), not
+        # ImportError, so catch everything and let the caller fall back.
+        logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
+        return False
+
+
+# Kept in step with install_python_stack._FLASH_ATTN_IMPORT_PROBE_TIMEOUT.
+_IMPORT_PROBE_TIMEOUT = 300
+
+
+def _is_importable_isolated(import_name: str) -> bool:
+    """Probe the import in a child process.
+
+    A wrong-arch wheel can abort or segfault in its initialiser instead of raising, which
+    would kill this worker rather than fall back. A child turns that into a return code
+    (negative = fatal signal).
+    """
+    try:
+        result = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                import_name,
+            ],
+            stdout = _sp.DEVNULL,
+            stderr = _sp.DEVNULL,
+            timeout = _IMPORT_PROBE_TIMEOUT,
+            # No env override: the probe must see what the real in-process import will.
+        )
+    except (OSError, _sp.TimeoutExpired) as exc:
+        logger.debug("%s import probe did not complete (%s)", import_name, exc)
+        return False
+    if result.returncode != 0:
+        logger.debug("%s import probe exited %s", import_name, result.returncode)
+    return result.returncode == 0
+
+
+def _uninstall_package(pypi_name: str, display_name: str) -> bool:
+    """Remove a distribution. True iff it is gone afterwards."""
+    if shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", pypi_name]
+    result = _sp.run(
+        cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        env = utf8_child_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("Could not remove the rejected %s install:\n%s", display_name, result.stdout)
+        return False
+    return True
+
+
+def _distribution_present(pypi_name: str) -> bool:
+    """Whether the distribution's METADATA is installed, without importing it.
+
+    Metadata is what matters: unsloth/models/_utils.py gates on ``_package_available`` and
+    only then imports the native module, so metadata left behind is what turns a rejected
+    wheel into an in-process crash. Reading it never loads the extension, so this is safe
+    even for a wheel that would abort.
+    """
+    importlib.invalidate_caches()
+    try:
+        importlib.metadata.distribution(pypi_name)
+        return True
+    except Exception:
+        return False
+
+
+def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
+    """Discard an install that will not import, and say which state we ended in.
+
+    Idempotent, so it is safe on EVERY exit rather than only the ones somebody remembered:
+    it no-ops when the distribution is already gone. Leaving it in place is not the same as
+    never having installed it, since the metadata gate above imports it anyway.
+    """
+    if not _distribution_present(pypi_name):
+        return
+    logger.warning("%s %s", display_name, reason)
+    if _uninstall_package(pypi_name, display_name):
+        _send_status(event_queue, f"{display_name} is not usable on this GPU; removed it")
+    else:
+        _send_status(
+            event_queue,
+            f"{display_name} is not usable on this GPU and could not be removed; "
+            f"uninstall {pypi_name} manually before training",
+        )
+
+
 def _install_package_wheel_first(
+    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+) -> bool:
+    """Install a fast-path package, wheel first, and never leave an unusable one behind.
+
+    The two "touch nothing" guards run here, outside the cleanup: an already-working
+    package returns before any subprocess, and offline changes nothing. Everything after
+    them is an install attempt, so ANY unsuccessful exit -- timeout, failed install, bad
+    import -- discards what is left rather than leaving metadata the in-process import
+    would pick up. Enforced here rather than at each return because four separate exits
+    have now been found that forgot to clean up.
+    """
+    if _is_importable(import_name):
+        logger.info("%s already installed", display_name)
+        return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
+
+    installed = False
+    try:
+        installed = _attempt_package_install(
+            event_queue = event_queue,
+            import_name = import_name,
+            display_name = display_name,
+            pypi_name = pypi_name,
+            **kwargs,
+        )
+        return installed
+    finally:
+        if not installed:
+            _reject_install(event_queue, pypi_name, display_name, "will not import")
+
+
+def _attempt_package_install(
     *,
     event_queue: Any,
     import_name: str,
@@ -981,16 +1309,9 @@ def _install_package_wheel_first(
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
 ) -> bool:
-    try:
-        __import__(import_name)
-        logger.info("%s already installed", display_name)
-        return True
-    except ImportError:
-        pass
-
-    if _model_offline_mode_enabled():
-        logger.info("Skipping %s installation while offline", display_name)
-        return False
+    """The install itself. Call it through _install_package_wheel_first, never directly."""
+    # Set when a wheel installed but would not import; see the uninstall before the fallback.
+    wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -1015,8 +1336,18 @@ def _install_package_wheel_first(
             run = _sp.run,
         ):
             if result.returncode == 0:
-                logger.info("Installed prebuilt %s wheel successfully", display_name)
-                return True
+                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
+                # verify rather than trust the exit code, and do it out of process: a bad
+                # one can take the worker down with it.
+                if _is_importable_isolated(import_name):
+                    logger.info("Installed prebuilt %s wheel successfully", display_name)
+                    return True
+                logger.warning(
+                    "%s wheel installed but is not importable; falling back to PyPI",
+                    display_name,
+                )
+                wheel_rejected = True
+                break
             logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
@@ -1049,6 +1380,16 @@ def _install_package_wheel_first(
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
+
+    if wheel_rejected:
+        # Remove it rather than install over it: pip/uv would report the broken
+        # distribution as already satisfying the spec and do nothing. --force-reinstall is
+        # not the answer either, since both scope it to the whole resolved transaction,
+        # which for flash-attn means torch and the running CUDA stack.
+        #
+        # A failure here is caught by the _reject_install in the finally below, which is
+        # reached from every exit rather than only the ones that remember to clean up.
+        _uninstall_package(pypi_name, display_name)
 
     _send_status(event_queue, pypi_status_message)
 
@@ -1168,6 +1509,12 @@ def _install_package_wheel_first(
                     display_name,
                     result.stdout,
                 )
+        return False
+
+    # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
+    # installing anything. Returning False is enough; the caller's finally discards it.
+    if not _is_importable_isolated(import_name):
+        logger.warning("%s installed from PyPI but will not import", display_name)
         return False
 
     if is_hip:
@@ -1965,12 +2312,6 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
-    if has_blackwell_gpu():
-        _send_status(
-            event_queue,
-            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-        )
-        return
 
     installed = _install_package_wheel_first(
         event_queue = event_queue,
@@ -2239,7 +2580,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
-    from utils.paths import resolve_dataset_path
+    from utils.paths import dataset_files_in_dir, resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
@@ -2253,24 +2594,8 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
-            parquet_dir = (
-                file_path_obj / "parquet-files"
-                if (file_path_obj / "parquet-files").exists()
-                else file_path_obj
-            )
-            parquet_files = sorted(parquet_dir.glob("*.parquet"))
-            if parquet_files:
-                all_files.extend(str(p) for p in parquet_files)
-                continue
-
-            candidates: list[Path] = []
-            for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-            if candidates:
-                all_files.extend(str(c) for c in candidates)
-                continue
-
-            raise ValueError(f"No supported data files in directory: {file_path_obj}")
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            continue
 
         all_files.append(str(file_path_obj))
 
@@ -2481,6 +2806,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
+    if use_lora:
+        _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
@@ -2615,6 +2943,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
+        _check_mlx_effective_targets(
+            config,
+            finetune_language = finetune_language,
+            finetune_vision = finetune_vision,
+        )
+
         peft_kwargs["finetune_language_layers"] = finetune_language
         peft_kwargs["finetune_attention_modules"] = finetune_attention
         peft_kwargs["finetune_mlp_modules"] = finetune_mlp
@@ -2629,14 +2964,50 @@ def _run_mlx_training(event_queue, stop_queue, config):
     slice_end = config.get("dataset_slice_end")
     config["_dataset_loaded_from_exact_snapshot"] = False
 
+    # A max_steps run cannot reach the whole dataset, and everything below here
+    # (formatting, templating, tokenization) maps over every row. Recomputed from
+    # the config, never carried over from the parent, so a bound can never be stale.
+    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run takes
+    # the text path, which honours the requested packing.
+    mlx_raw_text_mode = (
+        training_type == "Continued Pretraining" or config.get("format_type") == "raw"
+    )
+    # An mlx.launch run shards the batch across its processes the same way DDP does,
+    # and it advertises the count in the env this reads.
+    mlx_max_train_rows = max_train_rows_for_config(
+        config,
+        branch_never_packs = is_vlm and not mlx_raw_text_mode,
+        world_size = _data_parallel_world_size(),
+    )
+    # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
+    # whatever dataset it is handed, so bounding a checkpoint written without one
+    # continues on unrelated rows. Same marker, same rule as the CUDA path.
+    mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
+        resume_from_checkpoint, mlx_max_train_rows, random_seed
+    )
+
+    # A bracketed split names rows the same way the numeric fields do.
+    mlx_split_names_rows = "[" in (config.get("train_split") or "")
+
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(ds) - 1
             if end < start:
                 return ds.select([])
-            ds = ds.select(range(start, min(end + 1, len(ds))))
-        return ds
+            # The user named these rows; the bound below defers to that.
+            return ds.select(range(start, min(end + 1, len(ds))))
+        if mlx_split_names_rows:
+            return ds
+        return bound_dataset_rows(
+            ds,
+            mlx_max_train_rows,
+            mlx_max_train_rows_seed,
+            on_bound = lambda kept, total: _send(
+                "status",
+                status_message = f"Using {kept} of {total} rows (max_steps run)",
+            ),
+        )
 
     def _load_local(file_paths):
         from datasets import load_from_disk
@@ -2843,6 +3214,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Pin the subset before any checkpoint lands here; a resume reads it back.
+    if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
+        mlx_max_train_rows
+    ):
+        _send(
+            "warning",
+            message = (
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded"
+            ),
+        )
 
     # ── 6. Create trainer ──
     raw_eval_steps = config.get("eval_steps", 0)
@@ -3506,16 +3888,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
@@ -3934,6 +4310,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
+        # Filled in below, after the model probe; the closure runs after both.
+        max_train_rows = None
+        max_train_rows_seed = config.get("random_seed", 3407)
+
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
@@ -3957,6 +4337,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
+                max_train_rows = max_train_rows,
+                max_train_rows_seed = max_train_rows_seed,
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result
@@ -4014,6 +4397,50 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
+
+        # 4a has probed the model, so the packing opt-out can read the real branch
+        # instead of guessing from the client's dataset flags. Streaming and explicit
+        # train-split ranges opt out inside load_and_format_dataset.
+        # Audio codecs are chosen before the raw-text bypass and use plain Trainers
+        # with no packing argument, so they hold either way; the vision and audio-VLM
+        # branches are gated on `not raw_text_mode`, so a raw or CPT run takes the
+        # text path, which honours packing.
+        raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
+        branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
+            bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
+            and not raw_text_mode
+        )
+        # Every replica draws its own batch per step, so the subset has to cover all of
+        # them; sized here rather than in the config because it is a property of this
+        # machine's launch. Model probing is done, so torch and the GPU mask are settled.
+        max_train_rows = max_train_rows_for_config(
+            config,
+            branch_never_packs = branch_never_packs,
+            world_size = _data_parallel_world_size(),
+        )
+        # A resume trains on the rows its first start chose, read back from the marker
+        # beside the checkpoints. No marker means the checkpoint predates the bound and
+        # trained on the whole dataset; since the trainer fast-forwards by batch count
+        # over the current dataloader, bounding it now would continue on unrelated rows.
+        resumed_rows, max_train_rows_seed = row_bound_for_resume(
+            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
+        )
+        if resumed_rows != max_train_rows:
+            logger.info(
+                "Resuming with the row bound recorded at the original start "
+                f"({resumed_rows} rows) instead of {max_train_rows}\n"
+            )
+            if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Sized for fewer replicas than this machine has: the recorded subset
+                # is what the run trained on and re-deriving it would continue on
+                # unrelated rows, so it stays, but say that the extra ranks may reach
+                # the end of it and start over.
+                logger.info(
+                    "That subset was sized for a smaller data-parallel world than this "
+                    "one, so the added replicas may re-read rows; start a new run "
+                    "instead of resuming to size it for this machine\n"
+                )
+        max_train_rows = resumed_rows
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
@@ -4205,12 +4632,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens (if included) goes to modules_to_save -- trained full-precision at
-            # embedding_learning_rate. lm_head stays a LoRA target for merges (unsloth PR #4106).
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
+            _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            wants_embed = "embed_tokens" in _user_modules
-            cpt_trains_embeddings = wants_embed
-            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
+            cpt_trains_embeddings = bool(_wants)
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
@@ -4220,12 +4651,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "gate_proj",
                     "up_proj",
                     "down_proj",
-                    "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
                 use_lora = True,
                 target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                modules_to_save = _wants or None,
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
@@ -4296,8 +4726,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
             elif embedding_lr_value is not None:
                 logger.warning(
-                    "CPT: embedding_learning_rate was provided but embed_tokens is "
-                    "not being trained; ignoring the override.\n"
+                    "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                    "nor lm_head is being trained; ignoring the override.\n"
                 )
                 embedding_lr_value = None
 
@@ -4313,6 +4743,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
+        # Pin the subset before any checkpoint lands here, so a resume reads it back
+        # rather than deriving it from a config the user may have edited in between.
+        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+            # Not fatal, and nothing to fall back to: the dataset is already bounded.
+            # Say it, so a later resume reading this run as unbounded is explainable.
+            logger.warning(
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded\n"
+            )
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -4864,6 +5303,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         local_datasets = config.get("local_datasets") or []
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
+            from utils.paths import dataset_files_in_dir
+
             all_files: list[str] = []
             for dataset_file in dataset_paths:
                 file_path = (
@@ -4876,22 +5317,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 if os.path.isdir(file_path):
                     file_path_obj = Path(file_path)
-                    parquet_dir = (
-                        file_path_obj / "parquet-files"
-                        if (file_path_obj / "parquet-files").exists()
-                        else file_path_obj
-                    )
-                    parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                    if parquet_files:
-                        all_files.extend(str(p) for p in parquet_files)
-                        continue
-                    candidates: list[Path] = []
-                    for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                        candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                    if candidates:
-                        all_files.extend(str(c) for c in candidates)
-                        continue
-                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                    all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
                 else:
                     all_files.append(file_path)
 

@@ -5,6 +5,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +45,16 @@ def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):
     assert response.variants[0].partial is False
 
 
+def test_direct_complete_split_reports_the_whole_family_size(in_tmp_cwd):
+    first = in_tmp_cwd / "foo-Q4_K_M-00001-of-00002.gguf"
+    first.write_bytes(b"GGUF")
+    (in_tmp_cwd / "foo-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF" * 2)
+
+    row = _variants(os.fspath(first)).variants[0]
+    assert row.size_bytes == 12
+    assert row.shard_count == 2
+
+
 def test_markerless_relative_gguf_file_resolves_locally(in_tmp_cwd):
     (in_tmp_cwd / "models").mkdir()
     (in_tmp_cwd / "models" / "foo.gguf").write_bytes(b"GGUF")
@@ -70,6 +81,53 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     assert response.has_vision is True
     # A marked parent is still scanned for completeness.
     assert all(v.downloaded for v in response.variants)
+
+
+def test_an_audio_only_projector_does_not_flag_vision(in_tmp_cwd):
+    """The picker badge reads this flag, and ultravox / Voxtral / Qwen3-ASR ship a
+    projector for audio input only."""
+    import struct
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+    key = "clip.has_audio_encoder"
+    (in_tmp_cwd / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+
+    response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
+
+
+def test_online_only_projector_is_not_opened(in_tmp_cwd, monkeypatch):
+    """Projector discovery skips content only when metadata marks it unhydrated."""
+    from hub.utils import gguf
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    weight = in_tmp_cwd / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"GGUF")
+    projector = in_tmp_cwd / "mmproj-F16.gguf"
+    projector.write_bytes(b"online-only placeholder")
+
+    monkeypatch.setattr(
+        gguf,
+        "file_contents_available_locally",
+        lambda path, stat_result = None: Path(path) != projector,
+    )
+
+    def forbidden(_path):
+        raise AssertionError("online-only projector was opened")
+
+    monkeypatch.setattr(gguf, "mmproj_accepts_image", forbidden)
+    response = _variants(os.fspath(weight))
+
+    assert [variant.quant for variant in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
 
 
 @pytest.mark.parametrize(

@@ -18,8 +18,8 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
 # "Built an sdist" is NOT "needed a compiler": each name was verified against its own
 # sdist (setuptools.build_meta, no ext_modules, no .c/.cpp/.pyx/.rs), so its PEP 517
 # build is a pure-Python copy step. clean-machine-assert.sh carries the per-name detail.
-# diffusers is pinned to a source archive because MiniMax-H3 support is not in any release
-# yet; remove it here once a release carries H3. clean-machine-assert.sh carries the detail.
+# diffusers is here only for the `overlay: false` legs, which install the released wheel
+# and its pre-0.40.0 GitHub-archive pin; remove it once a release carries the wheel pin.
 $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels', 'diffusers')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })

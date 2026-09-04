@@ -228,7 +228,7 @@ def test_load_model_commits_requested_from_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
     healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_intent = intent")
+    snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 
@@ -312,6 +312,22 @@ def _load_impl_source() -> str:
     return body[: body.index("\n@router.")]
 
 
+def _first_load_dispatch(load_impl: str) -> int:
+    """Where the body first hands a load to a backend.
+
+    The GGUF call now goes through _run_gguf_load_attempt, a health-wait helper
+    defined above _load_model_impl, so no single backend method name marks the
+    load any more. Whichever spelling survives, the load is still what every
+    assertion here has to sit before.
+    """
+    found = [pos for n in _LOAD_DISPATCH if (pos := load_impl.find(n)) != -1]
+    assert found, f"no load dispatch in _load_model_impl; looked for {_LOAD_DISPATCH}"
+    return min(found)
+
+
+_LOAD_DISPATCH = ("_run_gguf_load_attempt(", "llama_backend.load_model", "backend.load_model,")
+
+
 def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     load_impl = _load_impl_source()
     resolve = load_impl.index("_resolve_parallel_slots(request, fastapi_request)")
@@ -320,7 +336,7 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     resolved_intent = load_impl.index("_resolve_gguf_load_intent(")
     resolved_dedupe = load_impl.index("_reuse_loaded_gguf(", resolved_intent)
     guard = load_impl.index("_guard_chat_load_against_training")
-    load_call = load_impl.index("llama_backend.load_model")
+    load_call = _first_load_dispatch(load_impl)
     assert resolve < fast_dedupe < active_intent
     assert active_intent < resolved_intent < resolved_dedupe
     assert resolved_dedupe < guard < load_call

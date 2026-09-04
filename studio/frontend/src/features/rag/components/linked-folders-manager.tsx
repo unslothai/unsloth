@@ -72,7 +72,7 @@ export function LinkedFoldersManager({
           <p className="text-xs leading-snug text-muted-foreground">
             {manager.desktopSupported
               ? "Keep supported documents indexed as this folder changes."
-              : "Existing linked folders stay synced; link new folders in the desktop app."}
+              : "Existing linked folders stay synced; linking requires the managed desktop backend."}
           </p>
         </div>
         {scope ? (
@@ -86,7 +86,7 @@ export function LinkedFoldersManager({
             title={
               manager.desktopSupported
                 ? "Choose a local folder"
-                : "Requires the desktop app"
+                : "Requires the managed desktop backend"
             }
           >
             {manager.mutating ? (

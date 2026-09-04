@@ -56,7 +56,13 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import (
+    _FIT_MIN_CTX,
+    _kv_bytes_per_elem,
+    _planned_main_cache_types,
+    _planned_scratch_cache_type,
+    LlamaCppBackend,
+)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -67,6 +73,7 @@ def _backend(
     embd = 5120,
     mla = None,
     arch = None,
+    pooling_type = None,
 ):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -74,6 +81,32 @@ def _backend(
     b._embedding_length = embd
     b._key_length_mla = mla  # non-None -> MLA (compressed attention)
     b._architecture = arch  # GGUF general.architecture (e.g. 'deepseek4')
+    b._pooling_type = pooling_type
+    return b
+
+
+def _backend_from_gguf_local(
+    n_layers = 80,
+    embd = 8192,
+    n_kv_heads = 8,
+    head_dim = 128,
+):
+    """Backend that can also estimate KV bytes, for the planner cells below.
+
+    A real ``__init__`` (not ``__new__`` like ``_backend`` above) so every
+    attribute the KV estimator reads exists at its default; only the handful of
+    dims these cells vary are overridden. These tests are about which cache type
+    is priced, not about GGUF parsing.
+    """
+    b = LlamaCppBackend()
+    b._vocab_size = 248_320
+    b._embedding_length = embd
+    b._n_layers = n_layers
+    b._n_kv_heads = n_kv_heads
+    b._kv_key_length = head_dim
+    b._kv_value_length = head_dim
+    b._context_length = 262_144
+    assert b._can_estimate_kv()
     return b
 
 
@@ -134,6 +167,13 @@ class TestScaling:
         lo = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 256)
         hi = b._estimate_compute_buffer_bytes(n_parallel = 4, n_ubatch = 1024)
         assert hi > lo
+
+    def test_embedding_mode_budgets_the_first_output_buffer(self):
+        chat = _backend()._estimate_compute_buffer_bytes(n_parallel = 1, n_ubatch = 512)
+        embedding = _backend(pooling_type = 2)._estimate_compute_buffer_bytes(
+            n_parallel = 1, n_ubatch = 512
+        )
+        assert embedding > chat
 
 
 class TestFallback:
@@ -429,7 +469,7 @@ class TestContextBufferLayerSplit:
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
-        # allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        # allocated 4.0 GiB per device; Unsloth reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
             1024**3
@@ -701,7 +741,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
     def test_finite_gpu_layers_below_the_count_disables(self, flag):
-        # User extras land after Studio's -ngl -1, so this last-wins.
+        # User extras land after Unsloth's -ngl -1, so this last-wins.
         assert self._off([flag, "1"], n_layers = 93) is True
         assert self._off([f"{flag}=1"], n_layers = 93) is True
 
@@ -797,8 +837,8 @@ class TestPerDeviceSplitReserve:
             subset = ranked[:n]
             pool = sum(max(0.0, usable(g)) for g in subset)
             ms = model_bytes + (n - 1) * self._OH
-            cc = lambda c, n = n: n * b._compute_buffer_ctx_bytes(
-                c, self._UB, "f16", layer_split = n > 1
+            cc = lambda c, n = n: (
+                n * b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = n > 1)
             )
             capped = b._fit_context_to_vram(
                 native_ctx,
@@ -838,10 +878,16 @@ class TestPerDeviceSplitReserve:
         min_gpus = 2,
         enforce = True,
     ):
-        """Mirror of the reduced-to-4096 loop the native loop falls through to. Same
-        pooled admission, so it needs the same per-device gate."""
+        """Mirror of the Auto offload loop the native loop falls through to. Same
+        pooled admission, so it needs the same per-device gate.
+
+        Driven at the fit search floor rather than at ``_AUTO_OFFLOAD_CTX``: what
+        this exercises is the per-device reserve gate, and the floor is the lowest
+        context the loop above can still be admitted at, so it is the value that
+        makes the gate decide anything.
+        """
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
-        ctx = 4096
+        ctx = _FIT_MIN_CTX
 
         def usable(g):
             return g[1] - (1.0 - frac) * totals[g[0]]
@@ -862,26 +908,39 @@ class TestPerDeviceSplitReserve:
             return sorted(idx for idx, _ in subset), ctx
         return None, 0
 
+    def _card_at_floor_reserve(self, b, total_mib, margin_mib):
+        """Free VRAM leaving card 1 exactly ``margin_mib`` from the reserve it
+        replicates AT THE FIT FLOOR, which is the context ``_drive_reduced`` runs.
+
+        Derived rather than written out: the whole point of these two cases is a
+        card sized one MiB either side of that reserve, so the number has to follow
+        the floor. Spelled 4096 it silently stopped straddling anything when the
+        floor moved to 8192 -- the card was built against reserve(4096) == 1120 MiB
+        while the driver charged reserve(8192) == 1216.
+        """
+        reserve_mib = (
+            self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
+        ) / MIB
+        return round(reserve_mib + margin_mib + 0.03 * total_mib)
+
     def test_reduced_context_fallback_enforces_the_same_reserve(self):
-        # Card 1 sized one MiB under the reserve it replicates at 4096 ctx: the pooled
-        # budget still admits the pair, so dropping to 4096 pinned a card that OOMs.
+        # Card 1 sized one MiB under the reserve it replicates at the floor: the
+        # pooled budget still admits the pair, so dropping to the floor pinned a
+        # card that OOMs.
         b = self._fit_backend()
         totals = {0: 49_152, 1: 24_576}
-        reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
-        ) / MIB
-        gpus = [(0, 40_000), (1, round(reserve_mib - 1 + 0.03 * totals[1]))]
-        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == ([0, 1], 4096)
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], -1))]
+        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == (
+            [0, 1],
+            _FIT_MIN_CTX,
+        )
         assert self._drive_reduced(b, gpus, totals, 20_480) == (None, 0)
 
     def test_reduced_context_fallback_keeps_a_card_that_holds_it(self):
         b = self._fit_backend()
         totals = {0: 49_152, 1: 24_576}
-        reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
-        ) / MIB
-        gpus = [(0, 40_000), (1, round(reserve_mib + 1 + 0.03 * totals[1]))]
-        assert self._drive_reduced(b, gpus, totals, 20_480) == ([0, 1], 4096)
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], +1))]
+        assert self._drive_reduced(b, gpus, totals, 20_480) == ([0, 1], _FIT_MIN_CTX)
 
     def test_pooled_budget_hides_the_small_cards_shortfall(self):
         # Pre-fix: the pair is admitted at native context even though card 1 has
@@ -933,8 +992,10 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Native-context loop and the reduced-to-4096 fallback below it.
-        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 2
+        # Native-context loop, the reduced-to-4096 fallback below it, and the
+        # Auto drafter-drop probe above them, which caps to the same reserve so
+        # it cannot price a drafter at a context the weakest card never holds.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 3
         # Gated on the chosen context, and only reachable after the pooled test.
         assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
@@ -965,9 +1026,8 @@ class TestPerDeviceReserveCap:
     def test_cap_is_exact_at_the_256_boundary(self):
         b = self._fit_backend()
         usable = 2_500 - 0.03 * 24_576  # 1762.72 MiB
-        reserve = (
-            lambda c: (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True))
-            / MIB
+        reserve = lambda c: (
+            (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True)) / MIB
         )
         assert reserve(31_488) == 1762.0 <= usable
         assert reserve(31_744) == 1768.0 > usable
@@ -987,18 +1047,21 @@ class TestPerDeviceReserveCap:
         gpus, totals = self._HOMOGENEOUS
         assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], 262144)
 
-    def test_cap_floors_at_4096_and_still_rejects_below_it(self):
-        # usable 1118.72 < reserve(4096) == 1120.0: nothing to salvage.
-        b = self._fit_backend()
-        assert self._drive(
-            b, [(0, 40_000), (1, 1_856)], {0: 49_152, 1: 24_576}, 20_480, 262144
-        ) == (None, 0)
+    _card_at_floor_reserve = TestPerDeviceSplitReserve._card_at_floor_reserve
 
-    def test_cap_keeps_a_card_that_holds_exactly_4096(self):
+    def test_cap_floors_at_the_fit_minimum_and_still_rejects_below_it(self):
+        # Card 1 one MiB under reserve(_FIT_MIN_CTX): the cap has nothing to salvage,
+        # so it returns 0 rather than handing back the floor it could not price.
         b = self._fit_backend()
-        assert self._drive(
-            b, [(0, 40_000), (1, 1_858)], {0: 49_152, 1: 24_576}, 20_480, 262144
-        ) == ([0, 1], 4096)
+        totals = {0: 49_152, 1: 24_576}
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], -1))]
+        assert self._drive(b, gpus, totals, 20_480, 262144) == (None, 0)
+
+    def test_cap_keeps_a_card_that_holds_exactly_the_fit_minimum(self):
+        b = self._fit_backend()
+        totals = {0: 49_152, 1: 24_576}
+        gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], +1))]
+        assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], _FIT_MIN_CTX)
 
     def test_flat_arch_term_is_not_rate_inverted(self):
         # deepseek4 carries a flat indexer term, so inverting the per-token rate
@@ -1168,15 +1231,162 @@ class TestSplitRateRecheckAfterSelection:
         # 4096 ctx: the 18 MiB of extra masks changes no decision.
         assert self._pin(40_000, 2, ctx = 4096) == self._pin(40_000, 2, recheck = False, ctx = 4096)
 
-    def test_wired_into_both_call_sites(self):
+    def test_wired_into_every_call_site(self):
+        import ast
         import inspect
+        import re
+        import textwrap
 
-        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Explicit-context pin and the reduced-slot retry both pass the step.
-        assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        load = "".join(source.split())
+        # Read the call sites out of the parse tree. Counting spellings said the same
+        # thing while it lasted, but it also reddened on a rename that changed nothing
+        # about the rule: the three sites price at three different contexts and the
+        # names they use for them are not the contract.
+        wired = [
+            ast.unparse(keyword.value)
+            for node in ast.walk(ast.parse(textwrap.dedent(source)))
+            if isinstance(node, ast.Call)
+            for keyword in node.keywords
+            if keyword.arg == "split_extra_bytes"
+        ]
+        # Projector floor pin, explicit-context pin, reduced-slot retry, per-candidate
+        # re-fit. A fifth has to come here and say which context it prices at.
+        #
+        # Four, not the three the counting version asserted. It counted two spellings,
+        # `_cc_split_extra(effective_ctx)` and `_cc_split_extra(ctx),`, and the
+        # projector-floor site spells its context `_mm_floor_ctx`, so it was invisible
+        # to the check that claimed to cover every call site. It has been wired
+        # correctly the whole time; nothing was holding it there.
+        assert len(wired) == 4, wired
+        # Each passes the step at a context of its own, so none is exempt and none
+        # hardcodes one: `_cc_split_extra(4096)` would not match.
+        for expression in wired:
+            assert re.fullmatch(r"_cc_split_extra\(\w+\)", expression), expression
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
         assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load
         slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
         assert "self._select_gpus_split_aware(" in slots
         assert "split_extra_bytes=split_extra_bytes," in slots
+
+
+# ── The scratch rate keys off the LIGHTER axis ───────────────────────────────
+#
+# Since ggml-org/llama.cpp#23792 Unsloth no longer rewrites the requested type for the
+# tensor attempt, so an asymmetric pair is reachable in the one mode with no --fit
+# valve. The budget resolves ONE scalar, the heavier axis, for KV bytes; handing that
+# to _compute_buffer_ctx_bytes prices a q4_0 K cache as if nothing were quantized,
+# because the dequant branch gates on bytes/elem < 2.0.
+
+
+class TestScratchTakesTheLighterAxis:
+    """_planned_scratch_cache_type is the seam that keeps the two terms honest:
+    heavier axis for KV bytes, lighter axis for the dequant scratch."""
+
+    @pytest.mark.parametrize(
+        "k,v,expected",
+        [
+            ("f16", "f16", "f16"),
+            ("q8_0", "q8_0", "q8_0"),
+            ("q4_0", "f16", "q4_0"),  # the shape the heavier scalar hides
+            ("f16", "q4_0", "q4_0"),  # and with the axes swapped
+            ("q8_0", "q4_0", "q4_0"),
+            ("f32", "q8_0", "q8_0"),
+        ],
+    )
+    def test_it_picks_the_quantized_axis_whichever_side_it_is_on(self, k, v, expected):
+        extras = ["--cache-type-k", k, "--cache-type-v", v]
+        assert _planned_scratch_cache_type(None, extras) == expected
+        # And the budget still takes the heavier one, so the two disagree exactly
+        # when they should.
+        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
+
+    def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
+        """Unsloth emits one type on both axes, so nothing changes for the common
+        case -- this fix must not move the fit for a plain q8_0 load."""
+        for kv in ("f16", "q8_0", "q4_0", "iq4_nl"):
+            assert _planned_scratch_cache_type(kv, None) == kv
+
+    def test_extras_beat_the_managed_field_per_axis(self):
+        """Extras are appended last and win per axis, so the scratch must follow
+        them, not the field the UI sent."""
+        assert _planned_scratch_cache_type("f16", ["--cache-type-k", "q4_0"]) == "q4_0"
+
+    def test_it_reads_the_inherited_env_when_nothing_else_sets_a_type(self):
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
+        assert _planned_scratch_cache_type(None, None, env) == "q4_0"
+
+    @pytest.mark.parametrize("k,v", [("q4_0", "f16"), ("f16", "q4_0")])
+    def test_the_asymmetric_pair_selects_the_dequant_rate(self, k, v):
+        """The point of the seam: at the same context the asymmetric pair must
+        cost what the quantized axis really allocates, not the KQ-mask floor."""
+        b = _backend()
+        extras = ["--cache-type-k", k, "--cache-type-v", v]
+        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        lighter = _planned_scratch_cache_type(None, extras)
+
+        heavy_rate = b._compute_buffer_ctx_bytes(131_072, 2048, heavier)
+        light_rate = b._compute_buffer_ctx_bytes(131_072, 2048, lighter)
+
+        assert light_rate > heavy_rate, (light_rate, heavy_rate)
+        # Same answer as a symmetric quantized cache: the scratch is per-tensor
+        # work on the quantized axis, not something the f16 axis discounts.
+        assert light_rate == b._compute_buffer_ctx_bytes(131_072, 2048, "q4_0")
+
+
+class TestTensorFitPricesTheQuantizedAxis:
+    """End to end through the planner: the advertised context must not exceed
+    what an honest per-axis price allows. Tensor mode has no --fit valve, so an
+    optimistic context OOMs at startup instead of spilling."""
+
+    @staticmethod
+    def _plan(
+        b,
+        cache_type,
+        scratch_type,
+        ub,
+        ngpu = 4,
+        per_gpu = 48_000,
+    ):
+        return b._plan_tensor_parallel(
+            gpus = [(i, per_gpu) for i in range(ngpu)],
+            model_size = 60 * 1024**3,
+            target_ctx = 262_144,
+            max_target_ctx = 262_144,
+            total_by_idx = {i: per_gpu for i in range(ngpu)},
+            cache_type_kv = cache_type,
+            scratch_cache_type_kv = scratch_type,
+            n_parallel = 1,
+            swa_full = False,
+            kv_unified = True,
+            n_ubatch = ub,
+            flash_attn = False,
+        )
+
+    def test_an_asymmetric_pair_is_capped_like_its_quantized_axis(self):
+        """-ctk q4_0 -ctv f16 at a raised micro-batch. Priced from the heavier
+        axis alone the planner advertises the full 262144; the quantized axis
+        cannot hold it."""
+        b = _backend_from_gguf_local()
+        optimistic = self._plan(b, "f16", None, 2048)[0]
+        honest = self._plan(b, "f16", "q4_0", 2048)[0]
+
+        assert honest < optimistic, (honest, optimistic)
+        # Still a real context, not the 2048 floor: the fix must not collapse the
+        # fit, only stop it over-advertising.
+        assert honest > 2048, honest
+        # It comes out BELOW a symmetric q4_0 load, which is right and worth
+        # pinning: the asymmetric pair pays f16 KV bytes on both axes (the heavier
+        # axis budgets storage) AND the full quantized dequant scratch. Both terms
+        # conservative is the point; neither one alone describes this launch.
+        assert honest < self._plan(b, "q4_0", "q4_0", 2048)[0]
+
+    def test_a_symmetric_request_is_unchanged(self):
+        """Default and explicit scratch type agree when both axes match, so no
+        existing load moves."""
+        b = _backend_from_gguf_local()
+        for kv in ("f16", "q8_0", "q4_0"):
+            for ub in (512, 2048):
+                assert self._plan(b, kv, None, ub) == self._plan(b, kv, kv, ub)

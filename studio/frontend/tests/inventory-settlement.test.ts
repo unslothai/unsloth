@@ -7,7 +7,7 @@ import { resolveInventorySettlement } from "../src/features/hub/inventory/invent
 
 const emptyReadyInventory = {
   downloadedReady: true,
-  emptyRevalidationSignature: "empty-ready",
+  emptyRevalidationFresh: false,
   hasActiveEmptyRefresh: false,
   hasInventoryRows: false,
   hasUnreadyInventoryFailure: false,
@@ -18,7 +18,6 @@ test("keeps an empty ready inventory unsettled until revalidation", () => {
   assert.deepEqual(
     resolveInventorySettlement({
       ...emptyReadyInventory,
-      lastEmptyRevalidationSignature: null,
     }),
     {
       emptyRevalidationRequired: true,
@@ -28,7 +27,7 @@ test("keeps an empty ready inventory unsettled until revalidation", () => {
   assert.deepEqual(
     resolveInventorySettlement({
       ...emptyReadyInventory,
-      lastEmptyRevalidationSignature: "empty-ready",
+      emptyRevalidationFresh: true,
     }),
     {
       emptyRevalidationRequired: false,
@@ -46,7 +45,6 @@ test("settles usable rows and failures with prior ready state", () => {
       resolveInventorySettlement({
         ...emptyReadyInventory,
         ...state,
-        lastEmptyRevalidationSignature: null,
       }),
       {
         emptyRevalidationRequired: false,
@@ -62,7 +60,6 @@ test("keeps an unready failure unsettled for the next enable retry", () => {
       ...emptyReadyInventory,
       hasUnreadyInventoryFailure: true,
       inventoryFailed: true,
-      lastEmptyRevalidationSignature: null,
     }),
     {
       emptyRevalidationRequired: false,
@@ -78,7 +75,6 @@ test("settles a partial failure when another source returned rows", () => {
       hasInventoryRows: true,
       hasUnreadyInventoryFailure: true,
       inventoryFailed: true,
-      lastEmptyRevalidationSignature: null,
     }),
     {
       emptyRevalidationRequired: false,

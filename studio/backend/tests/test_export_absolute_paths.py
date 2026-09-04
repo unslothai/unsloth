@@ -98,6 +98,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
+    # routes/models.py imports this alongside get_current_subject; a stub missing it
+    # fails the import with "unknown location", which reads like a path problem.
+    auth_mod.allow_ambient_hf_token = lambda: True
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
@@ -142,6 +145,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
     utils_utils.canonical_model_repo_id = lambda value: value
+    # routes/models.py refuses a forced-anonymous caller offline through this; the stub
+    # answers False so the export paths under test take their ordinary route.
+    utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 
@@ -171,9 +177,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     )
 
     utils_model_config = types.ModuleType("utils.models.model_config")
-    utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None
     utils_model_config._extract_quant_label = lambda value: value
     utils_model_config._is_big_endian_gguf_path = lambda *args, **kwargs: False
+    utils_model_config._is_imatrix_path = lambda *args, **kwargs: False
     utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
     monkeypatch.setitem(
@@ -712,7 +718,7 @@ def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch
     monkeypatch.setattr(
         export_route,
         "_try_register_external_export",
-        lambda path: (registered.append(path) is None, str(path)),
+        lambda path, **_kwargs: (registered.append(path) is None, str(path)),
     )
     monkeypatch.setattr(
         "utils.paths.storage_roots.exports_root",
@@ -727,6 +733,42 @@ def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch
         "scan_folder_path": str(output),
     }
     assert registered == [output]
+
+
+def test_recovered_external_export_invalidates_only_when_first_registered(tmp_path, monkeypatch):
+    _install_lightweight_backend_stubs(monkeypatch)
+    export_route = _load_module(
+        "test_routes_export_registration_invalidation",
+        "routes/export.py",
+        monkeypatch,
+    )
+    output = tmp_path / "Gemma4_26B_gguf"
+    output.mkdir()
+    insertions = iter((True, False, False))
+    invalidations = []
+    warms = []
+
+    storage_pkg = types.ModuleType("storage")
+    studio_db = types.ModuleType("storage.studio_db")
+    studio_db.add_scan_folder_with_status = lambda path: (
+        {"id": 1, "path": path, "created_at": "fake"},
+        next(insertions),
+    )
+    resolver = types.ModuleType("core.inference.local_model_resolver")
+    resolver.invalidate_index = lambda: invalidations.append(1)
+    resolver.warm_index_soon = lambda: warms.append(1)
+    monkeypatch.setitem(sys.modules, "storage", storage_pkg)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", studio_db)
+    monkeypatch.setitem(sys.modules, "core.inference.local_model_resolver", resolver)
+
+    assert export_route._try_register_external_export(output) == (True, str(output))
+    assert export_route._try_register_external_export(output) == (True, str(output))
+    assert export_route._try_register_external_export(output, refresh_index = True) == (
+        True,
+        str(output),
+    )
+    assert invalidations == [1, 1]
+    assert warms == [1, 1]
 
 
 def test_export_details_does_not_register_contained_exports(tmp_path, monkeypatch):

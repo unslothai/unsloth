@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 import base64
+import importlib.util
 import ipaddress
 import os
 import shlex
@@ -14,6 +15,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from models.auth import (
     ApiKeyListResponse,
@@ -31,6 +33,7 @@ from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_without_credential,
     create_access_token,
     create_refresh_token,
     get_current_credential,
@@ -42,6 +45,50 @@ from auth.authentication import (
 router = APIRouter()
 
 
+def _require_a_credential_of_its_own(what: str):
+    """Refuse a caller that nothing but keyless API access let in.
+
+    For effects that outlive the setting: turning keyless access back off does not
+    withdraw a key it handed out, restore one it destroyed, or undo a sign-out it
+    forced. Listing keys is refused with them because it names the key to revoke.
+    """
+
+    def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
+        if no_credential:
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = f"{what} can only be done from the Unsloth UI or with an existing API key.",
+            )
+
+    return dependency
+
+
+# Byte-identical to _WINDOWS_CLI_ENTRYPOINT in unsloth_cli/commands/studio.py and to
+# the bootstrap unsloth_cli/__main__.py documents for user-site installs.
+_CLI_BOOTSTRAP = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+)
+
+
+def _cli_is_inside(prefix: str) -> bool:
+    """Whether unsloth_cli lives under *prefix*, so -I would still find it.
+
+    Located rather than imported: this runs in a request handler, and a spec
+    lookup answers the only question asked here, which is where the package is
+    on disk and not whether it starts.
+    """
+    try:
+        spec = importlib.util.find_spec("unsloth_cli")
+        origin = getattr(spec, "origin", None)
+        if not origin:
+            # A namespace package, or nothing found.
+            return False
+        return Path(origin).resolve().is_relative_to(Path(prefix).resolve())
+    except (ImportError, OSError, ValueError, AttributeError):
+        return False
+
+
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
@@ -51,19 +98,42 @@ def _reset_password_command() -> str:
     POSIX paths are shell-quoted. On Windows we use the bare absolute path only
     when it has no spaces (a quoted path differs between cmd and PowerShell);
     otherwise, or if the launcher can't be located, fall back to the PATH form.
+
+    Windows never names unsloth.exe here, present or not. Existing is not the
+    same as runnable: an Application Control policy leaves the generated,
+    unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
+    and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
+    ahead of the .cmd shim. Whoever is locked out of Unsloth is exactly who needs
+    this command to work, so it must not be the one a policy refuses. Preference
+    order is therefore the interpreter's module entry, which needs no quoting in
+    cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
+    PATHEXT reaching for the executable.
+
+    -I only when the package is inside this interpreter's own prefix. -I implies
+    -s, so a ``pip install --user`` install would be told to run a command that
+    cannot find itself; unsloth_cli/__main__.py documents that exception and the
+    bootstrap to use instead, and this prints that bootstrap. It is safe to show
+    to either shell: the trampoline contains single quotes only, so one pair of
+    double quotes wraps it identically in cmd and in PowerShell.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
-            exe = os.path.join(bin_dir, "unsloth.exe")
-            if os.path.isfile(exe) and " " not in exe:
-                return f"{exe} studio reset-password"
+            python = os.path.abspath(sys.executable)
+            if " " not in python:
+                if _cli_is_inside(sys.prefix):
+                    return f"{python} -I -m unsloth_cli studio reset-password"
+                return f'{python} -X utf8 -c "{_CLI_BOOTSTRAP}" studio reset-password'
+            # A spaced interpreter path cannot be written unquoted, so fall
+            # through to the PATH form below.
         else:
             exe = os.path.join(bin_dir, "unsloth")
             if os.path.isfile(exe):
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
     return "unsloth studio reset-password"
 
 
@@ -82,17 +152,11 @@ _LOGIN_LOCKOUT_SECONDS = 60
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
-# Sharded overflow for per-IP failures that can't get their own bucket while the
-# dict is saturated. Each shard is a small fixed-capacity dict ``ip -> [count,
-# window_start]``: a per-IP count (so a source is throttled, and cleared on
-# success, by its own failures -- no cross-IP collateral) with hard-bounded
-# memory and O(1) lookups. When a shard is full a new IP evicts the lowest-count
-# entry (and starts clean, never inheriting its count) rather than growing without
-# bound, so a high-cardinality spray can't blow memory/CPU the way a per-failure
-# deque could; a persistent attacker keeps a high count and is never the one
-# evicted.
+# Sharded overflow for per-IP failures that can't get their own bucket
+# Each shard is a fixed-capacity dict ``ip -> [count, window_start]``; when full, a new IP evicts the lowest-count entry
+# and starts clean.
 _LOGIN_IP_OVERFLOW_SHARDS = 256
-_LOGIN_IP_OVERFLOW_MAX = 64  # distinct IPs tracked per shard
+_LOGIN_IP_OVERFLOW_MAX = 64
 _LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
 
 
@@ -108,19 +172,12 @@ def _overflow_record(ip: str, now: float) -> int:
         if now - entry[1] > _LOGIN_WINDOW_SECONDS:
             entry[0], entry[1] = 1, now
         else:
-            # Only "at or above the per-IP threshold" matters for blocking, so cap
-            # the count there. This also keeps the migration into a per-IP bucket
-            # bounded -- without the cap a saturated source could accrue an
-            # unbounded count, then materialize one deque entry per failure
-            # (``[start] * carried``) on the next attempt, allocating an arbitrarily
-            # large deque while holding the login lock.
+            # Cap the count at the threshold: uncapped, a saturated source materializes one deque entry per failure
+            # (`[start] * carried`) while holding the login lock.
             entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        # Make room by dropping the lowest-count entry, but the new source starts
-        # clean -- never inherit the evicted IP's failures, or an unrelated source
-        # could be 429'd after one attempt. Worst case under a saturated shard is
-        # that a heavy hitter briefly resets, not that a bystander is blocked.
+        # Make room by dropping the lowest-count entry.
         del shard[min(shard, key = lambda k: shard[k][0])]
     shard[ip] = [1, now]
     return 1
@@ -146,9 +203,8 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
     entry = _overflow_shard(ip).pop(ip, None)
     if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
         return 0, now
-    # Cap the carried count so the bucket migration never allocates more than the
-    # per-IP threshold worth of deque entries (defensive; _overflow_record already
-    # clamps, but keep the bound at the consumption site too).
+    # Cap the carried count so the bucket migration never allocates more than the per-IP threshold
+    # worth of deque entries (defensive; _overflow_record already clamps).
     return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
 
 
@@ -314,11 +370,7 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Honor the IP's overflow shard regardless of current dict capacity: a
-        # source counted there during saturation must stay throttled until those
-        # failures age out, even if a bucket later frees up -- otherwise a fresh
-        # bucket would reset it. Shards are empty outside saturation, so this is a
-        # no-op in the common case.
+        # Honor the IP's overflow shard regardless of current dict capacity
         ip_blocked = max(
             _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
             _overflow_blocked(ip, now),
@@ -356,24 +408,34 @@ def identity(nonce: str, request: Request) -> dict:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
         )
-    # The address + port the connection actually landed on, from the socket
-    # (request.scope is getsockname, so it is the real local address even when
-    # bound to 0.0.0.0), never the client-controlled Host header.
+    # The address + port the connection actually landed on.
+    # request.scope is getsockname, so this is the real local address even when bound to 0.0.0.0, never the client-
+    # controlled Host header.
     server = request.scope.get("server") or ("", 0)
     host = server[0] or ""
     port = server[1] if server[1] is not None else 0
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
+# FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
-async def auth_status() -> AuthStatusResponse:
+def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
+    from auth.bootstrap_timeout import bootstrap_deadline_remaining_seconds
+
+    requires_change = (
+        storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+        if storage.is_initialized()
+        else True
+    )
+    # Only while the default password stands: that is what the deadline fires on.
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
-        if storage.is_initialized()
-        else True,
+        requires_password_change = requires_change,
+        bootstrap_deadline_seconds = (
+            bootstrap_deadline_remaining_seconds() if requires_change else None
+        ),
     )
 
 
@@ -386,8 +448,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
-            # IP not interpolated into the body; behind a proxy/NAT it's
-            # misleading or an info leak.
+            # IP not interpolated into the body: behind a proxy/NAT it is misleading or an info leak.
             detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
@@ -412,8 +473,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    # Issue against the credential version just verified, not whatever is in the DB
-    # now: a concurrent reset-password must not hand this login a post-reset session.
+    # Issue against the credential version just verified.
     access_token = create_access_token(subject = payload.username, secret = jwt_secret)
     refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
@@ -426,7 +486,9 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Signing out")),
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -522,9 +584,8 @@ async def set_desktop_initial_password(
             detail = "New password cannot contain spaces",
         )
 
-    # Conditional on the credential just read: a web password change or a
-    # reset-password landing while this request is in flight must not be
-    # overwritten by a caller that verified no password at all.
+    # Conditional on the credential just read: a concurrent web password change or reset-password
+    # must not be overwritten by a caller that verified no password at all.
     new_secret = storage.update_password(
         current_subject,
         payload.new_password,
@@ -557,6 +618,7 @@ async def change_password(
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
     is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
@@ -583,13 +645,9 @@ async def change_password(
             detail = "New password must be different from the current password",
         )
 
-    # Single transaction: a separate refresh-token purge could fail after the
-    # password commit, leaving pre-change tokens able to mint access tokens.
-    # Conditional on the hash just verified: a reset-password that landed while
-    # this request was in flight must not be overwritten by it.
-    # The desktop app authenticates with a local secret rather than this
-    # password; revoking that secret would break its auto-auth over a change it
-    # made itself. A browser session still revokes it.
+    # Single transaction: a separate refresh-token purge could fail after the password commit,
+    # leaving pre-change tokens able to mint access tokens. Conditional on the hash just
+    # verified, so a concurrent reset-password cannot be overwritten by it.
     new_secret = storage.update_password(
         current_subject,
         payload.new_password,
@@ -620,7 +678,6 @@ async def change_password(
     )
 
 
-# ---------------------------------------------------------------------------
 # API key management
 # ---------------------------------------------------------------------------
 
@@ -639,7 +696,9 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
+    payload: CreateApiKeyRequest,
+    credential: tuple = Depends(get_current_credential),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
@@ -668,7 +727,10 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
+def list_api_keys(
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -677,7 +739,11 @@ async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(
+    key_id: int,
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

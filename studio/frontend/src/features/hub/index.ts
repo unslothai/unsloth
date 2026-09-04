@@ -8,8 +8,12 @@ export {
   jobKeyOf,
   startExternalJob,
   subscribeJobListeners,
+  type TransportMode,
   updateExternalJob,
+  TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
+  useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
 export { useHubDatasetSearch } from "./hooks/use-hub-dataset-search";
@@ -27,7 +31,6 @@ export {
   LOCAL_MODEL_SOURCE,
   LOCAL_MODEL_SOURCES,
   type BaseModelSource,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedInventoryRow,
@@ -54,13 +57,13 @@ export {
   type ResolvedInventoryResource,
   type ScanFolderInfo,
   addScanFolder,
-  browseFolders,
   buildCachedInventoryRow,
   buildLocalInventoryRows,
   dedupeSameSourceHubCacheRows,
   defaultCapabilities,
   deleteCachedDataset,
   deleteCachedModel,
+  epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
   formatLocalUpdated,
@@ -77,6 +80,7 @@ export {
   normalizeModelFormat,
   normalizeRuntime,
   normalizeTimestamp,
+  partialSetFromRows,
   removeScanFolder,
   resolveInventoryResource,
   useDeviceInventorySources,
@@ -95,6 +99,8 @@ export {
 } from "./stores/hf-token-store";
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
+export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,

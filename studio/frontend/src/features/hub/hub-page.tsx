@@ -6,6 +6,7 @@ import {
   applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  isSpeechOnlyStatus,
   listGgufVariants,
   resolveInferenceCheckpointId,
   useChatModelRuntime,
@@ -21,12 +22,16 @@ import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   hfModelFitsDevice,
+  loadScopedGpu,
   resolveInitialConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -67,12 +72,14 @@ import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import type {
+  HfModelResult,
   HfModelSearchChannel,
   HfSortDirection,
   HfSortKey,
 } from "./hooks/use-hub-model-search";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
+import { resolveSelectionUrlSync } from "./lib/selection-resolution";
 import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
 import { settingsGgufVariantForRow } from "./inventory/settings-identity";
@@ -97,6 +104,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { looksLikeLocalPath, routableToMediaPage } from "./lib/local-path";
 import {
   ggufVariantsMatch,
   modelIdsMatch,
@@ -107,6 +115,7 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { studioPageForTask } from "./lib/unsloth-support";
 import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
@@ -368,7 +377,31 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  // The saved VRAM Budget the loader admits against. The "Fits on device" filter scored against
+  // the 0.97 default without it, so lowering the setting moved the badges and not the filter.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
+  // One fit answer for every Hub row, picked the way the task pickers pick it: by the runtime that
+  // PLACES the row. An image or video repo goes to the diffusion planner, on one torch device,
+  // under the media rule, so judging it by llama.cpp's budget kept a 52 GiB media GGUF that clears
+  // 62.1 GiB on a 64 GiB Mac and blows the planner's 44.8. Everything else keeps the GGUF
+  // backend's own inventory, which is the one thing llama.cpp rows must be judged against.
+  const rowFitsDevice = useCallback(
+    (result: HfModelResult) => {
+      const mediaRow = studioPageForTask(result.pipelineTag) !== undefined;
+      const source = loadScopedGpu(
+        mediaRow || !result.isGguf ? gpu : inferenceGpu,
+        mediaRow,
+      );
+      return hfModelFitsDevice(result, source, {
+        budgetFraction,
+        gpuCount: source.deviceCount,
+        mediaLoad: mediaRow,
+        hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+      });
+    },
+    [budgetFraction, gpu, inferenceGpu],
+  );
   // Browser reachability, which is what every client here asks about: the
   // selected model's metadata and the cached feed each issue their own request.
   // On the discovery phase they would stay blocked at "probing" until a
@@ -393,9 +426,11 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeGgufContextLength = useChatRuntimeStore(
-    (s) => s.ggufContextLength,
+  const activeLoadedContextLength = useChatRuntimeStore(
+    (s) => s.loadedContextLength,
   );
+  const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
+    useState(false);
   // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
@@ -437,7 +472,12 @@ export function ModelsPage() {
         adoptResidentModelStatus(
           {
             // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-            checkpointId: resolveInferenceCheckpointId(status),
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount sync did.
+            checkpointId: isSpeechOnlyStatus(status)
+              ? null
+              : resolveInferenceCheckpointId(status),
+            speechOnly: isSpeechOnlyStatus(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {
@@ -459,6 +499,8 @@ export function ModelsPage() {
               applyActiveModelStatusToStore(status, {
                 previousCheckpoint: previous.checkpoint ?? undefined,
                 previousGgufVariant: previous.ggufVariant,
+                adoptingExistingServerModel:
+                  previous.checkpoint === null || previous.checkpoint === "",
               });
             },
           },
@@ -472,11 +514,15 @@ export function ModelsPage() {
 
   // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
-    void refreshResidentModelStatus();
+    let active = true;
+    void refreshResidentModelStatus().finally(() => {
+      if (active) setInitialResidentStatusSettled(true);
+    });
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
     );
     return () => {
+      active = false;
       // A response still in flight adopts nothing once the Hub is gone.
       residentStatusSeq.current += 1;
       unsubscribe();
@@ -781,10 +827,29 @@ export function ModelsPage() {
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      reloadReadySent.current ||
+      !initialResidentStatusSettled ||
+      (isDiscoverTab ? isLoading : !inventorySettled)
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [
+    initialResidentStatusSettled,
+    inventorySettled,
+    isDiscoverTab,
+    isLoading,
+  ]);
 
   const modelDiscoveryInventorySignature = useMemo(
     () => discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),
@@ -859,12 +924,10 @@ export function ModelsPage() {
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
-          hfModelFitsDevice(
-            row.result,
-            row.result.isGguf ? inferenceGpu : gpu,
-          )),
+          rowFitsDevice(row.result)),
     );
   }, [
+    rowFitsDevice,
     discoverRows,
     hiddenEmbeddingModelIds,
     isDatasetMode,
@@ -873,8 +936,6 @@ export function ModelsPage() {
     deferredCapabilityFilter,
     activeChannel,
     fitOnDeviceOnly,
-    gpu,
-    inferenceGpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -904,9 +965,11 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, inferenceGpu),
+            rowFitsDevice(row.result),
         ),
     [
+      budgetFraction,
+      rowFitsDevice,
       hubFeed.trending.results,
       hiddenEmbeddingModelIds,
       modelDiscoveryInventorySignature,
@@ -1102,6 +1165,7 @@ export function ModelsPage() {
 
   const {
     selectedId,
+    selectionInputId,
     setSelected,
     selectedModel,
     metadataUnavailable,
@@ -1115,6 +1179,7 @@ export function ModelsPage() {
     filteredDiscoverRows: selectionFilteredDiscoverRows,
     filteredCachedRows,
     filteredLocalRows,
+    downloadedReady,
     results: selectionResults,
     accessToken: apiHfToken,
     online,
@@ -1122,13 +1187,12 @@ export function ModelsPage() {
 
   const handleSelect = useCallback(
     (id: string) => {
-      setSelected(id);
       void navigate({
         to: "/hub",
         search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
-    [setSelected, navigate],
+    [navigate],
   );
   const handleCloseDetail = useCallback(() => {
     // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
@@ -1184,10 +1248,35 @@ export function ModelsPage() {
   );
 
   useEffect(() => {
-    if (urlModel !== selectedId) {
-      setSelected(urlModel);
+    const sync = resolveSelectionUrlSync({
+      isDiscoverTab,
+      urlModel,
+      selectionInputId,
+      resolvedSelectedId: selectedId,
+      resolvedModelFormat: selectedModel?.modelFormat ?? null,
+    });
+    if (sync?.action === "select") {
+      setSelected(sync.selectedId);
+    } else if (sync?.action === "replace") {
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({
+          ...prev,
+          model: sync.selectedId,
+          file: sync.preserveGgufFile ? prev.file : undefined,
+        }),
+        replace: true,
+      });
     }
-  }, [urlModel, selectedId, setSelected]);
+  }, [
+    isDiscoverTab,
+    navigate,
+    selectedId,
+    selectedModel?.modelFormat,
+    selectionInputId,
+    setSelected,
+    urlModel,
+  ]);
 
   // Track the last non-split layout so leaving split mode restores it.
   useEffect(() => {
@@ -1205,7 +1294,6 @@ export function ModelsPage() {
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
     if (!firstId) return;
-    setSelected(firstId);
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, model: firstId, file: undefined }),
@@ -1218,7 +1306,6 @@ export function ModelsPage() {
     listRows,
     filteredCachedRows,
     filteredLocalRows,
-    setSelected,
     navigate,
   ]);
 
@@ -1259,8 +1346,12 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
+    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
+  const gpuSharedLabel =
+    gpu.available && gpu.memorySharedGb > 0
+      ? `${Math.round(gpu.memorySharedGb)} GiB`
+      : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1277,6 +1368,35 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // An image / video model is run by its own page, not by chat: loading it here evicted
+      // the resident chat model for a llama.cpp load that could only fail. Same resolution
+      // and destination the chat picker uses, so both surfaces route a pick identically.
+      // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
+      // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
+      const mediaPage = studioPageForTask(
+        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
+      );
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
+      const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
+      if (
+        mediaPage &&
+        routableToMediaPage(selectedModel.kind, selectedModel.localSource) &&
+        routeId
+      ) {
+        void navigate({
+          to: `/${mediaPage}`,
+          // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
+          search: diffusionRouteSearch(routeId, {
+            ggufVariant: opts.ggufVariant ?? null,
+          }),
+        });
+        return;
+      }
       const configIdentity = modelConfigIdentity(
         selectedModel.kind,
         selectedModel.resource,
@@ -1302,6 +1422,11 @@ export function ModelsPage() {
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
         previousConfig,
+        // The runtime store is not enough: applyPerModelConfigToRuntime has no field
+        // for the launch flags, and /load only inherits them from the SAME resident
+        // model, so a cold launch or a switch from another model ran without the
+        // arguments this model was remembered with.
+        ...(rememberedConfig ? { config: rememberedConfig } : {}),
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1313,7 +1438,7 @@ export function ModelsPage() {
         .catch(() => undefined);
       openNewChat();
     },
-    [openNewChat, selectModel, selectedModel],
+    [navigate, openNewChat, selectModel, selectedModel],
   );
   const handleLoad = useCallback(
     (opts: ModelLoadOptions) =>
@@ -1450,6 +1575,11 @@ export function ModelsPage() {
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
+        config,
         previousConfig,
       }).catch(() => undefined);
     },
@@ -1581,6 +1711,7 @@ export function ModelsPage() {
       minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
+      gpuCount: inferenceGpu.deviceCount,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1595,6 +1726,7 @@ export function ModelsPage() {
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
+      inferenceGpu.deviceCount,
       inferenceGpu.systemRamAvailableGb,
     ],
   );
@@ -1863,6 +1995,7 @@ export function ModelsPage() {
           localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
+          gpuSharedLabel={gpuSharedLabel}
           ramLabel={ramLabel}
           coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
@@ -1981,7 +2114,7 @@ export function ModelsPage() {
               target={settingsTarget}
               loadedConfig={settingsTargetIsResident ? activeModelConfig : null}
               loadedContextLength={
-                settingsTargetIsResident ? activeGgufContextLength : null
+                settingsTargetIsResident ? activeLoadedContextLength : null
               }
               onBack={() => setSettingsTarget(null)}
               onRun={runSettingsTarget}

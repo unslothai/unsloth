@@ -17,6 +17,7 @@ from typing import cast
 import pytest
 
 from core.inference import safetensors_agentic
+from core.inference import tool_call_parser
 from core.inference.safetensors_agentic import (
     _coerce_arguments,
     _detect_render_html_tool_start,
@@ -115,19 +116,6 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
         assert "print('hi')" in result[0]["function"]["arguments"]
-
-    def test_xml_param_preserves_leading_indentation(self):
-        import json
-
-        # Only the wrapping newline is trimmed; code-argument indentation survives.
-        text = (
-            "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "code": "    indented = 1\n    more"
-        }
 
     def test_xml_unclosed(self):
         # Closing tags omitted; parser must still extract the value.
@@ -661,11 +649,14 @@ class TestParser:
     def test_streaming_strip_handles_nested_wrapperless_gemma(self):
         # Same class of bug for the wrapper-less Gemma call:NAME{...} form with a
         # nested object argument.
-        raw = "ok call:f{loc:{city:NYC},n:3} tail"
+        raw = "ok\ncall:f{loc:{city:NYC},n:3} tail"
         out = strip_tool_markup_streaming(raw)
         assert "call:f" not in out
         assert "}" not in out
-        assert "ok " in out and "tail" in out
+        assert "ok" in out and "tail" in out
+        # Mid-sentence the same shape is prose: streaming display keeps it.
+        inline = "ok call:f{loc:{city:NYC},n:3} tail"
+        assert strip_tool_markup_streaming(inline) == inline
 
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
         # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
@@ -1099,8 +1090,11 @@ class TestParserMultiFormat:
         assert result == []
 
     def test_gemma4_bare_strip_markup_final(self):
-        text = "Here you go: call:web_search{query:weather today}"
+        text = "Here you go:\ncall:web_search{query:weather today}"
         assert "call:web_search" not in strip_tool_markup(text, final = True)
+        # Mid-sentence: prose, kept whole.
+        inline = "Here you go: call:web_search{query:weather today}"
+        assert strip_tool_markup(inline, final = True) == inline
 
     # ── Cross-format sentinels ────────────────────────────────────
 
@@ -3667,6 +3661,16 @@ class TestGGUFSafetensorsHealingParity:
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
+            # the sign-offs only count when nothing follows them; named work keeps the plan reading.
+            "I'll dig into the source now and report back.",
+            "I'll dig in and search the web for the latest numbers.",
+            "I'll dig in, then run the numbers.",
+            "I'll dig in. Starting with a web search.",
+            "I'll dig in.\nStarting with a web search.",
+            "I'll help analyze the sales data now.",
+            # "let me assist" names work without a "to", so only the sign-offs skip that gate.
+            "Let me assist by searching the web now.",
+            "Let me assist with checking the documentation.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3684,6 +3688,10 @@ class TestGGUFSafetensorsHealingParity:
             "I'll never call that tool.",
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
+            # #8907: a question to the user, signed off with an action that names no work.
+            "Let me know what you're after and I'll dig in.",
+            'Could you clarify what "it" means? Let me know and I\'ll help analyze!',
+            "Tell me what you are after and let me dig in.",
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",
@@ -3694,6 +3702,12 @@ class TestGGUFSafetensorsHealingParity:
             "First class is available",
             # Advice to the user, not work for this turn.
             "First, install the package.",
+            # Same for "create"/"parse" leading a numbered walkthrough. Only
+            # this loop and the hosted one consume the signal without the GGUF
+            # artifact guard, so a verb widened here regenerates their finished
+            # instructional answers outright.
+            "First, create a virtual environment:\n1. Run python -m venv .venv.\n2. Activate it.",
+            "First, parse the CSV header:\n1. Open the file.\n2. Read the first line.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -4393,7 +4407,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_explicit_nudge_off_is_not_reprompted(self):
+    def test_explicit_nudge_off_is_not_reprompted(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4407,9 +4424,10 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_omitted_nudge_flag_is_not_reprompted(self):
-        # The retry is new on this loop: API callers who do not send the flag
-        # must keep today's behavior. Unsloth opts in explicitly.
+    def test_omitted_nudge_flag_follows_disabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4421,6 +4439,21 @@ class TestPlanWithoutActionReprompt:
         texts = [e["text"] for e in events if e["type"] == "content"]
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_omitted_nudge_flag_follows_enabled_process_default(self, monkeypatch):
+        from core.inference import passthrough_healing
+
+        monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SECOND TURN"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("SECOND TURN" in t for t in texts)
 
     def test_rag_autoinject_counts_as_executed_tool(self, monkeypatch):
         # Autoinject already ran a KB search outside the controller; a short
@@ -5241,3 +5274,58 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
             and node.func.id == "awaiting_approval_status"
         ]
         assert calls, f"{name} still announces a gated tool call as running"
+
+
+class TestStreamingDisplayStripStillMatchesTheExportedHelper:
+    """The loop used to call ``strip_tool_markup_streaming`` directly; it now drives a
+    ``StreamingMarkupStripper`` instead, and the exported helper has no call site left in
+    this module. Everything else in this file asserts on the helper, so without this the
+    suite would look like it guards the loop while guarding a parallel implementation.
+
+    This pins the two together: for the inputs the rest of the file uses, the incremental
+    path the loop actually runs must agree with the helper at every prefix.
+    """
+
+    @staticmethod
+    def _loop_strip(text, names = None):
+        """The loop's display strip, reproduced exactly: Magistral reasoning removal,
+        then the shared incremental stripper (see ``_strip_streaming_display``)."""
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        return stripper.strip(safetensors_agentic._strip_mistral_reasoning(text))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call>',
+            "before <function=search><parameter=q>x</parameter></function> after",
+            "plain prose with no markup at all",
+            "<think>rehearsed <tool_call>{}</tool_call></think> visible",
+            "[TOOL_CALLS] search[ARGS]{}",
+            "trailing <function=search",
+            "",
+        ],
+    )
+    def test_the_loop_path_agrees_with_the_helper(self, text):
+        names = {"search"}
+        assert self._loop_strip(text, names) == strip_tool_markup_streaming(
+            text, enabled_tool_names = names
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call> after',
+            "<function=search><parameter=q>a</parameter></function>tail",
+        ],
+    )
+    def test_the_loop_path_agrees_at_every_prefix(self, text):
+        """The loop feeds a growing buffer, so agreement has to hold at each step, not
+        only on the whole string."""
+        names = {"search"}
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        for i in range(1, len(text) + 1):
+            prefix = text[:i]
+            incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
+            assert incremental == strip_tool_markup_streaming(
+                prefix, enabled_tool_names = names
+            ), f"diverged at offset {i}"

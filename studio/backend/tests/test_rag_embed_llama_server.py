@@ -3,9 +3,13 @@
 
 """llama-server GGUF embedder tests, every boundary mocked."""
 
+import os
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+import types
 from pathlib import Path
 
 import numpy as np
@@ -53,7 +57,7 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: gpus))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
 
 
@@ -89,6 +93,33 @@ def test_unknown_backend_raises(monkeypatch):
     monkeypatch.setattr(config, "EMBED_BACKEND", "bogus")
     with pytest.raises(ValueError, match = "Unknown RAG_EMBED_BACKEND"):
         embeddings._get_backend()
+
+
+def test_shutdown_waits_for_an_active_embedding_operation(monkeypatch):
+    backend = LlamaServerBackend()
+    entered = threading.Event()
+    finish = threading.Event()
+    shutdown_done = threading.Event()
+
+    def _post(path, payload, **_kwargs):
+        entered.set()
+        assert finish.wait(timeout = 2)
+        return {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+
+    monkeypatch.setattr(backend, "_post", _post)
+    worker = threading.Thread(target = lambda: backend.encode(["x"]))
+    worker.start()
+    assert entered.wait(timeout = 2)
+
+    closer = threading.Thread(target = lambda: (backend._shutdown(), shutdown_done.set()))
+    closer.start()
+    assert shutdown_done.wait(timeout = 0.05) is False
+    finish.set()
+    worker.join(timeout = 2)
+    closer.join(timeout = 2)
+    assert shutdown_done.is_set()
+    with pytest.raises(RuntimeError, match = "unloaded"):
+        backend.encode(["x"])
 
 
 def test_explicit_backend_overrides_auto(monkeypatch):
@@ -153,6 +184,68 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Unsloth's selection
 
 
+def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch, tmp_path):
+    # dyld ignores LD_LIBRARY_PATH, and Apple Silicon is routed through the
+    # use_gpu branch, so the embedding server needs the same treatment the chat
+    # server got in #8566.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/inherited")
+    # Pin an inherited value rather than asserting the key is absent: the child
+    # env is a copy of os.environ, so an ambient LD_LIBRARY_PATH would be there
+    # whatever this branch does. What matters is that it is left alone.
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
+    # A host-native directory, not a POSIX literal: _llama_lib_dir resolves the
+    # path, and this test simulates darwin on whatever host runs it, so on a
+    # Windows runner "/opt/llama/bin" comes back drive-anchored as "D:\opt\...".
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+    b = LlamaServerBackend()
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = True)
+    entries = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert entries == [str(bin_dir), "/opt/inherited"]
+    assert env["LD_LIBRARY_PATH"] == "/opt/sentinel"
+
+
+def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch, tmp_path):
+    # EMBED_DEVICE=cpu, and the CPU retry after a failed GPU start, load the
+    # same sibling dylibs; the loader path cannot be gated on use_gpu.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    # Host-native, for the same reason as the GPU case above.
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+    b = LlamaServerBackend()
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = False)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(bin_dir)
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_build_env_resolves_a_wrapper_entrypoint(monkeypatch, tmp_path):
+    # The managed install puts an entrypoint in front of the real server; the
+    # dylibs sit next to the target, not next to the wrapper.
+    import os
+    import sys as _sys
+
+    real_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    real_dir.mkdir(parents = True)
+    (real_dir / "llama-server").write_text("")
+    wrapper = tmp_path / "llama.cpp" / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    b = LlamaServerBackend()
+    env = b._build_env(str(wrapper), use_gpu = True)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(real_dir)
+
+
 def test_use_gpu_explicit_modes(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
@@ -184,11 +277,15 @@ def test_gpu_available_reuses_studio_probe(monkeypatch):
 
     monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
     # Ample free VRAM -> GPU; nearly full -> CPU; none -> CPU.
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 40000)])
+    )
     assert LlamaServerBackend._gpu_available() is True
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 100)])
+    )
     assert LlamaServerBackend._gpu_available() is False
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: []))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: []))
     assert LlamaServerBackend._gpu_available() is False
 
 
@@ -207,7 +304,9 @@ def _patch_spawn_deps(
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
     monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_model_path", lambda self: "/m/bge.gguf")
+    monkeypatch.setattr(
+        LlamaServerBackend, "_resolve_model_path", lambda self, model_name = None: "/m/bge.gguf"
+    )
     monkeypatch.setattr(LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port))
     monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: proc)
 
@@ -244,7 +343,7 @@ def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
     b = LlamaServerBackend()
     calls = []
 
-    def fake_spawn_once(use_gpu):
+    def fake_spawn_once(use_gpu, model_name = None):
         calls.append(use_gpu)
         if use_gpu:
             raise RuntimeError("CUDA out of memory")
@@ -259,7 +358,7 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
     b = LlamaServerBackend()
 
-    def fake_spawn_once(use_gpu):
+    def fake_spawn_once(use_gpu, model_name = None):
         raise RuntimeError("CUDA out of memory")
 
     monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
@@ -276,10 +375,10 @@ def _embed_response(vectors):
 
 def test_encode_orders_and_returns_float32(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     captured = {}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         captured["path"] = path
         captured["input"] = payload["input"]
         return _embed_response([[3.0, 4.0], [0.0, 5.0]])
@@ -294,8 +393,8 @@ def test_encode_orders_and_returns_float32(monkeypatch):
 
 def test_encode_normalizes(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
-    monkeypatch.setattr(b, "_post", lambda p, pl: _embed_response([[3.0, 4.0]]))
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
+    monkeypatch.setattr(b, "_post", lambda p, pl, **_k: _embed_response([[3.0, 4.0]]))
     out = b.encode(["a"], normalize = True)
     np.testing.assert_allclose(np.linalg.norm(out, axis = 1), [1.0], rtol = 1e-6)
 
@@ -303,7 +402,7 @@ def test_encode_normalizes(monkeypatch):
 def test_encode_empty_returns_zero_rows(monkeypatch):
     b = LlamaServerBackend()
     b._dim = 384
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     out = b.encode([])
     assert out.shape == (0, 384)
     assert out.dtype == np.float32
@@ -311,8 +410,10 @@ def test_encode_empty_returns_zero_rows(monkeypatch):
 
 def test_encode_rejects_count_mismatch(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
-    monkeypatch.setattr(b, "_post", lambda p, pl: {"data": [{"index": 0, "embedding": [1.0]}]})
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        b, "_post", lambda p, pl, **_k: {"data": [{"index": 0, "embedding": [1.0]}]}
+    )
     with pytest.raises(RuntimeError, match = "vectors for"):
         b.encode(["a", "b"], normalize = False)
 
@@ -320,10 +421,10 @@ def test_encode_rejects_count_mismatch(monkeypatch):
 def test_encode_batches(monkeypatch):
     monkeypatch.setattr(config, "EMBED_BATCH", 2)
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     calls = []
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         chunk = payload["input"]
         calls.append(len(chunk))
         return _embed_response([[1.0, 0.0]] * len(chunk))
@@ -336,10 +437,10 @@ def test_encode_batches(monkeypatch):
 
 def test_dim_probes_once_and_caches(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     n_calls = {"n": 0}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         n_calls["n"] += 1
         return _embed_response([[0.1] * 384])
 
@@ -351,10 +452,10 @@ def test_dim_probes_once_and_caches(monkeypatch):
 
 def test_token_counter_hits_tokenize(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     seen = {}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         seen["path"] = path
         seen["content"] = payload["content"]
         return {"tokens": [1, 2, 3, 4]}
@@ -371,11 +472,14 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     b._process = _FakeProc(alive = False, returncode = 0)
     spawned = {"n": 0}
 
-    def fake_spawn():
+    def fake_spawn(model_name = None):
         spawned["n"] += 1
         b._process = _FakeProc(alive = True)
         # _current() now also checks the served repo, so mark it current.
         b._model_repo = config.effective_gguf_repo()
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        b._binary_path_revision = custom_llama_cpp_path_revision()
 
     monkeypatch.setattr(b, "_spawn", fake_spawn)
     b._ensure_ready()
@@ -386,14 +490,43 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     assert spawned["n"] == 1
 
 
+def test_path_save_restarts_embedder_with_new_binary(monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    backend = LlamaServerBackend()
+    backend._process = _FakeProc(alive = True)
+    backend._model_repo = config.effective_gguf_repo()
+    backend._binary = "/old/llama-server"
+    backend._binary_path_revision = llama_cpp_path_settings.custom_llama_cpp_path_revision()
+    monkeypatch.setattr(
+        llama_cpp_path_settings, "_path_revision", backend._binary_path_revision + 1
+    )
+    spawned = []
+
+    def fake_spawn(model_name = None):
+        spawned.append(backend._binary)
+        backend._process = _FakeProc(alive = True)
+        backend._model_repo = config.effective_gguf_repo()
+        backend._binary = "/new/llama-server"
+        backend._binary_path_revision = llama_cpp_path_settings.custom_llama_cpp_path_revision()
+
+    monkeypatch.setattr(backend, "_spawn", fake_spawn)
+    backend._ensure_ready()
+
+    assert spawned == [None]
+    assert backend._binary == "/new/llama-server"
+
+
 def test_post_restarts_once_on_connect_error(monkeypatch):
     import httpx
 
     b = LlamaServerBackend()
     b._port = 9000
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda *_a, **_k: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 
@@ -424,9 +557,11 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
 
     b = LlamaServerBackend()
     b._port = 9000
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda *_a, **_k: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 
@@ -449,3 +584,1116 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     out = b._post("/v1/embeddings", {"input": ["x"]})
     assert out["data"][0]["embedding"] == [1.0, 0.0]
     assert restarts["n"] == 1  # timeout self-heals like a transport error
+
+
+class TestTheEmbeddingLoaderChangesAreMacOsOnly:
+    """The RAG server's Linux and Windows launches must be as they were.
+
+    The probe environment and the resolved library directory both started out
+    unconditional, which moved the first LD_LIBRARY_PATH entry for every Linux
+    GPU install whose llama-server is a symlink, and gave the capability probe
+    an environment it never had.
+    """
+
+    def test_the_help_probe_still_inherits_the_environment_off_mac(self, monkeypatch):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text("/opt/mine/llama-server")
+        assert seen.get("env") is None
+
+    def test_the_help_probe_gets_the_loader_environment_on_mac(self, monkeypatch, tmp_path):
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"\xcf\xfa\xed\xfe")
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text(str(binary))
+        assert seen.get("env") is not None
+
+    def test_linux_gpu_libs_still_hang_off_the_given_path(self, monkeypatch, tmp_path):
+        real = tmp_path / "build" / "bin" / "llama-server"
+        real.parent.mkdir(parents = True)
+        real.write_bytes(b"\xcf\xfa\xed\xfe")
+        wrapper = tmp_path / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+        wrapper.chmod(0o755)
+        seen = {}
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod.LlamaServerBackend,
+            "_add_linux_cuda_libs",
+            staticmethod(lambda env, d: seen.setdefault("dir", d)),
+        )
+        mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
+        assert seen["dir"] == str(wrapper.parent)
+
+
+def test_device_preference_is_shared_between_both_backends(monkeypatch):
+    """One reader, so the two backends cannot disagree about the same string.
+
+    They did: this one compared a bare .lower() with no strip, so " gpu " forced the
+    GPU for sentence-transformers and fell through to auto here, and an Intel user
+    writing their own accelerator's name (xpu) got neither.
+    """
+    for requested, expected in (
+        ("gpu", "gpu"),
+        ("GPU", "gpu"),
+        ("  gpu  ", "gpu"),
+        ("cuda", "gpu"),
+        ("rocm", "gpu"),
+        ("hip", "gpu"),
+        ("xpu", "gpu"),
+        ("mps", "gpu"),
+        ("metal", "gpu"),
+        ("cpu", "cpu"),
+        ("CPU", "cpu"),
+        (" cpu ", "cpu"),
+        ("auto", "auto"),
+        ("", "auto"),
+        ("   ", "auto"),
+        ("banana", "auto"),
+    ):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        assert config.embed_device_preference() == expected, requested
+
+
+def test_use_gpu_honours_the_normalized_preference(monkeypatch):
+    """A whitespace-padded or device-named setting reaches this backend too."""
+    backend = LlamaServerBackend()
+    for requested in ("  gpu  ", "GPU", "xpu", "cuda"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: False),
+        )
+        assert backend._use_gpu() is True, requested
+    for requested in (" cpu ", "CPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: True),
+        )
+        assert backend._use_gpu() is False, requested
+
+
+def test_gpu_opt_in_still_falls_back_to_cpu(monkeypatch):
+    """Opting into the GPU by naming it must not turn a failed GPU start fatal.
+
+    These spellings all fell through to ``auto`` before the normalizer read them,
+    so they fell back; making them fatal would stop RAG on hosts it worked on."""
+    for requested in ("cuda", "rocm", "hip", "xpu", "mps", "metal", "  gpu  ", "  CUDA  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(
+            use_gpu,
+            model_name = None,
+            _calls = calls,
+        ):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        assert backend._force_cpu is True, requested
+
+
+def test_literal_gpu_remains_a_hard_request(monkeypatch):
+    """The documented value keeps forcing the GPU, as it always has."""
+    for requested in ("gpu", "GPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        monkeypatch.setattr(
+            backend,
+            "_spawn_once",
+            lambda use_gpu, *_a: (_ for _ in ()).throw(RuntimeError("no cuda")),
+        )
+        with pytest.raises(RuntimeError, match = "no cuda"):
+            backend._spawn()
+        assert backend._force_cpu is False, requested
+
+
+def test_a_soft_gpu_opt_in_keeps_its_own_cpu_fallback(monkeypatch):
+    """The chat reaper kills this server routinely, so respawns are the common case.
+
+    A GPU start we were already allowed to give up on must not be retried on every
+    one of them: each retry pays the full startup timeout before landing back on the
+    CPU it had already fallen back to. Only the literal ``gpu`` outranks the flag,
+    and that spelling never sets it."""
+    for requested in ("cuda", "xpu", "  gpu  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(
+            use_gpu,
+            model_name = None,
+            _calls = calls,
+        ):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        backend._spawn()  # the reaper killed it; the respawn stays where we landed
+        assert calls == [True, False, False], requested
+        assert backend._use_gpu() is False, requested
+
+
+def _seed_cache(
+    root,
+    repo_id,
+    filenames,
+    *,
+    revision = "abc123",
+    ref = True,
+):
+    """A hub cache tree built the way hf_hub_download builds one: the snapshot holds
+    symlinks into blobs/, not regular files."""
+    repo_dir = root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / revision
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    for name in filenames:
+        blob = blobs / name.replace("/", "_")
+        blob.write_text("gguf")
+        link = snapshot / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(os.path.relpath(blob, link.parent))
+    if ref:
+        (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+        (repo_dir / "refs" / "main").write_text(revision)
+    return snapshot
+
+
+def _use_cache_root(monkeypatch, root):
+    import utils.hf_cache_settings as hcs
+    monkeypatch.setattr(hcs, "active_hf_hub_cache", lambda: str(root))
+
+
+def _no_hub(monkeypatch):
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_uncached_model_path",
+        lambda self, *a, **k: pytest.fail("resolved over the hub despite a usable cache"),
+    )
+
+
+def test_cached_gguf_resolves_without_touching_the_hub(monkeypatch, tmp_path):
+    """A repo already on disk must never be re-listed: _model_path is per-process, so
+    every restart used to pay a hub call to name a file it already held (#8778)."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    _no_hub(monkeypatch)
+    backend = LlamaServerBackend()
+    backend._dim = 384  # a width belonging to whatever was served before
+    assert backend._resolve_model_path().endswith("bge-F16.gguf")
+    assert backend._model_repo == repo
+    assert backend._dim is None  # re-probed against the file actually adopted
+
+
+def test_the_pick_takes_the_shortest_variant_match_and_never_an_mmproj(monkeypatch):
+    """An order no directory scan would produce: the wanted file is neither first nor
+    shortest overall, and the shortest F16 name is an mmproj projector."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    names = [
+        "bge-small-en-v1.5-F16-alt.gguf",
+        "mmproj-F16.gguf",
+        "bge-small-en-v1.5-F16.gguf",
+        "bge-Q8_0.gguf",
+        "README.md",
+    ]
+    assert LlamaServerBackend._pick_gguf(names) == "bge-small-en-v1.5-F16.gguf"
+
+
+def test_cached_gguf_skips_mmproj_and_honours_the_variant(monkeypatch, tmp_path):
+    """The same rule reached through the cache, over a real snapshot layout."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        ["mmproj-F16.gguf", "bge-small-en-v1.5-F16.gguf", "bge-Q8_0.gguf", "README.md"],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("bge-small-en-v1.5-F16.gguf")
+
+
+def test_the_pick_is_stable_whatever_order_the_names_arrive_in(monkeypatch):
+    """A directory scan has no guaranteed order, unlike a hub listing. Among equal-length
+    shard names that order would otherwise decide the answer, and only the first shard
+    carries the metadata llama-server needs."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    shards = ["model-F16-00001-of-00002.gguf", "model-F16-00002-of-00002.gguf"]
+    assert LlamaServerBackend._pick_gguf(shards) == shards[0]
+    assert LlamaServerBackend._pick_gguf(list(reversed(shards))) == shards[0]
+
+
+def test_an_mtp_drafter_is_never_taken_for_the_embedder(monkeypatch):
+    """A drafter is a companion, not a model. A cache holding only the companion must read
+    as no embedder rather than as the embedder, and the name sorts ahead of the real weight
+    often enough that the length tiebreak alone would not save it."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "BF16")
+    assert LlamaServerBackend._pick_gguf(["MTP/mtp-model-BF16.gguf"]) is None
+    assert (
+        LlamaServerBackend._pick_gguf(["MTP/mtp-model-BF16.gguf", "model-BF16.gguf"])
+        == "model-BF16.gguf"
+    )
+
+
+def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
+    """Quant-per-directory layouts are common, so a snapshot-root-only scan would
+    re-download a model that is already cached."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["F16/bge-small.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None and resolved.endswith("F16/bge-small.gguf")
+
+
+def test_an_incomplete_cached_shard_set_is_not_a_hit(monkeypatch, tmp_path):
+    """llama-server opens sibling shards implicitly and only the first carries the metadata,
+    so a snapshot holding a trailing shard alone cannot serve the model. Treating it as a
+    hit would skip the hub that still has the rest."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["model-F16-00002-of-00002.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_a_complete_cached_shard_set_resolves_to_its_first_shard(monkeypatch, tmp_path):
+    """Whole on disk, it is servable -- and must be handed over as shard 1 whatever order
+    the scan produced."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        ["model-F16-00002-of-00002.gguf", "model-F16-00001-of-00002.gguf"],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None and resolved.endswith("model-F16-00001-of-00002.gguf")
+
+
+def test_an_incomplete_set_does_not_shadow_a_complete_one(monkeypatch, tmp_path):
+    """Completeness has to narrow the candidates, not veto the winner: the short name wins
+    the tiebreak, so vetoing it afterwards would report no hit while a servable family sat
+    beside it."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        [
+            "a-F16-00001-of-00002.gguf",  # shorter, incomplete: no sibling shard
+            "embedding-model-F16-00001-of-00002.gguf",
+            "embedding-model-F16-00002-of-00002.gguf",
+        ],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None
+    assert resolved.endswith("embedding-model-F16-00001-of-00002.gguf")
+
+
+def test_an_incomplete_variant_match_does_not_hide_a_whole_other_variant(monkeypatch, tmp_path):
+    """Offline, the relaxed pass takes any variant. An unservable F16 must not stand in the
+    way of a Q8 that is whole -- the difference between a working embedder and none."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["model-F16-00002-of-00002.gguf", "model-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None  # strict: no whole F16
+    relaxed = LlamaServerBackend._resolve_cached_gguf(repo, require_variant = False)
+    assert relaxed is not None and relaxed.endswith("model-Q8_0.gguf")
+
+
+def test_cached_gguf_uses_only_the_revision_refs_main_names(monkeypatch, tmp_path):
+    """hf_hub_download serves refs/main. The current revision here sorts neither first nor
+    last, so no directory ordering can stand in for reading the ref."""
+    repo = config.effective_gguf_repo()
+    root = tmp_path / "hub"
+    _seed_cache(root, repo, ["aaa-F16.gguf"], revision = "aaa111", ref = False)
+    _seed_cache(root, repo, ["live-F16.gguf"], revision = "mmm555", ref = True)
+    _seed_cache(root, repo, ["zzz-F16.gguf"], revision = "zzz999", ref = False)
+    _use_cache_root(monkeypatch, root)
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("live-F16.gguf")
+
+
+def test_a_commit_pinned_cache_with_no_ref_defers_to_the_hub(monkeypatch, tmp_path):
+    """Snapshot directories are commit hashes, which order by nothing; guessing among them
+    could serve a superseded model, so an unnamed revision is no hit at all."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"], revision = "deadbeef", ref = False)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_a_cached_other_variant_does_not_satisfy_the_configured_one(monkeypatch, tmp_path):
+    """Falling back on a listing means the variant is not published; falling back on a
+    cache would serve a Q8 left from an earlier setting instead of the configured F16."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached(monkeypatch, tmp_path):
+    """Refusing the wrong variant must not cost the user their embedder outright: a cached
+    Q8 beats none, the degrade #8778 asks for."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline mode is enabled")),
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path().endswith("bge-Q8_0.gguf")
+
+
+def test_a_pending_picker_download_never_falls_through_to_the_hub(monkeypatch, tmp_path):
+    import utils.embedding_model_settings as ems
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/pending-GGUF")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    backend = LlamaServerBackend()
+    monkeypatch.setattr(
+        backend,
+        "_resolve_uncached_model_path",
+        lambda *a: (_ for _ in ()).throw(AssertionError("pending model reached the Hub")),
+    )
+
+    with pytest.raises(RuntimeError, match = "not downloaded yet"):
+        backend._resolve_model_path()
+
+
+def test_a_completed_pending_download_uses_its_cached_fallback_quant(monkeypatch, tmp_path):
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    monkeypatch.setattr(
+        backend,
+        "_resolve_uncached_model_path",
+        lambda *a: (_ for _ in ()).throw(AssertionError("cached pending model reached Hub")),
+    )
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+
+
+def test_an_unreachable_hub_still_reaches_the_fallback_repo_s_cache(monkeypatch, tmp_path):
+    """The cache-first pass consults only the preferred repo, to keep a reachable companion
+    ahead of the fallback. Offline that ordering is moot and the fallback repo's cache is
+    all there is, so the relaxed pass must still look there."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/foo")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/foo-GGUF")
+    _seed_cache(tmp_path / "hub", "org/foo", ["fallback-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline mode is enabled")),
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path().endswith("fallback-F16.gguf")
+
+
+def test_a_reachable_hub_is_preferred_over_a_cached_other_variant(monkeypatch, tmp_path):
+    """A last resort, not a shortcut: a cached Q8 must not pre-empt a hub that can still
+    name the configured variant."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["bge-F16.gguf"])
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda **kw: "/cache/bge-F16.gguf")
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/bge-F16.gguf"
+
+
+def test_a_failed_transfer_surfaces_instead_of_serving_another_variant(monkeypatch, tmp_path):
+    """A download failing for its own reasons (no disk, bad checksum) is no evidence the
+    variant is unobtainable, so it must not be answered with a different model."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["bge-F16.gguf"])
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: (_ for _ in ()).throw(OSError("No space left on device")),
+    )
+    backend = LlamaServerBackend()
+    with pytest.raises(OSError, match = "No space left on device"):
+        backend._resolve_model_path()
+
+
+def test_a_cached_gguf_is_found_whatever_the_extension_case(monkeypatch, tmp_path):
+    """The hub path always matched the suffix case-insensitively; a stricter cache scan
+    would re-download a model sitting on disk, or fail outright when offline."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.GGUF"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("bge-F16.GGUF")
+
+
+def test_the_adopted_path_is_tagged_with_the_repo_it_was_resolved_for(monkeypatch, tmp_path):
+    """A Settings change landing mid-resolution must leave the path tagged with the repo it
+    was resolved FOR, so _current() reads it as stale and respawns."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    _no_hub(monkeypatch)
+    backend = LlamaServerBackend()
+
+    def _resolve_then_change_the_setting(repo_id, **_kw):
+        monkeypatch.setattr(config, "effective_gguf_repo", lambda: "someone/else-GGUF")
+        return str(tmp_path / "hub" / "bge-F16.gguf")
+
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_cached_gguf",
+        staticmethod(_resolve_then_change_the_setting),
+    )
+    backend._resolve_model_path()
+    assert backend._model_repo == repo
+    assert not backend._current()  # the new setting reads as stale, forcing a respawn
+
+
+def test_a_cached_fallback_repo_does_not_pre_empt_the_preferred_one(monkeypatch, tmp_path):
+    """A custom model resolves through its "-GGUF" companion first and only falls back to
+    the model repo when the companion has none. A file cached under the fallback must not
+    reorder that, or the backend serves the wrong weights and tags them as current."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/foo")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/foo-GGUF")
+    _seed_cache(tmp_path / "hub", "org/foo", ["fallback-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda repo_id, **k: ["preferred-F16.gguf"] if repo_id == "org/foo-GGUF" else [],
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda **kw: "/cache/preferred-F16.gguf"
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/preferred-F16.gguf"
+
+
+def test_the_cache_folder_is_named_from_the_resolved_repo_casing(monkeypatch, tmp_path):
+    """Settings takes a repo id as typed, while the cache folder carries whatever casing
+    downloaded it. Missing that match re-downloads, and fails outright when offline.
+
+    The resolver's answer is deliberately a different id, not a case variant: on a
+    case-insensitive filesystem a variant would resolve either way and prove nothing."""
+    import utils.paths as paths_pkg
+
+    _seed_cache(tmp_path / "hub", "Cached/Spelling-GGUF", ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(
+        paths_pkg, "resolve_cached_repo_id_case", lambda name: "Cached/Spelling-GGUF"
+    )
+    resolved = LlamaServerBackend._resolve_cached_gguf("as/typed-GGUF")
+    assert resolved is not None and resolved.endswith("bge-F16.gguf")
+
+
+def test_the_listing_cannot_outlive_its_deadline(monkeypatch, tmp_path):
+    """list_repo_files takes no timeout and pagination overrides any client-level default,
+    so a blackholed address holds this call, and _lifecycle_lock with it, until the kernel
+    exhausts its SYN retries."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    @contextlib.contextmanager
+    def reachable():
+        yield False
+
+    def _stalls(*_a, **_k):
+        time.sleep(30)
+        raise AssertionError("deadline did not cut the listing short")
+
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", reachable)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", _stalls)
+    monkeypatch.setattr(LlamaServerBackend, "_LIST_DEADLINE_S", 0.3)
+    backend = LlamaServerBackend()
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match = "no .gguf embedder found"):
+        backend._resolve_model_path()
+    assert time.monotonic() - started < 3.0
+
+
+def test_the_hub_resolve_runs_inside_the_unreachable_guard(monkeypatch, tmp_path):
+    """The deadline covers the listing only; the guard is what keeps the transfer from
+    starting against an unreachable endpoint."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    active = []
+
+    @contextlib.contextmanager
+    def recording_guard():
+        active.append(True)
+        try:
+            yield False
+        finally:
+            active.pop()
+
+    def _require_guard(*_a, **_k):
+        assert active, "hub call made outside the guard"
+        return ["bge-F16.gguf"]
+
+    def _download(**_kw):
+        assert active, "download made outside the guard"
+        return "/cache/bge-F16.gguf"
+
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", recording_guard)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", _require_guard)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/bge-F16.gguf"
+    assert active == []
+
+
+def test_a_split_family_is_downloaded_whole_not_just_its_first_shard(monkeypatch, tmp_path):
+    """`-m shard1` makes llama-server open the siblings itself.
+
+    Fetching only the picked file leaves it starting against a repo it just
+    downloaded and failing on the shards that were never asked for.
+    """
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    names = [
+        "bge-F16-00001-of-00003.gguf",
+        "bge-F16-00002-of-00003.gguf",
+        "bge-F16-00003-of-00003.gguf",
+    ]
+    fetched = []
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: names)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: (fetched.append(kw["filename"]), f"/cache/{kw['filename']}")[1],
+    )
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path() == "/cache/bge-F16-00001-of-00003.gguf"
+    assert fetched == names
+
+
+def test_a_torn_published_family_is_skipped_rather_than_half_fetched(monkeypatch, tmp_path):
+    """Shard 2 missing on the hub is not a repo to adopt; the candidate loop moves on."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: ["bge-F16-00001-of-00003.gguf", "bge-F16-00003-of-00003.gguf"],
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: pytest.fail("a torn family must not be fetched"),
+    )
+    backend = LlamaServerBackend()
+    with pytest.raises(RuntimeError, match = "no .gguf embedder found"):
+        backend._resolve_model_path()
+
+
+def test_a_local_dir_of_shards_resolves_to_shard_one_in_any_scan_order(monkeypatch, tmp_path):
+    """`iterdir` guarantees no order, and every shard name here is the same length,
+    so a length-only sort let the directory decide which shard llama-server opened."""
+    names = [
+        "bge-F16-00001-of-00003.gguf",
+        "bge-F16-00002-of-00003.gguf",
+        "bge-F16-00003-of-00003.gguf",
+    ]
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    orders = [names, list(reversed(names)), [names[1], names[2], names[0]]]
+    real_iterdir = Path.iterdir
+    for index, order in enumerate(orders):
+        d = tmp_path / f"dir{index}"
+        d.mkdir()
+        for name in order:
+            (d / name).write_bytes(b"")
+        monkeypatch.setattr(
+            Path,
+            "iterdir",
+            lambda self, o = order, r = real_iterdir: (
+                iter([self / n for n in o]) if self == d else r(self)
+            ),
+        )
+        picked = LlamaServerBackend._resolve_local_gguf(str(d))
+        assert Path(picked).name == "bge-F16-00001-of-00003.gguf"
+
+
+def test_a_local_dir_with_a_torn_family_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    d = tmp_path / "torn"
+    d.mkdir()
+    for n in ("bge-F16-00001-of-00003.gguf", "bge-F16-00003-of-00003.gguf"):
+        (d / n).write_bytes(b"")
+    with pytest.raises(RuntimeError, match = "no .gguf file found"):
+        LlamaServerBackend._resolve_local_gguf(str(d))
+
+
+def test_a_local_dir_still_skips_mmproj_and_appledouble_sidecars(tmp_path):
+    """macOS copies leave `._name` sidecars beside the real file."""
+    d = tmp_path / "local"
+    d.mkdir()
+    (d / "mmproj-bge.gguf").write_bytes(b"")
+    (d / "._bge.gguf").write_bytes(b"\x00\x05\x16\x07")
+    (d / "bge.gguf").write_bytes(b"")
+    assert Path(LlamaServerBackend._resolve_local_gguf(str(d))).name == "bge.gguf"
+
+
+def test_a_wsl_drive_letter_dir_resolves_like_the_other_local_probes(monkeypatch, tmp_path):
+    """`normalize_path` maps `C:\\...` onto `/mnt/c/...` under WSL, and the
+    sentence-transformers and settings probes already run through it. This one did
+    not, so the same folder was a local model on one backend and an unknown Hub repo
+    on the other, failing with "No GGUF weights found in 'C:\\models\\...-GGUF'"."""
+    from utils.paths import path_utils
+
+    drive = tmp_path / "mnt" / "c" / "models"
+    drive.mkdir(parents = True)
+    (drive / "bge-F16.gguf").write_bytes(b"")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(path_utils, "_IS_WSL", True)
+    monkeypatch.setattr(
+        path_utils,
+        "normalize_path",
+        lambda p: (
+            str(tmp_path / "mnt" / p[0].lower() / p[3:].replace("\\", "/"))
+            if len(p) >= 3 and p[1] == ":"
+            else p
+        ),
+    )
+    import utils.paths as paths_pkg
+
+    monkeypatch.setattr(paths_pkg, "normalize_path", path_utils.normalize_path)
+
+    picked = LlamaServerBackend._resolve_local_gguf(r"C:\models")
+    assert picked is not None and Path(picked).name == "bge-F16.gguf"
+
+
+def test_a_posix_path_is_untouched_by_the_normalization(tmp_path):
+    """The rewrite must not start mangling ordinary POSIX paths."""
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / "bge.gguf").write_bytes(b"")
+    assert Path(LlamaServerBackend._resolve_local_gguf(str(d))).name == "bge.gguf"
+
+
+def test_a_stand_in_quant_does_not_retire_the_pending_marker(monkeypatch, tmp_path):
+    """The advertised transfer has not landed: reaching the relaxed pass means the
+    configured variant is absent, so what gets served is a leftover from an earlier
+    setting. Clearing the marker on it would pin the model to that quant for good."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+    assert cleared == [], "a stand-in quant is not the transfer that was advertised"
+
+
+def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp_path):
+    """The other half: the configured variant in the preferred repo IS what the
+    picker advertised, so the marker has been answered and must not outlive it."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-F16.gguf")
+    assert cleared == ["org/pending"]
+
+
+def test_the_planned_fallback_quant_landing_retires_the_pending_marker(monkeypatch, tmp_path):
+    """A repo publishing no F16 is downloaded as whatever quant it does publish, so
+    the variant-matching pass never recognizes the finished transfer. Left that way
+    the model is cache-only for the life of the install, and a later eviction is
+    refused as "not downloaded" though the advertised download completed."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    # What the picker planned and the download manager fetched.
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["pending-Q8_0.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+    assert cleared == ["org/pending"]
+
+
+def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(monkeypatch):
+    """One subprocess serves one GGUF, and the lifecycle read the live setting, so
+    a job pinned to A served B's weights while still tagging its vectors A."""
+    from core.rag import config
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/model-b")
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: f"{model}-GGUF",
+    )
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    monkeypatch.setattr(b, "_binary_path_revision", None, raising = False)
+    import utils.llama_cpp_path_settings as paths
+
+    monkeypatch.setattr(paths, "custom_llama_cpp_path_revision", lambda: None)
+
+    # A live server on A's weights.
+    b._model_repo = "org/model-a-GGUF"
+
+    # The live setting is B, so an unpinned request finds the server stale.
+    assert b._current() is False
+    # A request pinned to A is served by exactly that server, no respawn.
+    assert b._current("org/model-a") is True
+    # And a request pinned to B is not.
+    assert b._current("org/model-b") is False
+
+
+def test_resolution_follows_the_pinned_model(monkeypatch, tmp_path):
+    """_resolve_model_path derived the repo and the local-path probe from the live
+    setting, so the pinned model reached neither."""
+    from core.rag import config
+
+    gguf = tmp_path / "pinned.gguf"
+    gguf.write_bytes(b"GGUF")
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/model-b")
+    monkeypatch.setattr(
+        config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    seen = []
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_local_gguf",
+        staticmethod(
+            lambda model: seen.append(model) or (str(gguf) if "model-a" in model else None)
+        ),
+    )
+
+    assert b._resolve_model_path("org/model-a") == str(gguf)
+    assert seen == ["org/model-a"]
+    # Tagged with the repo it was resolved FOR, so a later unpinned request sees
+    # it as stale rather than serving A's weights under B's name.
+    assert b._model_repo == "org/model-a-GGUF"
+
+
+def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
+    """Readiness and the POST were two steps, so a swap in between landed A's
+    request on B's server, storing B's vectors under A's identity."""
+    import threading
+
+    b = LlamaServerBackend()
+    order: list[str] = []
+    swapped = threading.Event()
+
+    def fake_ensure_ready(model_name = None):
+        order.append(f"ready:{model_name}")
+
+    def fake_post(url, json = None):  # noqa: A002 - httpx's parameter name
+        order.append("post")
+        # A competing swap tries to run right here, where the old code let it.
+        swapper = threading.Thread(target = _swap)
+        swapper.start()
+        swapper.join(timeout = 0.5)
+        order.append("post-done")
+
+        class _R:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {"tokens": [1]}
+
+        return _R()
+
+    def _swap():
+        # Blocks until the in-flight request releases the lease.
+        with b._serve_lock:
+            order.append("swap")
+            swapped.set()
+
+    monkeypatch.setattr(b, "_ensure_ready", fake_ensure_ready)
+    monkeypatch.setattr(b._client, "post", fake_post)
+    monkeypatch.setattr(b, "_port", 1)
+
+    b._post("/tokenize", {"content": "x"}, model_name = "org/model-a")
+    swapped.wait(timeout = 2)
+
+    # The swap is after the request completed, never between ready and post.
+    assert order[:3] == ["ready:org/model-a", "post", "post-done"]
+    assert order[-1] == "swap"
+
+
+def test_a_dim_probe_is_serialized_with_a_model_switch(monkeypatch):
+    """One subprocess serves one GGUF, so ``_dim`` belongs to whichever model is
+    loaded. With two jobs pinned to models of different width, a probe that ran
+    outside the request path's lock could ready A, have the other switch to B and
+    cache B's width, and then answer A with it."""
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda model_name = None: None)
+    observed = {}
+
+    def _probe_encode(
+        texts,
+        normalize = False,
+        model_name = None,
+    ):
+        # A second job trying to take the server while this probe is mid-flight.
+        acquired = []
+        switcher = threading.Thread(
+            target = lambda: acquired.append(b._serve_lock.acquire(timeout = 0.5))
+        )
+        switcher.start()
+        switcher.join()
+        if acquired[0]:
+            b._serve_lock.release()
+        observed["excluded"] = not acquired[0]
+        return np.zeros((1, 384), dtype = np.float32)
+
+    monkeypatch.setattr(b, "encode", _probe_encode)
+
+    assert b.dim() == 384
+    assert observed["excluded"] is True, "a model switch could land inside the probe"
+
+
+def test_the_runtime_probe_does_not_wait_on_a_model_load(monkeypatch):
+    """Both the resolve GET and the PUT run this preflight before any
+    deadline-bounded Hub call, and ``_get`` holds ``_lock`` across a whole
+    SentenceTransformer construction, download included. Sharing that lock made
+    opening or saving Settings during a first load block for as long as the load."""
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    finished = threading.Event()
+
+    def _probe():
+        embeddings.sentence_transformers_runtime_available()
+        finished.set()
+
+    with embeddings._lock:  # stands in for a load in progress
+        worker = threading.Thread(target = _probe, daemon = True)
+        worker.start()
+        assert finished.wait(timeout = 60), "the resolve preflight waited on the model-load lock"
+
+
+def test_a_stale_quant_in_another_directory_is_not_the_planned_family(monkeypatch, tmp_path):
+    """A repo that files each quant in its own directory publishes Q8_0/model.gguf
+    beside Q4_K_M/model.gguf. Matching the plan on base names alone let the stale
+    one pass for the planned one, retiring the marker and pinning the wrong quant."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    # The plan named the Q8_0 copy; only the Q4_K_M one is on disk.
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["Q8_0/model.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["Q4_K_M/model.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("model.gguf")
+    assert cleared == [], "a quant from another directory is not the planned family"
+
+
+def test_the_planned_family_matches_by_its_directory_too(monkeypatch, tmp_path):
+    """The other half: the planned copy in its own directory still retires it."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["Q8_0/model.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["Q8_0/model.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("model.gguf")
+    assert cleared == ["org/pending"]
+
+
+def test_warming_one_model_cannot_respawn_under_another_models_request(monkeypatch):
+    """warm() readied the server itself, outside the serving lock, so warming B
+    could kill and respawn between an encode pinned to A passing its own readiness
+    check and its POST, landing A's request on B's server under A's identity.
+    Readiness belongs to dim(), which holds the lock across it."""
+    b = LlamaServerBackend()
+    unlocked = []
+
+    def _lock_is_free() -> bool:
+        # Ownership is per thread for an RLock, so ask from another one.
+        seen = []
+        probe = threading.Thread(target = lambda: seen.append(b._serve_lock.acquire(timeout = 0.5)))
+        probe.start()
+        probe.join()
+        if seen[0]:
+            b._serve_lock.release()
+        return seen[0]
+
+    def _recording_ensure_ready(model_name = None):
+        if _lock_is_free():
+            unlocked.append(model_name)
+
+    monkeypatch.setattr(b, "_ensure_ready", _recording_ensure_ready)
+    monkeypatch.setattr(
+        b,
+        "encode",
+        lambda texts, normalize = False, model_name = None: np.zeros((1, 384), dtype = np.float32),
+    )
+    b.warm(model_name = "org/model-b")
+
+    assert unlocked == [], "a respawn during warm-up could land outside the serving lock"
+
+
+def test_the_planned_family_outranks_a_variant_that_arrives_later(monkeypatch, tmp_path):
+    """The record names the artifact this model's vectors were produced with, and
+    the stored identity carries the model and the repo but not the file. Once the
+    marker retired, a preferred variant arriving later (a full-repo download, a
+    republished revision) silently changed the weights under an existing index
+    without changing its tag."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    # The transfer completed, so nothing is pending any more.
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: False)
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["pending-Q8_0.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: False)
+    # And the configured variant has since landed in the same repo.
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf", "pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+
+
+def test_a_partly_present_planned_family_is_not_served(monkeypatch, tmp_path):
+    """Whole family or nothing: entering a torn one at shard 1 gives llama-server a
+    model it cannot finish opening."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: False)
+    monkeypatch.setattr(
+        ems,
+        "get_stored_gguf_files",
+        lambda model: ["p-00001-of-00002.gguf", "p-00002-of-00002.gguf"],
+    )
+    _seed_cache(tmp_path / "hub", repo, ["p-00001-of-00002.gguf", "pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._planned_family_path("org/pending", repo) is None
+    assert backend._resolve_model_path().endswith("pending-F16.gguf")

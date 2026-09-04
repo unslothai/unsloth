@@ -30,6 +30,9 @@ from unittest.mock import MagicMock  # noqa: E402
 import pytest  # noqa: E402
 
 
+_STUBBED: list[str] = []
+
+
 def _stub_if_missing(name, attrs):
     """Register a stub module for a dep the backend pytest job does not install.
 
@@ -50,6 +53,7 @@ def _stub_if_missing(name, attrs):
         return
     except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
         pass
+    _STUBBED.append(name)
     mod = types.ModuleType(name)
     mod.__spec__ = None
     for attr in attrs:
@@ -65,6 +69,15 @@ _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
+
+# Drop the stubs now that tmod is bound, because they outlive this module otherwise and the rest
+# of the suite then runs against them. utils.hardware.hardware._shared_policy branches on
+# `"unsloth" in sys.modules` and then reaches for unsloth.dataset_num_proc, which a spec-less
+# non-package stub cannot provide, so it returns None and every shared-policy case in
+# test_dataset_map_num_proc.py skips instead of running. A real install stubs nothing, so this is
+# a no-op there.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
 
 _VERBOSE_ENV = (
     "UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS",

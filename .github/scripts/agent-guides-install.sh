@@ -10,7 +10,7 @@
 # unsloth_cli/commands/start.py at HEAD.
 #
 # Usage: agent-guides-install.sh <agent>
-#   agent in: claude codex hermes openclaw opencode pi
+#   agent in: claude codex hermes openclaw opencode pi dsh
 set -uo pipefail
 
 AGENT="${1:?usage: agent-guides-install.sh <agent>}"
@@ -71,8 +71,18 @@ case "$AGENT" in
     npm_retry "@openai/codex" || install_fail "npm install -g @openai/codex failed"
     ;;
   opencode)
-    # start.py install_hint: npm install -g opencode-ai
-    npm_retry "opencode-ai" || install_fail "npm install -g opencode-ai failed"
+    case "${OPENCODE_CHANNEL:-stable}" in
+      stable) package="opencode-ai" ;;
+      v2)
+        package="@opencode-ai/cli@beta"
+        if latest_bin="$(npm view @opencode-ai/cli@latest bin --json 2>>"$LOG")" \
+            && grep -q '"opencode2"' <<<"$latest_bin"; then
+          package="@opencode-ai/cli@latest"
+        fi
+        ;;
+      *) install_fail "unknown OpenCode channel '${OPENCODE_CHANNEL}'" ;;
+    esac
+    npm_retry "$package" || install_fail "npm install -g $package failed"
     ;;
   openclaw)
     # start.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
@@ -99,6 +109,10 @@ case "$AGENT" in
     # test a stale Pi against the API).
     npm_retry --ignore-scripts "@earendil-works/pi-coding-agent" \
       || install_fail "npm install -g --ignore-scripts @earendil-works/pi-coding-agent failed"
+    ;;
+  dsh)
+    # start.py install_hint: npm install -g @deepseek-ai/dsh
+    npm_retry "@deepseek-ai/dsh" || install_fail "npm install -g @deepseek-ai/dsh failed"
     ;;
   *)
     install_fail "unknown agent '$AGENT'"

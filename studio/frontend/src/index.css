@@ -324,15 +324,24 @@
 	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
 	/* Model picker header controls. Padding and gaps come from the pinned
 	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
-	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
+	   plus --picker-control-pad. Height matches the h-9 it replaces at the
+	   16px default. */
 	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
+	   like the rest: it pads, and it stops the "Trending" label clipping. */
+	--picker-control-pad: 0.75rem;
+	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
+	   side, i.e. px-3 to px-4 on the tabs. */
+	--picker-tab-pad: 0.5rem;
+	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
-	   label, then the two dropdowns. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
-	/* Provider row adds one more control; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
+	   label, then the two dropdowns. The control row fills this exactly, which
+	   keeps the last dropdown flush with Search Hub above it. Widening a
+	   control takes the difference from the search field, not the panel. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control and the Connected pill; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -727,7 +736,13 @@ html[data-chat-font] .aui-root {
 }
 :root:not([data-palette]) .palette-card[data-palette-value="standard"],
 :root[data-palette="classic"] .palette-card[data-palette-value="classic"],
-:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"],
+.reload-snapshot-shell:not([data-palette])
+	.palette-card[data-palette-value="standard"],
+.reload-snapshot-shell[data-palette="classic"]
+	.palette-card[data-palette-value="classic"],
+.reload-snapshot-shell[data-palette="minimal"]
+	.palette-card[data-palette-value="minimal"] {
 	/* Selection keeps the card's own border weight, only darker. */
 	border-color: var(--ring-select);
 }
@@ -1003,6 +1018,28 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
+	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
+	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
+	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
+
+	   The element stays 0x0 and the ring is drawn by outline-offset. Outlines do not take part
+	   in layout, so the indicator appears without shifting the message the way giving the span
+	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
+	   click never draws it either. */
+	.aui-assistant-reveal-sentinel {
+		display: inline-block;
+		width: 0;
+		height: 0;
+		vertical-align: middle;
+	}
+
+	.aui-assistant-reveal-sentinel:focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: 6px;
+		border-radius: 2px;
+	}
+
 	/* Number fields use the shared grey stepper instead of native spinners. */
 	input[type="number"] {
 		appearance: textfield;
@@ -1096,17 +1133,46 @@ html[data-chat-font] .aui-root {
 		color: #fff !important;
 	}
 
+	/* Multi-select: the same fill a hovered or active row gets, no outline. */
+	.sidebar-nav-btn[data-selected="true"] {
+		background-color: var(--nav-surface-hover) !important;
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn[data-selected="true"] {
+		color: #fff !important;
+	}
+
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	@media (pointer: coarse) {
-		/* Only chat rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
+		/* Chat and project rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
 		.sidebar-row-action.sidebar-touch-reveal {
 			@apply opacity-100 pointer-events-auto;
 		}
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
+	}
+	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
+	   not over a pill, so they reveal on the header's hover. */
+	.sidebar-header-action {
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		color: inherit;
+	}
+	.group\/sidebar-header:hover .sidebar-header-action,
+	.sidebar-header-action:focus-visible,
+	.sidebar-header-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-header-action:hover {
+		background-color: var(--nav-surface-hover);
+	}
+	@media (pointer: coarse) {
+		/* No hover to reveal them on touch. */
+		.sidebar-header-action {
+			@apply opacity-100 pointer-events-auto;
+		}
 	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
@@ -1139,13 +1205,25 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
+	/* pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
+	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
+	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
 		color: #80868b;
 		letter-spacing: 0;
+	}
+	/* These compound selectors must beat the base label's pr-3 declaration.
+	   Tailwind emits utility classes before this components block, so putting
+	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-right: 11px;
+	}
+	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
+		padding-right: 13px;
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[21px];
@@ -1285,6 +1363,55 @@ html[data-chat-font] .aui-root {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 	}
+
+	/* Crossfade media settings into their in-flow action footers. Multiple alpha stops
+	   approximate a smooth 48px ease without painting a separate footer overlay. */
+	.panel-scroll-fade-action.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+	}
+	.panel-scroll-fade-action.is-scrolled:not(.is-bottom-faded) {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade-action.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+	}
 	.panel-scroll-fade.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
@@ -1325,17 +1452,6 @@ html[data-chat-font] .aui-root {
 	.diffusion-surface [data-slot="info-hint"]:focus-visible {
 		opacity: 1;
 		pointer-events: auto;
-	}
-
-	/* The Create / Train action floats over its settings, so hover must lighten the fill
-	   rather than thin it: a translucent green would show the controls behind it. Mixes to
-	   what bg-primary/80 looks like on the page, but stays opaque. */
-	.btn-float-action:hover:not(:disabled) {
-		background-color: color-mix(
-			in srgb,
-			var(--primary) 80%,
-			var(--background)
-		) !important;
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -1510,22 +1626,12 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
-	/* While a panel edge is dragged, keep the resize cursor even as the pointer
-	   travels over buttons and text that would claim their own. */
-	html[data-panel-resizing],
-	html[data-panel-resizing] * {
-		cursor: col-resize !important;
-		user-select: none !important;
-	}
-
-	html[data-panel-resizing]
-		:is(
-			[data-slot="sidebar-inner"],
-			[data-slot="sidebar-inset"],
-			[data-slot="chat-settings-panel"] > div
-		) {
-		pointer-events: none;
-	}
+	/* The resize cursor during a drag is owned by the fixed overlay that
+	   PanelResizeHandle mounts for the life of the drag, not by a rule here.
+	   A universal descendant selector on <html> restyles every element in the
+	   document on each of the two attribute flips, which costs in proportion to
+	   the standing DOM; the overlay costs one element. See
+	   components/ui/panel-resize-handle.tsx. */
 
 	/* Model selector: pointer cursor on every clickable element. */
 	.unsloth-model-selector-trigger,
@@ -2454,10 +2560,17 @@ html[data-chat-font] .aui-root {
 	 *    that gates content-visibility flips rendered height between the
 	 *    200px placeholder and the actual code-block height as the block
 	 *    sits near the viewport edge during stream finalization. The
-	 *    height jump is small but visible, and the rendering optimization
-	 *    is unnecessary for chat content (thread length is bounded). We
-	 *    force `visible` to keep the rendered height of code blocks fully
-	 *    determined by their actual content at all times.
+	 *    height jump is small but visible. We force `visible` to keep the
+	 *    rendered height of code blocks fully determined by their actual
+	 *    content at all times.
+	 *
+	 *    This used to be justified by "thread length is bounded", which
+	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
+	 *    back for `content-visibility: auto` here: WebKit below Safari 26
+	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
+	 *    and Unsloth has no in-thread search to fall back on. Containment on
+	 *    the message roots was measured as no help either; what grows with
+	 *    thread length is inherited-property style recalc, not layout.
 	 *
 	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
 	 *    streaming text segment in a span carrying this attribute. When
@@ -2472,6 +2585,150 @@ html[data-chat-font] .aui-root {
 	}
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
+	}
+
+	/* Off-screen maths costs a full RenderLayer walk on every scroll event.
+	 *
+	 * ON BY DEFAULT, AND ENGINE-GATED. `main.tsx` sets this attribute only when
+	 * `resolveMathBlockMode` says "contain", and `SHIP_DEFAULT` in
+	 * `math-block-mode.ts` is now "contain", so an ordinary install DOES arm this
+	 * rule -- but only where `engineFindsSkippedContent()` passes, which feature
+	 * detects `anchor-name` as a proxy for the WebKit release carrying the
+	 * find-in-page fix (webkit.org/b/283846). On an engine below that bar the
+	 * gate returns "off" and these rules never apply.
+	 * `VITE_UNSLOTH_MATH_BLOCK_CONTAINMENT` and
+	 * `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` override both ways at build and at
+	 * runtime, so it is still revertible by configuration rather than by a
+	 * revert.
+	 *
+	 * THE MECHANISM. On WebKitGTK, which is what Studio and Desktop render
+	 * through on Linux, `RenderLayerScrollableArea::scrollTo` reaches
+	 * `RenderLayer::recursiveUpdateLayerPositionsAfterScroll`, which recurses
+	 * over every descendant RenderLayer once per scroll EVENT with no dirty-bit
+	 * pruning and exactly one early out,
+	 * `!m_hasVisibleDescendant && !m_hasVisibleContent`.
+	 * `RenderBoxModelObject::requiresLayer()` is true for `isPositioned()`, and
+	 * `isPositioned()` is `position != static`, so `position: relative` alone
+	 * buys a layer. KaTeX sets it on `.katex`, `.base` and `.vlist`, and
+	 * `position: absolute` on `.katex-mathml` and `.vlist > span`. A
+	 * 500K-character maths-bearing thread measures 21,713 positioned boxes, about
+	 * 20,700 of them under KaTeX, and 287.6 ms of blocked main thread to move the
+	 * scroller by ONE PIXEL, which is 3.2 fps.
+	 *
+	 * `content-visibility: auto` reaches that same early out for content the user
+	 * cannot see: a skipped subtree is `isSkippedContent()` and
+	 * `RenderLayer::computeHasVisibleContent()` returns false for it.
+	 *
+	 * WHY THE BLOCK AND NOT THE MATHS. `content-visibility` needs size
+	 * containment, and size containment does not apply to a non-atomic
+	 * inline-level box (css-contain-2 #containment-size; WebKit checks it in
+	 * `Style::ContainmentChecker::shouldApplySizeContainment`). Shipped
+	 * `katex.css` gives `.katex` no `display`, so inline maths is `display:
+	 * inline` and the declaration is inert on it: measured at 0 of 146 sampled
+	 * inline roots. Only about 4,919 of the positioned boxes under maths in that
+	 * corpus sit under DISPLAY maths against about 15,291 under INLINE maths, and
+	 * a `.katex-display`-only rule measured minus 27 percent on the mean and plus
+	 * 13 percent on p50, under the bar either way. `.aui-math-block` is the
+	 * paragraph, list item or heading that HOLDS the inline maths, marked by the
+	 * renderer in `math-block-marker.ts` because no CSS selector can ask that
+	 * question except `:has()`, which is itself the measured owner of the 500K
+	 * scroll cost on Chromium.
+	 *
+	 * THE PLACEHOLDER IS MEASURED, NOT GUESSED, IT IS A FALLBACK, AND THERE ARE
+	 * TWO OF THEM. The mean rendered height over the 500K corpus is 138.04px for a
+	 * marked block and 49.13px for a display formula: a marked block is a
+	 * PARAGRAPH of prose that happens to contain a formula, and a display formula
+	 * is one line of maths, so the two populations are nothing like each other.
+	 * The mean rather than the median because the scrollHeight error a placeholder
+	 * introduces is the SUM of (placeholder minus actual) over the blocks not yet
+	 * rendered, and the mean is the value that makes that sum zero.
+	 *
+	 * One shared 7.5rem was tried first and measured: 18px short on every
+	 * paragraph and 71px too tall on every formula. Those errors do not cancel,
+	 * they queue up under the user, and on a first traversal of a 500K thread they
+	 * showed up as a 3,995px scrollbar excursion over 470 rescales. Two values
+	 * cut the per-block error to about 2px and 1px.
+	 *
+	 * The `auto` keyword makes the engine remember each block's real size once it
+	 * has been rendered, so either fallback only ever applies to a block the user
+	 * has not reached yet, and only until they reach it. A second traversal of the
+	 * same thread measured zero excursion and zero drift.
+	 *
+	 * WHAT IT COSTS, corrected. An earlier revision of this comment said 39
+	 * sub-structures move by one device pixel across seven formulae, blamed paint
+	 * containment re-parenting KaTeX's absolutely positioned `.vlist` boxes, and
+	 * gave that as the reason to ship off. Both halves were wrong. `contain: paint`
+	 * ALONE moves 192 pixels over the same seven frames, two of them bit-identical,
+	 * against 7,611 for the whole change, so it is about 2.5% of the effect. And
+	 * the effect is a FIRST-TRAVERSAL TRANSIENT rather than a rendering difference:
+	 * photographed after one full walk of the thread, so that every block has
+	 * rendered once and `contain-intrinsic-size: auto` holds its real height, the
+	 * two built bundles differ by TEN pixels over seven frames, four of them
+	 * bit-identical, with `scrollHeight` matching exactly. What the earlier
+	 * measurement caught was blocks still showing their placeholder.
+	 *
+	 * What it does cost is recorded on `SHIP_DEFAULT` in `math-block-mode.ts`: a
+	 * remembered height goes stale across a resize, 2.0% of `scrollHeight` on the
+	 * 500K corpus against 0.0% with the feature off, converging as blocks are
+	 * scrolled past; and paint containment clips an inline formula wider than the
+	 * column, which no block in that corpus is. This ships ON, gated on the
+	 * engine. */
+	html[data-math-block-containment="on"] .aui-thread-root .aui-math-block {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 8.5rem;
+	}
+	/* `.aui-math-display`, not `.katex-display`, because a display carrying an equation number must
+	   NOT take containment: style containment scopes `katexEqnNo` and Chromium then renders every
+	   numbered equation as (1). The renderer adds this class after KaTeX has run, to the displays
+	   that have no number. A `:has()` rule would say the same thing in CSS and is precisely what
+	   must not be used here, since two `:has()` rules were the measured owner of the 500K scroll
+	   cost on Chromium (#9669). */
+	html[data-math-block-containment="on"] .aui-thread-root .aui-math-display {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 3rem;
+	}
+
+	/* A PRINT IS NOT A VIEWPORT, and on WebKit that loses the equations.
+	 *
+	 * Skipped content is not painted, and the box keeps the placeholder height above, so a block
+	 * that is skipped when the print is taken comes out as an EMPTY 8.5rem or 3rem rectangle on the
+	 * page. Nothing about the printed copy tells the reader it happened; they keep a PDF whose
+	 * formulae, and whose maths-bearing paragraphs of prose, are blank boxes. That is the one
+	 * failure mode this whole feature must not have.
+	 *
+	 * WHY THE ENGINE DOES NOT SAVE US. `content-visibility: auto` skips whatever is not "relevant to
+	 * the user", and css-contain-2 defines that as on-screen, focused, selected or in the top layer
+	 * -- there is no print carve-out in the prose, under `#relevant-to-the-user` in
+	 * drafts.csswg.org/css-contain-2. The CSSWG resolved on 2024-06-13 to add one, "when printing a
+	 * document, also treat content-visibility:auto as visible" (w3c/csswg-drafts#10347), and the
+	 * spec still has not been edited. So each engine is on its own: Chromium unlocks for print
+	 * (`DisplayLockContext::SetShouldUnlockAutoForPrint`, 2020), Gecko resolves `auto` to `visible`
+	 * in print context (bugzilla 1907081, Firefox 130), and WebKit does NEITHER -- its
+	 * `ContentRelevancy` enum is `OnScreen | Focused | IsInTopLayer | Selected` and its
+	 * `ContentVisibilityDocumentState` never mentions printing, so relevancy stays whatever an
+	 * IntersectionObserver against the on-screen viewport last said. WebKit is exactly what Studio
+	 * renders through on Linux and what a macOS reader reaches this app with, and it is the engine
+	 * the gate ARMS: Safari 26 and WebKitGTK 2.50.4 both carry `anchor-name`, which is what
+	 * `FIND_IN_PAGE_PROBE` tests, and neither carries a print fix. The Gecko report reads exactly
+	 * like the defect this rule prevents: "the contents are not visible in the print preview.
+	 * However, the height is reserved, resulting in a few empty pages."
+	 *
+	 * WHY CSS AND NOT `beforeprint`. `code-fence-defer.tsx` needs a script for its print upgrade
+	 * because what it defers is not in the DOM to begin with. Here the maths IS in the DOM and only
+	 * its RENDERING is skipped, so switching the declaration off is the whole fix, and a media query
+	 * covers both doors that file has to hook separately: WebKit re-evaluates media queries inside
+	 * `LocalFrame::setPrinting` before it lays out the pages, and a headless `page.pdf()` or DevTools
+	 * print emulation changes the media without ever firing `beforeprint`.
+	 *
+	 * `!important` because the gated rules above are more specific than anything unprefixed, and
+	 * `none` rather than a length so the box is sized by its contents, matching the code-block rule
+	 * earlier in this file. */
+	@media print {
+		.aui-thread-root .aui-math-block,
+		.aui-thread-root .aui-math-display {
+			content-visibility: visible !important;
+			contain-intrinsic-size: none !important;
+		}
 	}
 }
 
@@ -2724,6 +2981,20 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
+   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+@supports selector(::-webkit-scrollbar) {
+	:root.client-windows .sidebar-scroll-fade,
+	:root.client-windows .sidebar-scroll-fade:hover,
+	:root.client-windows .run-settings-scroll,
+	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .hover-scrollbar,
+	:root.client-windows .hover-scrollbar:hover {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
 /* Run settings: always reserve the scrollbar gutter so the header close
    button keeps its position whether or not the scrollbar is showing. */
 .run-settings-scroll {
@@ -2742,6 +3013,30 @@ html[data-chat-font] .aui-root {
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
 	   can stop flush with the gutter edge without covering the scrollbar. */
 	scrollbar-gutter: stable;
+}
+
+/* An unregistered custom property always inherits, so writing
+   --aui-scroll-stabilizer on the scroll container dirties inherited style for
+   every descendant and the next scrollHeight read restyles the whole thread.
+   inherits:false confines that to the viewport element: over a 51,608-element
+   thread, 20 writes restyle 51,601 elements each (3,466 ms) without this rule
+   and 1 element each (2.1 ms) with it.
+
+   Safe because the only consumer is the padding-bottom declaration below, on
+   the same element, and initial-value 0px reproduces the `var(..., 0px)`
+   fallback, so an unset property still computes to 0px and removeProperty()
+   still releases the padding.
+
+   The stabilizer writes rarely (content shrinking inside the follow window,
+   mostly at stream finalisation), but those writes are most of the cost of
+   ending a stream in a long thread.
+
+   Engines without @property (Firefox below 128) ignore this block and keep the
+   inherited behaviour: slower, still correct. */
+@property --aui-scroll-stabilizer {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
 }
 
 /* Marker class applied only to actual streaming-thread viewports
@@ -3038,6 +3333,13 @@ html[data-chat-font] .aui-root {
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
+		/* The stroked arrow rasterizes half a Retina pixel to the right. */
+		transform: translateX(-0.25px);
+	}
+	/* The filled stop glyph lands one Retina pixel right of the circular
+	   action's center even though its SVG box is flex-centered. */
+	& svg.aui-composer-cancel-icon {
+		transform: translateX(-0.5px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
@@ -3142,4 +3444,78 @@ html[data-chat-font] .aui-root {
 			var(--foreground)
 		);
 	}
+}
+
+/* The retained reload shell. Its contents live in a closed shadow tree. The
+   script repeats this host rule inline because Vite injects development CSS
+   after main.tsx loads; in production this is painted by the render-blocking
+   stylesheet. Click-through: the copy is a picture, and the live document
+   underneath keeps taking input. */
+.reload-snapshot {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	pointer-events: none;
+	background: var(--background);
+}
+
+/* The copy is a still, so it must not animate at all. Pausing is not the same
+   thing: a paused animation holds its FIRST keyframe, which for the
+   animate-in/fade-in entrances is opacity 0, so those elements would render
+   invisible for as long as the shell is up. Even collapsing the duration
+   leaves them blank for the frame the animation starts on. Dropping the
+   animation paints the settled style straight away. This rule reaches the copy
+   because the shadow tree loads this same stylesheet and marks its root
+   .reload-snapshot-shell. */
+.reload-snapshot-shell *,
+.reload-snapshot-shell *::before,
+.reload-snapshot-shell *::after {
+	animation: none !important;
+	transition: none !important;
+}
+
+/* Find in page. The bar paints matches through the CSS Custom Highlight API,
+   so these two pseudo-elements are the whole visual: nothing is inserted into
+   the thread and nothing reflows when a match moves. An engine without the
+   registry falls back to selecting the active match.
+
+   Fixed colours in both themes, not palette tokens: a highlight has to stay
+   legible over body text, over a code fence with its own background, and over
+   a badge, and the accent colours move with the palette while that text does
+   not. `color` is set alongside the background because the API paints over
+   text of any colour. */
+::highlight(unsloth-find) {
+	background-color: #ffd84d;
+	color: #1a1a1a;
+}
+
+::highlight(unsloth-find-active) {
+	background-color: #ff8c1a;
+	color: #1a1a1a;
+}
+
+/* The find bar's surface: no border in either mode, so colour and shadow are
+   what separate it from the conversation.
+
+   Light is the chatbox's own background and shadow, so the panel a reader
+   summons over the conversation is made of the same material as the one they
+   type into. Dark cannot copy it: the composer sits at `--card` with no shadow,
+   because nothing overlaps it. This bar floats over cards that are themselves
+   `--card`, so it sits one step lighter, which also gives the ghost buttons
+   inside somewhere to go: their default `--muted/50` hover lands within a shade
+   of `--card` and reads as nothing. The shadow is the page background rather
+   than black, a halo that fades what passes underneath instead of a dark edge
+   around a panel that has given up its border. */
+.find-bar-surface {
+	background-color: #ffffff;
+	/* The composer's shadow spread wider and softened: that one sits at the
+	   bottom of the page with nothing under it, this one floats over content and
+	   needs more to sit on, but not more weight. Kept in step by
+	   tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.13);
+}
+
+.dark .find-bar-surface {
+	background-color: #2c2c2c;
+	box-shadow: 0 4px 20px 6px var(--background);
 }

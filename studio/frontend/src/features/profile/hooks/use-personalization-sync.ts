@@ -19,6 +19,7 @@ import {
 } from "@/features/settings";
 import {
   DEFAULT_LOCALE_PREFERENCE,
+  LOCALE_INITIALIZATION_TIMEOUT_MS,
   type LocalePreference,
   getLocalePreference,
   isLocalePreference,
@@ -38,7 +39,9 @@ const PUSH_DEBOUNCE_MS = 800;
 // locale). Version 1 always serialized the resolved locale, so its "en" is
 // usually the old default rather than an explicit pick.
 // Version 3 migrates untouched sidebar layouts to keep Video under More.
-const PERSONALIZATION_VERSION = 3;
+// Version 4 pins Video under Images. Without this bump a synced profile
+// rehydrates its stored layout over the local migration.
+const PERSONALIZATION_VERSION = 4;
 
 type ProfileSnapshot = {
   displayName: string;
@@ -230,6 +233,7 @@ export function usePersonalizationSync(enabled: boolean): void {
       return;
     }
     let cancelled = false;
+    const localeHydrationController = new AbortController();
     void (async () => {
       try {
         const remote = await loadPersonalization();
@@ -295,8 +299,36 @@ export function usePersonalizationSync(enabled: boolean): void {
           ) {
             useAppearanceCustomStore.getState().replaceAll(nextCustomization);
           }
-          if (nextLanguage !== latestLanguageRef.current)
-            setLocale(nextLanguage);
+          if (nextLanguage !== latestLanguageRef.current) {
+            const localeResult = await setLocale(nextLanguage, {
+              signal: localeHydrationController.signal,
+              // A catalog that will not load must not decide whether the rest of
+              // personalization syncs. Adopting the preference and rendering
+              // English keeps the local preference equal to the server's, so the
+              // baseline below is honest and the debounced push cannot overwrite
+              // the remote language with a stale local one.
+              adoptOnFailure: true,
+              // And a catalog request that is accepted but never completes
+              // must not hold hydration, and with it every save for the rest
+              // of the session, open forever. Same bound as startup.
+              timeoutMs: LOCALE_INITIALIZATION_TIMEOUT_MS,
+            });
+            if (cancelled) return;
+            // "superseded" means a newer request took over, so this language is
+            // no longer the one in effect and must not be recorded as the
+            // synchronized baseline: the newer request may itself have failed,
+            // leaving the local preference on neither value. Hydration still has
+            // to finish, or every later save stays paused for the session; an
+            // empty baseline makes the next push send whatever is in effect.
+            if (localeResult === "cancelled") return;
+            if (localeResult === "superseded") {
+              if (authGenerationRef.current === generation) {
+                lastSavedRef.current = "";
+                setHydratedGeneration(generation);
+              }
+              return;
+            }
+          }
           // lastSaved records what the server actually has (server-side defaults
           // for legacy fields) so the debounced push re-uploads preserved local
           // values.
@@ -360,6 +392,7 @@ export function usePersonalizationSync(enabled: boolean): void {
     })();
     return () => {
       cancelled = true;
+      localeHydrationController.abort();
     };
   }, [enabled]);
 

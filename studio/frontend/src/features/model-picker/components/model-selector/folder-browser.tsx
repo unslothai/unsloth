@@ -9,6 +9,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -30,15 +31,15 @@ export interface FolderBrowserProps {
   /** Optional initial directory. Defaults to the user's home on the server. */
   initialPath?: string;
   title?: string;
+  description?: string;
   confirmLabel?: string;
   showModelHints?: boolean;
 }
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Detect path style BEFORE normalizing: on POSIX `\` is a valid filename char,
-  // so rewriting `\` -> `/` would mangle names like `my\backup`. Only Windows
-  // paths (drive letter or UNC) convert.
+  // Detect path style BEFORE normalizing: on POSIX `\` is a valid filename char, so rewriting it
+  // would mangle names like `my\backup`. Only drive-letter or UNC paths convert.
   const isWindowsDrive =
     /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
@@ -59,8 +60,8 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows drive path: use `C:/` as the crumb value so clicking the drive root
-  // goes to the drive root, not the drive-relative CWD (`C:` alone is CWD-on-C).
+  // Windows drive path: use `C:/` as the crumb value so clicking the drive root goes to the drive
+  // root, not the drive-relative CWD (`C:` alone is CWD-on-C).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -83,6 +84,7 @@ export function FolderBrowser({
   onSelect,
   initialPath,
   title = "Select folder to detect models",
+  description,
   confirmLabel = "Use this folder",
   showModelHints = true,
 }: FolderBrowserProps) {
@@ -104,8 +106,7 @@ export function FolderBrowser({
     abortRef.current = ctrl;
     setLoading(true);
     setError(null);
-    // Forward the signal so cancelled navigation aborts the backend
-    // enumeration, not just the response.
+    // Forward the signal so cancelled navigation aborts the backend enumeration, not just the response.
     browseFolders(target, hidden, ctrl.signal)
       .then((res) => {
         if (ctrl.signal.aborted) return;
@@ -114,13 +115,13 @@ export function FolderBrowser({
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return;
-        // Surface the error; if the first request (e.g. a bad initialPath)
-        // fails, fall back to HOME so the modal stays navigable.
+        // Surface the error; if the first request (e.g. a bad initialPath) fails, fall back to HOME so
+        // the modal stays navigable.
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         if (opts?.fallbackOnError && target !== undefined) {
-          // Re-issue without a target -> backend defaults to HOME.
-          // Don't recurse if HOME itself fails (allowlist always has HOME).
+          // Re-issue without a target, so the backend defaults to HOME. Do not recurse if HOME itself
+          // fails (the allowlist always has HOME).
           queueMicrotask(() => navigate(undefined, hidden));
         }
       })
@@ -131,10 +132,10 @@ export function FolderBrowser({
 
   // Fetch only on closed -> open; later navigation is driven by `navigate()`,
   // so `path` is deliberately kept out of the dependency list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only reopening resets navigation to the initial path
   useEffect(() => {
     if (!open) return;
-    // fallbackOnError: recover into HOME if initialPath is bad, rather than
-    // showing an empty modal.
+    // fallbackOnError: recover into HOME if initialPath is bad, rather than showing an empty modal.
     navigate(initialPath, showHidden, { fallbackOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -159,6 +160,9 @@ export function FolderBrowser({
       >
         <DialogHeader className="px-6 pt-6 pb-2">
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {description ?? title}
+          </DialogDescription>
         </DialogHeader>
 
         {/* Breadcrumb */}
@@ -246,7 +250,8 @@ export function FolderBrowser({
                     (empty directory)
                   </div>
                 )}
-              {showModelHints && data.model_files_here !== undefined &&
+              {showModelHints &&
+                data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
                   <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-foreground/70">
                     {data.model_files_here} model file

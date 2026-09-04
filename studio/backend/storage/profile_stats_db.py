@@ -4,15 +4,18 @@
 """
 Profile usage statistics derived from studio.db.
 
-Read-only aggregation over rows the app already writes: chat threads/messages
-(with their per-message ``metadata_json``) and training runs/metrics. Nothing
-is recorded specifically for stats, so the numbers are only as complete as the
-local history.
+Read-only aggregation over chat threads/messages (with their per-message
+``metadata_json``), content-free API usage receipts, and training runs/metrics.
+The numbers are only as complete as the local history retained after each
+feature was introduced.
+
+Chat and training tables predate authenticated subjects and therefore remain
+install-wide. API usage receipts are filtered to the requesting subject.
 
 Token counts live inside each message's metadata blob, so they cannot be summed
 in SQL portably (JSON1 is not guaranteed on every bundled SQLite). Rows are
 streamed once in (thread, time) order and every metric is folded in that single
-pass, then memoised against a (count, max created_at) fingerprint so reopening
+pass, then memoised against per-source count/timestamp fingerprints so reopening
 the Profile tab is free until history changes.
 """
 
@@ -25,12 +28,13 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from storage.api_usage_db import canonical_api_subject
 from storage.studio_db import count_chat_message_attachments, get_connection
 
 logger = get_logger(__name__)
 
-# Gaps longer than this end a "sitting at the keyboard" stretch: without the cap
-# a thread reopened a week later would report a week-long chat.
+# Gaps longer than this end a sitting-at-the-keyboard stretch: without the cap a thread reopened a
+# week later would report a week-long chat.
 SESSION_GAP_SECONDS = 30 * 60
 # Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
@@ -39,8 +43,8 @@ MAX_TZ_OFFSET_MINUTES = 14 * 60
 # Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
-# Serve a memoised payload for this long even if the fingerprint is unchanged,
-# so a chat that is mid-stream still refreshes reasonably promptly.
+# Serve a memoised payload for this long even when the fingerprint is unchanged, so a chat that is
+# mid-stream still refreshes promptly.
 CACHE_TTL_SECONDS = 20.0
 
 _cache_lock = threading.Lock()
@@ -193,6 +197,70 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
+class _ApiUsageFold:
+    """Scalar-only API receipts folded separately from chat-only metrics."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.by_day: dict[date, int] = {}
+        self.models: dict[str, dict[str, Any]] = {}
+        self.requests = 0
+
+
+def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
+    fold = _ApiUsageFold()
+    rows = conn.execute(
+        """
+        SELECT model, prompt_tokens, completion_tokens, total_tokens, created_at
+        FROM api_usage_events
+        WHERE subject = ?
+        ORDER BY created_at
+        """,
+        (subject,),
+    )
+    for row in rows:
+        prompt_tokens = _as_int(row["prompt_tokens"])
+        completion_tokens = _as_int(row["completion_tokens"])
+        total_tokens = _as_int(row["total_tokens"])
+        fold.prompt_tokens += prompt_tokens
+        fold.completion_tokens += completion_tokens
+        # Preserve the provider's authoritative total even when it differs from the input/output sum.
+        fold.total_tokens += total_tokens
+        fold.requests += 1
+
+        stamp = _local_stamp(_as_int(row["created_at"]), zone)
+        if stamp is not None:
+            day = stamp.date()
+            fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
+
+        model_id = _clean_str(row["model"])
+        if model_id:
+            model = fold.models.setdefault(
+                model_id,
+                {"id": model_id, "label": _model_label(model_id), "messages": 0, "tokens": 0},
+            )
+            # One terminal API request represents one model response in the combined leaderboard.
+            model["messages"] += 1
+            model["tokens"] += total_tokens
+    return fold
+
+
+def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
+    """Merge only combined activity surfaces, leaving chat counters intact."""
+    for day, tokens in api.by_day.items():
+        bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
+        bucket["tokens"] += tokens
+    for model_id, api_model in api.models.items():
+        model = chat.models.setdefault(
+            model_id,
+            {"id": model_id, "label": api_model["label"], "messages": 0, "tokens": 0},
+        )
+        model["messages"] += api_model["messages"]
+        model["tokens"] += api_model["tokens"]
+
+
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
     """For each original message, the one clone elected to stand in for it.
 
@@ -292,20 +360,16 @@ def _fold_messages(conn, zone) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
-        # Compare mode stores one thread per pane under a shared pair_id, and
-        # the sidebar shows them as a single conversation. Count them that way
-        # too, or one comparison inflates the chat total and drags the average
-        # tokens per chat down.
+        # Compare mode stores one thread per pane under a shared pair_id and the sidebar shows them as a
+        # single conversation, so counting them twice inflates the chat total.
         conversation_id = row["pair_id"] or thread_id
 
-        # A fork is its own visible conversation, so it counts towards the chat
-        # total from the moment it exists, before any new turn is added.
+        # A fork is its own visible conversation, so it counts towards the chat total from the moment it exists, before
+        # any new turn is added.
         fold.threads.add(conversation_id)
 
-        # Forking clones the whole ancestry into the new thread, keeping each
-        # copy's original timestamp. Skip a clone while the row it was taken
-        # from is still there to be counted; once that original is gone, only
-        # the elected fork stands in for it, so nothing is lost or doubled.
+        # Forking clones the whole ancestry keeping each copy's timestamp, so skip a clone while the row
+        # it came from is still countable; once that original is gone the elected fork stands in.
         source_id = row["forked_from_thread_id"]
         if source_id and created_at < _as_int(row["thread_created_at"]):
             original = (source_id, created_at, row["role"])
@@ -348,9 +412,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
             usage = usage if isinstance(usage, dict) else {}
             timing = timing if isinstance(timing, dict) else {}
 
-            # llama.cpp reports its own counters under serverTimings when the
-            # provider sends no usage chunk. The response-details sheet already
-            # falls back to these, so the totals here have to as well.
+            # llama.cpp reports its own counters under serverTimings when the provider sends no usage chunk, and
+            # the response-details sheet already falls back to these.
             server = metadata.get("serverTimings")
             server = server if isinstance(server, dict) else {}
 
@@ -361,7 +424,6 @@ def _fold_messages(conn, zone) -> _MessageFold:
             total_tokens = _as_int(usage.get("totalTokens"))
             if completion_tokens == 0:
                 # Local engines occasionally omit the usage chunk; the adapter's
-                # own token count is the next best estimate.
                 completion_tokens = _as_int(timing.get("tokenCount"))
             if total_tokens == 0:
                 total_tokens = prompt_tokens + completion_tokens
@@ -375,11 +437,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            # responseDetails carries the model that actually answered, which
-            # differs from the requested checkpoint whenever a provider routes
-            # or resolves an alias. contextUsage.modelId is the request, so it
-            # is only the fallback. The thread's model_id is never used: it
-            # tracks the current selection, not the one that ran.
+            # responseDetails carries the model that actually answered, which differs from the requested
+            # checkpoint whenever a provider routes or resolves an alias.
             details = metadata.get("responseDetails")
             details = details if isinstance(details, dict) else {}
             model_id = _clean_str(details.get("responseModelId")) or _clean_str(
@@ -485,18 +544,16 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # A resumed run continues its source's step and token counters from the
-    # checkpoint, so both absolute totals already include the source's work.
-    # Only a run superseded by a resume is dropped: create_run's claim sets
-    # resume_blocked while leaving output_dir intact, whereas cancelling clears
-    # output_dir, so a cancelled run keeps contributing the work it did do.
+    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped:
+    # create_run's claim sets resume_blocked while leaving output_dir intact, whereas cancelling
+    # clears it, so a cancelled run keeps the work it did do.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
-    # num_tokens is state.num_input_tokens_seen, a running total logged at each
-    # step, so summing the samples multiplies the real figure. Take each run's
-    # final counter, the same value get_run_metrics reports.
+    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the
+    # samples multiplies the real figure; take each run's final counter, the value get_run_metrics
+    # reports.
     tokens = conn.execute(
         f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
@@ -532,8 +589,8 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                # A renamed run keeps the name the user gave it; otherwise fall
-                # back to the short model label rather than the full repo id.
+                # A renamed run keeps the name the user gave it; otherwise fall back to the short model label rather
+                # than the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
@@ -548,30 +605,54 @@ def _training_stats(conn) -> dict[str, Any]:
     }
 
 
-def _fingerprint(conn) -> tuple:
+def _fingerprint(conn, subject: str) -> tuple:
     message_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages"
     ).fetchone()
     run_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(started_at), '') FROM training_runs"
     ).fetchone()
-    return (message_row[0], message_row[1], run_row[0], run_row[1])
+    api_row = conn.execute(
+        """
+        SELECT COUNT(*), COALESCE(MAX(created_at), 0)
+        FROM api_usage_events
+        WHERE subject = ?
+        """,
+        (subject,),
+    ).fetchone()
+    return (
+        message_row[0],
+        message_row[1],
+        run_row[0],
+        run_row[1],
+        subject,
+        api_row[0],
+        api_row[1],
+    )
 
 
 def compute_profile_stats(
     days: int = MAX_DAILY_DAYS,
     tz_offset_minutes: int = 0,
     tz_name: str = "",
+    *,
+    subject: str = "",
 ) -> dict[str, Any]:
-    """Aggregate every profile statistic in one pass, memoised per history state."""
+    """Aggregate profile statistics, subject-scoping only external API usage.
+
+    Legacy Unsloth chat and training history is install-wide because those rows
+    have no authenticated owner. An empty subject intentionally sees no API
+    receipts, keeping non-route callers fail-closed.
+    """
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
     )
     zone = _resolve_zone(tz_name, tz_offset_minutes)
+    subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn), days, tz_offset_minutes, tz_name)
+        fingerprint = (_fingerprint(conn, subject), days, tz_offset_minutes, tz_name)
         now = time.monotonic()
         with _cache_lock:
             if (
@@ -583,16 +664,17 @@ def compute_profile_stats(
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
+        api_fold = _fold_api_usage(conn, zone, subject)
+        _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 
-        # "Today" has to match the buckets above, or the newest column and the
-        # current streak drift by a day whenever the caller is elsewhere.
+        # "Today" has to match the buckets above, or the newest column and the current streak drift by a day
+        # whenever the caller is elsewhere.
         today = (_local_stamp(int(time.time() * 1000), zone) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        # The grid stops at today and the streaks ignore anything later, so the
-        # day-based headlines have to as well. A skewed client clock would
+        # The grid stops at today and the streaks ignore anything later, so a skewed client clock would
         # otherwise name a peak day that is nowhere in the chart.
         past_days = {day: bucket for day, bucket in fold.by_day.items() if day <= today}
         peak_day = max(past_days.items(), key = lambda item: item[1]["tokens"], default = None)
@@ -609,9 +691,15 @@ def compute_profile_stats(
                 "messages": fold.messages,
                 "userMessages": fold.user_messages,
                 "assistantMessages": fold.assistant_messages,
-                "promptTokens": fold.prompt_tokens,
-                "completionTokens": fold.completion_tokens,
-                "totalTokens": fold.total_tokens,
+                "promptTokens": fold.prompt_tokens + api_fold.prompt_tokens,
+                "completionTokens": fold.completion_tokens + api_fold.completion_tokens,
+                "totalTokens": fold.total_tokens + api_fold.total_tokens,
+                "chatPromptTokens": fold.prompt_tokens,
+                "chatCompletionTokens": fold.completion_tokens,
+                "chatTokens": fold.total_tokens,
+                "apiPromptTokens": api_fold.prompt_tokens,
+                "apiCompletionTokens": api_fold.completion_tokens,
+                "apiTokens": api_fold.total_tokens,
                 "cachedTokens": fold.cached_tokens,
                 "toolCalls": fold.tool_calls,
                 "attachments": fold.attachments,
@@ -656,9 +744,10 @@ def compute_profile_stats(
         }
 
         logger.debug(
-            "profile stats computed in %.1f ms (%d messages)",
+            "profile stats computed in %.1f ms (%d messages, %d API requests)",
             (time.perf_counter() - started) * 1000,
             fold.messages,
+            api_fold.requests,
         )
 
         with _cache_lock:

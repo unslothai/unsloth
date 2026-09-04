@@ -26,9 +26,10 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_console_error,
     is_benign_page_error,
-    recover_or_replace_page,
+    recover_or_replace_page as _robust_recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -64,6 +65,12 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
+# Render like the 4 vCPU boxes users and Kaggle sessions actually run on. The
+# rapid-submit step passes unthrottled here and fails at 4x and 8x, which is how
+# the parked-send bug was finally reproduced off Kaggle. Off unless set, and
+# Chromium only, since it is delivered over CDP.
+CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
+
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
@@ -81,6 +88,44 @@ def info(s):
 
 def fail(m):
     raise AssertionError(f"[ui] FAIL: {m}")
+
+
+def apply_cpu_throttle(ctx, page):
+    """Throttle this page, if the option is set. No-op otherwise."""
+    if CPU_THROTTLE <= 1:
+        return page
+    ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
+    info(f"CPU throttled {CPU_THROTTLE}x")
+    return page
+
+
+def new_throttled_page(ctx):
+    """Every page this driver opens, with the settings common to all of them.
+
+    The throttle is scoped to the page TARGET, so a page opened directly runs
+    at full speed and the steps after it pass under exactly the conditions the
+    throttle exists to reproduce. The 60s default rides along for the reason it
+    always did: macos-14 renders, webfonts and lazy routes crowd 30s.
+    """
+    page = ctx.new_page()
+    page.set_default_timeout(60_000)
+    apply_cpu_throttle(ctx, page)
+    return page
+
+
+def recover_or_replace_page(page, ctx, **kwargs):
+    """The shared recovery, with the throttle carried onto a replacement page.
+
+    `Emulation.setCPUThrottlingRate` is scoped to the PAGE TARGET, so a page
+    from `ctx.new_page()` runs at full speed however the option was set, and
+    every remaining step would pass under exactly the conditions the throttle
+    exists to reproduce. Wrapping the import rather than each call site means a
+    fourth recovery point cannot forget it.
+    """
+    replacement = _robust_recover_or_replace_page(page, ctx, **kwargs)
+    if replacement is not page:
+        apply_cpu_throttle(ctx, replacement)
+    return replacement
 
 
 def expected_default_model():
@@ -150,6 +195,114 @@ def exercise_permission_mode_controls(page, shoot):
         expect(item).to_be_visible()
         item.click()
 
+    def set_legacy_confirm(legacy_value):
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+
+    # The level is an installation setting, mirrored through /api/chat/settings,
+    # so "fresh profile" is no longer "fresh browser": the cross-browser step
+    # runs this block three times against ONE install, and runs two and three
+    # would otherwise open on the level run one left behind. Refuse the
+    # hydrating GET, with no local level either, which is the state a first-ever
+    # browser on a never-configured install is in. Everything up to the end of
+    # the migration loop reads the level, so the whole stretch is held there.
+    def refuse_settings_hydration(route):
+        if route.request.method == "GET":
+            route.fulfill(
+                status = 503,
+                content_type = "application/json",
+                body = json.dumps({"detail": "hydration disabled for this step"}),
+            )
+        else:
+            route.continue_()
+
+    # Every reload in this block used to be followed by a bare
+    # `expect(pill).to_be_visible()` on the default 5s expect timeout.
+    # `domcontentloaded` fires long before React has mounted the composer, and on
+    # a 3-core macOS runner with a paravirtual GPU that gap is regularly wider
+    # than 5s. That is the failure that took studio-mac-ui-smoke red at 35672fc9b
+    # and again at bfcaea465, both times on this exact locator, with green runs on
+    # either side -- a race, not a regression.
+    #
+    # The composer-mount step already settles the network before waiting, for the
+    # same reason and with the same note about macOS. This does the same after
+    # each reload. It asserts exactly what it asserted before; it just stops
+    # asking before the answer can exist.
+    def reload_and_wait_for_pill():
+        page.reload(wait_until = "domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout = 30_000)
+        except Exception:
+            pass  # best-effort -- proceed even if network never idles
+        expect(pill).to_be_visible(timeout = 30_000)
+
+    # choose() only drives THIS tab. The mirror to /api/chat/settings is a 400ms
+    # trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts) whose
+    # only early flush is the beforeunload keepalive, so the pill turning over
+    # proves the click landed locally, not that the installation stored it.
+    #
+    # Measured on webkit, timed from the choose() below: choose returns at
+    # t+238ms, set_legacy_confirm at t+248ms, and the reload starts there. The
+    # debounce would not have fired until ~t+630ms, so the only PUT that goes out
+    # at all is the beforeunload keepalive at t+252ms, and the reloaded page's
+    # hydrating GET arrives at t+697ms. The assertion after the reload was
+    # therefore never testing the level this step chose. It was betting that an
+    # unload-time keepalive beats a hydrating GET by 445ms of loopback, on every
+    # engine, every run.
+    #
+    # When that bet loses, hydration returns the level the migration loop above
+    # left on the install ("off"), the pill reads "Run automatically", and the
+    # step fails as though migration were broken. That is what took webkit red at
+    # 20a98fd54 while chromium and firefox passed the same assertion in the same
+    # job.
+    #
+    # So: wait for the level to actually be ON the installation before reloading
+    # and asserting on it. Assert what was achieved, not what was commanded. This
+    # deliberately stops depending on the unload-time flush; that flush is worth a
+    # test of its own, but it was never what this step meant to assert.
+    def expect_server_mode(expected, timeout_ms = 15_000):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        seen = "<never read>"
+        while True:
+            seen = page.evaluate(
+                """async () => {
+                    const token = localStorage.getItem("unsloth_auth_token");
+                    const res = await fetch("/api/chat/settings", {
+                        headers: token ? { Authorization: "Bearer " + token } : {},
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return "<http " + res.status + ">";
+                    const body = await res.json();
+                    return (body && body.settings && body.settings.permissionMode) ?? null;
+                }"""
+            )
+            if seen == expected:
+                return
+            if time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(100)
+        fail(
+            f"permission level never reached the installation: /api/chat/settings "
+            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"{expected!r} -- the debounced mirror never landed"
+        )
+
+    page.route("**/api/chat/settings", refuse_settings_hydration)
+    set_legacy_confirm(None)
+    reload_and_wait_for_pill()
+
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
     menu = open_menu()
@@ -173,37 +326,58 @@ def exercise_permission_mode_controls(page, shoot):
     expect(page.get_by_role("alertdialog")).to_have_count(0)
 
     # Pointer and compact-layout coverage.
-    page.set_viewport_size({"width": 390, "height": 844})
+    compact_width = 390
+    page.set_viewport_size({"width": compact_width, "height": 844})
     expect(pill).to_be_visible()
+
+    # Let the reflow land before measuring. set_viewport_size returns once the
+    # viewport is set, not once the layout has responded to it, and
+    # to_be_visible does not cover the gap: the pill is already visible, at its
+    # old width. Reading the box straight away can catch the pre-reflow
+    # geometry, which is off the right edge of the narrow viewport and fails on
+    # a box no user ever sees. The floating monitor's own viewport checks below
+    # settle the same way rather than measuring immediately.
+    def fits_compact(box) -> bool:
+        return box is not None and box["x"] >= 0 and box["x"] + box["width"] <= compact_width
+
+    deadline = time.time() + 5
     box = pill.bounding_box()
-    if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
+    while not fits_compact(box) and time.time() < deadline:
+        page.wait_for_timeout(50)
+        box = pill.bounding_box()
+    if not fits_compact(box):
         fail(f"permission pill is clipped in compact layout: {box!r}")
     page.set_viewport_size({"width": 1280, "height": 900})
 
-    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto. Still
+    # under the refused hydration above: a stored level wins over the local
+    # derivation, so without it the second reload would assert against the level
+    # the first one seeded and read as a migration bug.
     migration_cases = (
         ("true", "Ask for approval"),
         ("false", "Run automatically"),
         (None, "Approve for me"),
     )
-    for legacy_value, expected_label in migration_cases:
-        page.evaluate(
-            """(legacyValue) => {
-                localStorage.removeItem("unsloth_chat_permission_mode");
-                if (legacyValue === null) {
-                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
-                } else {
-                    localStorage.setItem(
-                        "unsloth_chat_confirm_tool_calls",
-                        legacyValue,
-                    );
-                }
-            }""",
-            legacy_value,
-        )
-        page.reload(wait_until = "domcontentloaded")
-        expect(pill).to_be_visible()
-        expect_mode(expected_label)
+    try:
+        for legacy_value, expected_label in migration_cases:
+            set_legacy_confirm(legacy_value)
+            reload_and_wait_for_pill()
+            expect_mode(expected_label)
+    finally:
+        page.unroute("**/api/chat/settings", refuse_settings_hydration)
+
+    # The other half of that contract: with a level stored for the install, a
+    # browser holding only the legacy key gets the installation's level back
+    # rather than its own derivation.
+    choose("Ask for approval")
+    expect_mode("Ask for approval")
+    expect_server_mode("ask")
+    set_legacy_confirm("false")
+    reload_and_wait_for_pill()
+    expect_mode("Ask for approval")
+    cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if cached != "ask":
+        fail(f"hydration left the local cache at {cached!r}, expected 'ask'")
 
     choose("Run automatically")
     expect_mode("Run automatically")
@@ -238,8 +412,7 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
-    page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
     # Leave the full chat smoke in the fresh-install default.
@@ -547,6 +720,13 @@ with sync_playwright() as p:
             launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
     elif PLAYWRIGHT_CHANNEL:
         fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+    if CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER != "chromium":
+        # Refused here rather than at the call: `new_cdp_session` is Chromium
+        # only, so firefox/webkit would abort mid-run with a Playwright error
+        # about CDP that says nothing about the option that caused it. Both are
+        # supported browsers, so this pairing is reachable from the documented
+        # environment alone.
+        fail(f"STUDIO_UI_CPU_THROTTLE requires chromium, not {PLAYWRIGHT_BROWSER}")
     browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
@@ -567,10 +747,7 @@ with sync_playwright() as p:
             else None
         ),
     )
-    page = ctx.new_page()
-    # 60s default (was 30s): macos-14 under --single-process Chromium is
-    # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
-    page.set_default_timeout(60_000)
+    page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []
@@ -1087,7 +1264,7 @@ with sync_playwright() as p:
         """(args) => {
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
-                intercepted: false, submitted: false, queueSeen: false,
+                intercepted: false, preparing: false, submitted: false, queueSeen: false,
                 observed: false, error: null, seen: [], holdUntil: 0,
             };
             const state = window.__unslothRapid;
@@ -1095,7 +1272,11 @@ with sync_playwright() as p:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             const sendFollowUp = (deadline) => {
-                if (state.submitted || state.error) return;
+                if (state.preparing || state.submitted || state.error) return;
+                if (deadline === undefined) deadline = Date.now() + 5000;
+                if (state.holdUntil) {
+                    deadline = Math.min(deadline, state.holdUntil - 250);
+                }
                 // Re-query, and retry: this is the chat's first message, so
                 // sending it swaps the welcome composer for the dock composer.
                 // A node captured earlier is detached, and for a short window
@@ -1104,14 +1285,10 @@ with sync_playwright() as p:
                     'textarea[aria-label="Message input"]'
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
-                    if (deadline === undefined) deadline = Date.now() + 5000;
                     // Never retry past the hold. The response is released when
                     // it expires, so a submit after that races a buffered reply
                     // finishing first and would report a queue failure for an
                     // application that behaved correctly.
-                    if (state.holdUntil) {
-                        deadline = Math.min(deadline, state.holdUntil - 250);
-                    }
                     if (Date.now() > deadline) {
                         state.error = "no connected composer for the follow-up";
                         return;
@@ -1126,8 +1303,32 @@ with sync_playwright() as p:
                 ).set;
                 setValue.call(composer, secondPrompt);
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
-                composer.form.requestSubmit();
-                state.submitted = true;
+                // Synthetic input and requestSubmit in the same JS turn can make
+                // the form callback read the previous controlled value. That is
+                // not how a user types, and it leaves the new text visible while
+                // the test incorrectly records a submit. Let React publish the
+                // input, then re-check the composer because the welcome bar can
+                // be replaced by the dock bar during this frame.
+                state.preparing = true;
+                requestAnimationFrame(() => {
+                    state.preparing = false;
+                    const current = document.querySelector(
+                        'textarea[aria-label="Message input"]'
+                    );
+                    if (
+                        !current || !current.isConnected || !current.form ||
+                        current.value !== secondPrompt
+                    ) {
+                        if (Date.now() > deadline) {
+                            state.error = "follow-up composer did not settle";
+                            return;
+                        }
+                        setTimeout(() => sendFollowUp(deadline), 25);
+                        return;
+                    }
+                    current.form.requestSubmit();
+                    state.submitted = true;
+                });
             };
 
             window.fetch = async (...a) => {
@@ -1223,6 +1424,32 @@ with sync_playwright() as p:
             f"{state['intercepted']})"
         )
 
+    # Settle before the five-turn sequence below: two bubbles, nothing streaming,
+    # nothing queued. That is the whole job of this wait. What the turns SAID is
+    # not checked here and never was; the queue behaviour this step exists to
+    # prove is `state.queueSeen` above.
+    #
+    # This used to also require every reply's innerText to be non-empty, which
+    # measured the action bar, not the reply. innerText of a message root spans
+    # the whole subtree, and the assistant action bar sits inside it, so the
+    # clause was satisfied by button labels ("Copy Edit response Refresh Delete
+    # message Read aloud More" plus the tok/s readout) whatever the model
+    # returned. Instrumented at this exact point on the CI runners, comparing the
+    # message content element against the message root, two passing runs read:
+    #
+    #   content=[0, 0]   innerText=[73, 73]  -> clause held, both replies empty
+    #   content=[0, 19]  innerText=[73, 89]  -> clause held, first reply empty
+    #
+    # gemma-3-270m-it answers "Reply with exactly: rapid-first" with an empty
+    # completion often enough to appear in 3 of 8 sampled runs, and the clause
+    # held anyway every time, so it never had the coverage its wording implies.
+    # A content-based replacement would be flakier than what it replaces, because
+    # an empty completion is the model's behaviour, not a defect in Unsloth.
+    #
+    # It matters now because the assistant action bar autohides on every reply but
+    # the newest, so for the older of the two this reads, the labels are no longer in
+    # the subtree and the clause finally started reporting what it was actually
+    # measuring: a hidden hover affordance.
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
@@ -1230,7 +1457,6 @@ with sync_playwright() as p:
             ).slice(-2);
             return replies.length === 2 &&
                 document.querySelectorAll('[data-role="assistant"]').length >= want &&
-                replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
                 !document.querySelector('button[aria-label="Stop generating"]') &&
                 !document.querySelector('button[aria-label="Remove queued prompt 1"]');
         }""",
@@ -1522,7 +1748,7 @@ with sync_playwright() as p:
             opened = False
             for attempt in range(2):
                 try:
-                    acct.click(force = True)
+                    click_forced(acct)
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
@@ -1556,10 +1782,10 @@ with sync_playwright() as p:
             for click_attempt in range(3):
                 try:
                     if click_attempt == 0:
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     elif click_attempt == 1:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     else:
                         theme_item.evaluate("el => el.click()")
                     click_err = None
@@ -1654,7 +1880,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(500)
                 item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() == 0:
-                    more_btn.click(force = True)
+                    click_forced(more_btn)
                     page.wait_for_timeout(500)
                     item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() > 0:
@@ -1667,7 +1893,7 @@ with sync_playwright() as p:
         # though the button is visible + enabled (belt-and-suspenders
         # atop the startViewTransition neutraliser).
         try:
-            btn.click(force = True, timeout = 5_000)
+            click_forced(btn, timeout = 5_000)
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
@@ -1685,7 +1911,7 @@ with sync_playwright() as p:
     # Compare moved into the composer "Tools and attachments" menu.
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
-        plus_btn.click(force = True)
+        click_forced(plus_btn)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
@@ -1699,13 +1925,13 @@ with sync_playwright() as p:
                     "menuitem", name = re.compile(r"Compare chat", re.I)
                 ).first
                 if compare_item.count() == 0:
-                    more_trigger.click(force = True)
+                    click_forced(more_trigger)
                     page.wait_for_timeout(400)
                     compare_item = page.get_by_role(
                         "menuitem", name = re.compile(r"Compare chat", re.I)
                     ).first
         if compare_item.count() > 0:
-            compare_item.click(force = True)
+            click_forced(compare_item)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")
@@ -2008,10 +2234,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("persisted monitor stays dormant on /login and resumes after auth")
     # Start fresh after the CLI rotation invalidates this browser session.
-    # Stay in the SAME context: macOS Chromium runs --single-process, where
-    # closing the last context kills the browser and a second context cannot
-    # be created. Open the new page before closing the old one; the context
-    # init script covers the new page.
+    # Stay in the SAME context: it keeps the init script and costs nothing to
+    # reuse. This used to be forced, because macOS ran --single-process Chromium,
+    # which allows only one context; that flag is gone now. Open the new page
+    # before closing the old one; the context init script covers the new page.
     try:
         ctx.clear_cookies()
     except Exception as exc:
@@ -2032,8 +2258,7 @@ with sync_playwright() as p:
         )
     except Exception as exc:
         info(f"WARN clearing stale auth tokens failed: {exc!r}")
-    _fresh_page = ctx.new_page()
-    _fresh_page.set_default_timeout(60_000)
+    _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
     try:
