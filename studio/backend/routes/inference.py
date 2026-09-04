@@ -25836,21 +25836,22 @@ def _embedding_payload(vector, encoding_format: str):
     return [float(x) for x in vector]
 
 
-def _names_studio_embedder(requested: str) -> bool:
+def _names_studio_embedder(requested: str) -> Optional[str]:
     from core.rag import config as rag_config
     from utils.paths import is_local_path
 
     model = rag_config.effective_embedding_model()
+    repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     wanted = (rag_config.embedding_identity_model(requested) or requested).strip()
-    for name in (model, rag_config.effective_gguf_repo_for_embedding_model(model)):
+    for name in (model, repo, _public_embedding_name(model), _public_embedding_name(repo)):
         if not name:
             continue
         if is_local_path(name) or is_local_path(wanted):
             if wanted == name:
-                return True
+                return model
         elif wanted.casefold() == name.casefold():
-            return True
-    return False
+            return model
+    return None
 
 
 async def _embeddings_client_gone(request: Request) -> bool:
@@ -25889,7 +25890,7 @@ def _reference_is_decisive(requested: str) -> bool:
         return False
 
 
-async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
+async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict, str]]:
     try:
         body = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -25899,10 +25900,13 @@ async def _studio_embedder_request_body(request: Request) -> Optional[dict]:
     requested = body.get("model")
     if not isinstance(requested, str) or not requested.strip():
         return None
-    return body if await asyncio.to_thread(_names_studio_embedder, requested) else None
+    model = await asyncio.to_thread(_names_studio_embedder, requested)
+    return (body, model) if model else None
 
 
-async def _studio_embeddings(request: Request, body: dict, current_subject: str) -> Response:
+async def _studio_embeddings(
+    request: Request, body: dict, current_subject: str, model_name: Optional[str] = None
+) -> Response:
     from core.inference.llama_keepwarm import (
         untrack_admitted_inference,
         untrack_current_request,
@@ -25927,7 +25931,7 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
     if encoding_format is None:
         encoding_format = "float"
     dimensions = body.get("dimensions")
-    model_name = rag_config.effective_embedding_model()
+    model_name = model_name or rag_config.effective_embedding_model()
     label = _public_embedding_name(model_name)
 
     def _embed():
@@ -25983,6 +25987,10 @@ async def _studio_embeddings(request: Request, body: dict, current_subject: str)
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
         raise
+    if await _embeddings_client_gone(request):
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise asyncio.CancelledError()
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
@@ -26071,11 +26079,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
-    studio_body = await _studio_embedder_request_body(request)
-    if studio_body is not None and not await _resident_answers_embeddings(
-        llama_backend, studio_body["model"]
+    studio_request = await _studio_embedder_request_body(request)
+    if studio_request is not None and not await _resident_answers_embeddings(
+        llama_backend, studio_request[0]["model"]
     ):
-        return await _studio_embeddings(request, studio_body, current_subject)
+        return await _studio_embeddings(
+            request, studio_request[0], current_subject, model_name = studio_request[1]
+        )
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
         # With the slot empty, `_reject_unservable_model` returns without deciding

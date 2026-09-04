@@ -850,3 +850,55 @@ def test_reference_is_decisive_only_on_positive_evidence(monkeypatch):
     # A vendor id is not, so LiteLLM/OpenRouter style names keep working.
     assert inference_route._reference_is_decisive("text-embedding-3-small") is False
     assert inference_route._reference_is_decisive("openai/text-embedding-3-large") is False
+
+
+def test_advertised_local_identity_is_accepted_as_an_alias(studio_embedder, tmp_path):
+    model_dir = str(tmp_path / "bge")
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: model_dir)
+    studio_embedder.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    public = inference_route._public_embedding_name(model_dir)
+    assert inference_route._names_studio_embedder(f"sentence-transformers:{public}") == model_dir
+    assert inference_route._names_studio_embedder(public) == model_dir
+    assert inference_route._names_studio_embedder("bge-00000000") is None
+
+
+def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder):
+    calls = []
+
+    class _Gone(_Request):
+        async def is_disconnected(self):
+            return True
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", lambda texts, **_: calls.append(texts) or _vectors(texts))
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError):
+            await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert calls == []
+        response = await inference_route.openai_embeddings(_Request({"input": "later"}), "t")
+        assert response.status_code == 200
+
+    asyncio.run(run())
+
+
+def test_alias_match_pins_the_model_for_the_request(studio_embedder):
+    settings = iter([MODEL, "unsloth/other-model", "unsloth/other-model"])
+    seen = []
+
+    def _encode_with_identity(texts, *, model_name = None, normalize = True):
+        seen.append(model_name)
+        return _vectors(texts), IDENTITY
+
+    _identity_names(studio_embedder)
+    studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: next(settings))
+    studio_embedder.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    _call({"input": "alpha", "model": MODEL})
+    assert seen == [MODEL]
