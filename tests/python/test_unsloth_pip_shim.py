@@ -455,9 +455,9 @@ def test_forwarded_install_carries_protected_constraints(shim, monkeypatch):
     assert all("==" in pin for pin in pins), pins
     names = {pin.split("==", 1)[0].lower().replace("_", "-") for pin in pins}
     protected = {"transformers"} | shim._KEEP | {"nvidia-"}
-    assert all(
-        n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
-    ), names
+    assert all(n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names), (
+        names
+    )
 
 
 def test_forwarded_install_without_protected_packages_has_no_constraints(shim, monkeypatch):
@@ -797,3 +797,118 @@ def test_flag_only_or_fully_protected_cells_still_no_op(shim, args):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
         shim.main()
+
+
+# --- hashed lock files: a requirement continues across physical lines --------------
+# `pip-compile --generate-hashes` / `uv pip compile --generate-hashes` emit
+#     torch==2.11.0 \
+#         --hash=sha256:... \
+#         --hash=sha256:...
+# Filtering physical lines dropped only the first row and published the orphaned
+# `--hash` rows; uv then refuses the whole file with
+# "Unexpected '-', expected '-c', '-e', '-r' or the start of a requirement".
+HASHED_LOCK = (
+    "colorama==0.4.6 \\\n"
+    "    --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \\\n"
+    "    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6\n"
+    "    # via -r in.txt\n"
+    "torch==2.11.0 \\\n"
+    "    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111 \\\n"
+    "    --hash=sha256:2222222222222222222222222222222222222222222222222222222222222222\n"
+    "idna==3.18 \\\n"
+    "    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2\n"
+)
+
+
+def test_hashed_requirement_drops_its_continuation_lines(shim, tmp_path):
+    req = tmp_path / "locked.txt"
+    req.write_text(HASHED_LOCK, encoding = "utf-8")
+    execd, _ = _run(shim, "uv", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    # no ORPHANED option row: every `--hash` must continue the line above it
+    prev = ""
+    for line in filtered.splitlines():
+        if line.strip().startswith("--hash"):
+            assert prev.rstrip().endswith("\\"), filtered
+        prev = line
+    assert "torch" not in filtered, filtered
+    assert "1111111111111111" not in filtered and "2222222222222222" not in filtered, filtered
+    # the untouched requirements keep BOTH their pin and every hash row
+    assert "colorama==0.4.6 \\" in filtered, filtered
+    assert "08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44" in filtered
+    assert "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6" in filtered
+    assert "idna==3.18 \\" in filtered, filtered
+    assert "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2" in filtered
+
+
+def test_hashed_transformers_still_records_its_version(shim, tmp_path):
+    req = tmp_path / "locked.txt"
+    req.write_text(
+        "transformers==4.55.0 \\\n"
+        "    --hash=sha256:3333333333333333333333333333333333333333333333333333333333333333\n"
+        "snac==1.2.0\n",
+        encoding = "utf-8",
+    )
+    execd, marker = _run(shim, "pip", ["-r", str(req)])
+    assert marker == "4.55.0", marker
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "transformers" not in filtered and "3333333333333333" not in filtered, filtered
+
+
+def test_continued_protected_requirement_leaves_no_orphan_specifier(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text("torch \\\n    ==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "==2.11.0" not in filtered, filtered
+    assert "snac==1.2.0" in filtered, filtered
+
+
+# --- extras of a baked package ----------------------------------------------------
+# `pip install "datasets[audio]"` against an installed datasets ADDS the extra's
+# dependencies, it does not replace datasets, so dropping the token lost every one of
+# them and still printed "ok". The injected --constraint pins the baked version.
+@pytest.mark.parametrize(
+    "arg, expected",
+    [
+        pytest.param("datasets[audio]", "datasets[audio]", id = "bare"),
+        pytest.param("unsloth[studio]", "unsloth[studio]", id = "unsloth-studio"),
+        # the pin is what would replace the bake, so only the pin is dropped
+        pytest.param("datasets[audio]==4.3.0", "datasets[audio]", id = "pinned"),
+        pytest.param("datasets[audio, vision]", "datasets[audio, vision]", id = "multi"),
+        pytest.param(
+            'datasets[audio]; python_version >= "3.10"',
+            'datasets[audio] ; python_version >= "3.10"',
+            id = "marker",
+        ),
+    ],
+)
+def test_extras_of_baked_package_are_forwarded(shim, arg, expected):
+    execd, _ = _run(shim, "pip", [arg])
+    assert execd == [expected], execd
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        # a direct reference REPLACES the distribution, extras or not
+        "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
+        "torch[opt] @ https://example.com/torch-2.11.0-py3-none-any.whl",
+    ],
+)
+def test_extras_with_direct_reference_still_dropped(shim, arg):
+    execd, _ = _run(shim, "pip", [arg])
+    assert execd is None, execd
+
+
+def test_extras_of_baked_package_in_requirements_file(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text("datasets[audio]==4.3.0\ntorch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "datasets[audio]" in filtered, filtered
+    assert "datasets[audio]==4.3.0" not in filtered, filtered
+    assert "torch" not in filtered, filtered
+    assert "snac==1.2.0" in filtered, filtered

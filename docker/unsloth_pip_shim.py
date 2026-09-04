@@ -317,6 +317,37 @@ def _expand_env_refs(text):
     return _ENV_REF_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), text)
 
 
+_EXTRAS_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*\[(?P<extras>[^\]]+)\]\s*(?P<rest>.*)$"
+)
+
+
+def _extras_only_target(token):
+    """`name[extras]` when `token` asks for EXTRAS of a baked package, else None.
+
+    pip and uv treat `pkg[extra]` against an already-satisfied `pkg` as "add the
+    optional dependencies", not "replace pkg", so dropping the whole token loses
+    every package the extra pulls in and still prints ok: `pip install
+    "datasets[audio]"` became a no-op and the notebook died later on the missing
+    decoder. The version specifier is dropped along with the rest of the
+    requirement and _protected_constraints_file() pins the baked version, so what
+    is forwarded can only ADD. A direct reference (`pkg[extra] @ url`) or a path
+    IS a replacement request, so those keep being dropped."""
+    if "://" in token or token.startswith((".", "/", "-")) or os.sep in token:
+        return None
+    m = _EXTRAS_RE.match(token.strip())
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    if rest.startswith("@"):
+        return None
+    out = m.group("name") + "[" + m.group("extras").strip() + "]"
+    marker = rest.split(";", 1)
+    if len(marker) == 2 and marker[1].strip():
+        out += " ; " + marker[1].strip()
+    return out
+
+
 def _classify_flag_target(spec):
     name = _canon(spec)
     if name == "transformers":
@@ -378,6 +409,27 @@ def _rewrite_include(line, stripped, src_dir, depth):
     return line, False, None, []
 
 
+def _logical_lines(lines):
+    """Group physical requirements-file lines into the LOGICAL lines pip parses.
+
+    A trailing backslash continues onto the next line, which is exactly how
+    `pip-compile --generate-hashes` / `uv pip compile --generate-hashes` write a
+    pinned requirement: `torch==2.11.0 \\` then indented `--hash=...` rows.
+    Filtering physical lines dropped only the first row and published the orphaned
+    `--hash` rows, which uv rejects outright ("Unexpected '-', expected ... the
+    start of a requirement"), killing the whole install."""
+    group = []
+    for line in lines:
+        group.append(line)
+        body = line.strip()
+        if body.endswith("\\") and not body.startswith("#"):
+            continue
+        yield group
+        group = []
+    if group:
+        yield group
+
+
 def _filter_requirements_file(path, _depth = 0):
     """Strip protected packages out of a `-r` file, recursing into nested includes.
     Returns (path_to_use, recorded_transformers_version, dropped_specs)."""
@@ -388,10 +440,11 @@ def _filter_requirements_file(path, _depth = 0):
         return path, None, []
     src_dir = os.path.dirname(os.path.abspath(path))
     out, dropped, recorded, changed = [], [], None, False
-    for line in lines:
-        stripped = line.strip()
+    for group in _logical_lines(lines):
+        line = group[0]
+        stripped = " ".join(part.strip().rstrip("\\").strip() for part in group).strip()
         if not stripped or stripped.startswith("#"):
-            out.append(line)
+            out.extend(group)
             continue
         if stripped.startswith("-"):
             e_flag, e_target, _e_comment = _parse_flag_line(stripped, ("-e", "--editable"))
@@ -403,7 +456,10 @@ def _filter_requirements_file(path, _depth = 0):
                     dropped.append(e_flag + " " + e_target)
                     changed = True
                     continue
-                out.append(line)
+                out.extend(group)
+                continue
+            if len(group) > 1:
+                out.extend(group)
                 continue
             new_line, rewrote, inc_rec, inc_drp = _rewrite_include(line, stripped, src_dir, _depth)
             if new_line is not None:
@@ -415,23 +471,30 @@ def _filter_requirements_file(path, _depth = 0):
             dropped.extend(inc_drp)
             continue
         spec = stripped.split(" #", 1)[0].strip()
+        # the per-requirement options a joined `--hash` block carries are noise here
+        report = spec.split(" --", 1)[0].strip()
         classified = _expand_env_refs(spec)
         name = _canon(classified)
         if name is None:
-            out.append(line)
+            out.extend(group)
             continue
         if name == "transformers":
             v = _version_pin(classified)
             if v and not recorded:
                 recorded = v
-            dropped.append(spec)
+            dropped.append(report)
             changed = True
             continue
         if _is_protected(name):
-            dropped.append(spec)
+            extras = _extras_only_target(spec)
+            if extras is not None:
+                out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
+                changed = True
+                continue
+            dropped.append(report)
             changed = True
             continue
-        out.append(line)
+        out.extend(group)
     if not changed:
         return path, None, []
     try:
@@ -523,6 +586,7 @@ def main():
 
     head, tail = argv[: i + 1], argv[i + 1 :]
     keep_args, dropped, recorded = [], [], None
+    extras_only = []
     has_target = False
     skip_next = False
     prev_flag = None
@@ -651,11 +715,19 @@ def main():
             dropped.append(tok)
             continue
         if _is_protected(name):
+            extras = _extras_only_target(tok)
+            if extras is not None:
+                keep_args.append(extras)
+                extras_only.append(extras)
+                has_target = True
+                continue
             dropped.append(tok)
             continue
         keep_args.append(tok)
         has_target = True
 
+    if extras_only:
+        print("[unsloth-nb] kept baked versions, adding extras only: " + " ".join(extras_only))
     if recorded:
         try:
             os.makedirs(os.path.dirname(MARKER), exist_ok = True)
