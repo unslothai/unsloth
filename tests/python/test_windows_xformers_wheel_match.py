@@ -30,12 +30,15 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 WHEEL_INDEX_BASE = "https://download.pytorch.org/whl"
 
-# (CUDA family, torch release) -> xFormers version, i.e.
-# Every row was HEAD-verified as live on download.pytorch.org, and the cu128/cu130 0.0.34 wheels were downloaded and
-# their xformers/cpp_lib.json read back: cu128 -> {"cuda": 1208, "torch": "2.10.0+cu128"} cu130 -> {"cuda": 1300,
-# "torch": "2.10.0+cu130"} Keep this in step with _XFORMERS_WHEEL_VERSIONS in studio/backend/utils/wheel_utils.py and
-# $script:XformersWheelVersions in install.ps1
-# test_xformers_matrix_agrees_with_wheel_utils below enforces it.
+# (CUDA family, torch release) -> xFormers version, i.e. the wheel that index
+# actually publishes for that torch. Every row was HEAD-verified as live on
+# download.pytorch.org, and the cu128/cu130 0.0.34 wheels were downloaded and
+# their xformers/cpp_lib.json read back:
+#     cu128 -> {"cuda": 1208, "torch": "2.10.0+cu128"}
+#     cu130 -> {"cuda": 1300, "torch": "2.10.0+cu130"}
+# Keep this in step with _XFORMERS_WHEEL_VERSIONS in
+# studio/backend/utils/wheel_utils.py and $script:XformersWheelVersions in
+# install.ps1 -- test_xformers_matrix_agrees_with_wheel_utils below enforces it.
 XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu126", "290"): "0.0.33.post1",
     ("cu128", "290"): "0.0.33.post1",
@@ -48,11 +51,9 @@ XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu130", "2100"): "0.0.34",
 }
 
-# torch 2.11 publishes no xFormers wheel on any index yet, and the Windows torch pin in install.ps1 is torch<2.11.0 for
-# exactly that kind of reason.
-# Assert the absence so a future 2.11 row has to be added deliberately (with a live wheel) rather than inherited from
-# 2.10
-TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS = ("2110",)
+# Torch releases with no xFormers wheel on any index; naming one in an extra would resolve
+# a wheel built for a different torch. Empty: 0.0.35 is stable-ABI and loads under 2.11 up.
+TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS: tuple[str, ...] = ()
 
 
 def _tomllib():
@@ -118,8 +119,8 @@ def test_aggregate_extra_pulls_in_the_matched_wheel(family: str, torch_tag: str)
 @pytest.mark.parametrize("torch_tag", TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS)
 def test_no_extras_invented_for_torch_without_xformers_wheels(torch_tag: str):
     extras = _extras()
-    # CUDA extras only -- the intel-gpu-torch2110 / intelgputorch2110 XPU extras carry no xformers row and are not
-    # affected.
+    # CUDA extras only -- the intel-gpu-torch2110 / intelgputorch2110 XPU extras carry
+    # no xformers row and are not affected.
     pattern = re.compile(rf"^cu\d+(?:only)?-?torch{torch_tag}$")
     offenders = [n for n in extras if pattern.match(n)]
     assert offenders == [], (
@@ -168,7 +169,7 @@ def test_xformers_matrix_agrees_with_wheel_utils():
     )
     assert body, "could not find _XFORMERS_WHEEL_VERSIONS in wheel_utils.py"
     for (family, torch_tag), version in XFORMERS_WHEEL_MATRIX.items():
-        release = f"{torch_tag[0]}.{torch_tag[1:-1]}.{torch_tag[-1]}"
+        release = f"{torch_tag[0]}.{torch_tag[1:-1]}.{torch_tag[-1]}"  # "2100" -> "2.10.0"
         row = re.search(rf'^\s*"{re.escape(release)}":\s*\{{(.*?)\}}', body.group(1), re.MULTILINE)
         assert row, f"wheel_utils has no row for torch {release}"
         assert f'"{family}": "{version}"' in row.group(1), (

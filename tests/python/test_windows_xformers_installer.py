@@ -241,11 +241,17 @@ def test_installer_never_installs_an_unpinned_xformers():
 
 def test_xformers_step_runs_after_the_torch_flavor_repair():
     """The repair can reinstall torch from a different index; selecting the wheel before it
-    would pin against a torch build that is about to be replaced."""
+    would pin against a torch build that is about to be replaced.
+
+    Anchored on code, not on comment prose. The previous anchors were the section
+    headers, and a comment-tightening pass that inserted one word into
+    "Enforce the installed torch flavor" turned this red without changing any
+    behaviour, which is a failure of the test rather than of the installer.
+    """
     source = _source()
-    repair = source.index("Enforce the installed torch flavor matches the detected GPU build")
-    xformers = source.index("Pin xFormers to the wheel built for the torch")
-    overlay = source.index("CI only: overlay a source checkout")
+    repair = source.index("$expectedTorchTag = Get-ExpectedTorchFlavorTag")
+    xformers = source.index("xformers==$_xfVersion")
+    overlay = source.index("UNSLOTH_CI_SOURCE_OVERLAY")
     assert repair < xformers < overlay
 
 
