@@ -552,15 +552,13 @@ export const ModelInspector = memo(function ModelInspector({
     studioPageForTask(
       taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
     ) !== undefined;
-  const openRunConfig =
-    !hasActiveHubDownload &&
-    isHubModelRunEligible({
-      model,
-      isDataset,
-      mediaRuntime: runsOnMediaRuntime,
-      nonGgufRuntimeAvailable:
-        !chatOnlyMeasured && unslothSupport.status !== "unsupported",
-    })
+  const openRunConfig = isHubModelRunEligible({
+    model,
+    isDataset,
+    mediaRuntime: runsOnMediaRuntime,
+    nonGgufRuntimeAvailable:
+      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+  })
       ? onOpenRunConfig
       : undefined;
 

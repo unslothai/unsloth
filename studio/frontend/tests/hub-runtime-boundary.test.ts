@@ -243,6 +243,14 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
   );
   assert.match(
     modelInspector,
+    /const openRunConfig = isHubModelRunEligible\(/,
+  );
+  assert.match(
+    ggufCard,
+    /const showRunAction =[^;]*?!downloadingThisVariant[^;]*?;/s,
+  );
+  assert.match(
+    modelInspector,
     /<ModelStatusChips[\s\S]*?chatOnly=\{chatOnly\}/,
   );
   assert.doesNotMatch(
