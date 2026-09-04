@@ -414,6 +414,7 @@ def _runtime_read_paths() -> tuple[str, ...]:
         os.path.join(sys.prefix, "lib64"),
         os.path.join(sys.base_prefix, "lib"),
         os.path.join(sys.base_prefix, "lib64"),
+        os.path.join(sys.base_prefix, "Python"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     try:

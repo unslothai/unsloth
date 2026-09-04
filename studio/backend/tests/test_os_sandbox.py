@@ -469,6 +469,8 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
         pytest.skip(f"symlinks are unavailable: {exc}")
     pyvenv_cfg = venv / "pyvenv.cfg"
     pyvenv_cfg.write_text("home = ../base/bin\n", encoding = "utf-8")
+    framework_image = base_python.parents[1] / "Python"
+    framework_image.touch()
     monkeypatch.setattr(os_sandbox.sys, "executable", str(venv_python))
     monkeypatch.setattr(os_sandbox.sys, "prefix", str(venv))
     monkeypatch.setattr(os_sandbox.sys, "base_prefix", str(base_python.parents[1]))
@@ -480,6 +482,7 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
     assert str(base_python) in paths
     assert str(venv_python.parent) in paths
     assert str(pyvenv_cfg) in paths
+    assert str(framework_image) in paths
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", (str(base_python.parent),))
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
