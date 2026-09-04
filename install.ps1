@@ -3058,6 +3058,8 @@ exit 0
     $studioNeedsRuntimeLock = $true
     $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
     $studioAutoStartProcess = $null
+    $previousUvCacheDir = $env:UV_CACHE_DIR
+    $hadPreviousUvCacheDir = ($null -ne $previousUvCacheDir)
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -4268,6 +4270,18 @@ exit 0
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
+    }
+
+    # Keep uv's default cache under Studio so it is removed with Studio. Wait until any
+    # existing venv passes ownership validation; the outer finally restores the caller's value.
+    if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+        $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
+        if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
+            $invalidUvCache = "$($env:UV_CACHE_DIR).invalid.$(Get-Date -Format 'yyyyMMddHHmmss').$PID"
+            Move-Item -LiteralPath $env:UV_CACHE_DIR -Destination $invalidUvCache
+            substep "moved conflicting uv cache file aside to $invalidUvCache" "Yellow"
+        }
+        [System.IO.Directory]::CreateDirectory($env:UV_CACHE_DIR) | Out-Null
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
@@ -6576,6 +6590,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine ""
     }
     } finally {
+        if ($hadPreviousUvCacheDir) {
+            $env:UV_CACHE_DIR = $previousUvCacheDir
+        } else {
+            Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+        }
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
