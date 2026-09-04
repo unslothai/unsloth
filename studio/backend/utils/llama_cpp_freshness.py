@@ -121,7 +121,8 @@ def update_download_size_bytes(
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # Tag-independent platform suffix: accept the fork's "app-*" bundles
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*"
+    # prebuilts ("windows" before "win").
     m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None

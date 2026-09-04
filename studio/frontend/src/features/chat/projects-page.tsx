@@ -90,8 +90,8 @@ const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 78;
 
-// Modified column, matching a file-list feel: Today / Yesterday / N days ago,
-// then a short date once it is over a week old.
+// Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
+// once it is over a week old.
 function formatModified(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
@@ -259,8 +259,8 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortMode]);
-  // Default view shows as many rows as fit the page, then loads more as the
-  // user scrolls near the bottom. Search always spans every project.
+  // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
+  // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
@@ -276,8 +276,8 @@ export function ProjectsPage() {
     window.dispatchEvent(new Event("unsloth:app-shell-ready"));
   }, [hasLoaded]);
 
-  // Estimate how many rows fit below the list's top so the first page fills the
-  // screen without loading everything up front.
+  // Estimate how many rows fit below the list's top so the first page fills the screen without
+  // loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
@@ -294,8 +294,7 @@ export function ProjectsPage() {
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
 
-  // Infinite scroll: reveal another page-step whenever the sentinel near the
-  // list bottom scrolls into view.
+  // Infinite scroll: reveal another page-step whenever the sentinel near the list bottom scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -309,8 +308,8 @@ export function ProjectsPage() {
     );
     io.observe(el);
     return () => io.disconnect();
-    // Re-observe after each load so it keeps filling while the sentinel stays
-    // in view (IntersectionObserver does not re-fire on a steady intersection).
+    // Re-observe after each load so it keeps filling while the sentinel stays in view
+    // (IntersectionObserver does not re-fire on a steady intersection).
   }, [hasMore, visibleCount]);
 
   function openProject(projectId: string) {

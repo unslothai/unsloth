@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
-import { TEXT_ATTACHMENT_ACCEPT } from "./text-attachment-accept";
+import {
+  TEXT_ATTACHMENT_ACCEPT,
+  decodeTextAttachmentBytes,
+  isTextAttachmentName,
+} from "./text-attachment-accept";
 
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
@@ -21,12 +25,13 @@ export { TEXT_ATTACHMENT_ACCEPT };
 export type AttachmentText = {
   label: AttachmentTextLabel | null;
   text: string;
-  // True when the file was only read up to the preview cap, so the dialog can
-  // say so even if the extracted text ends up short.
+  // True when the file was only read up to the preview cap, so the dialog can say so even if
+  // the extracted text ends up short.
   truncated: boolean;
 };
 
-const AUDIO_ATTACHMENT_RE = /\.(wav|mp3|m4a|ogg|oga|flac|webm|mp4|aac)$/i;
+const AUDIO_ATTACHMENT_RE =
+  /\.(wav|mp3|mp2|m4a|ogg|oga|opus|flac|webm|mp4|aac|aiff|aif|aifc|caf|wma|amr)$/i;
 const AUDIO_MIME_RE = /^audio\//i;
 const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
@@ -39,14 +44,11 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-// mammoth picks the parts it parses out of the relationships, not out of the
-// filenames, so a target may be called anything ("payload.bin") and still be
-// inflated and parsed as XML, while an .xml part nothing points at (customXml,
-// the glossary document) is never opened at all. The bound therefore follows
-// docx-reader.js: the two package parts it always reads, the main document and
-// its relationships, and the five parts resolved out of those relationships,
-// each with mammoth's own "word/<name>.xml" fallback. Image targets stay lazy
-// and are never read by extractRawText.
+// mammoth picks the parts it parses out of the relationships, not the filenames, so a target
+// may be called anything and still be parsed as XML, while an .xml part nothing points at
+// is never opened. The bound therefore follows docx-reader.js: the two package parts it
+// always reads plus the five resolved out of those relationships, each with mammoth's own
+// "word/<name>.xml" fallback. Image targets stay lazy.
 const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
@@ -59,20 +61,20 @@ const DOCX_RELATED_PART_NAMES = [
   "numbering",
   "styles",
 ];
-// readXmlFileWithBody opens the relationships of every part it reads a body
-// from, so these three carry a .rels part of their own.
+// readXmlFileWithBody opens the relationships of every part it reads a body from, so these
+// three carry a .rels part of their own.
 const DOCX_BODY_PART_NAMES = new Set(["comments", "endnotes", "footnotes"]);
 const DOCX_MAIN_DOCUMENT_FALLBACK = "word/document.xml";
-// A <Relationship> tag, with the element prefix mammoth's namespace mapping
-// accepts, and skipping any ">" that sits inside an attribute value.
+// A <Relationship> tag with the element prefix mammoth's namespace mapping accepts, skipping
+// any ">" that sits inside an attribute value.
 const DOCX_RELATIONSHIP_TAG_RE =
   /<(?:[^\s/>"'=]+:)?Relationship(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>/g;
-// Attribute names are matched by consuming whole name="value" pairs, so a
-// value that itself contains Target= cannot be mistaken for an attribute.
-// mammoth reads child.attributes.Target, which a prefixed r:Target never
-// populates, so prefixed names are deliberately not accepted here.
+// Attribute names are matched by consuming whole name="value" pairs, so a value containing
+// Target= cannot be mistaken for an attribute. mammoth reads child.attributes.Target,
+// which a prefixed r:Target never populates, so prefixed names are not accepted.
 const XML_ATTRIBUTE_RE = /([^\s/>"'=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-/** Non-element markup: a `<Relationship>` inside a comment, CDATA section or processing instruction is text to mammoth's parser, and each ends at its first delimiter the way XML ends it. */
+/** Non-element markup: a `<Relationship>` inside a comment, CDATA section or processing
+ *  instruction is text to mammoth's parser, and each ends at its first delimiter. */
 const XML_NON_ELEMENT_RE =
   /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>/g;
 const XML_ENTITY_RE = /&(?:#(\d+)|#[xX]([\da-fA-F]+)|([a-zA-Z]+));/g;
@@ -83,26 +85,29 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
 };
-/**
- * Ceiling on everything a DOCX unpacks to, and the reason mammoth never sees
- * the file the user chose.
- *
- * jszip takes each part's size from the central directory and inflates the part
- * in full before anything can reject it, so an entry declaring 1 KB that
- * expands to 1 GB exhausts the webview. fflate allocates every entry at its
- * declared size and stops there, so mammoth is handed a repack of fflate's
- * output and can only inflate what has already been bounded here.
- */
+/** Ceiling on everything a DOCX unpacks to, and why mammoth never sees the file the user
+ *  chose. jszip takes each part's size from the central directory and inflates it in full
+ *  before anything can reject it, so an entry declaring 1 KB that expands to 1 GB exhausts
+ *  the webview. fflate allocates at the declared size and stops, so mammoth is handed a
+ *  repack of fflate's output. */
 const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
+  mp2: "audio/mpeg",
   m4a: "audio/mp4",
   mp4: "audio/mp4",
   ogg: "audio/ogg",
   oga: "audio/ogg",
+  opus: "audio/opus",
   flac: "audio/flac",
   aac: "audio/aac",
+  aiff: "audio/aiff",
+  aif: "audio/aiff",
+  aifc: "audio/aiff",
+  caf: "audio/x-caf",
+  wma: "audio/x-ms-wma",
+  amr: "audio/amr",
   webm: "audio/webm",
 };
 // Node.TEXT_NODE and Node.ELEMENT_NODE, spelled out so the extractor runs where the DOM globals do not.
@@ -149,89 +154,257 @@ const HTML_BLOCK_TAGS = new Set([
 ]);
 /** The extensions the text and html previews colour, mapped to shiki ids; one missing here previews unstyled. */
 const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
+  ada: "ada",
+  adb: "ada",
+  adoc: "asciidoc",
+  ads: "ada",
+  applescript: "applescript",
+  asciidoc: "asciidoc",
+  asm: "asm",
   astro: "astro",
+  avsc: "json",
+  awk: "awk",
   bash: "shellscript",
   bat: "bat",
+  bazel: "python",
+  bib: "bibtex",
+  bicep: "bicep",
+  bzl: "python",
   c: "c",
+  cabal: "haskell",
+  cairo: "cairo",
+  cbl: "cobol",
   cc: "cpp",
   cfg: "ini",
   cjs: "javascript",
+  cl: "lisp",
+  clj: "clojure",
+  cljc: "clojure",
+  cljs: "clojure",
+  cls: "latex",
   cmake: "cmake",
+  cmd: "bat",
+  cnf: "ini",
+  cob: "cobol",
+  comp: "glsl",
   conf: "ini",
+  containerfile: "docker",
   cpp: "cpp",
+  cql: "sql",
+  cr: "crystal",
   cs: "csharp",
+  csh: "shellscript",
+  cshtml: "razor",
+  csproj: "xml",
   css: "css",
+  cts: "typescript",
+  cu: "cuda",
+  cuh: "cuda",
   cxx: "cpp",
+  d: "d",
   dart: "dart",
+  desktop: "ini",
+  dhall: "dhall",
   diff: "diff",
   dockerfile: "docker",
+  dot: "dot",
+  edn: "clojure",
+  ejs: "ejs",
+  el: "lisp",
   env: "dotenv",
+  erb: "erb",
+  erl: "erlang",
+  ex: "elixir",
+  exs: "elixir",
+  f: "fortran-free-form",
+  f03: "fortran-free-form",
+  f90: "fortran-free-form",
+  f95: "fortran-free-form",
+  feature: "gherkin",
   fish: "fish",
+  for: "fortran-free-form",
+  frag: "glsl",
+  fs: "fsharp",
+  fsi: "fsharp",
+  fsproj: "xml",
+  fsx: "fsharp",
+  gd: "gdscript",
+  gemspec: "ruby",
+  geojson: "json",
+  geom: "glsl",
+  glsl: "glsl",
+  gn: "python",
+  gni: "python",
   go: "go",
   gql: "graphql",
   gradle: "groovy",
   graphql: "graphql",
+  groovy: "groovy",
+  gv: "dot",
   h: "c",
+  haml: "haml",
+  handlebars: "handlebars",
+  har: "json",
+  hbs: "handlebars",
+  hcl: "hcl",
+  hh: "cpp",
+  hlsl: "hlsl",
   hpp: "cpp",
+  hql: "sql",
+  hrl: "erlang",
+  hs: "haskell",
   htm: "html",
   html: "html",
+  http: "http",
+  hx: "haxe",
+  hxx: "cpp",
   ini: "ini",
+  inl: "cpp",
+  ipp: "cpp",
+  j2: "jinja",
+  jade: "pug",
   java: "java",
+  jinja: "jinja",
+  jinja2: "jinja",
   jl: "julia",
   js: "javascript",
   json: "json",
+  json5: "json5",
+  jsonc: "jsonc",
   jsonl: "json",
   jsx: "jsx",
+  ksh: "shellscript",
   kt: "kotlin",
   kts: "kotlin",
+  latex: "latex",
   less: "less",
+  lhs: "haskell",
+  liquid: "liquid",
+  lisp: "lisp",
+  lsp: "lisp",
   lua: "lua",
+  mak: "make",
   makefile: "make",
-  md: "markdown",
   markdown: "markdown",
+  md: "markdown",
   mdx: "mdx",
+  mermaid: "mermaid",
+  metal: "cpp",
   mjs: "javascript",
+  mk: "make",
+  ml: "ocaml",
+  mli: "ocaml",
+  mmd: "mermaid",
+  mojo: "mojo",
+  move: "move",
+  mts: "typescript",
+  mustache: "handlebars",
   ndjson: "json",
+  nim: "nim",
+  nimble: "nim",
+  nims: "nim",
+  ninja: "ninja",
+  nix: "nix",
+  njk: "jinja",
+  nu: "nushell",
+  pas: "pascal",
   php: "php",
   pl: "perl",
+  plantuml: "plantuml",
+  plist: "xml",
+  plsql: "sql",
   pm: "perl",
+  podspec: "ruby",
+  pp: "pascal",
+  prisma: "prisma",
   properties: "ini",
+  props: "xml",
   proto: "proto",
   ps1: "powershell",
+  psd1: "powershell",
+  psm1: "powershell",
+  psql: "sql",
+  psv: "csv",
+  pug: "pug",
+  puml: "plantuml",
+  pxd: "python",
   py: "python",
   pyi: "python",
+  pyx: "python",
+  qmd: "markdown",
+  qml: "qml",
   r: "r",
+  rake: "ruby",
+  razor: "razor",
   rb: "ruby",
+  reg: "ini",
+  rest: "http",
+  resx: "xml",
+  rkt: "racket",
+  rmd: "markdown",
+  ron: "rust",
   rs: "rust",
   rst: "rst",
+  s: "asm",
+  sas: "sas",
   sass: "sass",
+  sbt: "scala",
   scala: "scala",
+  scm: "scheme",
   scss: "scss",
+  service: "ini",
   sh: "shellscript",
+  shader: "hlsl",
+  sol: "solidity",
   sql: "sql",
+  ss: "scheme",
+  star: "python",
+  starlark: "python",
+  sty: "latex",
+  styl: "stylus",
+  sv: "system-verilog",
   svelte: "svelte",
   svg: "xml",
+  svh: "system-verilog",
   swift: "swift",
+  targets: "xml",
+  tcl: "tcl",
+  tcsh: "shellscript",
+  tex: "latex",
   tf: "terraform",
+  tfstate: "json",
   tfvars: "terraform",
   toml: "toml",
   ts: "typescript",
   tsx: "tsx",
+  twig: "twig",
+  v: "v",
+  vb: "vb",
+  vbproj: "xml",
+  vbs: "vb",
+  vert: "glsl",
+  vhd: "vhdl",
+  vhdl: "vhdl",
   vue: "vue",
+  wgsl: "wgsl",
+  xlf: "xml",
+  xliff: "xml",
   xml: "xml",
   yaml: "yaml",
   yml: "yaml",
+  zig: "zig",
   zsh: "shellscript",
 };
-// Long attachments still have to render inside a dialog, so the preview stops
-// well before the point where a single <pre> stalls the webview.
+// Long attachments still render inside a dialog, so the preview stops well before a single
+// <pre> stalls the webview.
 const MAX_PREVIEW_TEXT_LENGTH = 200_000;
-// Text and HTML have no size limit at upload, so a preview reads a bounded slice
-// instead of the whole file. Five bytes per character keeps the slice past the
-// character cap for any UTF-8 input, so truncation is still detected.
+// Text and HTML have no upload size limit, so a preview reads a bounded slice. Five bytes
+// per character keeps the slice past the character cap for any UTF-8 input, so truncation
+// is still detected.
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
-/** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to a member of Object.prototype. */
+/** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to
+ *  a member of Object.prototype. */
 function lookUp(
   table: Record<string, string>,
   key: string,
@@ -249,9 +422,8 @@ export function isAudioAttachment(
   );
 }
 
-// The audio part keeps only the coarse format the backend needs ("mp3" or
-// "wav"), so the content type wins, then the extension for uploads the browser
-// typed as empty, and the part format only as a last resort.
+// The audio part keeps only the coarse format the backend needs, so the content type wins,
+// then the extension for uploads the browser typed as empty, then the part format.
 export function attachmentAudioSrc(
   audio: { data: string; format: string },
   contentType: string | undefined,
@@ -299,9 +471,9 @@ export function isOpenDocumentAttachment(
   );
 }
 
-// CompositeAttachmentAdapter selects the first accept string that matches.
-// Text comes before the document-specific adapters, so previews must apply the
-// same MIME-or-extension match before looking at PDF/DOCX/HTML names.
+// CompositeAttachmentAdapter selects the first matching accept string. Text comes before the
+// document-specific adapters, so previews must apply the same MIME-or-extension match
+// before looking at PDF/DOCX/HTML names.
 function isTextAttachment(
   name: string,
   contentType: string | undefined,
@@ -320,11 +492,10 @@ function isTextAttachment(
   });
 }
 
-// unpdf and mammoth decode the whole file on the main thread, so both refuse a
-// document past the ceiling the OpenDocument path already enforces, and refuse
-// it before the read rather than after. The adapters call this from add() as
-// well: the composer clears its text and attachments before it awaits send(),
-// so a throw there loses the typed message along with the file.
+// unpdf and mammoth decode the whole file on the main thread, so both refuse a document past
+// the OpenDocument ceiling, and refuse before the read. The adapters call this from add()
+// too: the composer clears text and attachments before awaiting send(), so a throw there
+// loses the typed message along with the file.
 export function getDocumentAttachmentSizeError(
   file: File,
   label: "PDF" | "DOCX",
@@ -352,8 +523,8 @@ function joinDocxPath(basePath: string, target: string): string {
   return joined.startsWith("/") ? joined.slice(1) : joined;
 }
 
-// XML attribute values are entity-decoded by the parser mammoth hands the
-// relationships to, so a target only matches the archive once decoded.
+// XML attribute values are entity-decoded by the parser mammoth uses, so a target only
+// matches the archive once decoded.
 function decodeXmlEntities(value: string): string {
   return value.replace(XML_ENTITY_RE, (match, decimal, hex, name) => {
     const code = decimal
@@ -368,12 +539,10 @@ function decodeXmlEntities(value: string): string {
   });
 }
 
-// The relationship parts are XML, but only their targets are needed, so they
-// are scanned rather than parsed: DOMParser is not available where this also
-// runs under test, and a malformed rels file is mammoth's to report. The scan
-// accepts every attribute form mammoth's parser resolves (both quote styles,
-// entity-encoded values, a prefixed element name, ">" inside a value), so a
-// crafted rels file cannot hide a target from the bound below.
+// The relationship parts are XML, but only their targets are needed, so they are scanned
+// rather than parsed: DOMParser is not available under test, and a malformed rels file is
+// mammoth's to report. The scan accepts every attribute form mammoth's parser resolves, so
+// a crafted rels file cannot hide a target from the bound below.
 function readDocxXmlTargets(
   rels: Uint8Array | undefined,
   basePath: string,
@@ -415,19 +584,16 @@ function docxRelationshipsPath(path: string): string {
 
 type DocxArchive = {
   entries: Unzipped;
-  /** Every name the central directory declares, unpacked entries included, so a target resolves the way findPartPath resolves it. */
+  /** Every name the central directory declares, unpacked entries included, so a target resolves
+   *  the way findPartPath resolves it. */
   names: Set<string>;
   oversized: Set<string>;
 };
 
-/**
- * Inflates the archive under fflate's declared-size allocation.
- *
- * An entry past the XML ceiling is left out rather than refused: mammoth opens
- * the package parts and whatever the relationships point at, so a large
- * unreferenced part, custom XML or an embedded image, must still preview.
- * `assertDocxPartSizes` refuses the ones mammoth would have parsed.
- */
+/** Inflates the archive under fflate's declared-size allocation. An entry past the XML ceiling
+ *  is left out rather than refused: mammoth opens the package parts and whatever the
+ *  relationships point at, so a large unreferenced part must still preview.
+ *  `assertDocxPartSizes` refuses the ones mammoth would have parsed. */
 function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
@@ -451,15 +617,9 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
   return { entries, names, oversized };
 }
 
-/**
- * Refuses the parts mammoth goes on to parse when they exceed the XML ceiling.
- *
- * mammoth takes no entry filter, so the set is resolved the way findPartPaths
- * resolves it: the main document out of "_rels/.rels" and the styles,
- * numbering and note parts out of the document's own .rels, each falling back
- * to a fixed name when no target resolves. Both sides read the same bytes,
- * since mammoth is handed the repack of these entries.
- */
+/** Refuses the parts mammoth goes on to parse when they exceed the XML ceiling. mammoth takes
+ *  no entry filter, so the set is resolved as findPartPaths resolves it, each falling back
+ *  to a fixed name when no target resolves. Both sides read the same bytes. */
 function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
   const { entries, names, oversized } = archive;
   const bound = (path: string) => {
@@ -467,8 +627,7 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
       throw new Error(`DOCX XML file is too large: ${filename}:${path}`);
     }
   };
-  // findPartPath keeps the first target that exists, and every target it
-  // discards is one mammoth never opens.
+  // findPartPath keeps the first target that exists, and every target it discards is one mammoth never opens.
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => names.has(path)) ?? fallback;
 
@@ -501,7 +660,8 @@ function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
   }
 }
 
-/** The archive mammoth is given: fflate's own output, so a part that lies about its size arrives truncated rather than inflated in full. */
+/** The archive mammoth is given: fflate's own output, so a part that lies about its size
+ *  arrives truncated rather than inflated in full. */
 export function repackDocxAttachmentArchive(
   filename: string,
   bytes: Uint8Array,
@@ -511,14 +671,9 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
-/**
- * The bytes of a view, as an ArrayBuffer, without copying when it owns one.
- *
- * jszip reads the whole buffer it is handed and looks for the end-of-directory
- * record at its tail, so a view that does not span its buffer would arrive as a
- * corrupt archive. zipSync happens to return an exact-fit array today, which is
- * not something its API promises.
- */
+/** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the
+ *  whole buffer and looks for the end-of-directory record at its tail, so a view that does
+ *  not span its buffer would arrive as a corrupt archive. */
 function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const spansBuffer =
     view.byteOffset === 0 && view.byteLength === view.buffer.byteLength;
@@ -537,13 +692,9 @@ function isDocxSizeError(error: unknown): boolean {
   );
 }
 
-/**
- * The verdict add() needs before the attachment exists.
- *
- * The composer clears its text and attachments before it awaits send(), so a
- * DOCX that only fails there discards the typed message along with the file.
- * add() calls this instead, the way the audio adapter checks its own ceiling.
- */
+/** The verdict add() needs before the attachment exists. The composer clears its text and
+ *  attachments before it awaits send(), so a DOCX that only fails there discards the typed
+ *  message along with the file. */
 export async function getDocxAttachmentError(
   file: File,
 ): Promise<string | null> {
@@ -602,13 +753,8 @@ export function extractHtmlAttachmentText(html: string): string {
   return normalizeExtractedText(collectHtmlBlockText(doc.body));
 }
 
-/**
- * Text with the line structure the source had.
- *
- * `textContent` runs a whole page together, so every block-level element and
- * every `<br>` contributes a break of its own and the inline runs between them
- * are joined as written.
- */
+/** Text with the line structure the source had. `textContent` runs a whole page together, so
+ *  every block-level element and every `<br>` contributes a break of its own. */
 function collectHtmlBlockText(node: Node | null): string {
   if (!node) {
     return "";
@@ -679,18 +825,42 @@ export async function readAttachmentText(
   return { label: null, ...(await readBoundedText(file)) };
 }
 
+// Formats that state their own encoding somewhere other than the first bytes: a
+// gettext header sits below the translator comments, and a mail or vCard
+// declaration below whatever came before it in the archive.
+const DECLARES_ITS_CHARSET_RE = /\.(?:po|pot|eml|mbox|vcf)$/i;
+
 async function readBoundedText(
   file: File,
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
-  return { text: await slice.text(), truncated };
+  // Strict decoding belongs to the files the text adapter owns, where refusing
+  // is better than sending mojibake to the model. A preview of someone else's
+  // file may not be stricter than the adapter that accepted it: .html goes to
+  // the HTML adapter, which sends a windows-1252 page happily, and reading the
+  // preview through the strict path meant opening one threw where it used to
+  // render.
+  if (!isTextAttachmentName(file.name)) {
+    return { text: await slice.text(), truncated };
+  }
+  const bytes = new Uint8Array(await slice.arrayBuffer());
+  // The declaration can sit past the preview slice, and looking for it inside
+  // the slice reported an error for a file the attachment itself decodes. Only
+  // the formats that can carry one that far in pay for the second read.
+  const whole =
+    truncated && DECLARES_ITS_CHARSET_RE.test(file.name)
+      ? new Uint8Array(await file.arrayBuffer())
+      : bytes;
+  return {
+    text: decodeTextAttachmentBytes(bytes, file.name, truncated, whole),
+    truncated,
+  };
 }
 
-// A sent attachment keeps only the text its adapter produced, so the preview
-// unwraps the adapter's header or tag rather than showing it to the user. The
-// stored payload has no size limit, so the wrapper is matched on a prefix and
-// only the capped body is copied out.
+// A sent attachment keeps only the text its adapter produced, so the preview unwraps the
+// adapter's header rather than showing it. The stored payload has no size limit, so the
+// wrapper is matched on a prefix and only the capped body is copied out.
 export function parseAttachmentText(raw: string): AttachmentText {
   const head = raw.slice(0, MAX_ATTACHMENT_WRAPPER_LENGTH);
 
@@ -740,13 +910,9 @@ export function truncateAttachmentPreviewText(text: string): {
   return { text: text.slice(0, MAX_PREVIEW_TEXT_LENGTH), truncated: true };
 }
 
-/**
- * The shiki language a plain-text attachment previews as, or null for prose.
- *
- * Only the filename decides. Text pulled out of a PDF, a DOCX or a spreadsheet
- * is prose whatever the document was called, so callers pass the extracted
- * label instead of the name in that case.
- */
+/** The shiki language a plain-text attachment previews as, or null for prose. Only the
+ *  filename decides; text pulled out of a PDF or DOCX is prose whatever the document was
+ *  called, so callers pass the extracted label instead. */
 export function attachmentTextLanguage(
   name: string | undefined,
   label: AttachmentTextLabel | null,

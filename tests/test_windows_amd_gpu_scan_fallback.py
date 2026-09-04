@@ -108,9 +108,14 @@ def _amd_scan_block(src: str) -> str:
 
 
 def _arch_resolution_block(src: str) -> str:
-    """Everything from the arch-resolution header up to the ROCm version capture that follows."""
-    start = src.index("    # ── Arch resolution:")
-    end = src.index("    # Capture ROCm version early", start)
+    """Everything from the arch-resolution guard up to the hipconfig probe that follows.
+
+    Anchored on CODE at both ends for the same reason as _installer_scan_block: the two
+    comments this used to key on are exactly the kind a comment pass rewrites, and the
+    failure it produces is a ValueError rather than an assertion that says anything."""
+    marker = src.index("$script:ROCmUnsupportedGfxArch = $null")
+    start = src.index("    if (-not $script:ROCmGfxArch) {", marker)
+    end = src.index("    if ($HasROCm -or $HipSdkInstalled) {", start)
     return src[start:end]
 
 
@@ -444,10 +449,12 @@ def _installer_scan_block() -> str:
     The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
     this one: it feeds no label and no arch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = src.index(
-        "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
-    )
-    end = src.index("        # Capture ROCm version for wheel selection", start)
+    # Anchored on CODE at both ends. The end anchor used to be a comment and a comment
+    # pass deleted it, which turned four tests into ValueError instead of a failure
+    # that said anything. The next statement after the block is the hipconfig probe.
+    body = src.index("$amdAdapters = @(Get-CimInstance Win32_VideoController")
+    start = src.rindex("        if (-not $HasROCm) {", 0, body)
+    end = src.index("        if ($HasROCm -or $HipSdkInstalled) {", start)
     return src[start:end]
 
 

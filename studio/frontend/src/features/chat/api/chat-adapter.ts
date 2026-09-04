@@ -307,8 +307,7 @@ import {
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
 
-// Small models (<=9B) answer from memory instead of calling search, so "auto"
-// forces retrieval for them and leaves it to larger ones.
+// Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
 
 class ChatGenerationTerminalError extends Error {
@@ -327,7 +326,6 @@ function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
   if (mode === "on") return true;
   if (mode === "off") return false;
   const size = parseParamCountB(checkpoint);
-  // Unknown size -> enable.
   return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
 }
 
@@ -336,8 +334,7 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  // External prompt-cache fields (see _build_usage_chunk in
-  // external_provider.py); cache_creation is Anthropic-only.
+  // External prompt-cache fields (external_provider.py); cache_creation is Anthropic-only.
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
@@ -365,8 +362,7 @@ interface ServerTimings {
   diffusion_prompt_prepare_ms?: number;
   diffusion_decode_ms?: number;
   diffusion_wall_ms?: number;
-  // Honest throughput, matching the standalone diffusion CLI:
-  //   effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
+  // effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
   diffusion_effective_tok_s?: number;
   diffusion_parallel_tok_s?: number;
   diffusion_output_tok_s?: number;
@@ -411,9 +407,7 @@ type OpenAIStreamAdapterOptions = {
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
-// Synthetic provider-side tool names; backend stamps args._server_tool so
-// user functions with the same name aren't dropped. Mirror of backend
-// _SERVER_SIDE_BUILTIN_TOOL_NAMES.
+// Synthetic provider-side tool names; mirror of backend _SERVER_SIDE_BUILTIN_TOOL_NAMES.
 const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
   "web_search",
   "web_fetch",
@@ -421,12 +415,8 @@ const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
   "image_generation",
 ]);
 
-/**
- * Whether a persisted tool-call part is provider-side synthetic and should
- * be stripped from outbound history. Matches on the args._server_tool marker
- * or a Gemini native_part payload (no shape heuristic, since user functions
- * can legitimately share a name).
- */
+/** Whether a persisted tool-call part is provider-side synthetic (args._server_tool or Gemini
+ *  native_part), and so must be stripped from outbound history. */
 function isServerSideBuiltinToolPart(
   toolNameLower: string,
   _argsObj: Record<string, unknown> | null,
@@ -452,12 +442,8 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Best-effort partial parse of a live tool_args stream into a tool part's
- * `args`, so cards render the payload while the model is still writing it. The
- * structured path streams raw arguments JSON; the text path wraps it in call
- * markup, unwrapped here. Returns null until something parses; never throws.
- */
+/** Best-effort partial parse of a live tool_args stream so cards render while the model writes.
+ *  Returns null until something parses; never throws. */
 function parseLiveToolArgs(
   raw: string,
 ): { args: Record<string, unknown>; argsText: string } | null {
@@ -471,11 +457,9 @@ function parseLiveToolArgs(
     | Record<string, unknown>
     | undefined;
   if (!parsed || typeof parsed !== "object") return null;
-  // Call envelope from the text path: unwrap to the arguments payload.
   const inner = parsed.arguments ?? parsed.parameters;
   if (typeof parsed.name === "string" && inner !== undefined) {
     if (typeof inner === "string") {
-      // Stringified arguments: partial-parse the inner JSON string.
       const innerParsed = parsePartialJsonObject(inner) as
         | Record<string, unknown>
         | undefined;
@@ -505,7 +489,6 @@ function parseSystemVariablesMap(raw: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     }
   } catch {
-    // Invalid JSON: keep unresolved placeholders in output prompt.
   }
   return {};
 }
@@ -644,33 +627,17 @@ export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
   return ThreadAutosaveHandle;
 }
 
-/**
- * Match error messages indicating the request filled (or would fill) the KV
- * cache, so the UI can toast a pointer at the ``Context Length`` setting.
- *
- * Two wordings reach the client and both must hit:
- *   1. Raw llama-server text when ``--no-context-shift`` trips:
- *      "the request exceeds the available context size (N tokens)".
- *   2. The friendly rewrite from
- *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
- *      ... context window. ..." (the one most users see on the streaming GGUF
- *      path). Its advice branches, so only the lead-in is stable to match on.
- *
- * Match substrings, not full regexes: both layers have drifted across
- * versions (llama.cpp phrasing and _friendly_error copy edits).
- */
+/** Match errors meaning the KV cache filled: llama-server's "exceeds the available context
+ *  size" and _friendly_error's "Message too long". Substrings, since both have drifted. */
 export function isContextLimitError(message: string): boolean {
   if (!message) return false;
   const m = message.toLowerCase();
   return (
-    // Raw llama-server wording.
     m.includes("context size") ||
     m.includes("context shift") ||
     m.includes("exceeds the available context") ||
-    // Backend _friendly_error rewrite.
     m.includes("message too long") ||
     m.includes("context window") ||
-    // n_ctx mentions that carry an "exceed"/"full" signal.
     (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
   );
 }
@@ -688,12 +655,8 @@ async function updateStoredChatThreadEventually(
   }
 }
 
-/**
- * Return ``raw`` when it is a safe-to-navigate http(s) URL, else "".
- * Rejects non-string input, CR/LF (header injection), and non-http(s)
- * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider/tool-
- * controlled strings cannot land in an <a href>.
- */
+/** Return `raw` when it is a safe http(s) URL, else "": rejects CR/LF and javascript:/data:/
+ *  vbscript: so provider strings cannot land in an <a href>. */
 function isSafeNavigableSourceUrl(raw: unknown): string {
   if (typeof raw !== "string") return "";
   const value = raw.trim();
@@ -704,7 +667,6 @@ function isSafeNavigableSourceUrl(raw: unknown): string {
       return value;
     }
   } catch {
-    // Fall through.
   }
   return "";
 }
@@ -728,19 +690,15 @@ function documentCitationToSource(
     "";
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // Only treat ``source`` as navigable when it is real http(s);
-  // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
-  // or a hostile scheme. Fall back to a stable doc anchor otherwise.
+  // search_result_location `source` can be a free-form id or a hostile scheme; fall back to a
+  // doc anchor unless it is real http(s).
   const url =
     isSafeNavigableSourceUrl(source) ||
     `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
-  // Trim the cited snippet so the Sources panel stays scannable.
   const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Anthropic numbers inline [N] per citation, not per source URL.
-  // Fold citation type + position-bearing fields into the id so distinct
-  // citations on the same source keep separate Sources entries.
+  // Anthropic numbers inline [N] per citation, so fold citation type and position into the id.
   const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
@@ -792,9 +750,7 @@ function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
-      // output is attacker-controllable, so a hostile scheme must not
-      // reach the Sources panel <a href>.
+      // Provider output is attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
       const url = isSafeNavigableSourceUrl(urlMatch[1]);
       if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
@@ -958,10 +914,8 @@ function toOpenAIImageEditReferenceMessage(
   return { role: "assistant", content };
 }
 
-// Refusal flag stamped on assistant metadata when the backend emits the
-// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
-// request body (Anthropic: leaving refusals in context keeps refusing).
-// Using metadata, not text, prevents content from spoofing a reset.
+// Refusal marker on metadata, not text, which content could spoof: Anthropic keeps refusing
+// while refusals stay in context.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
   const metadata = (message as { metadata?: unknown }).metadata as
@@ -982,12 +936,8 @@ type SerializedMessage = {
   }>;
   tool_call_id?: string;
   name?: string;
-  /**
-   * Gemini text-part thoughtSignature stashed during streaming on the
-   * last text MessagePart. Backend reads
-   * `extra_content.google.thought_signature` and attaches it to the
-   * matching Gemini text part on the outbound turn.
-   */
+  /** Gemini text-part thoughtSignature stashed while streaming; the backend reads it from
+   *  extra_content.google.thought_signature. */
   extra_content?: unknown;
 };
 
@@ -1097,9 +1047,8 @@ function serializeAssistantToolCallPart(
       arguments: argumentsStr,
     },
   };
-  // Promote args.google to extra_content.google so the backend
-  // native_part replay branch can find it. The backend only inspects
-  // extra_content, not function.arguments.
+  // Promote args.google to extra_content.google: the backend replay branch only inspects extra_content.
+  // The backend inspects extra_content, not function.arguments.
   if (tc.extra_content !== undefined) {
     entry.extra_content = tc.extra_content;
   } else if (argsGoogle) {
@@ -1113,13 +1062,8 @@ export interface McpImageToolResult {
   images: { data: string; mimeType: string }[];
 }
 
-/**
- * The text the model actually saw, for a result that may be wrapped.
- *
- * Chat replay and every export path have to agree on this: exports feed
- * fine-tuning datasets, so a wrapper serialized whole would train on the card's
- * sessionId/images/files instead of the tool's output.
- */
+/** The text the model actually saw, for a result that may be wrapped. Exports feed fine-tuning
+ *  datasets, so a serialized wrapper would train on the card's metadata. */
 export function toolResultModelText(
   result: unknown,
   toolName?: string,
@@ -1134,13 +1078,8 @@ export function toolResultModelText(
   return result;
 }
 
-/**
- * A wrapper this app put around a result, rather than a result shaped like one.
- *
- * The shape is only that: an MCP or custom tool answering with text, sessionId
- * and images is someone else's, and unwrapping it drops every other field it
- * returned. The backend gates the same strip on the tool name.
- */
+/** A wrapper this app added, not a result merely shaped like one: unwrapping someone else's
+ *  MCP result drops every other field it returned. */
 function isSandboxWrapper(
   result: unknown,
   toolName?: string,
@@ -1176,7 +1115,6 @@ function serializeToolResultPart(
   const result = (tc as { result?: unknown }).result;
   const { isServerSideBuiltin } = getToolPartReplayMetadata(tc);
 
-  // Skip provider-side builtins; see isServerSideBuiltinToolPart.
   if (isServerSideBuiltin) {
     return null;
   }
@@ -1184,21 +1122,15 @@ function serializeToolResultPart(
 
   let content: string;
   if (typeof result === "string") {
-    // Backend ChatMessage validator rejects role="tool" with empty
-    // content; serialise a sentinel JSON so legitimately empty tool
-    // outputs still round-trip the follow-up turn to the provider.
+    // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
     isMcpImageToolResult(result) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
-    // Replay the stdout the model saw, not the card's sessionId/images/files:
-    // stringifying the wrapper feeds it internal metadata instead of the output.
-    // The image tokens go with them: a token resolves against the message whose
-    // search produced it, so a model copying one out of replayed history names
-    // an id the next message cannot resolve and the picture silently does not
-    // render. Without them it searches again, and that token does resolve.
+    // Replay the stdout the model saw, not the wrapper; image tokens go with it, since a token
+    // resolves only against the message whose search produced it.
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
@@ -1220,10 +1152,8 @@ function serializeToolResultPart(
 }
 
 function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
-  // Gemini/OpenAI provider-native builtin cards replay through
-  // extra_content/native parts and intentionally do not produce role="tool"
-  // messages. Local/user tool calls must have a concrete tool result before
-  // they are replayed ahead of later assistant text.
+  // Provider-native builtin cards replay via extra_content and produce no role="tool" message;
+  // local tool calls must have a concrete result first.
   return getToolPartReplayMetadata(part).isServerSideBuiltin;
 }
 
@@ -1248,8 +1178,7 @@ function studioToolHistoryRequestFieldsAfterReplay(
 }
 
 function sanitizeAssistantReplayText(text: string): string {
-  // Same reason as the tool result above: the tokens the model wrote last turn
-  // are renderer markup scoped to that message, not prose it should repeat.
+  // The tokens the model wrote last turn are renderer markup scoped to that message, not prose to repeat.
   return stripSearchImageTokens(text).replace(
     /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
     "[audio]",
@@ -1328,8 +1257,7 @@ function serializeAssistantReplayMessages(
   includeReasoningContent = false,
 ): SerializedMessage[] {
   if (isAnthropicRefusalMessage(message)) {
-    // Prune refused assistant turn from outbound history; the
-    // rendered transcript still shows the user-visible notice.
+    // Prune the refused assistant turn from outbound history; the transcript still shows the notice.
     return [];
   }
 
@@ -1378,9 +1306,7 @@ function serializeAssistantReplayMessages(
     };
     if (hasToolCalls) {
       assistantMessage.tool_calls = pendingToolCalls;
-      // OpenAI requires content === null on assistant turns whose
-      // payload is entirely tool_calls (matches the wire shape Gemini
-      // expects for the next functionCall replay).
+      // OpenAI requires content === null on assistant turns whose payload is entirely tool_calls.
       if (!hasContent) {
         assistantMessage.content = null;
       }
@@ -1507,36 +1433,25 @@ function toOpenAIMessages(
   ];
 }
 
-/** Payload the turn carries in its own parts, so that a turn holding real history is kept
- * even when the replay serialiser emits nothing for it.
- *
- * Tool calls are deliberately absent. A call the serialiser can carry leaves `tool_calls` on
- * the wire and is caught by the shape check below; a call it cannot carry (a local call
- * Stopped before its result arrived, which OpenAI forbids replaying without a responding
- * `role="tool"` message) reaches the provider as nothing. Counting the second as payload keeps
- * a turn the backend then drops (`_drop_empty_assistant_sentinels`), so
- * `_coalesce_consecutive_user_turns` merges the two user turns, resending the cancelled
- * prompt and inviting the tool request again. */
+/** Payload the turn carries in its own parts. Tool calls are deliberately absent: counting an
+ *  uncarryable call as payload keeps a turn the backend drops, merging two user turns. */
 function assistantTurnCarriesPayload(message: RunMessage): boolean {
   for (const part of message.content ?? []) {
-    // sanitizeAssistantReplayText only substitutes, never empties, so the raw part is
-    // equivalent here and keeps the scan off that regex.
+    // sanitizeAssistantReplayText only substitutes, never empties, so the raw part is equivalent here.
     if (part.type === "text" && part.text.trim().length > 0) return true;
   }
   if (collectImageParts(message).length > 0) return true;
   return "attachments" in message && (message.attachments?.length ?? 0) > 0;
 }
 
-/** Whitespace is not content: `_build_external_messages` (studio/backend/routes/inference.py)
- * drops any assistant turn whose string content trims away, so counting it here would keep a
- * pair the backend then splits apart again. */
+/** Whitespace is not content: _build_external_messages drops any assistant turn whose content trims away. */
 function hasReplayContent(content: OpenAIMessageContent | null): boolean {
   if (typeof content === "string") return content.trim().length > 0;
   return Boolean(content);
 }
 
-/** `status` is session state only (a reloaded thread comes back stamped complete), so the
- * persisted marker is read alongside it. */
+/** `status` is session state only (a reloaded thread comes back complete), so the persisted
+ *  marker is read alongside it. */
 function assistantTurnEndedEarly(message: RunMessage): boolean {
   return (
     message.status?.type === "incomplete" ||
@@ -1544,16 +1459,16 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
   );
 }
 
-/** A Stop that landed before the turn produced anything: it serialises to a lone empty
- * assistant message, which every backend drops, stranding two user turns in a row. */
+/** A Stop before the turn produced anything serialises to a lone empty assistant message,
+ *  stranding two user turns in a row. */
 function isAbandonedAssistantTurn(
   message: RunMessage,
   includeReasoningContent: boolean,
 ): boolean {
   if (message.role !== "assistant") return false;
   if (assistantTurnCarriesPayload(message)) return false;
-  // A turn that finished on reasoning alone is a reply; on an external request it serialises
-  // empty only because reasoning is stripped there, which must not read as abandoned.
+  // A turn that finished on reasoning alone is a reply, even though external requests strip
+  // reasoning and serialise it empty.
   if (
     !assistantTurnEndedEarly(message) &&
     (message.content ?? []).some((part) => part.type === "reasoning")
@@ -1570,8 +1485,8 @@ function isAbandonedAssistantTurn(
   );
 }
 
-/** Drop refused and abandoned assistant turns along with the user prompt that triggered
- * them: a refusal re-triggers the classifier, an abandoned turn breaks role alternation. */
+/** Drop refused and abandoned assistant turns with their prompt: a refusal re-triggers the
+ *  classifier, an abandoned turn breaks role alternation. */
 function pruneOutboundHistory(
   messages: RunMessages,
   includeReasoningContent: boolean,
@@ -1580,8 +1495,7 @@ function pruneOutboundHistory(
   const abandoned = history.map((message) =>
     isAbandonedAssistantTurn(message, includeReasoningContent),
   );
-  // A prompt is only stranded when something survives after it, so a thread whose last turn
-  // was abandoned keeps its trailing prompt: that is the history the next send needs.
+  // A prompt is only stranded when something survives after it, so a trailing abandoned turn keeps its prompt.
   let lastSurviving = -1;
   for (let index = history.length - 1; index >= 0; index -= 1) {
     if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) {
@@ -1624,7 +1538,6 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       continue;
     }
 
-    // Image in message.content (e.g. compare view).
     for (const part of message.content ?? []) {
       if (part.type === "image" && "image" in part) {
         const encoded = extractImageBase64(part.image);
@@ -1632,7 +1545,6 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       }
     }
 
-    // Image in message.attachments (e.g. chat composer).
     if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
@@ -1666,9 +1578,7 @@ function extractAudioPartBase64(
   return raw.startsWith("data:") ? raw.split(",")[1] : raw;
 }
 
-// Exported for tests.
-// Whether any message carries an image, by the rule collectImageParts pushes one. A predicate,
-// not that helper: building the parts would copy the base64 this exists to avoid touching.
+// A predicate rather than collectImageParts: building the parts would copy the base64 this exists to avoid touching.
 export function messagesContainImage(messages: RunMessages): boolean {
   const isImage = (part: { type: string }) =>
     part.type === "image" &&
@@ -1689,13 +1599,9 @@ export function messagesContainImage(messages: RunMessages): boolean {
   return false;
 }
 
-// A recording or a clip the user supplied is their own content in exactly the sense the
-// text-attachment rule already covers: the model answers from what is inside it, so the
-// subjects of that answer must not reach the image engines either. Matched on the part
-// TYPE rather than through the base64 extractors above -- a clip whose payload does not
-// parse is still a clip, and a predicate that fails open on it is the wrong way round.
-// Video arrives as a file part carrying a video mime type, the shape
-// extractVideoPartBase64 reads.
+// Matched on the part TYPE, not the base64 extractors: a clip whose payload does not parse is
+// still user content and must not reach the image engines.
+// Video arrives as a file part carrying a video mime type, the shape extractVideoPartBase64 reads.
 function isPrivateMediaPart(part: { type: string }): boolean {
   if (part.type === "audio") return true;
   return (
@@ -1734,13 +1640,11 @@ export function findLatestUserAudioBase64(
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
-    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
       const base64 = extractAudioPartBase64(part);
       if (base64) return base64;
     }
 
-    // Attachment content parts (from AudioAttachmentAdapter)
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
@@ -1750,15 +1654,13 @@ export function findLatestUserAudioBase64(
       }
     }
 
-    // Only the newest user message counts. audio_base64 switches the
-    // backend onto the audio generation path, so replaying audio from an
-    // older turn would hijack text follow-ups (Whisper would retranscribe
-    // the stale clip). Matches the consumed-on-send semantics of the
-    // legacy pendingAudio path.
+    // Only the newest user message counts: audio_base64 switches the backend onto the audio path,
+    // so a stale clip would hijack text follow-ups.
+    // Replaying audio from an older turn would hijack text follow-ups, since Whisper would
+    // retranscribe the stale clip. Matches the consumed-on-send semantics of the legacy pendingAudio.
     break;
   }
 
-  // Runtime store (main composer's audio upload).
   const pendingAudio = includePendingAudio
     ? useChatRuntimeStore.getState().pendingAudioBase64
     : null;
@@ -1777,9 +1679,7 @@ function extractVideoPartBase64(
     : filePart.data;
 }
 
-/** Base64 of the clip on the newest user turn. Only the newest counts, like
- * audio: replaying an older one would re-sample it into frames and spend the
- * context of every text follow-up. */
+/** Base64 of the clip on the newest user turn only; replaying an older one would re-sample it into frames. */
 export function findLatestUserVideoBase64(
   messages: RunMessages,
 ): string | undefined {
@@ -1803,18 +1703,14 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
-// text the request carries.
+// The Canvas instructions createOpenAIStreamAdapter appends, so the recount prices the same text.
 export const CANVAS_TOOL_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
 export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
-/**
- * The OpenAI-form history fields a completion would send. Mirrors the prune + system-prompt half
- * of createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since
- * --enable-tools can inject schemas the client cannot see.
- */
+/** The OpenAI-form history a completion would send. The tool catalog is priced server-side,
+ *  since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
   messages: RunMessages,
   threadId: string | undefined,
@@ -1856,8 +1752,7 @@ export async function buildLocalTokenCountHistory(
     });
   }
 
-  // Canvas appends one of these on every request, schema or not, so a count without it reads low.
-  // The adapter's image gate is never why render_html is off here: the count route refuses images.
+  // Canvas appends one of these on every request, so a count without it reads low.
   const canvasInstruction = artifactsEnabled
     ? supportsTools
       ? CANVAS_TOOL_INSTRUCTION
@@ -1883,11 +1778,8 @@ export async function buildLocalTokenCountHistory(
   };
 }
 
-/**
- * The reasoning fields a completion would send. llama-server falls back to the load-time
- * `--chat-template-kwargs` only for keys a request omits, so a count sending none renders the
- * template in whatever mode the model was LOADED in and misreports any prefilled thinking block.
- */
+/** The reasoning fields a completion would send: llama-server falls back to load-time
+ *  --chat-template-kwargs only for omitted keys, so sending none misreports the mode. */
 export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   const {
     supportsReasoning,
@@ -1898,14 +1790,12 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
     supportsPreserveThinking,
     preserveThinking,
   } = useChatRuntimeStore.getState();
-  // Same clamp the request build applies: a level the loaded template does not offer would be
-  // dropped by the backend and counted against the template default.
+  // Same clamp the request build applies: a level the loaded template does not offer is dropped by the backend.
   const localReasoningEffort = clampReasoningEffortToLevels(
     reasoningEffort,
     reasoningEffortLevels,
   );
   return {
-    // enable_thinking, not the Anthropic-style `thinking` block: the backend normalizes it anyway.
     ...(supportsReasoning
       ? reasoningStyle === "enable_thinking_effort"
         ? reasoningEnabled
@@ -1923,10 +1813,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   };
 }
 
-/**
- * The tool flags a completion would send, so the count includes the schemas and the action nudge.
- * Same gates the adapter applies; the render_html image gate is left to the server.
- */
+/** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
 ): Promise<Record<string, unknown>> {
@@ -1970,13 +1857,8 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled
   ) {
-    // Explicit false, not an omitted field: the server defaults tools on for a
-    // request that never mentions them, so every pill being off has to say so.
-    // The permission level rides along because `--enable-tools` still outranks
-    // that false in _effective_enable_tools, so a CLI policy can inject
-    // python/terminal into a pill-less request and the count would otherwise
-    // price sandboxed schemas against an unsandboxed completion. Inert whenever
-    // the false stands and no tool list is built.
+    // Explicit false, not omission: the server defaults tools on. The permission level rides
+    // along because `--enable-tools` still outranks that false in _effective_enable_tools.
     return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
@@ -2017,8 +1899,8 @@ export async function buildLocalTokenCountExtras(
                     ? { project_id: ragProjectId }
                     : {}),
                 }),
-            // Carried as the completion carries them: an unpersisted New Chat has neither id,
-            // and {} is falsy in Python, so the count alone would drop the tool and its nudge.
+            // An unpersisted New Chat has neither id, and {} is falsy in Python, so the count alone would
+            // drop the tool and its nudge.
             default_top_k: ragTopK,
             mode: ragMode,
             // Retrieval turned off means the loop renders exactly these messages, so the
@@ -2055,8 +1937,7 @@ async function resolveUseAdapter(
     if (!thread?.pairId) {
       return undefined;
     }
-    // model1/model2 threads skip the adapter toggle — each side loads
-    // its own model via /api/inference/load before generation.
+    // compare threads skip the adapter toggle: each side loads its own model via /api/inference/load.
     if (thread.modelType === "model1" || thread.modelType === "model2") {
       return undefined;
     }
@@ -2109,20 +1990,16 @@ async function resolveChatInstructions(
     .join("\n\n");
 }
 
-// A run resolves the project separately for the sandbox, the RAG scope and the
-// instructions, and while a fresh thread's row is still being written they all
-// take the composer fallback. Answered once per thread and reused, or a
-// navigation between those calls mixes two projects into one request.
+// Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
+// project, and navigating between them would mix two projects into one request.
 const composerProjectByPendingThread = new Map<string, string | null>();
 
-/** The project the run started in, kept for the whole run. Only the first send
- * for a thread records one: a later run finds the row and never consults it. */
+/** The project the run started in, kept for the whole run; only a thread's first send records one. */
 function rememberComposerProjectForRun(
   threadId: string,
   projectId: string | null,
 ): void {
-  // An incognito thread never has a row, so resolveProjectId answers before it
-  // reads the map: an entry here would be one nothing ever removes.
+  // An incognito thread never has a row, so resolveProjectId answers before it reads the map.
   if (isThreadIncognito(threadId)) return;
   if (!composerProjectByPendingThread.has(threadId)) {
     composerProjectByPendingThread.set(threadId, projectId);
@@ -2132,14 +2009,11 @@ function rememberComposerProjectForRun(
 export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
-  // A caller that gates on the answer (the queue's indexing probe) has to tell
-  // "no project" from "could not read the row": one sends, the other waits. It
-  // also names its own fallback, since the store names whichever project is on
-  // screen when it polls rather than the one it is waiting for.
+  // A caller gating on the answer must tell "no project" from "could not read the row": one sends, the other waits.
   opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
-  // Read before the await: a send survives navigation, so a store read after the
-  // lookup could hand this request the project the user moved to.
+  // Read before the await: a send survives navigation, so a later store read could hand this
+  // request the project the user moved to.
   const composerProjectId =
     opts?.composerProjectId !== undefined
       ? opts.composerProjectId
@@ -2149,8 +2023,7 @@ export async function resolveProjectId(
     try {
       thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
     } catch (error) {
-      // A failed lookup is not proof the row is missing, so it must not adopt
-      // whichever project the composer last had open.
+      // A failed lookup is not proof the row is missing, so do not adopt the composer's project.
       if (opts?.rethrowReadFailure) throw error;
       return null;
     }
@@ -2158,9 +2031,8 @@ export async function resolveProjectId(
       composerProjectByPendingThread.delete(threadId);
       return thread.projectId ?? null;
     }
-    // No row yet: initialize() does not await the write, so a fresh chat's first
-    // send can read ahead of it and drop the project's sources, instructions and
-    // sandbox. An incognito thread is never persisted, so its miss is the answer.
+    // initialize() does not await the row write, so a fresh chat's first send can read ahead of
+    // it; an incognito thread is never persisted, so its miss is the answer.
     if (isThreadIncognito(threadId)) {
       return null;
     }
@@ -2168,9 +2040,7 @@ export async function resolveProjectId(
     if (pending !== undefined) {
       return pending;
     }
-    // Not recorded here: the send records it, and this also runs off a run (the
-    // queue probe, the token-count extras), where a poll landing mid-navigation
-    // would pin the run to whichever project is on screen.
+    // The send records it, not this: a poll landing mid-navigation would pin the run to whichever project is on screen.
   }
   return composerProjectId ?? null;
 }
@@ -2205,11 +2075,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   });
 }
 
-/**
- * Auto-load the smallest downloaded model when the user chats without
- * selecting one. Prefers GGUF (smallest cached variant), then smallest
- * cached safetensors model.
- */
+/** Auto-load the smallest downloaded model when the user chats without picking one; GGUF
+ *  first, then cached safetensors. */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
@@ -2225,8 +2092,7 @@ type AutoLoadCandidate = {
   successLabel: string;
 };
 
-// Same case rules as autoLoadSourceKey: folding a POSIX target would let a
-// failed /models/Foo mark a distinct /models/foo as already tried.
+// Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
 function autoLoadCandidateKey(
   kind: LastLocalModelKind,
   id: string,
@@ -2297,9 +2163,11 @@ type QueuedResolvedModelRuntime = {
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
 
-// A background auto-load may enrich models[] with the loaded catalog entry,
-// but every field describing the model visible in the current chat must return
-// to its prior value after the queued run captures its private runtime.
+// A background auto-load may enrich models[], but every field describing the visible chat's
+// model must return to its prior value.
+// Read them from the same per-model config that fed effectiveMaxSeqLength: on a background
+// auto-load the live store holds session defaults, not the saved Manual mode, layer pin or GPU
+// pick. The saved GPU pick is reconciled against the GPUs present now.
 const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
@@ -2363,8 +2231,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "chatTemplateOverride",
   "loadedChatTemplateOverride",
   "chatTemplateOverrideReason",
-  // The rest of the group mlxRuntimeStateFrom writes, or a background autoload
-  // leaves its width and verdict on the restored model.
+  // Or a background autoload leaves its width and verdict on the restored model.
+  // The rest of the group mlxRuntimeStateFrom writes.
   "mlxKvBits",
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
@@ -2412,8 +2280,7 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
     ...snapshot.runtime,
     ...snapshot.settings,
     params: { ...snapshot.settings.params },
-    // A visible provider run can finish while the background model loads.
-    // Preserve those newer per-thread totals instead of restoring stale usage.
+    // A visible provider run can finish while the background model loads; keep the newer per-thread totals.
     contextUsage: liveUsage.contextUsage,
     contextUsageByThreadId: liveUsage.contextUsageByThreadId,
   });
@@ -2442,8 +2309,8 @@ function queuedResolvedModelFromStore(
       ? {
           isVision: activeModel.isVision,
           isGguf: activeModel.isGguf,
-          // The queued run mints its own summary for a model with no catalog row, and
-          // the sampling seed is gated on this.
+          // The queued run mints its own summary for a model with no catalog row, and the sampling seed
+          // is gated on this.
           isMlx: activeModel.isMlx,
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
@@ -2490,19 +2357,16 @@ function isChattableCachedRepo(repo: {
   return (
     repo.partial !== true &&
     repo.capabilities?.can_chat !== false &&
-    // Same rule isAutoLoadableLocalRow applies locally: an adapter has no base
-    // weights, so /load fetches the base from the Hub when it is not cached,
-    // and can_chat is reported true for the format on file layout alone.
+    // An adapter has no base weights, so /load fetches the base from the Hub and can_chat is
+    // reported true on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion and speech repos report can_chat true on file format alone.
     !NON_CHAT_TASKS.has(repo.task ?? "")
   );
 }
 
-// Chat models are tagged "text-generation" or left null, so this is a list rather than
-// a "has a task" test. The picker routes these rows to their own page on click; a
-// background load has no routing step. For the audio tasks the backend answers a chat
-// completion with synthesized speech rather than refusing it.
+// Chat models are tagged "text-generation" or left null, so this is a list rather than a "has
+// a task" test; the audio tasks answer a chat completion with speech.
 const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
@@ -2513,42 +2377,29 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "automatic-speech-recognition",
 ]);
 
-// Scan folders the picker exposes. hf_cache is already in the cached lists.
-// ollama stays out by policy: its rows load through the picker, but the API
-// auto-switch index never resolves them (local_model_resolver.py skips the
-// Ollama scanner), so auto-loading one would promise an API identity that
-// cannot be reached.
+// ollama stays out by policy: local_model_resolver.py skips its scanner, so auto-loading one
+// promises an API identity that cannot be reached.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
   "custom",
 ]);
 
-/**
- * Picker policy for a background pick. Adapters and checkpoints are excluded:
- * an adapter resolves its base model (a Hub fetch when the base is uncached),
- * and a scan-folder checkpoint is a pickle with no Hub security scan.
- */
+/** Picker policy for a background pick; adapters (base fetched from the Hub) and scan-folder
+ *  checkpoints (pickle, no Hub scan) are excluded. */
 function isAutoLoadableLocalRow(
   row: LocalModelInfo,
-  // Set when a cached lookup failed: the excluded hf_cache rows are then the
-  // only evidence of that cache, and dropping them left a device whose one
-  // model lives there with nothing to load.
+  // Set when a cached lookup failed: the excluded hf_cache rows are then the only evidence of that cache.
   admitHfCache = false,
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
       (admitHfCache && row.source === "hf_cache")) &&
-    // Absent capabilities means unclassified, not "not chat": requiring true
-    // skipped the row and fell through to downloading the default.
+    // Absent capabilities means unclassified, not "not chat": requiring true fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
-    // An allowlist, because an exclusion is only as good as the classification:
-    // the backend sends "unknown" when it cannot tell a format apart and an
-    // older one omits the field, so both slipped past a `!== "checkpoint"` test
-    // and made a pickle eligible. A checkpoint directory looks like a
-    // safetensors one, so this has to fail closed; GGUF is still recognised by
-    // suffix, so an unclassified .gguf row keeps loading.
+    // An allowlist, since the backend sends "unknown" when it cannot classify and older ones omit
+    // the field, so a `!== "checkpoint"` test made a pickle eligible.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !NON_CHAT_TASKS.has(row.task ?? "") &&
     runsOnThisPlatform(row) &&
@@ -2556,22 +2407,18 @@ function isAutoLoadableLocalRow(
   );
 }
 
-// model_format is optional, so an older backend omits it on a direct .gguf row.
-// Reading only the field made such a row a Transformers source, which sends the
-// safetensors context length to /load and remembers the wrong kind.
+// model_format is optional on an older backend, so reading only the field made a direct .gguf
+// row a Transformers source.
 function isGgufLocalRow(row: LocalModelInfo): boolean {
   return (
     row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
   );
 }
 
-/** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
- * every other local format there. */
+/** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
-  // a remote Linux Unsloth would hide every local safetensors model and fetch
-  // the default. Failing open is safe: validation refuses an ineligible pick.
+  // chatOnly is a BROWSER guess until the backend reports it; fail open, since validation refuses an ineligible pick.
   if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
@@ -2584,15 +2431,13 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   );
 }
 
-/** The picker hides cached non-GGUF rows outright on a chat-only install
- * (visibleCachedModelRows). Same wait-for-the-server rule as above. */
+/** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
   return !platform.fetched || !platform.isChatOnly();
 }
 
-/** One loadable thing on this device, from any inventory. `listVariants` is
- * lazy, so only the repos the cascade reaches are scanned. */
+/** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */
 type AutoLoadSource = {
   kind: LastLocalModelKind;
   /** Catalog id: per-model settings, toasts, remembered-model matching. */
@@ -2605,10 +2450,10 @@ type AutoLoadSource = {
   listVariants: (() => Promise<GgufVariantDetail[]>) | null;
 };
 
-// Case-sensitive targets keep their case (Linux distinguishes /models/Foo from
-// /models/foo; \\wsl$\ reaches the same ext4). Repo ids and Windows paths fold,
-// separators included, so C:\a\m.gguf and C:/a/m.gguf are one key. NFC first:
-// macOS returns decomposed names for the same file.
+// Case-sensitive targets keep their case; repo ids and Windows paths fold, separators
+// included. NFC first: macOS returns decomposed names.
+// Linux distinguishes /models/Foo from models/foo, and \\wsl$\ reaches the same ext4; separators
+// fold, so C:\a\m.gguf and C:/a/m.gguf are one key. NFC first: macOS returns decomposed names.
 function normalizeTarget(value: string): string {
   const target = value.trim().normalize("NFC");
   if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
@@ -2618,9 +2463,8 @@ function normalizeTarget(value: string): string {
   return /^[/~]/.test(target) ? target : target.toLowerCase();
 }
 
-// The load target alone, not the kind: a repo holding both GGUF and safetensors
-// yields a row in each list, but the backend resolves one target to one model,
-// so keeping both would spend a second attempt on the same files.
+// The load target alone, not the kind: one target is one model, so a repo in both lists must
+// not spend two attempts.
 function autoLoadSourceKey(source: AutoLoadSource): string {
   return normalizeTarget(source.loadId);
 }
@@ -2687,8 +2531,7 @@ function isRememberedSource(
   remembered: { id: string; kind: LastLocalModelKind },
 ): boolean {
   if (source.kind !== remembered.kind) return false;
-  // Same case rules as the dedupe key: folding a POSIX path would mark two
-  // models differing only by case as both being the remembered one.
+  // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
   return (
     normalizeTarget(source.id) === target ||
@@ -2708,15 +2551,13 @@ function orderAutoLoadSources(
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>
     source.sizeBytes > 0 ? source.sizeBytes : Number.MAX_SAFE_INTEGER;
-  // Same-target twins are kept, just ordered behind the preferred row: dropping
-  // them here lost a loadable safetensors row whenever its GGUF twin resolved
-  // no quant, so the cascade skips a twin at run time instead.
+  // Same-target twins sort behind the preferred row rather than being dropped: dropping lost a
+  // loadable safetensors row whenever its GGUF twin resolved no quant.
   return [...sources].sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
 }
 
-/** The candidate to attempt, resolving a GGUF quant when one is needed:
- * remembered quant first, then smallest, skipping quants already tried so one
- * bad file cannot sink a whole repo. null when nothing here is loadable. */
+/** The candidate to attempt: remembered quant first, then smallest, skipping quants already
+ *  tried. null when nothing here is loadable. */
 async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
@@ -2771,9 +2612,8 @@ function formatDownloadBytes(bytes: number): string {
     : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
 
-/** Fetch the default through the Hub download manager rather than letting
- * /api/inference/load pull it inline: the manager gives it a panel entry, live
- * progress, and a working Cancel. "ready" means the bytes are on disk. */
+/** Fetch the default through the Hub download manager rather than inline in /load: that gives
+ *  a panel entry, live progress and a working Cancel. */
 async function ensureDefaultModelDownloaded(
   hfToken: string | null,
   abortSignal: AbortSignal | undefined,
@@ -2788,7 +2628,6 @@ async function ensureDefaultModelDownloaded(
     const variant = listing.variants.find(
       (entry) => entry.quant?.toLowerCase() === variantKey,
     );
-    // Pulled by an earlier run: nothing to download.
     if (variant?.downloaded && variant.partial !== true) return "ready";
     expectedBytes = variant?.download_size_bytes || variant?.size_bytes || 0;
   } catch {
@@ -2796,10 +2635,8 @@ async function ensureDefaultModelDownloaded(
   }
   abortSignal?.throwIfAborted();
 
-  // startJob sends the stored token raw, with none of the recovery validateModel
-  // and loadModel get, so an expired one would fail the download of a public
-  // repo the lookup above just read anonymously. After the on-disk check, so
-  // nothing prompts when there is nothing to download.
+  // startJob sends the stored token raw, so an expired one would fail a public repo's download;
+  // placed after the on-disk check so nothing prompts needlessly.
   const prepared = await prepareHfTokenForUse(hfToken);
   abortSignal?.throwIfAborted();
   if (!prepared.proceed) return "cancelled";
@@ -2811,15 +2648,12 @@ async function ensureDefaultModelDownloaded(
     expectedBytes,
   };
   const jobKey = jobKeyOf(request.kind, request.repoId, request.variant);
-  // requestStart runs transport preflights before the job exists, and cancel()
-  // no-ops on a missing key, so remember the click and replay it once the job
-  // appears or the first Cancel is silently swallowed.
+  // requestStart runs preflights before the job exists and cancel() no-ops on a missing key, so
+  // remember the click and replay it once the job appears.
   let cancelRequested = false;
   let cancelInFlight = false;
   let cancelEverIssued = false;
-  // Cancelling patches the job and wakes the subscription below, so this must
-  // not re-enter while a request is outstanding. The latch clears when the
-  // request settles, since a failed cancel leaves the job running for a retry.
+  // The latch clears when the request settles, since a failed cancel leaves the job running for a retry.
   const issueCancel = (): boolean => {
     const active = selectActiveJob(
       useDownloadManagerStore.getState(),
@@ -2867,8 +2701,7 @@ async function ensureDefaultModelDownloaded(
     // Before the start request, so a fast completion cannot be missed.
     cleanups.push(
       subscribeJobListeners(request.kind, request.repoId, {
-        // A cancel can fail and the transfer finish anyway; the user asked for
-        // it to stop, so the bytes are not handed to a load.
+        // A cancel can fail and the transfer finish anyway; the bytes are still not handed to a load.
         onComplete: (variant) =>
           isOurVariant(variant) &&
           finish(cancelRequested ? "cancelled" : "ready"),
@@ -2876,14 +2709,11 @@ async function ensureDefaultModelDownloaded(
         onError: (variant) => isOurVariant(variant) && finish("failed"),
       }),
     );
-    // Live progress in the title; the panel shows the same job with its bar.
     cleanups.push(
       useDownloadManagerStore.subscribe((state) => {
         const job = state.jobs[jobKey];
         if (!job) return;
-        // Cancelled during the preflights: stop it as soon as it exists. The
-        // deferred first attempt only; a retry comes from another click, not
-        // from every store tick.
+        // Cancelled during the preflights: stop it as soon as it exists, once, not on every store tick.
         if (cancelRequested) {
           if (!cancelEverIssued) issueCancel();
           return;
@@ -2899,8 +2729,7 @@ async function ensureDefaultModelDownloaded(
         );
       }),
     );
-    // Stopping the send stops the wait, not the transfer: it keeps running and
-    // stays cancellable in the panel.
+    // Stopping the send stops the wait, not the transfer.
     if (abortSignal) {
       const onAbort = () => finish("cancelled");
       abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -2918,8 +2747,7 @@ async function ensureDefaultModelDownloaded(
           finish("cancelled");
           return;
         }
-        // "conflict" and "busy" need the Hub download card; "error" already
-        // toasted.
+        // "conflict" and "busy" need the Hub download card; "error" already toasted.
         finish("failed");
       },
       () => finish("failed"),
@@ -3089,16 +2917,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         : undefined,
     });
   };
-  // Like the interactive load toast: an auto-load that lost GPU acceleration
-  // must not read as a plain success.
+  // An auto-load that lost GPU acceleration must not read as a plain success.
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
-    // Both reasons, composed. Nesting them as `mmproj ? ... : cpu ? ...` dropped the
-    // CPU message whenever both were set, which is reachable and is the case this
-    // feature exists for -- see loadFallbackNotice.
+    // Both reasons composed: nesting them as `mmproj ? ... : cpu ? ...` dropped the CPU message.
+    // That combination is reachable and is the case this feature exists for; see loadFallbackNotice.
     const notice = loadFallbackNotice(
       message,
       cpuFallbackReason,
@@ -3134,8 +2960,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       error instanceof Error && error.message.trim()
         ? error.message.trim()
         : "";
-    // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
-    // backend): those stop the Hub download, but must not blame the model.
+    // loadModel can reject before /api/inference/load is sent (dismissed token dialog, dead
+    // backend); those must not blame the model.
     const marker = error as {
       unslothTransportFailure?: boolean;
       unslothUserCancelled?: boolean;
@@ -3158,21 +2984,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
-    // GGUF-only: scopes the training guard to the same placement policy /load
-    // will use. Manual mode must match because it makes placement user-owned.
-    // The layer/MoE/split knobs are deliberately not sent: Auto mode's guard
-    // sizes conservatively, while Manual mode bypasses that estimate.
-    // The safetensors fallback omits both fields and uses HF auto-placement.
+    // GGUF-only: the guard must be told the placement policy /load will use, since Auto sizes
+    // conservatively and Manual bypasses the estimate. Layer/MoE/split are not sent.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
-    // The projector is part of what the guard has to size: a load that skips
-    // it needs ~1 GB less, and charging for it would refuse loads that fit.
+    // The projector is part of what the guard sizes: charging for a skipped one refuses loads that fit.
+    // A load that skips the projector needs ~1 GB less.
     disable_vision?: boolean | null;
-    // The estimate charges a drafter whose size differs by mode (a DSpark
-    // sidecar is ~11 GB, and Auto reaches it), so this preflight has to be told
-    // what the load will send or it sizes a different model.
+    // The estimate charges a drafter whose size differs by mode, so the preflight must be told what the load will send.
+    // A DSpark sidecar is ~11 GB, and Auto reaches it.
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
@@ -3184,8 +3006,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       trust_remote_code: trustRemoteCode,
     });
     options?.abortSignal?.throwIfAborted();
-    // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
-    // files on its own; both are deferred to the explicit consent dialog instead.
+    // A background auto-load never runs custom code or Hub-flagged unsafe files; both need the
+    // explicit consent dialog.
     if (
       validation.requires_trust_remote_code ||
       validation.requires_security_review
@@ -3202,13 +3024,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   }
 
   function recordCandidateFailure(label: string, error: unknown): void {
-    // Every rejection is recorded: the sweep's catches are bare, so one left unrecorded reads as
-    // "nothing was cached" and fetches the default. Only cancelling ends the sweep.
+    // Every rejection is recorded: the sweep's catches are bare, so an unrecorded one reads as
+    // "nothing was cached" and fetches the default.
     const marker = error as { unslothUserCancelled?: boolean };
     noteLoadFailure(label, error);
     if (marker?.unslothUserCancelled === true) {
-      // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
-      // transport failure deliberately does NOT: the backend can come back mid-sweep.
+      // Stop rather than reopen the same dialog per repo; a transport failure does not, since the
+      // backend can come back mid-sweep.
       autoLoadCancelled = true;
     }
   }
@@ -3220,8 +3042,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     try {
       return await canAutoLoad(payload);
     } catch (error) {
-      // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
-      // where the sweep's bare catches would drop it and hit the Hub download.
+      // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here
+      // rather than in the sweep's bare catches.
       recordCandidateFailure(label, error);
       throw error;
     }
@@ -3260,20 +3082,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       defaultMaxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
-    // The GPU knobs are per-model, so read them from the same per-model config
-    // that fed effectiveMaxSeqLength -- on a background auto-load the live store
-    // holds session defaults, not the saved Manual mode / layer pin / GPU pick.
-    // Absent fields fall back like the interactive restore: the mode to the store
-    // (a persisted standing preference), the per-model knobs to their defaults.
-    // The saved GPU pick is reconciled against the GPUs present now.
+    // The GPU knobs are per-model: on a background auto-load the live store holds session
+    // defaults, not the saved Manual mode / layer pin / GPU pick.
     const effectiveGpuMemoryMode =
       config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = config.nCpuMoe ?? 0;
     if (config.selectedGpuIds != null) {
-      // Warm the device cache first: on a cold cache the reconcile passes the
-      // saved pick through unvalidated, and a stale cross-host pick then fails
-      // the load with the picker hidden.
+      // Warm the device cache first: on a cold cache the reconcile passes a stale cross-host pick through unvalidated.
       await ensureGpuDeviceCache();
     }
     let isDiffusion = false;
@@ -3281,15 +3097,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.kind === "gguf" &&
       (config.selectedGpuIds != null || config.tensorParallel === true)
     ) {
-      // Prepare the token before this probe, exactly as validateModel/loadModel
-      // (and the interactive performLoad path) do: the Hub 401s an invalid
-      // Authorization header even for a public repo, so sending the raw stored
-      // token here would abort this candidate before the existing anonymous/
-      // replacement-token recovery flow could run.
+      // Prepare the token before this probe: the Hub 401s an invalid Authorization header even for
+      // a public repo, aborting the candidate before recovery can run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Raised before loadModel, so route it through the same helper or every later candidate
-        // reopens the dialog.
+        // Raised before loadModel, so route it through the same helper or every later candidate reopens the dialog.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
@@ -3308,14 +3120,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         })
       ).isDiffusion;
     }
-    // The stored override can live only on the server (written through the API, or
-    // from another browser), and this config comes from local storage. Nothing is
-    // resident at startup, so /load's omission path has nothing to inherit from, and
-    // the model would come up without the arguments that were saved for it.
-    //
-    // Sanitized like every other hydration: this becomes an EXPLICIT list, which
-    // /load validates strictly rather than putting through the carry-over paths that
-    // drop a newly denied flag quietly.
+    // The stored override can live only on the server while this config is local, and nothing is
+    // resident at startup for /load's omission path to inherit from. Sanitized like every
+    // hydration, so it becomes an EXPLICIT list /load validates strictly.
     let resolvedExtraArgs = config.llamaExtraArgs;
     if (candidate.kind === "gguf" && !isDiffusion) {
       try {
@@ -3328,9 +3135,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         if (resolvedExtraArgs === undefined) {
           const stored = await fetchLoadExtraArgs(
             modelPath,
-            // The advertised repository id as well as the path this load resolves
-            // to: cached inventory can hand back a different loadId, and the row
-            // was written under whichever of the two the user was looking at.
+            // Both the advertised repo id and the path this load resolves to: cached inventory can hand
+            // back a different loadId.
             candidate.id,
             candidate.ggufVariant ?? null,
           );
@@ -3340,24 +3146,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               resolvedExtraArgs = cleaned;
             }
           } else if (stored.explicit) {
-            // A row carrying an EMPTY list is a cleared box, not an absent one, and
-            // the difference decides what /load does: omitting the field lets it
-            // carry the resident model's arguments over, which is what was cleared.
+            // An EMPTY list is a cleared box, not an absent one: omitting the field lets /load carry over
+            // the arguments that were cleared.
             resolvedExtraArgs = [];
           }
         } else if (resolvedExtraArgs !== null && resolvedExtraArgs.length > 0) {
-          // The local copy gets the same treatment as the fetched one. It was
-          // written by whatever build was running then, so a flag added to the
-          // managed set since would be sent explicitly and answered with a 400,
-          // and the remembered model would not come up at all.
+          // Same for the local copy: a flag added to the managed set since it was written would be sent
+          // explicitly and answered with a 400.
           const cleaned = clean(resolvedExtraArgs);
           if (cleaned.length !== resolvedExtraArgs.length) {
             resolvedExtraArgs = cleaned.length > 0 ? cleaned : [];
           }
         }
       } catch {
-        // An overrides outage must not stop a startup load: without this the model
-        // comes up as it did before the feature existed.
+        // An overrides outage must not stop a startup load.
       }
     }
     const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
@@ -3371,10 +3173,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             isDiffusion,
           )
         : null;
-    // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
-    // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
-    // The context pin is per-model too, so it comes from the saved config, not
-    // the live store.
+    // Under Manual GPU memory with Auto layers llama.cpp's --fit owns context sizing, so send 0
+    // or the per-model pin (GGUF-only).
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
       effectiveGpuMemoryMode,
@@ -3398,27 +3198,22 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
-        // The same values the load below sends.
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
-        // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
-              // Sized like the load below: a remembered manual DiffusionGemma
-              // split (0 especially) must not be refused as a full-GGUF occupant.
+              // A remembered manual DiffusionGemma split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
-              // Same omit-when-blank rule, and the same values the load sends:
-              // the draft cache dtype changes what the estimate charges the
-              // drafter, so a preflight without it disagrees with the launch.
+              // The draft cache dtype changes what the estimate charges the drafter, so a preflight without
+              // it disagrees with the launch.
               ...serverTuningLoadPayload(config),
-              // Checked with the same arguments the load below sends, or a list
-              // the backend refuses would pass this gate and fail the launch.
+              // Checked with the same arguments the load sends, or a list the backend refuses would pass this gate.
               ...(resolvedExtraArgs !== undefined
                 ? { llama_extra_args: resolvedExtraArgs ?? [] }
                 : {}),
@@ -3429,8 +3224,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       skippedAutoLoadCandidates.add(
         autoLoadCandidateKey(
           candidate.kind,
-          // A cached repo and a local row can alias the same files, so
-          // blocking one must block the other.
+          // A cached repo and a local row can alias the same files, so blocking one must block the other.
           candidate.loadId ?? candidate.id,
           candidate.ggufVariant,
         ),
@@ -3463,10 +3257,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
-      // GGUF-only: the safetensors fallback loads via HF auto-placement (no
-      // explicit pins). The split ratio is deliberately never remembered
-      // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
-      // free-VRAM default in charge rather than sending a stale store value.
+      // GGUF-only; the split ratio is never remembered (it is bound to an exact GPU set), so
+      // llama.cpp's free-VRAM default stays in charge.
       ...(candidate.kind === "gguf"
         ? {
             gpu_memory_mode: effectiveGpuMemoryMode,
@@ -3477,14 +3269,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
-            // Remembered like the rest of this block, or the auto-load reverts
-            // an override the user asked to be remembered.
+            // Remembered like the rest of this block, or the auto-load reverts the override.
             ...serverTuningLoadPayload(config),
-            // Remembered pass-through arguments, for the same reason as the rest of
-            // this block: nothing is resident at startup, so the omission path has
-            // nothing to inherit them from and the model would come up without the
-            // flags the user asked to be remembered. Undefined means this config
-            // predates the field; a cleared list is an explicit none.
+            // Remembered pass-through args: nothing is resident at startup to inherit them from.
+            // Undefined predates the field; a cleared list is an explicit none.
             ...(resolvedExtraArgs !== undefined
               ? { llama_extra_args: resolvedExtraArgs ?? [] }
               : {}),
@@ -3495,22 +3283,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       noteLoadFailure(failureLabel, error);
       throw error;
     });
-    // Do not apply this load to the visible runtime after its queue was
-    // cancelled. We still await /load so the model lifecycle remains
-    // serialized before a foreground selection can begin.
+    // Do not apply this load to the visible runtime once its queue was cancelled; still await
+    // /load so the lifecycle stays serialized.
     options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
-      // Only persist the global preference when the value came from the global
-      // settings. A per-model config's choice must stay load-local, or autoloading
-      // a remembered model on startup would rewrite the global default.
+      // Persist the global preference only when the value came from global settings, or autoloading
+      // a remembered model rewrites the default.
       if (config.speculativeType == null) {
         saveSpeculativeType(effectiveSpeculativeType);
       }
       // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
       persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
       const loadedModelId = loadResp.model || modelPath;
-      // The identity stays the backend's, per the inactive-cache contract; the
-      // pin is recorded alongside it so a later reload finds the same directory.
+      // The identity stays the backend's; the pin is recorded alongside it so a later reload finds the same directory.
       useChatRuntimeStore.setState({
         activeLoadId: modelPath === candidate.id ? null : modelPath,
       });
@@ -3555,20 +3340,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ),
         },
       );
-      // Upsert: a pre-load catalog entry has no backend-derived audio
-      // capability, and the load response is the authority on it.
+      // Upsert: the load response is the authority on audio capability, which a pre-load catalog entry lacks.
       syncModelCapabilities(loadedModelId, {
         ...loadResp,
         display_name: loadResp.display_name ?? candidate.id,
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // The Context Length saved for this model, not fitMaxSeqLength: the wire
-        // value is Auto-resolved for a same-model reload, so pinning it would
-        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // The saved Context Length, not fitMaxSeqLength: the wire value is Auto-resolved on a
+        // same-model reload, so pinning it turns Auto into a number the user never set.
         const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
-        // Slots this auto-load committed. Diffusion ignores --parallel, so a count
-        // there would mint a phantom override a saved preset carries onto a GGUF.
+        // Diffusion ignores --parallel, so counting slots there would mint a phantom override.
         const committedSlots =
           (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
         // same rule for the batch sizes
@@ -3598,11 +3380,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
           ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
-          // What this launch is running, for a later rollback. The status applier
-          // cannot seed it: the model-loading lease is held for the whole of this
-          // load, which is exactly the guard that stops a mid-switch poll writing
-          // here. Without it an immediate switch snapshots the previous model's
-          // list, and a failed switch restores this one with the wrong arguments.
+          // What this launch is running, for a later rollback: the status applier cannot seed it while
+          // the model-loading lease is held, and a failed switch would restore the wrong args.
           loadedLlamaExtraArgs:
             loadResp.requested_llama_extra_args !== undefined
               ? (loadResp.requested_llama_extra_args ?? [])
@@ -3610,8 +3389,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
-          // Repaired from the echo alongside tensorParallel: this load picked its
-          // own model and config, so a stale true would show Vision off over a
+          // Repaired from the echo alongside tensorParallel: a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
@@ -3642,8 +3420,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
-          // GGUF-only and never sent here: a staged override would be saved for
-          // a model that cannot use it.
+          // GGUF-only and never sent here: a staged override would be saved for a model that cannot use it.
           nParallel: null,
           loadedNParallel: null,
           nBatch: null,
@@ -3651,20 +3428,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           nUbatch: null,
           loadedNUbatch: null,
           ...clearedServerTuningState(),
-          // Same reason, and the baseline has to be cleared rather than left: a
-          // rollback to THIS model must not resend a GGUF's arguments.
+          // Same reason, and the baseline must clear so a rollback to THIS model does not resend a
+          // GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
-          // Cleared, not carried, like the GGUF-only knobs above: a safetensors
-          // load has no projector, and a stale true would stage it for the next
-          // model that has one.
+          // Cleared, not carried: a safetensors load has no projector, and a stale true would stage it
+          // for the next model that has one.
           disableVision: false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
-          // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
-          // GGUF load left, matching the interactive/status sibling load paths.
+          // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
           ...loadedGpuMemoryFields(loadResp),
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
@@ -3700,21 +3475,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     return true;
   }
   try {
-    // Fail closed: these three lists are the only evidence of what is on the
-    // device, and `.catch(() => [])` turned one flaky request into "the user
-    // has nothing", downloading a model over a loadable local one. Both cached
-    // calls take the run signal because they are raw fetches with no timeout of
-    // their own; listLocalModels has its own 30s bound.
+    // Fail closed: `.catch(() => [])` turned one flaky request into "the user has nothing" and
+    // downloaded a model over a loadable local one.
+    // These three lists are the only evidence of what is on the device. Both cached calls take the run
+    // signal, being raw fetches with no timeout of their own; listLocalModels has its own 30s bound.
     const inventory = await Promise.allSettled([
       listCachedGguf(options?.abortSignal),
       listCachedModels(hfToken, options?.abortSignal),
       listLocalModels(),
     ]);
     options?.abortSignal?.throwIfAborted();
-    // Settled, not all: a rejection is one unknown source, not an empty device.
-    // Failing the whole batch threw away the lists that did arrive, so a broken
-    // local scan skipped a loadable cached model. Keep what came back and let
-    // the gap block only the default download below.
+    // Settled, not all: a rejection is one unknown source, not an empty device, and failing the
+    // batch threw away the lists that did arrive.
     const [ggufSettled, modelsSettled, localSettled] = inventory;
     const allGgufRepos =
       ggufSettled.status === "fulfilled" ? ggufSettled.value : [];
@@ -3723,14 +3495,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const localRows =
       localSettled.status === "fulfilled" ? localSettled.value.models : [];
     const inventoryIncomplete = inventory.some((r) => r.status === "rejected");
-    // Only the two managed-cache lookups: /api/hub/local also reports hf_cache
-    // rows, so when either of these failed that response covers the gap.
+    // Only the two managed-cache lookups: /api/hub/local also reports hf_cache rows.
     const cachedInventoryFailed =
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
 
-    // Managed cache plus everything the picker indexes on disk. Reading only
-    // the cache lists is what made a local model invisible here.
+    // Managed cache plus everything the picker indexes on disk; reading only the cache lists made
+    // a local model invisible.
     const sources = orderAutoLoadSources(
       buildAutoLoadSources(
         allGgufRepos.filter(isChattableCachedRepo),
@@ -3746,10 +3517,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       lastLoaded,
     );
 
-    // One load target can appear in more than one list. Once a row for it has
-    // produced a candidate its twin is the same files and must not spend a
-    // second attempt, so a twin is reached only if the preferred row resolved
-    // nothing at all.
+    // One load target can appear in more than one list, so a twin is reached only if the preferred
+    // row resolved nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
@@ -3767,9 +3536,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ),
         );
       try {
-        // A repo can hold several downloaded quants: each failure marks that
-        // quant tried and comes back for the next, so one corrupt file does not
-        // cost the whole repo. The attempt cap bounds the loop.
+        // A repo can hold several downloaded quants: each failure marks that quant tried, so one
+        // corrupt file does not cost the whole repo.
         while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
           const candidate = await resolveAutoLoadCandidate(
             source,
@@ -3792,8 +3560,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           } catch {
             options?.abortSignal?.throwIfAborted();
             hadNonTrustFailure = true;
-            // loadAutoLoadCandidate records a refusal but not a rejection, so
-            // mark it here or the next pass resolves the same quant forever.
+            // loadAutoLoadCandidate records a refusal but not a rejection, so mark it here or the next
+            // pass resolves the same quant forever.
             skippedAutoLoadCandidates.add(
               autoLoadCandidateKey(
                 candidate.kind,
@@ -3810,10 +3578,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
     }
 
-    // Cap also gates the default download, so total /api/inference/load
-    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    // A tried-and-failed cached model stops here: that reason beats an unrelated Hub default.
-    // An empty cache never sets loadFailure and still falls through.
+    // The cap gates the default download too, so the whole /load budget is MAX_AUTO_LOAD_ATTEMPTS.
+    // A tried-and-failed cached model stops here; an empty cache falls through.
+    // Cap also gates the default download, so the total /load budget across cached plus fallback is
+    // MAX_AUTO_LOAD_ATTEMPTS, not +1. An empty cache never sets loadFailure.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
       if (loadFailure.current) {
@@ -3838,15 +3606,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       };
     }
 
-    // Only an empty *complete* inventory means the device has nothing; with a
-    // source unknown, downloading risks duplicating a model already here.
+    // Only an empty *complete* inventory means the device has nothing.
     if (inventoryIncomplete) {
       toast.dismiss(toastId);
       return { loaded: false, blockedByTrustRemoteCode: false };
     }
 
-    // Nothing on the device: fetch the default as a managed download job, and
-    // only hand it to /api/inference/load once the bytes are here.
+    // Fetch the default as a managed download job and hand it to /api/inference/load only once the bytes are here.
     try {
       const rt = useChatRuntimeStore.getState();
       if (rt.selectedGpuIds != null) {
@@ -3856,18 +3622,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
       );
-      // Preflight BEFORE the transfer: active training or the GPU placement
-      // guard can refuse this model, and learning that after several gigabytes
-      // costs the user bandwidth and a long wait for nothing. The load below
-      // reuses this snapshot, so it sends exactly what was cleared here.
+      // Preflight BEFORE the transfer: training or the placement guard can refuse this model, and
+      // learning that after gigabytes costs a long wait. The load reuses this snapshot.
       if (
         !(await canAutoLoad({
           model_path: DEFAULT_CHAT_MODEL_REPO,
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
-          // The same live-store GPU pick the load below sends (a fresh default
-          // model has no remembered settings to prefer).
+          // The same live-store GPU pick the load below sends.
           gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
           speculative_type: specSettings.speculativeType,
@@ -3908,9 +3671,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       const loadResp = await loadModel({
         model_path: DEFAULT_CHAT_MODEL_REPO,
         hf_token: hfToken,
-        // Model default under both modes: Auto layers + no pin means
-        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
-        // preflight above sends the same).
+        // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
@@ -3918,13 +3679,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the live
-        // store may hold edits drafted for a staged pick, and a fresh default
-        // model has no remembered settings, so those stay at their defaults like
-        // the cached-candidate path. The GPU pick deliberately differs (it's the
-        // picker's current on-screen selection, which the canAutoLoad preflight
-        // above already committed to).
+        // GPU Memory mode is a standing preference; the per-model layer/MoE/split knobs and context
+        // pin stay at their defaults, and the GPU pick is the on-screen one the preflight used.
+        // The GPU pick deliberately differs: it is the picker's on-screen selection, which the canAutoLoad
+        // preflight above already committed to.
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
@@ -3987,8 +3745,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
-          // The request above omits n_parallel: a staged override left from a
-          // preset would read as applied and be re-sent by the next Apply.
+          // The request above omits n_parallel: a staged override would read as applied and be re-sent
+          // by the next Apply.
           nParallel: null,
           loadedNParallel: null,
           nBatch: null,
@@ -3999,14 +3757,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
-          // The request above omits disable_vision, so the echo is what the load
-          // ran with; adopting it stops a previous model's Vision-off carrying over.
+          // The request above omits disable_vision, so the echo is what the load ran with.
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
-          // Drives the GPU Memory controls' diffusion gate; set alongside the
-          // GPU fields on every load path so the gate can't read stale.
+          // Drives the GPU Memory controls' diffusion gate; set on every load path so the gate cannot read stale.
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: null,
@@ -4065,8 +3821,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
     abortSignal.throwIfAborted();
     const visibleState = useChatRuntimeStore.getState();
     if (isExternalModelId(visibleState.params.checkpoint)) {
-      // Hold the lifecycle lease across the probe. Its response cannot become
-      // stale behind a foreground or sibling queued load, and only this owner
+      // Hold the lifecycle lease across the probe. Fail closed: a transient status error is not
+      // evidence that the local server is empty.
+      // Its response cannot become stale behind a foreground or sibling queued load, and only this owner
       // may clear modelLoading afterward.
       // A failed probe is not evidence the local server is empty, and neither is one read
       // mid-replacement: fail closed, or the outgoing model stands in for the incoming one.
@@ -4182,15 +3939,8 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
-      // Before the first await: hydration and a model load both run ahead of the
-      // first resolveProjectId, and a send survives navigation. Only consulted
-      // while the thread's own row is still missing.
-      //
-      // ...which for a fresh send is exactly the window this has to be right in, and the store
-      // is no longer a safe reading of it: send() awaits document extraction, and initialize()
-      // does not await its row write, so the user may be in another project by now and the run
-      // would take its instructions, RAG sources and sandbox from one the message was never
-      // sent to. A stamp OF null still wins -- a send from outside any project.
+      // Before the first await: send() awaits document extraction and initialize() does not await
+      // its row write, so the store is no longer a safe reading of the project. Null still wins.
       const creationClaim = unstable_threadId
         ? readThreadCreationClaim(unstable_threadId)
         : undefined;
@@ -4198,15 +3948,8 @@ export function createOpenAIStreamAdapter(
         ? creationClaim.projectId
         : (useChatRuntimeStore.getState().activeProjectId ?? null);
       await useChatRuntimeStore.getState().hydratePersistedSettings();
-      // After the hydrate, not before: the backend reads some settings out of
-      // SQLite at call time rather than taking them from the request -- Search
-      // images picks the web_search schema that way -- and the mirror is a
-      // trailing-edge debounce, so sending inside that window would run on the
-      // value from before the toggle. Edits made while the initial GET was still
-      // out are held back and only reach the debounce when hydration replays
-      // them, so a flush ahead of it would find nothing queued and miss exactly
-      // the first message after a startup edit. No wait at all unless something
-      // is actually queued or in flight.
+      // After the hydrate: the backend reads some settings out of SQLite at call time and the
+      // mirror is a trailing debounce, so sending inside that window uses pre-toggle values.
       await flushPendingChatSettings();
       // And the migration a model pick may have just scheduled: an external
       // selection gets no load or status callback, so this is the only join
@@ -4221,18 +3964,15 @@ export function createOpenAIStreamAdapter(
       // resume and read B's settings for A.
       const runThreadId =
         unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
-      // Refused rather than run on whatever the store holds now: the wait only runs out
-      // for a chat the user left mid-read, and the settings on screen are then some
-      // other chat's. The run is recoverable by reopening the chat; a message sent with
-      // another chat's tools and permission level is not.
+      // Refused rather than run on whatever the store holds now: the wait only runs out for a chat
+      // the user left, and a message sent with another chat's tools is not recoverable.
       if (!(await awaitThreadScopedPairing(runThreadId))) {
         throw new Error(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
       let runtime = useChatRuntimeStore.getState();
-      // Capture the thread ID once so it stays stable even if the user
-      // switches chats while waiting for model load / auto-load.
+      // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
       if (resolvedThreadId) {
@@ -4287,8 +4027,8 @@ export function createOpenAIStreamAdapter(
           runtime = useChatRuntimeStore.getState();
         }
       }
-      // Started only when the model hands this turn off, never on the toggle alone: arming
-      // research offers it the tool, and it decides whether the message wants researching.
+      // Started only when the model hands this turn off: arming research offers the tool, the model
+      // decides whether to use it.
       const startDeepResearch = async function* (
         researchQuestion: string,
         transitionSignal: AbortSignal = abortSignal,
@@ -4328,11 +4068,8 @@ export function createOpenAIStreamAdapter(
             throw new Error("Load a model first.");
           }
         }
-        // The turn's own settings, not the store's now. This generator runs AFTER the
-        // model's stream, and the model selector stays usable while a turn is streaming: a
-        // live read researched the question model A handed off with whichever model B had
-        // since been picked, or failed outright when B runs no Studio tools. The one thing
-        // that legitimately happened after the send is the empty-model resolution above.
+        // The turn's own settings, not the store's now: the model selector stays usable while a turn
+        // streams, so a live read would research with whichever model was picked since.
         const sendTimeRuntime = runtime;
         const withResolvedModel = <T extends typeof sendTimeRuntime>(base: T): T =>
           queuedEmptyModelRuntime === null
@@ -4366,8 +4103,7 @@ export function createOpenAIStreamAdapter(
             : withResolvedModel({
                 ...sendTimeRuntime,
                 ...queuedRunSettings,
-                // The queued snapshot carries no model of its own; without a resolution
-                // this turn's own is the answer.
+                // The queued snapshot carries no model of its own.
                 params: {
                   ...queuedRunSettings.params,
                   checkpoint: sendTimeRuntime.params.checkpoint,
@@ -4474,10 +4210,8 @@ export function createOpenAIStreamAdapter(
             : undefined;
 
         const threadKey = resolvedThreadId;
-        // The run is durable on the server, but Stop, archive and delete reach a background
-        // thread only through this map: without a handle the supervisor kept planning against
-        // a deleted conversation. Registered before the run exists, since the thread can be
-        // stopped while createResearchRun is still in flight.
+        // Stop, archive and delete reach a background thread only through this map; registered before
+        // the run exists, since the thread can be stopped mid-create.
         let researchRunId: string | null = null;
         let researchStopRequested = false;
         const researchServerCancel = () => {
@@ -4504,8 +4238,8 @@ export function createOpenAIStreamAdapter(
           once: true,
         });
         try {
-          // The normal history adapter persists messages after model execution,
-          // but research validates the user message before it can start.
+          // Research validates the user message before it can start, unlike the history adapter, which
+          // persists after execution.
           const storedUserMessage = (
             await listStoredChatMessages(resolvedThreadId)
           ).find((message) => message.id === userMessage.id);
@@ -4529,8 +4263,8 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            // Omitted when empty rather than sent as "": CreateResearchRun forbids unknown
-            // fields, so an unconditional send 422s against a backend that predates it.
+            // Omitted when empty: CreateResearchRun forbids unknown fields, so an unconditional send 422s
+            // an older backend.
             ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
@@ -4544,8 +4278,8 @@ export function createOpenAIStreamAdapter(
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
-            // Stopped while createResearchRun was still in flight, so the handle had no
-            // id to act on. Replay it rather than following a run the user already ended.
+            // Stopped while createResearchRun was in flight, so the handle had no id; replay it rather
+            // than follow a run the user ended.
             void cancelResearchRun(createdRun.id).catch(() => {});
             return;
           }
@@ -4553,8 +4287,7 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          // The toggle stays on through the run: it is what the user turned on, and it is what
-          // is happening. The composer takes it away only once the chat's research is spent.
+          // The toggle stays on through the run; the composer takes it away once the chat's research is spent.
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -4617,8 +4350,9 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
-      // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
+      // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
+      // reader has only threadListItem.remoteId.
+      // unstable_threadId alone, with no activeThreadId fallback: the reader has only
       // threadListItem.remoteId, which is exactly this value.
       const toolOutputPaneScope = toolThreadScope(
         toolPaneScope(options.modelType, options.pairId),
@@ -4628,8 +4362,7 @@ export function createOpenAIStreamAdapter(
         toolOutputKey(toolOutputPaneScope, id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
-      // Which conversation was on screen when this run started. A first turn has no id yet, so
-      // this is the only way to tell later whether the user has switched away from it.
+      // Which conversation was on screen when this run started; a first turn has no id yet.
       const activeThreadIdAtRunStart =
         useChatRuntimeStore.getState().activeThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
@@ -4655,7 +4388,6 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
-      // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -4678,7 +4410,6 @@ export function createOpenAIStreamAdapter(
         }
         queuedEmptyModelRuntime = resolution.modelRuntime;
         if (!resolution.loaded) {
-          // A reported failure already names the model; generic advice buries it.
           if (!resolution.loadFailureReported) {
             toast.error(
               resolution.blockedByTrustRemoteCode
@@ -4696,7 +4427,6 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      // Re-read store after auto-load / model-ready wait.
       const liveRuntime = useChatRuntimeStore.getState();
       runtime = queuedRunSettings
         ? queuedRunSettings.params.checkpoint
@@ -4794,9 +4524,9 @@ export function createOpenAIStreamAdapter(
         runtime = { ...runtime, deepResearchEnabled: false };
         toast.info("Deep Research needs a model that supports tools");
       }
-      // Project sources auto-scope: a chat inside a project retrieves from the
-      // project's indexed sources even when the Docs pill is off. The probe is
-      // cached, so this is one round trip per project every ~30s at most.
+      // A chat inside a project retrieves from its indexed sources even with the Docs pill off;
+      // the probe is cached.
+      // The probe is cached, so this is one round trip per project every ~30s at most.
       const ragProjectId = await resolveProjectId(
         resolvedThreadId,
         readThreadRecord,
@@ -4874,8 +4604,7 @@ export function createOpenAIStreamAdapter(
         throw new Error("Missing connection API key.");
       }
 
-      // Image-generation flag (OpenAI cloud + Responses-capable model);
-      // computed first so Gemini image mode can suppress Search/Code.
+      // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
@@ -4886,8 +4615,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
-      // Per-model Search/Code allowances live in
-      // providerSupportsBuiltin*; this flag just signals image-mode.
+      // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
         imageGenerationEnabledForThisTurn;
@@ -4912,9 +4640,8 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
-      // Fetch pill is independent of Search (Anthropic bills web_fetch
-      // separately). Sourced from `webFetchToolsEnabled`; on providers
-      // without web_fetch the toggle is forced off in chat-page setState.
+      // Fetch is independent of Search (Anthropic bills web_fetch separately); forced off in
+      // chat-page setState where unsupported.
       const webFetchEnabledForThisTurn = Boolean(
         externalProvider &&
           webFetchToolsEnabled &&
@@ -4924,11 +4651,8 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
-      // Which side of the connection the Code pill runs code on. Hosted
-      // `code_execution` and local `python` / `terminal` are two trust
-      // boundaries, not two spellings of one feature, so the stored pill keeps
-      // meaning the provider's sandbox wherever it meant that before the Unsloth
-      // loop reached these providers. See code-tool-placement.ts.
+      // Hosted `code_execution` and local `python`/`terminal` are two trust boundaries, not two
+      // spellings of one feature. See code-tool-placement.ts.
       const {
         local: studioLocalCodeTools,
         hosted: hostedCodeToolsForThisTurn,
@@ -4953,9 +4677,8 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
-      // toOpenAIMessages emits assistant tool_calls + role="tool"
-      // follow-ups; the backend Gemini translator rebuilds the
-      // functionCall / functionResponse parts (with thoughtSignature).
+      // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
+      // translator rebuilds the functionCall/functionResponse parts.
       const outboundMessages = survivingMessages
         .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
         .filter((message): message is NonNullable<typeof message> =>
@@ -4980,9 +4703,8 @@ export function createOpenAIStreamAdapter(
             break;
           }
         }
-        // OpenAIChatMessage is a structural superset of SerializedMessage
-        // on the role/content axis; cast through unknown since
-        // referenceMessage carries no tool_calls (plain assistant turn).
+        // OpenAIChatMessage is a structural superset of SerializedMessage on the role/content axis;
+        // referenceMessage carries no tool_calls.
         outboundMessages.splice(
           insertAt,
           0,
@@ -4990,21 +4712,20 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      // The run's messages stop at the user turn (this is a sibling branch), so the
-      // partial is appended here for the backend to resume.
+      // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
           content: continuation.partial,
         });
-        // The original assistant message is not in this branch, so without its
-        // signature the model history goes back unsigned.
+        // The original assistant message is not in this branch, so without its signature the history
+        // goes back unsigned.
         attachAssistantThoughtSignature(
           outboundMessages,
           continuation.thoughtSignature,
         );
-        // Anthropic 400s when the last message is an assistant turn, so it gets an
-        // instruction turn after the partial instead of a prefill.
+        // Anthropic 400s when the last message is an assistant turn, so append an instruction turn
+        // instead of a prefill.
         if (rejectsAssistantPrefill(externalProvider?.providerType)) {
           outboundMessages.push({
             role: "user",
@@ -5034,9 +4755,7 @@ export function createOpenAIStreamAdapter(
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        // Treat search and fetch as one "any web tool" axis so the guard
-        // only warns when neither pill is on; checking webSearch alone
-        // mis-fired when only Fetch was on and suppressed web_fetch.
+        // Treat search and fetch as one "any web tool" axis: checking webSearch alone mis-fired when only Fetch was on.
         const anyWebEnabledForThisTurn =
           webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
         if (
@@ -5112,11 +4831,10 @@ export function createOpenAIStreamAdapter(
         targetMessages.unshift({ role: "system", content: text });
       }
 
-      // Scan post-prune history so a refused user turn's image/audio
-      // doesn't gate or mis-attribute the next turn.
+      // Scan post-prune history so a refused user turn's image/audio does not gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
-      // A continuation resumes the turn as it was sent: picking up a clip staged in the
-      // composer since would switch it onto the audio path, which cannot be continued.
+      // A continuation resumes the turn as it was sent: a clip staged since would switch it onto
+      // the uncontinuable audio path.
       const audioBase64 = findLatestUserAudioBase64(
         survivingMessages,
         !queuedRunSettings && !continuation,
@@ -5124,9 +4842,7 @@ export function createOpenAIStreamAdapter(
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
-      // Keep render_html local-only and mirror the backend image-turn gate.
-      // Canvas is independent of Search/Code: a local tool-capable model
-      // with Canvas on exposes render_html even with no other pills active.
+      // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -5145,10 +4861,8 @@ export function createOpenAIStreamAdapter(
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
-      // Block when ANY image is in the outbound payload (current or prior
-      // turns) and the loaded model can't process images. Once a chat
-      // contains an image, a non-vision model can't respond — the user
-      // starts a new chat to switch models.
+      // Block when ANY image is in the outbound payload and the loaded model cannot process images;
+      // switching models means starting a new chat.
       if (imageBase64) {
         const activeModel = runtime.models.find(
           (m) => m.id === params.checkpoint,
@@ -5169,14 +4883,10 @@ export function createOpenAIStreamAdapter(
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          // Flip the per-thread running flag on→off so compare-mode
-          // waitForRunEnd resolves instead of hanging: this gate fires
-          // before the streaming path's setThreadRunning(true).
+          // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
+          // fires before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
-          // Own token: siblings share "__default", so an ownerless clear would drop their
-          // entries while they are still generating. Marked as the gate's, so a reader that
-          // means "this thread's run started" is not told one did by a pair of flags that
-          // stand for a request nobody made.
+          // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
           const gateOwner = createImageGateRunOwner();
           runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
           runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
@@ -5184,7 +4894,6 @@ export function createOpenAIStreamAdapter(
           throw new Error(imageGateReason);
         }
       }
-      // Clear pending audio from store after extracting (consumed on send).
       if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
@@ -5202,9 +4911,7 @@ export function createOpenAIStreamAdapter(
       );
 
       const threadKey = resolvedThreadId || "__default";
-      // A first turn files its handles under "__default"; autosave then assigns a real id and
-      // adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes and the
-      // final clear follow the run instead of stranding entries behind.
+      // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
           ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
@@ -5216,14 +4923,11 @@ export function createOpenAIStreamAdapter(
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only holds the visible
-      // thread's cancelRun(), so this controller is the only way to end a backgrounded chat's
-      // request; the cancel POST below reaches llama-server only.
+      // Per-run abort chained to assistant-ui's signal: cancelByThreadId only holds the visible thread's cancelRun().
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
-      // Declared here, not at its registration below: it doubles as this run's identity token
-      // on the per-thread maps (see registerThreadServerCancel).
+      // Declared here because it doubles as this run's identity token on the per-thread maps.
       const serverCancel = () => runAbort.abort();
       if (abortSignal.aborted) {
         forwardAbort();
@@ -5231,7 +4935,6 @@ export function createOpenAIStreamAdapter(
         abortSignal.addEventListener("abort", forwardAbort, { once: true });
       }
 
-      // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
@@ -5245,10 +4948,8 @@ export function createOpenAIStreamAdapter(
           !imageBase64 &&
           !audioBase64 &&
           !videoBase64 &&
-          // Continue seeds the partial into the sibling assistant and yields it before the
-          // request starts, so the autosave can land before admission does. Admission
-          // refuses a substantive placeholder with a 409, which is not a fallback error,
-          // and the turn would fail outright. Continuations keep the legacy stream.
+          // Continue yields the seeded partial before the request starts so the autosave lands before
+          // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
           !continuation &&
           resolvedThreadId &&
           !isThreadIncognito(resolvedThreadId) &&
@@ -5264,9 +4965,8 @@ export function createOpenAIStreamAdapter(
       let generationFirstChunkAt: number | undefined;
       let generationChunkCount = 0;
       let generationStopRequested = false;
-      // Set when the no-progress deadline fires on THIS stream rather than on a recovery
-      // follower. Both must persist the marker, or the next reload attaches another
-      // follower and blocks the composer for a further deadline.
+      // Both this stream and a recovery follower must persist the marker, or the next reload
+      // attaches another follower and blocks the composer for a further deadline.
       let generationStalled = false;
       const generationCustom = () =>
         generationRunId
@@ -5299,9 +4999,8 @@ export function createOpenAIStreamAdapter(
             {
               model: params.checkpoint,
               messages: outboundMessages,
-              // Same run in both registries: without it the backend files this under no
-              // thread, and the stop-chats prompt counts the named local run and the
-              // unnamed backend one as two.
+              // Same run in both registries: otherwise the backend files it under no thread and the
+              // stop-chats prompt counts one run as two.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               stream: false,
               temperature: params.temperature,
@@ -5374,63 +5073,47 @@ export function createOpenAIStreamAdapter(
         if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
-      // backend leaves external-provider runs out of active_generations for the same reason.
+      // Flagged local/external so the model-swap gate counts only the chats a reload ends; the
+      // backend excludes external runs from active_generations for the same reason.
       releaseCurrentPreStreamRun();
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seeded with the partial so the bubble reads as one response; the boundary lets
-      // the finalizers re-derive the new output and repair a repeat/restart.
+      // Seeded with the partial so the bubble reads as one response; the boundary lets the
+      // finalizers repair a repeat or restart.
       let cumulativeText = continuation ? continuation.partial : "";
-      // Reading `cumulativeText` at all costs O(reply): each `+=` builds a cons
-      // string and the first read of it flattens the whole reply, so one
-      // charCodeAt per arrival is as expensive as a scan. Everything below that
-      // used to consult the buffer once per arrival is fed the delta instead,
-      // through `appendCumulative`, and the buffer is only read where the reply
-      // is actually published.
-      //
-      // Answers "does the text end inside <think>" from what each arrival adds.
+      // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
+      // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
+      // the delta through `appendCumulative` and the buffer is read only where the reply is
+      // published. This tracks "does the text end inside <think>".
       const thinkTags = createThinkTagTracker();
-      // Answers "could the trailing ${...} strip cut anything" the same way, so
-      // the strip itself runs only on an arrival that ends in a fragment.
+      // Same for "could the trailing ${...} strip cut anything", so the strip only runs on an
+      // arrival that ends in a fragment.
       const placeholderWatch = createTrailingPlaceholderWatch();
-      // What the cap is measured against: only grows, unlike cumulativeText,
-      // and counts tool-argument deltas, which never reach it.
+      // What the cap is measured against: only grows, and counts tool-argument deltas.
       let streamedChars = 0;
-      // Whether this run appended reply text of its own. A continuation is
-      // SEEDED with the previous run's partial, and that partial is the middle
-      // of a reply someone is still writing rather than the end of a finished
-      // one, so a run that adds nothing to it must not have its tail trimmed.
-      // Read by the trailing-fragment strip after the stream.
+      // Whether this run appended reply text of its own: a continuation is SEEDED with the previous
+      // run's partial, so a run that adds nothing must not have its tail trimmed.
       let producedReplyText = false;
       const continuationPartial = continuation?.partial ?? "";
-      // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
-      // resume at the exact token boundary, so their output is already the rest of the
-      // answer and trimming could only delete words the model meant to write. The repair
-      // is for providers that may ignore the prefill and repeat or restart.
+      // Local backends resume at the exact token boundary, so trimming could only delete words the
+      // model meant; the repair is for providers that repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
-      // Streamed publishes get the cumulative text unchanged; the repairs run once, on
-      // the finished turn. Both of them re-decide as the continuation grows, so running
-      // them per arrival published a SHORTER text than the arrival before it, and the
-      // restart branch published only the continuation, dropping the whole partial the
-      // reader was already looking at.
+      // The repairs run once, on the finished turn: both re-decide as the continuation grows, so
+      // per-arrival runs published a shorter text than the arrival before.
       const mergeContinuation = createContinuationMerger(
         continuationPartial,
         repairContinuation,
       );
-      // The parse of everything already streamed, extended by each delta.
-      // The final merge can rewrite the prefix it is handed, and a rewritten prefix is
-      // exactly what an extend-only parse cannot follow, so that one path keeps
-      // reparsing the whole reply as before. It is a continuation of an external
-      // provider that may repeat itself, not the streaming case.
+      // The parse of everything streamed so far, extended by each delta. The final merge can rewrite
+      // the prefix it is handed, which an extend-only parse cannot follow, so it reparses.
       const segmentedText = createSegmentedAssistantText({
         trustAppends: !(continuationPartial && repairContinuation),
       });
-      // The single place `cumulativeText` grows, so everything derived from it
-      // sees the same characters in the same order.
+      // The single place `cumulativeText` grows, so everything derived from it sees the same
+      // characters in the same order.
       const appendCumulative = (text: string): void => {
         if (!text) {
           return;
@@ -5440,24 +5123,21 @@ export function createOpenAIStreamAdapter(
         thinkTags.append(text);
         placeholderWatch.append(text);
       };
-      // A resumed turn starts with the partial already in the buffer. One read
-      // of it, once per turn, is what puts the trackers in step with it.
+      // A resumed turn starts with the partial already in the buffer; one read of it puts the trackers in step.
       if (cumulativeText) {
         thinkTags.append(cumulativeText);
         placeholderWatch.append(cumulativeText);
       }
-      // Every streamed yield carries the repaired text, not just the terminal ones:
-      // assistant-ui drops whatever is yielded after an abort, so on Stop the last
-      // STREAMED yield is what gets saved.
+      // Every streamed yield carries the repaired text: assistant-ui drops whatever is yielded after
+      // an abort, so on Stop the last STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
-      // Provisional reason on every streamed yield: an abort skips the terminal yields
-      // and a reload rebuilds messages as "complete", so a stopped turn would otherwise
-      // lose why it was short. The terminal yields overwrite or clear it.
+      // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
+      // rebuilds messages as "complete".
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
@@ -5467,14 +5147,12 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
-      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its
-      // only truncation signal. Everyone else reports "length" honestly.
+      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
-      // True while wrapping a `delta.reasoning_content` stream in
-      // <think>...</think> for parseAssistantContent. Lives outside the
-      // SSE loop because the close tag fires when content arrives.
+      // True while wrapping a `delta.reasoning_content` stream in <think> for parseAssistantContent;
+      // outside the SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
       type ToolCallProvenance = {
         source?: string;
@@ -5490,7 +5168,7 @@ export function createOpenAIStreamAdapter(
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
-        // No `arguments` field at all; a zero-parameter tool sends """".
+        // No `arguments` field at all; a zero-parameter tool sends "".
         _announced_only?: boolean;
         _resend_suspect?: boolean;
         _superseded?: boolean;
@@ -5498,15 +5176,12 @@ export function createOpenAIStreamAdapter(
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
-      // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // Ids for calls the stream gave none (issue #9807). A card is minted
-      // before its part joins `toolCallParts`, so without this a batch opening
-      // three calls mints one id three times.
+      // Ids for calls the stream gave none (#9807): a card is minted before its part joins
+      // `toolCallParts`, so a batch of three would mint one id three times.
       const reservedToolCallIds = new Set<string>();
-      // Of those, the ones the provider sent. `_has_stable_id` cannot say which:
-      // a split marks every card but the last with it, to keep a late id off the
-      // calls already spoken for.
+      // Of those, the ones the provider sent: a split marks every card but the last, keeping a late
+      // id off calls already spoken for.
       const providerSentToolCallIds = new Set<string>();
       const boundaryScans = new Map<
         string,
@@ -5514,18 +5189,15 @@ export function createOpenAIStreamAdapter(
       >();
       const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v);
-      // Forks whose last object never closed, the backend's open_tail_keys.
-      // `{"a":1}{` is not marked truncated, so the lone brace would persist as a
-      // card nothing completes.
+      // Forks whose last object never closed (the backend's open_tail_keys): `{"a":1}{` is not
+      // marked truncated, so the lone brace would persist as a card nothing completes.
       const openTailIds = new Set<string>();
-      // Metadata from a delta repeating a closed card's name. That name is
-      // either that call's, resent, or the next call to the same tool announcing
-      // itself, and only the object that follows tells them apart.
+      // Metadata from a delta repeating a closed card's name: only the object that follows tells a
+      // resend from the next call to the same tool.
       const pendingExtraByPartId = new Map<string, Record<string, unknown>>();
       const endProviderTurn = (): boolean => {
         let changed = false;
-        // _call_is_finished, on the arguments alone: the backend holds the
-        // fork back whatever id reached it.
+        // _call_is_finished, on the arguments alone: the backend holds the fork back whatever id reached it.
         for (const tailId of openTailIds) {
           const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
           if (at === -1) continue;
@@ -5536,9 +5208,8 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
-        // An announcement another call took over, and a name that only looked like
-        // a resent, were never calls. A lone announcement stays: a zero-parameter
-        // tool looks like that.
+        // An announcement another call took over was never a call; a lone one stays, since a
+        // zero-parameter tool looks like that.
         for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (
@@ -5548,8 +5219,8 @@ export function createOpenAIStreamAdapter(
             part.argsText
           )
             continue;
-          // Its metadata goes to the call it was mistaken for: Gemini stows a
-          // thought signature there and rejects a replay without one.
+          // Its metadata goes to the call it was mistaken for: Gemini stows a thought signature there
+          // and rejects a replay without one.
           const previous = toolCallParts[at - 1] as
             | PositionedToolCallPart
             | undefined;
@@ -5563,9 +5234,8 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
-        // _normalized_call drops a nameless call before reserving a card id, so a
-        // card kept here holds a number the backend gives the next round, whose
-        // events then land on this blank card.
+        // _normalized_call drops a nameless call before reserving a card id, so a card kept here
+        // holds a number the backend gives the next round.
         for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (part.toolName || part._delta_index === undefined) continue;
@@ -5574,8 +5244,7 @@ export function createOpenAIStreamAdapter(
           changed = true;
         }
         for (const [partId, waiting] of pendingExtraByPartId) {
-          // No object ever came, so the repeated name was that call's after all
-          // and so is the metadata that rode it.
+          // No object ever came, so the repeated name was that call's after all, and so is its metadata.
           const at = toolCallParts.findIndex((part) => part.toolCallId === partId);
           if (at === -1) continue;
           const part = toolCallParts[at] as PositionedToolCallPart;
@@ -5589,13 +5258,11 @@ export function createOpenAIStreamAdapter(
           changed = true;
         }
         pendingExtraByPartId.clear();
-        // The backend numbers the calls that survive: a card dropped above leaves
-        // a gap, and a claim displaced one for what turned out not to be a call.
-        // Both are settled here, where the backend settles them.
+        // The backend numbers the calls that survive, so gaps from dropped and displaced cards are
+        // settled here, where the backend settles them.
         if (changed) renumberMintedCards();
         openTailIds.clear();
-        // The next round opens at index 0 again, and without this "B" then
-        // "C" across the boundary named one call "BC".
+        // The next round opens at index 0 again, and without this "B" then "C" across the boundary named one call "BC".
         for (let at = 0; at < toolCallParts.length; at += 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (part._delta_index === undefined) continue;
@@ -5619,18 +5286,15 @@ export function createOpenAIStreamAdapter(
         reservedToolCallIds.add(partId);
         bindStreamedToolCallCard(toolPartIdByBackendId, partId);
       };
-      // Raw tool_args accumulator per card: the backend forwards arguments while
-      // the model is still WRITING them, and the partial parse below feeds the
-      // card's args so the code renders live.
+      // Raw tool_args accumulator per card: the backend forwards arguments while the model is still
+      // writing them, and the partial parse feeds the card's args.
       const liveArgsTextById = new Map<string, string>();
-      // A dropped card gives its id back: the backend never reserved it, so
-      // holding it makes the next round's mint skip a number it then reuses.
+      // A dropped card gives its id back: holding it makes the next round's mint skip a number it then reuses.
       const releaseStreamedCard = (partId: string): void => {
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
-        // A card that took a late id answers to a run-unique part id, so the id
-        // the provider sent is a separate key pointing at it. Left behind, it makes
-        // the next round's mint skip a number the backend reuses.
+        // A card that took a late id answers to a run-unique part id, so the provider's id is a
+        // separate key pointing at it; left behind it makes the mint skip a number.
         for (const [backendId, mapped] of [...toolPartIdByBackendId]) {
           if (mapped !== partId) continue;
           toolPartIdByBackendId.delete(backendId);
@@ -5642,8 +5306,9 @@ export function createOpenAIStreamAdapter(
         liveArgsTextById.delete(partId);
         pendingExtraByPartId.delete(partId);
       };
-      // The backend reserves provider ids before it mints; the client can
-      // only move a card aside once the claim lands.
+      // The backend reserves provider ids before it mints; a card can only move aside once the claim lands.
+      // Renumber in the order the backend walks them, or tool_start reaches the wrong card: three calls
+      // in one delta and a later `tool_call_1` cross-wire the second and third.
       const renameStreamedCard = (from: string, to: string): void => {
         reservedToolCallIds.delete(from);
         toolPartIdByBackendId.delete(from);
@@ -5654,8 +5319,8 @@ export function createOpenAIStreamAdapter(
         const live = liveArgsTextById.get(from);
         if (live !== undefined) liveArgsTextById.set(to, live);
         liveArgsTextById.delete(from);
-        // The turn-end sweep claims parked metadata by the part id the card holds
-        // then, so it has to travel with the rename or the sweep finds nothing.
+        // The turn-end sweep claims parked metadata by the part id the card holds then, so it must
+        // travel with the rename.
         const pending = pendingExtraByPartId.get(from);
         if (pending) pendingExtraByPartId.set(to, pending);
         pendingExtraByPartId.delete(from);
@@ -5663,16 +5328,13 @@ export function createOpenAIStreamAdapter(
         if (at !== -1) codexRoundToolCallIds[at] = to;
         paintStreamedCard(to);
       };
-      // The backend reserves provider ids before minting any card id, so a claim
-      // mid-response moves every card already numbered. Renumber in the order the
-      // backend walks them, or tool_start reaches the wrong card: three calls in
-      // one delta and a later `tool_call_1` cross-wire the second and third.
+      // The backend reserves provider ids before minting, so a claim mid-response moves every
+      // numbered card. Renumber in the backend's walk order, or tool_start hits the wrong card.
       const renumberMintedCards = (claimed?: string): void => {
         const minted = toolCallParts.filter(
           (part) =>
             !providerSentToolCallIds.has(part.toolCallId) &&
-            // This round's cards only. Earlier ones may carry a result, and the
-            // backend's ledger is append-only: it never renumbers, so neither may this.
+            // This round's cards only: the backend's ledger is append-only and never renumbers, so neither may this.
             (part as PositionedToolCallPart)._delta_index !== undefined,
         ) as PositionedToolCallPart[];
         const carried = minted.map((part) => ({
@@ -5690,13 +5352,12 @@ export function createOpenAIStreamAdapter(
           liveArgsTextById.delete(held.from);
           openTailIds.delete(held.from);
           pendingExtraByPartId.delete(held.from);
-          // Cleared before any is minted again: the mint reads the ids the parts
-          // hold, and a stale one makes the first card skip the backend's number.
+          // Cleared before any is minted again: the mint reads the ids the parts hold, and a stale one
+          // makes the first card skip the backend's number.
           const at = toolCallParts.indexOf(held.part);
           if (at !== -1) toolCallParts[at] = { ...held.part, toolCallId: "" };
         }
-        // Held back only now: the loop above frees every minted id, and one of
-        // them is the spelling being claimed.
+        // Held back only now: the loop above frees every minted id, and one of them is the spelling being claimed.
         if (claimed !== undefined) reservedToolCallIds.add(claimed);
         for (const held of carried) {
           const to = mintStreamedCardId(held.part._delta_index);
@@ -5713,10 +5374,8 @@ export function createOpenAIStreamAdapter(
           }
         }
       };
-      /**
-       * Parts for the calls after the first in a slot holding several. Nothing
-       * per-call is copied: the thought signature goes only to the last.
-       */
+      /** Parts for the calls after the first in a slot holding several. Nothing per-call is copied:
+       *  the thought signature goes only to the last. */
       const bornSplitToolCalls = (
         extraSegments: string[],
         toolName: string,
@@ -5751,13 +5410,9 @@ export function createOpenAIStreamAdapter(
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
         });
-      // Backend tool ids ("call_0", ...) restart every response, so a bare id as
-      // store key lets a later turn's stream overwrite the preserved output an
-      // earlier still-mounted finished card reads (the tool_start stale-clear
-      // only guards the forward direction). Mint one per-run-unique part id per
-      // backend id (confirmation ids already synthesize their own) so each card
-      // key is unique; every tool_start/output/args/end resolves the same id via
-      // this map, dropped at tool_end.
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as store key lets a
+      // later turn's stream overwrite a finished card's output. Mint one run-unique part id per
+      // backend id, resolved through this map and dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
@@ -5767,8 +5422,8 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      // Latest Gemini text-part thoughtSignature; pinned onto the final
-      // text MessagePart so next-turn replay carries it.
+      // Latest Gemini text-part thoughtSignature, pinned onto the final text MessagePart so the
+      // next turn's replay carries it.
       let latestTextThoughtSignature: string | undefined;
       const pinTextThoughtSignature = <T extends { type: string }>(
         parts: T[],
@@ -5800,9 +5455,7 @@ export function createOpenAIStreamAdapter(
           })
           .sort((a, b) => a.cursor - b.cursor || a.index - b.index);
 
-        // The distinct cursors, which are where the text is cut into runs. The
-        // runs before them never change again once a later one exists, so only
-        // the last one is still growing.
+        // The distinct cursors, where the text is cut into runs: only the last one is still growing.
         const boundaries: number[] = [];
         for (const positioned of positionedTools) {
           if (boundaries[boundaries.length - 1] !== positioned.cursor) {
@@ -5832,8 +5485,8 @@ export function createOpenAIStreamAdapter(
         return pinTextThoughtSignature(assembled);
       };
 
-      // Yielded before the request starts: an abort during load skips the partial-content
-      // yield below, saving an empty message and stranding the resumed text.
+      // Yielded before the request starts: an abort during load skips the partial-content yield
+      // below, saving an empty message.
       if (continuation) {
         yield {
           content: buildAssistantContent(cumulativeText),
@@ -5875,8 +5528,7 @@ export function createOpenAIStreamAdapter(
         }
         reasoningDurationTracker.finishGroup();
       };
-      // Anthropic document_citations payload, converted to Sources-panel
-      // parts at end-of-stream so inline [N] markers have matching entries.
+      // Anthropic document_citations, converted at end-of-stream so inline [N] markers have matching entries.
       const documentCitationParts: Array<{
         type: "source";
         sourceType: "url";
@@ -5885,20 +5537,18 @@ export function createOpenAIStreamAdapter(
         title: string;
         metadata?: { description: string };
       }> = [];
-      // Latched on the `anthropic_refusal` tool event; stamped onto final
-      // assistant metadata as `custom.anthropicRefusal` to drive the
-      // history-prune above.
+      // Latched on the `anthropic_refusal` tool event and stamped onto final metadata as
+      // `custom.anthropicRefusal` to drive the history prune.
       let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
 
-      // Colab-style proxies can swallow fetch aborts, so also POST
-      // /inference/cancel explicitly on abort.
+      // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
-        // assistant-ui aborts with detach=true when a runtime unmounts and detach=false for an
-        // explicit Stop. Only a real Stop cancels the backend run; runSignal forwards the reason.
+        // assistant-ui aborts with detach=true on unmount and false for an explicit Stop; only a real
+        // Stop cancels the backend run.
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
@@ -5913,12 +5563,12 @@ export function createOpenAIStreamAdapter(
         if (!stopPlan.postLegacyCancel) return;
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
-        // Plain fetch, not authFetch: authFetch redirects to login on
-        // 401, which would kick the user out mid-stop.
+        // Plain fetch, not authFetch: authFetch redirects to login on 401, kicking the user out mid-stop.
         const token = getAuthToken();
-        // Use apiUrl so the cancel POST reaches the right origin in Tauri
-        // production builds (webview origin != backend at 127.0.0.1:<port>).
-        // Browser/dev builds get the empty base, so the path is unchanged.
+        // apiUrl so the cancel POST reaches the right origin in Tauri builds (webview origin is not
+        // the backend); browser builds get the empty base.
+        // The webview origin is not the backend at 127.0.0.1:<port>. Browser and dev builds get the empty
+        // base, so the path is unchanged.
         void fetch(apiUrl("/api/inference/cancel"), {
           method: "POST",
           headers: {
@@ -5931,9 +5581,7 @@ export function createOpenAIStreamAdapter(
       };
 
       // Stop handle for when this conversation is not the visible one, which cancelByThreadId
-      // cannot reach. Aborting this run's own controller closes just its request, and the
-      // listener above posts its cancel_id so llama-server stops decoding too. For an
-      // external provider the abort is the stop, since its cancel_id is never registered.
+      // cannot reach. For an external provider the abort IS the stop: no cancel_id is registered.
       runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
         if (runSignal.aborted) {
@@ -6039,11 +5687,9 @@ export function createOpenAIStreamAdapter(
             reasoningEffort,
             externalReasoningCaps.reasoningEffortLevels,
           ) as RequestReasoningEffort;
-        // Clamp to the loaded local model's advertised levels so a stale value
-        // (e.g. "max" carried over from an external model, or a level this model
-        // lacks) becomes one the backend will honor instead of being dropped:
-        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style
-        // enable_thinking_effort gets high|max.
+        // Clamp to the loaded model's advertised levels so a stale value becomes one the backend
+        // honors: gpt-oss takes low|medium|high, GLM enable_thinking_effort high|max.
+        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style enable_thinking_effort high|max.
         const localReasoningEffort = clampReasoningEffortToLevels(
           reasoningEffort,
           reasoningEffortLevels,
@@ -6054,14 +5700,14 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
-            // Per-thread container reuse; empty/undefined falls back to
-            // container_auto. Anthropic uses anthropicCodeExecContainerId.
+            // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
+            // Anthropic uses anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
-                // Container selection can change while this run waits for model loading,
-                // so read it at payload construction instead of reusing run-start metadata.
+                // Container selection can change while this run waits for model loading, so read it when the
+                // payload is built.
                 const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
@@ -6071,9 +5717,8 @@ export function createOpenAIStreamAdapter(
                 openaiCodeExecContainerId = null;
                 anthropicCodeExecContainerId = null;
               }
-              // Pre-send container validation (OpenAI). Stale ids drop
-              // silently and fall through to lazy-create; on list-call
-              // failure, rely on the backend's retry path.
+              // Pre-send container validation (OpenAI): stale ids fall through to lazy-create, and a failed
+              // list call relies on the backend's retry.
               let activeContainerIds: Set<string> | null = null;
               if (externalProvider.providerType === "openai") {
                 try {
@@ -6098,8 +5743,8 @@ export function createOpenAIStreamAdapter(
                   openaiCodeExecContainerId = null;
                 }
               }
-              // Cross-thread inheritance: reuse the most recent container
-              // from any other thread; opt-out via the picker.
+              // Cross-thread inheritance: reuse the newest container from any other thread; opt out in the
+              // picker.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -6111,8 +5756,7 @@ export function createOpenAIStreamAdapter(
                   for (const t of others) {
                     if (t.id === resolvedThreadId) continue;
                     if (!t.openaiCodeExecContainerId) continue;
-                    // Skip ids not in active set; null the source thread so
-                    // the next pass doesn't re-pick a dead id.
+                    // Skip ids not in the active set; null the source thread so the next pass does not re-pick it.
                     if (
                       activeContainerIds &&
                       !activeContainerIds.has(t.openaiCodeExecContainerId)
@@ -6132,9 +5776,8 @@ export function createOpenAIStreamAdapter(
                   /* fall through to lazy-create below */
                 }
               }
-              // Pre-create our own container (vs container_auto) so it shows
-              // in the picker with a friendly name and the configured TTL.
-              // Falls back to container_auto on failure.
+              // Pre-create our own container rather than container_auto, so it shows in the picker with a
+              // friendly name and the configured TTL; falls back on failure.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -6150,9 +5793,7 @@ export function createOpenAIStreamAdapter(
                       baseUrl: externalProvider.baseUrl || null,
                     },
                     {
-                      // Friendly English-word name so the container is
-                      // human-readable in the picker (e.g. "kestrel-3f9c")
-                      // instead of a thread-id slug or blank default.
+                      // A friendly English-word name, so the container reads as more than a thread-id slug.
                       name: pickFriendlyContainerName(),
                       ttlMinutes: ttlToUse,
                     },
@@ -6162,9 +5803,7 @@ export function createOpenAIStreamAdapter(
                     openaiCodeExecContainerId: created.id,
                   }).catch(() => {});
                 } catch {
-                  // Fall back to the backend's container_auto path on
-                  // failure — keeps the chat moving (the auto-created
-                  // container is unnamed); the next turn can retry.
+                  // Fall back to the backend's container_auto path on failure; the next turn can retry.
                   openaiCodeExecContainerId = null;
                 }
               }
@@ -6173,19 +5812,17 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
-              // Never forwarded upstream (the proxy sends an explicit field list);
-              // the trailing assistant turn is what asks a provider to continue.
+              // Never forwarded upstream (the proxy sends an explicit field list); the trailing assistant
+              // turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
-              // Reasoning-class models (OpenAI gpt-5.x / o3) reject
-              // temperature and top_p; forward only when supported.
+              // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
                 ? { temperature: params.temperature }
                 : {}),
               ...(externalCapabilities?.topP !== false
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking
-              // needs >=16k); clamp at the per-model max.
+              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
               max_tokens: Math.min(
                 Math.max(
                   params.maxTokens,
@@ -6201,29 +5838,20 @@ export function createOpenAIStreamAdapter(
               ...(externalUsesStudioTools && resolvedThreadId
                 ? { thread_id: resolvedThreadId }
                 : {}),
-              // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Unsloth executes the calls for any provider that advertises the
-              // capability. Providers that do not keep their provider-hosted
-              // tool envelope in the branch below.
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
-              // resolved to the provider's own sandbox is a hosted request and
-              // belongs in the branch below. Sending this body for it would
-              // attach permission_mode to a passthrough turn, which the route
-              // answers with a 400.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                // Armed research needs Studio's loop for the same reason the local body
-                // does: deep_research is appended past every tool filter, but only for a
-                // request that asked for the loop at all. Without it the turn proxies
-                // through, the model is never offered the tool, and arming does nothing.
+                // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
+                // only for a request that asked for the loop at all.
                 deepResearchArmed)
                 ? {
                     enable_tools: true,
@@ -6233,15 +5861,9 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
-                      // Hosted tools Unsloth has no local stand-in for. Their
-                      // pills stay lit whether or not an Unsloth tool is on, so
-                      // listing only the local names here would silently drop
-                      // Images (or Fetch) the moment Search, Code, MCP or a
-                      // project's automatic RAG selected this branch. Search
-                      // deliberately does not ride along: that is the one
-                      // Unsloth runs itself just above. Code rides along only
-                      // when it resolved to the provider's sandbox, which is
-                      // mutually exclusive with the local names above.
+                      // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
+                      // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
+                      // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
@@ -6259,18 +5881,13 @@ export function createOpenAIStreamAdapter(
                       runtime.toolCallTimeout >= 9999
                         ? 9999
                         : runtime.toolCallTimeout * 60,
-                    // Self-hosted models often write a call as text rather than
-                    // emitting structured tool_calls, so the external loop heals
-                    // like the local one. Omitting this left the backend on its
-                    // process default, which is not what the user set in Settings.
+                    // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
+                    // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Keep the external server-side loop under the same user
-                    // setting as the local inference paths.
+                    // Keep the external server-side loop under the same user setting as the local paths.
                     nudge_tool_calls: runtime.nudgeToolCalls,
-                    // This branch runs the tools here, so say so by name:
-                    // enabled_tools ["web_search"] is byte-identical to what an
-                    // older bundle sent meaning hosted search, so without this
-                    // flag Search silently stayed hosted.
+                    // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
+                    // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
@@ -6327,12 +5944,12 @@ export function createOpenAIStreamAdapter(
                           : []),
                       ],
                     }
-                  : // Explicit false: an omitted field falls back to the
-                    // server's tools-on default, which would bill provider
-                    // server tools.
+                  // Explicit false: an omitted field falls back to the server's tools-on default, which
+                  // would bill provider server tools.
+                  :
                     { enable_tools: false }),
-              // Also on this body, not just the local one: a provider whose models run Studio
-              // tools can hand off too, and omitting it here makes arming research a no-op.
+              // Also on this body: a provider whose models run Studio tools can hand off too, and omitting
+              // it makes arming research a no-op.
               ...(deepResearchArmed ? { deep_research_armed: true } : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
@@ -6371,8 +5988,7 @@ export function createOpenAIStreamAdapter(
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
-              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
-              // silently drops on unsupported models as a backstop.
+              // Anthropic fast mode (Opus 4.6 / 4.7 only); the backend drops it on unsupported models as a backstop.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,
@@ -6406,8 +6022,7 @@ export function createOpenAIStreamAdapter(
             ...studioToolHistoryRequestFieldsAfterReplay(
               survivingMessages as unknown as ToolHistoryMessage[],
             ),
-            // Opt into the trailing usage chunk so the context-usage bar
-            // and tok/s readout populate (backend gates it on include_usage).
+            // Opt into the trailing usage chunk so the context bar and tok/s populate (backend gates it).
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
               isGguf: activeModel?.isGguf === true,
@@ -6422,9 +6037,8 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
-            // Omitted when unset so the server keeps drawing a fresh seed, and when the
-            // backend does not read one, so a pin left over from a GGUF is not sent
-            // invisibly after a switch to transformers.
+            // Omitted when unset so the server draws a fresh seed, and when the backend reads none, so a
+            // GGUF pin is not sent invisibly after a switch.
             ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
               ? {}
               : { seed: params.seed }),
@@ -6437,9 +6051,10 @@ export function createOpenAIStreamAdapter(
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
-                ? // GLM-5.2-style: on/off gate plus an effort level. Disabling
-                  // sends enable_thinking=false (a real disable); enabling sends
-                  // the chosen level (e.g. high|max).
+                // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends
+                // the chosen level.
+                // Enabling sends the chosen level, e.g. high|max.
+                ?
                   reasoningEnabled
                   ? {
                       enable_thinking: true,
@@ -6459,14 +6074,9 @@ export function createOpenAIStreamAdapter(
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            // Permission level for local tool calls is sent for every local
-            // chat, not only when a tool pill is on: a process policy
-            // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. "auto" OMITS
-            // confirm_tool_calls: an explicit true would make the backend treat
-            // every auto request as needing a stream and defeat the safe-only
-            // no-stream exception. "ask" sends true; off/full send false (full
-            // also drops the sandbox).
+            // Sent for every local chat, since `unsloth run --enable-tools` can open the tool loop with
+            // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
+            // defeat the safe-only exception); "ask" sends true, off/full send false.
             permission_mode: permissionMode,
             ...(permissionMode === "auto"
               ? {}
@@ -6497,9 +6107,8 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Scope: thread_id = this thread's docs, kb_id = a KB,
-                  // project_id = the thread's project sources (auto-on whenever
-                  // the project has indexed sources, no Docs pill needed).
+                  // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
+                  // sources (auto-on whenever the project has indexed sources).
                   ...(ragEnabled || projectRagEnabled
                     ? {
                         rag_scope: {
@@ -6540,9 +6149,7 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              : // Explicit false, not an omitted field: the server defaults tools
-                // on for a request that never mentions them, so a model with no
-                // tool pill lit has to say so.
+              :  // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
                 { enable_tools: false }),
           };
         };
@@ -6570,8 +6177,7 @@ export function createOpenAIStreamAdapter(
                 requestPayload.enable_tools === true ||
                 (Array.isArray(clientTools) && clientTools.length > 0)
               ) {
-                // Confirmation and browser-executed tool chains still use the
-                // subscriber-owned stream in this PR.
+                // Confirmation and browser-executed tool chains still use the subscriber-owned stream.
                 generationDecision = "legacy";
               } else {
                 const admission = explicitStopSignal(runSignal);
@@ -6583,14 +6189,9 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
-                  // Before admission, not after. The run id is ours (`cancelId` is passed as
-                  // `runId`), and the run becomes visible through /active as soon as the POST
-                  // lands, so a visibility, pageshow, online or history-load trigger during
-                  // this await could otherwise start a recovery that the later claim would
-                  // not stop: the scheduler only tests ownership at startup.
-                  // Provisional: it owns recovery without marking the thread bounded.
-                  // The await below can outlast the checkpoint cap, and a capped thread
-                  // is dropped from the schedule for good.
+                  // Before admission, not after: the run is visible through /active as soon as the POST lands,
+                  // so a recovery started during this await would escape the later claim. Provisional, since
+                  // the await can outlast the checkpoint cap and a capped thread is dropped for good.
                   claimLiveGenerationRun(cancelId, resolvedThreadId!, {
                     provisional: true,
                   });
@@ -6609,20 +6210,19 @@ export function createOpenAIStreamAdapter(
                     if (!isLegacyFallbackChatGenerationAdmissionError(error)) {
                       throw error;
                     }
-                    // Durable recovery does not yet replay server-side tool events.
-                    // Use the subscriber-owned stream for this policy-forced case.
+                    // Durable recovery does not yet replay server-side tool events, so this policy-forced case
+                    // uses the subscriber-owned stream.
                     generationDecision = "legacy";
-                    // Dropped here rather than in the outer finally: this stream is about
-                    // to become subscriber-owned, and leaving the claim would let the cap
-                    // fire on a stream whose only persistence is those checkpoints.
+                    // Dropped here rather than in the outer finally: leaving the claim would let the cap fire on a
+                    // stream whose only persistence is those checkpoints.
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
-                    // Normally the same id we claimed above; claimed again in case the server
-                    // ever echoes a different one. Both are released in the finally below.
+                    // Normally the same id claimed above; claimed again in case the server echoes a different one.
+                    // Both are released in the finally.
                     claimLiveGenerationRun(generationRunId, resolvedThreadId!);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
@@ -6663,13 +6263,11 @@ export function createOpenAIStreamAdapter(
                 }
               } catch (error) {
                 if (!(error instanceof ChatGenerationStalledError)) throw error;
-                // End the stream rather than rethrow, keeping everything replayed so
-                // far, as the recovery follower does. The checks below stay quiet
-                // because a stalled run is still non-terminal.
+                // End the stream rather than rethrow, keeping everything replayed so far; a stalled run is
+                // still non-terminal, so the checks below stay quiet.
                 generationStalled = true;
-                // Different job from the marker: this is what makes the final yield
-                // carry `incomplete`, without which assistant-ui reads the partial reply
-                // as finished and offers no Continue until a reload rebuilds the reason.
+                // Makes the final yield carry `incomplete`, without which assistant-ui reads the partial reply
+                // as finished and offers no Continue.
                 incompleteReason = "interrupted";
               }
               if (generationStatus === "failed") {
@@ -6686,10 +6284,8 @@ export function createOpenAIStreamAdapter(
                 );
               }
             };
-            // The window is passed so a length-stop can tell a Max Tokens the user chose
-            // from the backend's stand-in for "Max" (the whole context length). The two
-            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
-            // is already unlimited.
+            // The window is passed so a length-stop can tell a user-chosen Max Tokens from the backend's
+            // stand-in for "Max"; the two need opposite advice.
             const stream =
               generationDecision === "durable"
                 ? durableStream()
@@ -6727,13 +6323,12 @@ export function createOpenAIStreamAdapter(
                 responseModelId = chunkModel;
               }
 
-              // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                // The one boundary every round has: only-disabled rounds emit
-                // no card and a [DONE] upstream sends no finish_reason.
+                // The one boundary every round has: only-disabled rounds emit no card and a [DONE] upstream
+                // sends no finish_reason.
                 if (!toolStatusText) {
                   endProviderTurn();
                 }
@@ -6751,10 +6346,9 @@ export function createOpenAIStreamAdapter(
                   chunk.context_truncated,
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
-                // What must stay silent is a fit that returned the ORIGINAL messages:
-                // toasting "older turns were removed" is untrue there, and burns the
-                // once-per-thread flag. Not `fits`, which is also false for a shortened
-                // prompt that really was sent.
+                // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
+                // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
+                // false for a shortened prompt that was sent.
                 const reallyCompacted = promptWasShortened(chunk.context_truncated);
                 if (
                   reallyCompacted &&
@@ -6763,8 +6357,7 @@ export function createOpenAIStreamAdapter(
                   !rollingContextNoticeThreads.has(resolvedThreadId)
                 ) {
                   rollingContextNoticeThreads.add(resolvedThreadId);
-                  // Once per thread per page load; the persistent record is the notice on
-                  // the assistant turn that compacted.
+                  // Once per thread per page load; the durable record is the notice on the turn that compacted.
                   const archived = contextTruncation?.archived_messages ?? 0;
                   toast.info("This conversation was compacted", {
                     description: archived
@@ -6779,9 +6372,7 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Local GGUF sends server-timed reasoning duration. Guard the type
-              // so a malformed or proxied chunk (string/null/NaN duration) can
-              // never turn the label into NaN.
+              // Guard the type so a malformed or proxied chunk (string/null/NaN duration) cannot make NaN.
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
@@ -6789,9 +6380,8 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Diffusion frame: a transient canvas snapshot. Route it to the transient
-              // store (the in-bubble renderer reads it) and skip it; it has no assistant
-              // text, so it never enters the transcript or the counters below.
+              // Diffusion frame: a transient canvas snapshot routed to the transient store and skipped; it
+              // has no assistant text, so it never enters the transcript.
               const diffusionFrame = (
                 chunk as unknown as {
                   _diffusionFrame?: {
@@ -6803,8 +6393,7 @@ export function createOpenAIStreamAdapter(
                 }
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
-                // Keyed by thread so a background run's frames stay out of the visible chat
-                // instead of overwriting the frame it is painting.
+                // Keyed by thread so a background run's frames stay out of the visible chat.
                 runtime.setActiveDiffusionCanvas(liveThreadKey(serverCancel), {
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
@@ -6814,23 +6403,18 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Emit tool-call content parts for assistant-ui.
-              // tool_start: add a part (renders "running").
-              // tool_end: set result on the part (transitions to "complete").
+              // tool_start adds a part (renders "running"), tool_end sets its result (transitions to "complete").
               const toolEvent = (
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Unsloth's own tool events end the turn that asked for them; finish_reason
-                // alone is not enough. A hosted tool runs INSIDE the turn and rides a whole
-                // chunk, where Unsloth's are bare {"type": "tool_start"} frames.
+                // Unsloth's own tool events end the turn that asked for them; finish_reason alone is not
+                // enough, since a hosted tool runs INSIDE the turn and rides a whole chunk.
                 if (!chunk.choices) {
                   endProviderTurn();
                 }
-                // Deep Research is an ordinary tool to every loop that runs it, so the handoff
-                // is read off the events they all publish rather than a bespoke frame. An
-                // ungated pair is not rendered: the research card is the reply, a tool pill
-                // would just precede it saying the same thing.
+                // Deep Research is an ordinary tool to every loop that runs it, so the handoff is read off the
+                // shared events. An ungated pair is not rendered: the research card is the reply.
                 if (
                   toolEvent.tool_name === "deep_research" &&
                   readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
@@ -6855,8 +6439,7 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "document_citations") {
-                  // Convert citations_delta footnotes into Sources-panel
-                  // entries matching the inline [N] markers.
+                  // Convert citations_delta footnotes into Sources entries matching the inline [N] markers.
                   const cits = toolEvent.citations;
                   if (Array.isArray(cits)) {
                     cits.forEach((entry, idx) => {
@@ -6888,15 +6471,13 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "anthropic_refusal") {
-                  // Latch the backend refusal signal so final message
-                  // metadata can drive the prune.
+                  // Latch the backend refusal signal so final metadata can drive the prune.
                   anthropicRefusalSeen = true;
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
-                  // Incremental stdout from a running tool: append to the live
-                  // store so the card renders it while the spinner runs. Final
-                  // result arrives via tool_end.
+                  // Incremental stdout from a running tool: append to the live store so the card renders it.
+                  // The final result arrives via tool_end.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId = resolveToolPartId(backendToolCallId);
@@ -6912,10 +6493,8 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_args") {
-                  // The model is still WRITING this call's arguments: accumulate
-                  // the raw stream and feed a partial parse into the part's args
-                  // so the card shows the code live. tool_start later replaces
-                  // args with the authoritative parse.
+                  // The model is still WRITING this call's arguments: accumulate the raw stream and feed a
+                  // partial parse so the card shows the code live; tool_start replaces it authoritatively.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId = resolveToolPartId(backendToolCallId);
@@ -6939,9 +6518,8 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      // A preview: it repeats per argument delta and
-                      // tool_start replaces it. Tool events carry state, so
-                      // they stay ungated.
+                      // A preview: it repeats per argument delta and tool_start replaces it. Tool events carry
+                      // state, so they stay ungated.
                       if (canPublish(streamedChars)) {
                         yield {
                           content: liveAssistantContent(),
@@ -6969,8 +6547,8 @@ export function createOpenAIStreamAdapter(
                   const approvalId = (toolEvent.approval_id as string) || "";
                   const awaitingConfirmation =
                     toolEvent.awaiting_confirmation === true;
-                  // Reuse a provisional card's part id, else the confirmation-scoped id
-                  // opens a second card and the first spins "Running" forever.
+                  // Reuse a provisional card's part id, else the confirmation-scoped id opens a second card and
+                  // the first spins forever.
                   const openPartId = backendToolCallId
                     ? toolPartIdByBackendId.get(backendToolCallId)
                     : undefined;
@@ -6986,8 +6564,8 @@ export function createOpenAIStreamAdapter(
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
-                  // "call_0" restarts every response: drop stale live/preserved
-                  // output under this key, else the card shows the previous call's.
+                  // "call_0" restarts every response: drop stale live/preserved output under this key, else the
+                  // card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
@@ -7044,11 +6622,8 @@ export function createOpenAIStreamAdapter(
                     toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
-                  // The result replaces the live output, but if the stream
-                  // captured MORE than the truncated result, preserve it so the
-                  // finished card keeps everything. Uses the shared predicate,
-                  // not a length compare (footer / "Exit code N:" / __IMAGES__
-                  // tail can make the result longer by byte).
+                  // If the stream captured MORE than the truncated result, preserve it. Uses the shared
+                  // predicate, not a length compare: a footer or __IMAGES__ tail can make the result longer.
                   const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
                     useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
@@ -7072,9 +6647,8 @@ export function createOpenAIStreamAdapter(
                   );
                   if (idx !== -1) {
                     const rawEvent = (toolEvent.result as string) ?? "";
-                    // Pulled out first, ahead of __IMAGES__, so the image
-                    // slice below is unchanged. Only from the tools that emit
-                    // it: elsewhere that line is content, not an envelope.
+                    // Pulled out first, ahead of __IMAGES__, so the image slice below is unchanged. Only from the
+                    // tools that emit it: elsewhere that line is content.
                     const { text: rawResult, files: createdFiles } =
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
@@ -7107,9 +6681,8 @@ export function createOpenAIStreamAdapter(
                           prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
-                    // A valid MCP image envelope wins; an invalid marker falls
-                    // through so a sandbox __IMAGES__ suffix still renders and
-                    // legit text round-trips unchanged.
+                    // A valid MCP image envelope wins; an invalid marker falls through so a sandbox __IMAGES__
+                    // suffix still renders.
                     let mcpImages: McpImageToolResult | null = null;
                     if (mcpImgIdx !== -1) {
                       try {
@@ -7131,8 +6704,7 @@ export function createOpenAIStreamAdapter(
                       typeof imageB64 === "string" &&
                       imageB64
                     ) {
-                      // Backend keeps base64 on separate image_b64 /
-                      // image_mime fields so logs stay small; repackage here.
+                      // The backend keeps base64 on separate image_b64 / image_mime fields to keep logs small.
                       parsedResult = {
                         image_b64: imageB64,
                         image_mime:
@@ -7147,8 +6719,7 @@ export function createOpenAIStreamAdapter(
                       parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default" to match the backend sandbox
-                      // dir used when no session_id (see tools.py _get_workdir).
+                      // Fall back to "_default", the backend sandbox dir used when there is no session_id.
                       const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
@@ -7167,14 +6738,9 @@ export function createOpenAIStreamAdapter(
                       createdFiles.length > 0 ||
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
-                      // Structured with files, for the download card, and with
-                      // neither, because the session is the only record of WHERE
-                      // this call ran: _created_file_sentinels emits nothing
-                      // when a concurrent call shared the directory, so a run
-                      // that wrote files can arrive bare and a moved chat would
-                      // then name a folder from its current scope. Downstream is
-                      // unaffected: both toolResultModelText and the outbound
-                      // translator unwrap a sandbox wrapper to this same .text.
+                      // Structured even with neither files nor images, because the session is the only record of
+                      // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
+                      // the directory, so a moved chat would name a folder from its current scope.
                       parsedResult = {
                         text: rawResult,
                         images: [],
@@ -7186,7 +6752,6 @@ export function createOpenAIStreamAdapter(
                     } else {
                       parsedResult = rawResult;
                     }
-                    // Merge tool_end args first, then Gemini native_part.
                     const nextArgs =
                       toolEvent.arguments &&
                       typeof toolEvent.arguments === "object"
@@ -7225,9 +6790,8 @@ export function createOpenAIStreamAdapter(
                         string,
                         unknown
                       >;
-                      // Extract part entries from parts:[...] or legacy
-                      // single-object native_part. Legacy thoughtSignature
-                      // always belongs on executableCode.
+                      // Extract part entries from parts:[...] or a legacy single-object native_part; a legacy
+                      // thoughtSignature always belongs on executableCode.
                       const collectParts = (
                         native: Record<string, unknown>,
                       ): Record<string, unknown>[] => {
@@ -7306,8 +6870,7 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // OpenAI usage may arrive either in an empty trailing chunk or on
-              // the terminal Codex chunk that also carries reasoning metadata.
+              // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
@@ -7319,15 +6882,13 @@ export function createOpenAIStreamAdapter(
               }
 
               totalChunks += 1;
-              // Latched, not read off the last chunk: a provider can send the
-              // terminal reason ahead of its usage chunk.
+              // Latched, not read off the last chunk: a provider can send the terminal reason ahead of its usage chunk.
               if (chunk.choices?.[0]?.finish_reason === "length") {
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
               }
-              // Latch the chunk's `model` field so the openrouter/free chip
-              // shows the chosen underlying model.
+              // Latch the chunk's `model` field so the openrouter/free chip shows the underlying model.
               if (
                 isExternalRequest &&
                 externalProvider?.providerType === "openrouter" &&
@@ -7349,15 +6910,13 @@ export function createOpenAIStreamAdapter(
               // Normalize structured delta.content (mistral magistral).
               const { text: delta, structuredReasoningContinues } =
                 extractDeltaText(rawDelta);
-              // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
-              // Replay state reaches the message only through a yield, so a
-              // Stop while the gate holds one persists a turn that cannot
-              // replay. Pace previews, never state.
+              // Replay state reaches the message only through a yield, so a Stop while the gate holds one
+              // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<
@@ -7390,15 +6949,13 @@ export function createOpenAIStreamAdapter(
               if (chunk.choices?.[0]?.finish_reason) {
                 codexRoundToolCallIds = [];
               }
-              // Kimi / DeepSeek stream thinking via delta.reasoning_content;
-              // wrap inline as <think>...</think> for parseAssistantContent.
+              // Kimi / DeepSeek stream thinking via delta.reasoning_content; wrap it inline as <think>.
               const rawReasoning = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_content?: unknown }
                   | undefined
               )?.reasoning_content;
-              // OpenRouter ships reasoning as delta.reasoning_details[]
-              // regardless of provider; merge into the same wrap path.
+              // OpenRouter ships reasoning as delta.reasoning_details[] whatever the provider; same wrap.
               const rawReasoningDetails = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_details?: unknown }
@@ -7416,9 +6973,8 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
-              // OpenAI delta.tool_calls: streams fragments by index;
-              // accumulate into one part. extra_content carries Gemini 3
-              // thoughtSignature for replay.
+              // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content
+              // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (
                 chunk.choices?.[0]?.delta as
                   | { tool_calls?: unknown }
@@ -7429,8 +6985,7 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
-                // Extending a call's arguments is a preview; introducing one
-                // is state, so it always publishes.
+                // Extending a call's arguments is a preview; introducing one is state, so it always publishes.
                 let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
@@ -7443,26 +6998,21 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // The chunk is cast, not validated, and llama-server has
-                  // shipped `arguments` as a decoded object.
+                  // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
                   const deltaArgs =
                     typeof call.function?.arguments === "string"
                       ? call.function.arguments
                       : "";
-                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with
-                  // tool_start/tool_end events. Resolve the backend id now so all three
-                  // event shapes update one run-unique card instead of leaving the raw
-                  // provisional card beside a second execution card.
-                  // Before resolving: a provider claiming a minted spelling
-                  // would resolve onto that card and merge the two calls. The
-                  // backend's reserve-then-mint order lands on the same pair.
+                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
+                  // resolve the backend id now to keep all three shapes on one card. Before resolving, since
+                  // a provider claiming a minted spelling would merge two calls.
                   if (
                     stableId &&
                     !providerSentToolCallIds.has(stableId) &&
                     toolCallParts.some((part) => part.toolCallId === stableId)
                   ) {
-                    // Renumber first: a minted card holds the claimed spelling until this runs,
-                    // and marking it provider-sent earlier would exempt it from the move.
+                    // Renumber first: a minted card holds the claimed spelling until this runs, and marking it
+                    // provider-sent earlier would exempt it from the move.
                     renumberMintedCards(stableId);
                     providerSentToolCallIds.add(stableId);
                     reservedToolCallIds.add(stableId);
@@ -7470,16 +7020,14 @@ export function createOpenAIStreamAdapter(
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
-                  // Reserved before any card id is minted, so a provider that
-                  // happens to spell an id `tool_call_0` keeps it to itself.
+                  // Reserved before any card id is minted, so a provider spelling an id `tool_call_0` keeps it.
                   if (stableId) {
                     reservedToolCallIds.add(stableId);
                     providerSentToolCallIds.add(stableId);
                   }
                   if (stablePartId) providerSentToolCallIds.add(stablePartId);
-                  // match by resolved id when the fragment carries one, else by
-                  // index slot; streams that send neither get a minted
-                  // tool_call_<n> id.
+                  // Match by resolved id when the fragment carries one, else by index slot; streams with
+                  // neither get a minted tool_call_<n>.
                   const existingIndex = findStreamedToolCallPartIndex(
                     toolCallParts,
                     stablePartId,
@@ -7489,8 +7037,8 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A closed object takes no more content, so a name or arguments reaching it
-                  // open the next call. Splitting the text alone is too late.
+                  // A closed object takes no more content, so a name or arguments reaching it open the next
+                  // call; splitting the text alone is too late.
                   const slotIsClosed = (() => {
                     if (!matched?.argsText) return false;
                     const held = scanArgsText(
@@ -7499,44 +7047,37 @@ export function createOpenAIStreamAdapter(
                     );
                     return held.complete.length > 0 && !held.tail;
                   })();
-                  // A fragment repeating the id this part holds continues it
-                  // however complete the arguments look.
+                  // A fragment repeating the id this part holds continues it however complete the arguments look.
                   const namesThisCall =
                     !!stablePartId && matched?.toolCallId === stablePartId;
-                  // A next call opens with its own "{"; cutting on anything
-                  // else runs the tool twice on a stray scalar suffix.
+                  // A next call opens with its own "{"; cutting on anything else runs the tool twice on a stray
+                  // scalar suffix.
                   const bringsArgs = deltaArgs.trim().startsWith("{");
                   const closedSlot = slotIsClosed && !namesThisCall;
-                  // An id naming a DIFFERENT call opens the next even before
-                  // its arguments arrive; alone it is that call's, stamped late.
+                  // An id naming a DIFFERENT call opens the next even before its arguments arrive.
                   const idNamesAnotherCall =
                     !!stablePartId &&
                     !!call.function?.name &&
                     !!matched?.toolName &&
-                    // Not a prefix test: a catalog holds both "web" and
-                    // "web_search".
+                    // Not a prefix test: a catalog holds both "web" and "web_search".
                     call.function.name !== matched.toolName;
-                  // A snapshot provider repeats the finished call verbatim
-                  // once it has an id. Exact repeats only, so parallel calls
-                  // differing anywhere still open separately.
+                  // A snapshot provider repeats the finished call verbatim once it has an id; exact repeats
+                  // only, so parallel calls still open separately.
                   const resendsThisCall =
                     !!stablePartId &&
                     !!matched &&
                     !matched._has_stable_id &&
                     call.function?.name === matched.toolName &&
                     deltaArgs === matched.argsText;
-                  // A name at a closed slot announces the next call: names
-                  // grow before the arguments, so nothing is left to extend. A
-                  // shared prefix is no proof ("web" after "web_search" is a
-                  // second call), but the SAME name is that call's, resent, and
-                  // llama-server and vLLM both resend it.
+                  // A name at a closed slot announces the next call. A shared prefix is no proof ("web" after
+                  // "web_search" is a second call), but the SAME name is that call resent, as llama-server
+                  // and vLLM both do.
                   const namesNextCall =
                     !!call.function?.name &&
                     !!matched?.toolName &&
                     call.function.name !== matched.toolName;
-                  // An announcement has no object to close, so the rule above
-                  // cannot reach it. A different name bringing an object is the
-                  // next call; gluing gave "A_longB", which matches no tool.
+                  // An announcement has no object to close, so the rule above cannot reach it; a different name
+                  // bringing an object is the next call, and gluing gave "A_longB".
                   const announcesOverAnnouncement =
                     ((matched as PositionedToolCallPart | undefined)
                       ?._announced_only === true ||
@@ -7550,11 +7091,8 @@ export function createOpenAIStreamAdapter(
                   if (announcesOverAnnouncement && matched) {
                     (matched as PositionedToolCallPart)._superseded = true;
                   }
-                  // A name repeating the one a closed card holds says nothing
-                  // new about that call, so metadata riding it belongs to
-                  // whichever call the next object opens; merged now it
-                  // overwrites the signature the closed call arrived with and
-                  // leaves the next call unsigned.
+                  // A name repeating a closed card's says nothing new about that call, so metadata riding it
+                  // belongs to whichever call the next object opens; merging now overwrites its signature.
                   const extraIsAmbiguous =
                     closedSlot &&
                     !!call.function?.name &&
@@ -7579,42 +7117,35 @@ export function createOpenAIStreamAdapter(
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    // Two dialects, and either alone breaks the other:
-                    // llama-server resends the whole name as it grows, OpenAI
-                    // streams it in fragments. Same rule as the backend.
+                    // Two dialects, and either alone breaks the other: llama-server resends the whole name as it
+                    // grows, OpenAI streams it in fragments. Same rule as the backend.
                     const nameFragment = call.function?.name ?? "";
-                    // Never once the object has closed AND a name is set: that
-                    // would put one tool's arguments under another's name.
-                    // Naming a card that has none is not a rename, and servers
-                    // do send the arguments first.
+                    // Never once the object has closed AND a name is set: that would put one tool's arguments
+                    // under another's name. Naming a card that has none is not a rename.
                     const nextName =
                       !nameFragment || (closedSlot && prevName)
                         ? prevName
                         : nameFragment.startsWith(prevName)
                           ? nameFragment
                           : prevName + nameFragment;
-                    // A snapshot repeated to carry the id adds nothing;
-                    // appending gives `{"a":1}{"a":1}` and splits it in two.
+                    // A snapshot repeated to carry the id adds nothing; appending gives `{"a":1}{"a":1}`.
                     const merged = resendsThisCall
                       ? (existing.argsText ?? "")
                       : (existing.argsText ?? "") + argsFragment;
-                    // A slot holding two objects is holding two calls: this is
-                    // how vLLM's id-less deltas glue `{"url":"a"}` and
-                    // `{"url":"b"}` into one unparsable string (issue #9807).
-                    // Cut on the object boundary, since the same tool twice has
-                    // no name to cut on; a delta with an id addresses its own.
+                    // A slot holding two objects is holding two calls: this is how vLLM's id-less deltas glue two
+                    // argument objects into one unparsable string (#9807). Cut on the object boundary, since
+                    // the same tool twice has no name to cut on.
                     const split = stablePartId
                       ? { complete: [], tail: "" }
                       : scanArgsText(existing.toolCallId, merged);
-                    // Whether the last segment is still open decides who may
-                    // go on writing to it.
+                    // Whether the last segment is still open decides who may go on writing to it.
                     const splitTailIsOpen = split.tail.length > 0;
                     const segments = splitTailIsOpen
                       ? [...split.complete, split.tail]
                       : split.complete;
                     const isSplit = segments.length > 1;
-                    // The slot keeps the object it opened with, under the name
-                    // and id it had; the rest are calls this delta introduced.
+                    // The slot keeps the object it opened with, under the name and id it had; the rest are calls
+                    // this delta introduced.
                     const slotText = isSplit ? segments[0] : merged;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
@@ -7631,9 +7162,8 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
-                    // Merged, not replaced: a signature announced with the
-                    // name and one arriving with the arguments are different
-                    // fields of one call.
+                    // Merged, not replaced: a signature announced with the name and one arriving with the
+                    // arguments are different fields of one call.
                     if (extraIsAmbiguous && isPlainRecord(call.extra_content)) {
                       pendingExtraByPartId.set(existing.toolCallId, {
                         ...(pendingExtraByPartId.get(existing.toolCallId) ?? {}),
@@ -7649,14 +7179,13 @@ export function createOpenAIStreamAdapter(
                       incomingExtra !== undefined &&
                       JSON.stringify(incomingExtra) !== JSON.stringify(prevExtra)
                     ) {
-                      // Gemini puts the thought signature on the call, and
-                      // the next turn is rejected without it.
+                      // Gemini puts the thought signature on the call, and the next turn is rejected without it.
                       replayStateChanged = true;
                     }
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
-                      // a late id claims the slot its id-less opening fragment
-                      // created, so tool_start and tool_end find the same card.
+                      // A late id claims the slot its id-less opening fragment created, so tool_start and tool_end
+                      // find the same card.
                       ...(stablePartId
                         ? { toolCallId: stablePartId, _has_stable_id: true }
                         : {}),
@@ -7669,8 +7198,7 @@ export function createOpenAIStreamAdapter(
                           ? { extra_content: prevExtra }
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
-                      // Any arguments field, "" included, means the call has
-                      // started, so the card survives the boundary sweep.
+                      // Any arguments field, "" included, means the call started, so the card survives the sweep.
                       _announced_only:
                         (existing as PositionedToolCallPart)._announced_only ===
                           true && call.function?.arguments === undefined,
@@ -7680,33 +7208,26 @@ export function createOpenAIStreamAdapter(
                           true && !slotText,
                     };
                     toolCallParts[existingIndex] = updated;
-                    // The card answers to its late id from here on, so what was
-                    // keyed on the provisional one moves and the id itself goes
-                    // back: the backend never reserved it for a call the
-                    // provider went on to name, and holding it makes the next
-                    // mint skip the number the backend hands out.
+                    // The card answers to its late id from here on, so keys move and the provisional id goes
+                    // back: the backend never reserved it, and holding it makes the next mint skip a number.
                     if (stablePartId && stablePartId !== existing.toolCallId) {
                       renameStreamedCard(existing.toolCallId, stablePartId);
                     }
                     if (isSplit) {
-                      // The slot keeps one segment, not the whole string, so
-                      // the resumable scan no longer describes it.
+                      // The slot keeps one segment, not the whole string, so the resumable scan no longer describes it.
                       boundaryScans.delete(existing.toolCallId);
                       boundaryScans.delete(updated.toolCallId);
-                      // Appended, not inserted beside the slot, so a call
-                      // opened third reads third whichever index it reused.
-                      // This delta's own metadata, not the merge: the merged
-                      // fields belong to the call the slot was holding, and
-                      // Gemini validates a signature against the functionCall
-                      // part it was returned on.
+                      // Appended, not inserted beside the slot, so a call opened third reads third whichever index
+                      // it reused. This delta's own metadata, not the merge: Gemini validates a signature against
+                      // the functionCall part it was returned on.
                       const born = bornSplitToolCalls(
                         segments.slice(1),
                         nextName,
                         idx,
                         call.extra_content,
                       );
-                      // The last is the object still being written, if one is:
-                      // kept for later fragments, dropped if it never closes.
+                      // The last is the object still being written, if any: kept for later fragments, dropped if it
+                      // never closes.
                       if (splitTailIsOpen && born.length > 0) {
                         openTailIds.add(born[born.length - 1].toolCallId);
                       }
@@ -7723,8 +7244,7 @@ export function createOpenAIStreamAdapter(
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    // vLLM bundles several calls into one delta when the model
-                    // writes them in one pass. Same boundary as above.
+                    // vLLM bundles several calls into one delta when the model writes them in one pass.
                     const freshSplit = stablePartId
                       ? { complete: [], tail: "" }
                       : splitTopLevelJsonObjects(argsFragment);
@@ -7735,13 +7255,10 @@ export function createOpenAIStreamAdapter(
                     const freshIsSplit = freshSegments.length > 1;
                     const nameFragment = call.function?.name ?? "";
                     const heldName = matched?.toolName ?? "";
-                    // A second call to the same tool can arrive with no name,
-                    // the first delta having given it; blank names nothing.
+                    // A second call to the same tool can arrive with no name, the first delta having given it.
                     const freshName = nameFragment || heldName;
-                    // Across several calls the metadata belongs to the one
-                    // this delta closes, the last. Same as the backend.
-                    // The object proved the repeated name announced this call,
-                    // so what was waiting on the card it reached is this one's.
+                    // Across several calls the metadata belongs to the one this delta closes, the last, as in the
+                    // backend; the object proved the repeated name announced this call.
                     const waiting = matched
                       ? pendingExtraByPartId.get(matched.toolCallId)
                       : undefined;
@@ -7789,13 +7306,11 @@ export function createOpenAIStreamAdapter(
                       ...(call.function?.arguments === undefined && freshName
                         ? { _announced_only: true }
                         : {}),
-                      // A fork's guess, or a slot the provider opened itself.
-                      // Only the provider's own announcement runs unfilled.
+                      // A fork's guess, or a slot the provider opened itself: only the provider's own announcement
+                      // runs unfilled.
                       ...(matched ? { _from_fork: true } : {}),
-                      // A name extending the one this fork left behind is most
-                      // likely it, resent. It still opens a card (the prefix is
-                      // no proof) but gives way rather than gluing
-                      // "alpha_longbeta".
+                      // A name extending the one this fork left behind is most likely it, resent; it still opens a
+                      // card (the prefix is no proof) but gives way rather than gluing them.
                       ...(freshName &&
                       heldName &&
                       freshName !== heldName &&
@@ -7811,8 +7326,7 @@ export function createOpenAIStreamAdapter(
                           bornExtra,
                         )
                       : [];
-                    // As above: the fork whose object is still open is held
-                    // only for the rest of the turn.
+                    // As above: the fork whose object is still open is held only for the rest of the turn.
                     if (freshTailIsOpen && born.length > 0) {
                       openTailIds.add(born[born.length - 1].toolCallId);
                     }
@@ -7820,11 +7334,10 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
-                // After this chunk's deltas: a provider can put finish_reason
-                // on the same chunk as the turn's last name-only delta.
+                // After this chunk's deltas: a provider can put finish_reason on the same chunk as the turn's
+                // last name-only delta.
                 if (chunk.choices?.[0]?.finish_reason) {
-                  // Ending the turn drops cards, so the publish below has to
-                  // see it rather than wait for the pacing gate.
+                  // Ending the turn drops cards, so the publish below must see it rather than wait for the pacing gate.
                   replayStateChanged ||= endProviderTurn();
                 }
                 if (
@@ -7849,9 +7362,8 @@ export function createOpenAIStreamAdapter(
               if (chunk.choices?.[0]?.finish_reason) {
                 replayStateChanged ||= endProviderTurn();
               }
-              // extra_content can arrive with no content at all: a Gemini
-              // thoughtSignature fragment, or the codex reasoning ledger on a
-              // terminal delta. The skip below would drop both.
+              // extra_content can arrive with no content at all (a Gemini thoughtSignature fragment, or the
+              // codex reasoning ledger); the skip below would drop both.
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
@@ -7898,10 +7410,8 @@ export function createOpenAIStreamAdapter(
               }
               streamedChars += reasoning.length + delta.length;
               producedReplyText = true;
-              // The trailing ${...} strip used to run here, once per arrival.
-              // It now runs once, on the finished reply, below the loop. See
-              // the comment there. Nothing on this path reads the buffer any
-              // more, so no arrival can flatten it.
+              // The trailing ${...} strip runs once on the finished reply, below the loop; nothing on this
+              // path reads the buffer, so no arrival can flatten it.
               const textEndsInsideThink = thinkTags.endsInsideThink();
               const assistantContent = liveAssistantContent();
 
@@ -7916,10 +7426,8 @@ export function createOpenAIStreamAdapter(
                 );
               }
               if (parsedReasoningGroupCount > 0) {
-                // Providers that close every reasoning block atomically
-                // (structured parts wrapped as <think>..</think>) end the group
-                // on each chunk. Reopen while the reasoning text is still
-                // growing so the timer spans the whole pass.
+                // Providers that close every reasoning block atomically end the group on each chunk; reopen
+                // while the reasoning text is still growing so the timer spans the whole pass.
                 reasoningDurationTracker.resumeGroup(
                   parsedReasoningGroupCount - 1,
                   lastReasoningGroupTextLength(assistantContent),
@@ -7934,14 +7442,9 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.finishGroup();
               }
 
-              // Everything above runs on every arrival; only the publish is
-              // coalesced. The cost being removed is downstream of the yield
-              // (assistant-ui, React, markdown, paint), not the rebuild, which
-              // is tens of milliseconds across a whole reply.
-              //
-              // A chunk with nothing new is skipped rather than paced: the gate
-              // would spend this cycle on an identical publish and hold the
-              // next real one.
+              // Only the publish is coalesced: the cost removed is downstream of the yield (assistant-ui,
+              // React, markdown, paint), not the rebuild. A chunk with nothing new is skipped rather than
+              // paced, or the gate would spend its cycle on an identical publish.
               if (
                 !replayStateChanged &&
                 (assistantContent.length === 0 ||
@@ -7977,10 +7480,8 @@ export function createOpenAIStreamAdapter(
               retriedWithRefreshedKey = true;
               continue;
             }
-            // The tool ran, so the run it announced is owed whatever the acknowledgement
-            // did next: a small model that stalls on the follow-up sentence, a timeout, a
-            // dropped connection. Its card replaces this reply anyway, so nothing the
-            // failed acknowledgement would have said is lost. Not after Stop.
+            // The tool ran, so the run it announced is owed whatever the acknowledgement did next; its
+            // card replaces this reply anyway. Not after Stop.
             if (deepResearchHandoff.question !== null && !runSignal.aborted) {
               try {
                 yield* startDeepResearch(deepResearchHandoff.question, runSignal);
@@ -7997,8 +7498,8 @@ export function createOpenAIStreamAdapter(
             throw streamError;
           }
         }
-        // The model asked for Deep Research, so the run takes over from here and its card
-        // replaces this reply. Not after Stop: the user ended the turn before it got there.
+        // The model asked for Deep Research, so its card replaces this reply. Not after Stop: the
+        // user ended the turn first.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
           try {
             yield* startDeepResearch(deepResearchHandoff.question, runSignal);
@@ -8011,32 +7512,11 @@ export function createOpenAIStreamAdapter(
           }
           return;
         }
-        // Strip a trailing ${...} template-literal fragment from external
-        // streams (mistral magistral occasionally emits one at the end of an
-        // otherwise complete answer).
-        //
-        // Once, on the finished reply. "Ends with ${...}" is a property of the
-        // completed answer, and running the strip on every arrival tested it
-        // against every prefix of that answer instead: the one arrival whose
-        // buffer happened to end at `...${name}` was cut, and reassigning the
-        // result made the cut permanent, so "return `Hi, ${name}!`" arrived as
-        // "return `Hi,!`". Any reply containing a template literal lost text.
-        // See #9098.
-        //
-        // Only where the stream ran to completion. An abort leaves more text
-        // still to come, so its tail is a prefix again and stripping it would
-        // be the same bug; that path keeps the buffer whole and this runs on
-        // the resumed reply instead. `producedReplyText` is the same case one
-        // step in: a continuation that finishes without a text or reasoning
-        // delta, having emitted only a tool call, leaves the buffer holding
-        // nothing but the seeded partial, and a partial is a prefix too.
-        //
-        // The watch still gates the scan, and now saves the whole reply from
-        // being flattened rather than one arrival's worth: a reply that does
-        // not end in a brace is rejected without the buffer being read at all.
-        // Before the <think> close below, so a fragment at the end of an
-        // unterminated reasoning block is still the end of the reply when it
-        // is tested.
+        // Strip a trailing ${...} template-literal fragment from external streams (mistral magistral
+        // emits one). Once, on the finished reply: running it per arrival tested every prefix, so
+        // "return `Hi, ${name}!`" arrived as "return `Hi,!`" (#9098). Completed streams only, since an
+        // abort leaves a prefix again and `producedReplyText` is that case one step in. Before the
+        // <think> close, so a fragment inside reasoning still counts as the end.
         if (
           isExternalRequest &&
           producedReplyText &&
@@ -8045,21 +7525,17 @@ export function createOpenAIStreamAdapter(
           const stripped = stripTrailingTemplatePlaceholder(cumulativeText);
           if (stripped.length !== cumulativeText.length) {
             cumulativeText = stripped;
-            // A suffix went away, so both trackers have to be told; the parse
-            // notices by itself, from the length.
+            // A suffix went away, so both trackers have to be told; the parse notices by itself, from the length.
             thinkTags.retract(cumulativeText);
             placeholderWatch.retract(cumulativeText);
           }
         }
-        // If the stream ended while we were still inside a
-        // delta.reasoning_content block (Kimi / DeepSeek path), close
-        // the open <think> tag so the reasoning panel parses cleanly.
+        // If the stream ended inside a delta.reasoning_content block, close the open <think> tag.
         closeReasoningContent();
         settleFirstTokenOk();
 
-        // Extract source parts from completed web_search and web_fetch
-        // calls. Both emit the same `Title:` / `URL:` / `Snippet:` block
-        // shape, so the parser need not branch on tool name.
+        // web_search and web_fetch emit the same `Title:` / `URL:` / `Snippet:` block shape, so the
+        // parser need not branch on tool name.
         const sourceParts = toolCallParts.flatMap((tc) => {
           if (
             (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
@@ -8086,11 +7562,10 @@ export function createOpenAIStreamAdapter(
         // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Gate on the captured checkpoint so a late completion from provider A cannot populate
-        // the bar after a mid-stream switch to B, and on the captured thread so a background
-        // run finishing after New Chat cannot repaint another chat's usage. An unresolved run
-        // has no id to compare, so compare what was on screen when it started. A first turn is
-        // adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
+        // Gate on the captured checkpoint and thread so a late completion from provider A cannot
+        // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
+        // the adopted key or the bar stays blank for life.
+        // A first turn is adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
         // adopted key, or the run stays "unresolved" for life and the bar stays blank.
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
@@ -8110,8 +7585,8 @@ export function createOpenAIStreamAdapter(
             cachedTokens,
             cacheWriteTokens,
           };
-          // File it under this run's own thread even when the gate below blocks the visible
-          // write, so switching back re-applies it.
+          // File it under this run's own thread even when the gate blocks the visible write, so
+          // switching back re-applies it.
           if (usageThreadKey !== null) {
             useChatRuntimeStore
               .getState()
@@ -8140,28 +7615,19 @@ export function createOpenAIStreamAdapter(
         // Before the lookup below: its network time is not generation time.
         const finishedAt = Date.now();
 
-        // Small models list things and never ask for their pictures, so fetch the
-        // missing ones and record the web_search call they should have made.
-        // Local tool loop only (a hosted provider would be replayed a tool it never
-        // saw), never over the user's own documents, never behind an approval prompt.
-        // The THREAD, not this turn and not the current toggle state. A follow-up
-        // answers from a search_knowledge_base result replayed in context without
-        // retrieving again, and turning RAG off afterwards clears both flags while
-        // those names are still sitting in the conversation -- so "list those product
-        // names" could hand private-document subjects to the image engines. Once a
-        // chat has retrieved private documents it stays ineligible.
+        // Small models list things and never ask for their pictures, so fetch the missing ones and
+        // record the web_search call they should have made. Local tool loop only, never over the
+        // user's documents, never behind an approval prompt. Gated on the THREAD, not the turn: a
+        // follow-up answers from a search_knowledge_base result replayed in context, so once a chat
+        // has retrieved private documents it stays ineligible even after RAG is switched off.
         const answerUsedPrivateDocs =
           ragEnabled ||
           projectRagEnabled ||
           messagesUsePrivateContent(messages) ||
           toolCallParts.some((part) => part.toolName === "search_knowledge_base");
-        // This run's own values, destructured from the runtime it started with,
-        // not the store as it stands now. Both are per-chat, and a run finishing
-        // after the user moved to a chat on "auto" would read that chat's
-        // permission level and look images up for an answer whose own chat had
-        // asked to be consulted first. (searchImages stays a live read: it
-        // describes the installation, so navigating cannot change it, and a user
-        // who has just switched it off should not get one last lookup.)
+        // This run's own values, not the store as it stands now: both are per-chat, and a run
+        // finishing after a move to a chat on "auto" would read that chat's permission level.
+        // searchImages stays a live read, since it describes the installation.
         const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";
         if (
           incompleteReason === null &&
@@ -8178,18 +7644,15 @@ export function createOpenAIStreamAdapter(
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
-            // Bounded so a slow engine cannot hold a finished answer open.
-            // Linked by hand: AbortSignal.any is newer than the Safari floor.
+            // Bounded so a slow engine cannot hold a finished answer open; linked by hand, since
+            // AbortSignal.any is newer than the Safari floor.
             const lookupAbort = new AbortController();
             const onRunAbort = () => lookupAbort.abort();
             runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
             const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
             try {
-              // authFetch, not a raw fetch: an access token that expired during a long
-              // generation is refreshed and the call retried, where a stale bearer just
-              // 401s into the catch below and the pictures never arrive. Unlike the
-              // cancel POST above, a login redirect here is right -- the answer is
-              // already finished, so nothing is interrupted by it.
+              // authFetch, not a raw fetch: a token that expired during a long generation is refreshed and
+              // retried. A login redirect is fine here, unlike the cancel POST: the answer is finished.
               const response = await authFetch(
                 "/api/inference/search-images/lookup",
                 {
@@ -8211,8 +7674,8 @@ export function createOpenAIStreamAdapter(
                   const args = { image_queries: subjects };
                   toolCallParts.push({
                     type: "tool-call" as const,
-                    // No colon: replayed ids must satisfy ^[a-zA-Z0-9_-]+$.
-                    // Guarded: randomUUID is undefined over plain HTTP on a LAN.
+                    // No colon: replayed ids must satisfy ^[a-zA-Z0-9_-]+$. Guarded, since randomUUID is
+                    // undefined over plain HTTP on a LAN.
                     toolCallId: `auto-images-${
                       typeof crypto !== "undefined" && "randomUUID" in crypto
                         ? crypto.randomUUID()
@@ -8248,7 +7711,6 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams.
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
@@ -8294,10 +7756,8 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
-              // The error already chose between the Max Tokens and Context Length
-              // remedies from the cap and the prompt size. Repeating the Max Tokens
-              // advice here overrode that choice in the one place the user reads,
-              // sending them to a setting that is already at its maximum.
+              // The error already chose between the Max Tokens and Context Length remedies; repeating the
+              // Max Tokens advice here overrode that choice in the one place the user reads.
               description:
                 msg ||
                 "The model used the full Max Tokens budget while thinking " +
@@ -8315,8 +7775,7 @@ export function createOpenAIStreamAdapter(
               });
             }
           } else if (err instanceof StreamInterruptedError) {
-            // Connection dropped mid-turn: surface it explicitly (the rethrow
-            // below also marks the message with an inline error + Retry).
+            // Connection dropped mid-turn: surface it explicitly (the rethrow also marks the message).
             toast.error("Response interrupted", {
               description:
                 "The connection dropped before the model finished. " +
@@ -8324,28 +7783,22 @@ export function createOpenAIStreamAdapter(
               duration: 8000,
             });
           } else if (isContextLimitError(msg)) {
-            // `fits: false` means everything evictable was evicted and the request STILL
-            // does not fit, so the message just sent is the problem and the usual advice
-            // is wrong: the history is already gone. Say which part is too long.
+            // `fits: false` means everything evictable was evicted and it still does not fit, so the
+            // message just sent is the problem and "start a new chat" is the wrong advice.
             const irreducible =
               contextTruncation?.fits === false ? contextTruncation : null;
-            // Against prompt_target, not context_length: the fit reserves up to a quarter
-            // of the window for the reply, so a 3,500-token message cannot fit a 4,096
-            // context, and comparing with the raw window would blame the conversation and
-            // send the user to a new chat that fails identically.
+            // Against prompt_target, not context_length: the fit reserves up to a quarter of the window
+            // for the reply, so the raw window would blame the conversation.
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
-            // Both the gate and the number below take the shared prompt floor off the turn
-            // first: `latest_turn_tokens` prices a whole rendered prompt, so on a
-            // tool-enabled request it carries the entire tool catalogue, and quoting it
-            // told the user a 6-token message was thousands of tokens "on its own".
+            // Both the gate and the number take the shared prompt floor off the turn first:
+            // `latest_turn_tokens` prices a whole rendered prompt, tool catalogue included.
             const oneTurnIsTheProblem = latestTurnIsTheProblem(
               irreducible,
               budget,
             );
-            // Whose turn it is decides the advice: in a tool loop the offending turn is
-            // often output the user never wrote and cannot edit, so "shorten this
-            // message" names the wrong thing and offers no remedy.
+            // Whose turn it is decides the advice: in a tool loop the offending turn is often output the
+            // user never wrote and cannot edit.
             const userCanShortenIt =
               (irreducible?.latest_turn_role ?? "user") === "user";
             const tooLong =
@@ -8364,19 +7817,17 @@ export function createOpenAIStreamAdapter(
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
                 : historyCannotHelp(irreducible)
-                  ? // No one turn to name, and the bulk is in the parts eviction never
-                    // touches, so "start a new chat" opens a chat that fails identically.
-                    // Both levers are named, neither claimed as the cause: the floor
-                    // bundles the template wrapper with the catalogue, so a large one does
-                    // not prove there are tools.
+                  // No one turn to name, and the bulk is in the parts eviction never touches. Both levers
+                  // are named, neither claimed as the cause.
+                  ?
                     "Even with every earlier turn dropped, this prompt would still be " +
                     "too long, so shortening the conversation will not help. " +
                     'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or reduce what every request carries: the system prompt and any " +
                     "tools that are enabled."
-                  : // llama-server runs with --no-context-shift, returning a hard
-                    // error instead of silently dropping old KV-cache turns. Point
-                    // the user at the control that raises the ceiling.
+                  // llama-server runs with --no-context-shift, a hard error instead of silently dropping
+                  // old KV turns, so point at the control that raises the ceiling.
+                  :
                     "The conversation has filled the model's context window. " +
                     'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
                     "or start a new chat.",
@@ -8427,13 +7878,12 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
-        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
-        // left claimed after its stream died is one this tab would never recover.
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run left
+        // claimed after its stream died would never be recovered.
         releaseLiveGenerationRun(cancelId);
         if (generationRunId) releaseLiveGenerationRun(generationRunId);
-        // A durable run that finished here is no longer active, and only a later
-        // history load would otherwise say so. Until then the thread reads as durable
-        // and a subscriber-owned stream started on it next would be capped.
+        // A durable run that finished here is no longer active, and until a history load says so the
+        // thread reads as durable and the next subscriber-owned stream would be capped.
         if (
           generationRunId &&
           (generationStatus === "completed" ||
@@ -8451,13 +7901,10 @@ export function createOpenAIStreamAdapter(
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
-        // and an unowned one wiped a concurrent run's badge behind the same key.
+        // Scoped by thread AND by run: a global clear wiped every other running chat's badge.
         runtime.setToolStatus(cleanupKey, null, serverCancel);
-        // Clear only this run's live keys (a concurrent pane owns its own). A
-        // key still here streamed stdout but never reached tool_end (SSE drop or
-        // cancel), so promote it to full output first, else the partial
-        // diagnostics the user was watching vanish from the card.
+        // Clear only this run's live keys. A key still here streamed stdout but never reached
+        // tool_end, so promote it to full output first or the diagnostics vanish from the card.
         for (const liveKey of runToolLiveOutputKeys) {
           const store = useChatRuntimeStore.getState();
           const liveOutput = store.toolLiveOutput[liveKey] ?? "";
@@ -8467,8 +7914,8 @@ export function createOpenAIStreamAdapter(
           store.clearToolLiveOutput(liveKey);
         }
         runToolLiveOutputKeys.clear();
-        // Drop the transient denoising canvas so the finished bubble shows only the committed
-        // answer. Scoped: a global clear wiped another denoising chat's frame.
+        // Drop the transient denoising canvas so the finished bubble shows only the committed answer;
+        // scoped, since a global clear wiped another chat's frame.
         runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
@@ -8480,8 +7927,7 @@ export function createOpenAIStreamAdapter(
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        // serverCancel narrows both clears: runs with no resolved thread id share the "__default"
-        // key, so a blind clear could drop a sibling's entry.
+        // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
       }

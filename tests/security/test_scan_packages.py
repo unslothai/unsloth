@@ -448,33 +448,85 @@ def test_annotation_only_network_entries_are_digest_pinned():
 
 
 def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
-    """Require a new review when context around an approved finding changes."""
+    """Require a new review when context around an approved finding changes.
+
+    These three findings sit in files whose matched lines are benign on their own,
+    so the approval has to be for the file as it was reviewed, not for the lines.
+    `_partition_baseline` gives that: an entry carrying `file_sha256` only suppresses
+    while the file still hashes to a pinned value, so any edit reopens it. What this
+    guards is that each of the three keeps a pinned approval -- dropping the pin
+    turns it into a line-matched approval that a later payload in the same file
+    would ride.
+
+    A (file, check) pair can hold several entries, one per revision of the matched
+    lines that a release has shipped. compiler.py already carries four. Three of them
+    are superseded and unpinned, and those are grandfathered by evidence hash below;
+    any variant added from here on has to be pinned, because an unpinned one
+    suppresses the finding whatever the file contains.
+
+    It used to also duplicate each approved digest as a literal here, which pinned
+    nothing extra (whoever edits the baseline can edit this file in the same commit)
+    and cost a red `main`: #10187 re-approved unsloth-zoo 2026.8.17 and moved the
+    baseline copy, the copy here was left behind, and the disagreement took
+    `Repo tests (CPU)` and `workflow-trigger lint` down on every open PR until
+    someone noticed. The digest belongs in the baseline, once.
+    """
     import json
     import pathlib
+    import re
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
     entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
-    expected = {
+    must_be_pinned = {
         (
             "unsloth_zoo/vision_utils.py",
             "Harvests environment variables/secrets AND makes network calls",
-        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        ),
         (
             "unsloth_zoo/vision_utils.py",
             "Accesses cloud metadata/IMDS AND makes network calls",
-        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        ),
         (
             "unsloth_zoo/compiler.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-        ): "58f43e3b6ddeefff69cb345baec7642eb10e3f081b0753f236be6571550d54e3",
+        ),
     }
-    actual = {
-        (entry["file"], entry["check"]): entry.get("file_sha256")
-        for entry in entries
-        if entry.get("package") == "unsloth-zoo"
-        and (entry.get("file"), entry.get("check")) in expected
+    # The evidence hashes of the superseded compiler.py variants, which are already
+    # in the baseline unpinned. These are frozen by construction: an evidence hash is
+    # over code a past zoo release shipped, so unlike the live digest it can never
+    # move, and listing them here brings back no drift. They are grandfathered rather
+    # than pinned because pinning them would be pinning a file no installed zoo has.
+    #
+    # Everything else has to be pinned. `_load_baseline` keys each variant on its own
+    # evidence_hash and maps an unpinned one to None, i.e. suppress for any file
+    # contents, so appending a new unpinned variant for one of these pairs would
+    # silence the finding entirely while an older pinned variant kept this test green.
+    GRANDFATHERED_UNPINNED = {
+        "ec1875fd32d00fe885e566ebda75163e46e838ca31020abb57e0991892c2bdf7",
+        "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d",
+        "610993c0b6f612bbbf2fa0b593591375e7b20cb5c9b516ea60b6c44a8b9430e9",
     }
-    assert actual == expected
+    pinned = set()
+    for entry in entries:
+        key = (entry.get("file"), entry.get("check"))
+        if entry.get("package") != "unsloth-zoo" or key not in must_be_pinned:
+            continue
+        digest = entry.get("file_sha256")
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+            pinned.add(key)
+            continue
+        assert entry.get("evidence_hash") in GRANDFATHERED_UNPINNED, (
+            f"{key[0]} has a new unpinned entry for {key[1]!r} "
+            f"(evidence_hash {entry.get('evidence_hash')!r}). An unpinned variant "
+            f"suppresses that finding whatever the file contains, so a re-approval "
+            f"has to carry file_sha256 rather than ride the evidence alone."
+        )
+    for key in sorted(must_be_pinned - pinned):
+        raise AssertionError(
+            f"{key[0]} is baselined for {key[1]!r} with no reviewed file digest, so "
+            f"it is approved on evidence that a later payload can leave unchanged. "
+            f"Re-approve it with --write-baseline and keep the file_sha256 pin."
+        )
 
 
 def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
@@ -491,7 +543,19 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
         and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
         and entry.get("file_sha256")
     ]
-    assert len(targets) == 3
+    # Three (file, check) pairs are pinned; a re-approval may append a revision
+    # rather than replace one, so count the pairs covered, not the entries. An
+    # exact entry count here would go red the first time a zoo release is
+    # approved by appending, which is the shape the torch and huggingface-hub
+    # entries in this baseline already have.
+    assert {(e["file"], e["check"]) for e in targets} == {
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ),
+        ("unsloth_zoo/vision_utils.py", "Accesses cloud metadata/IMDS AND makes network calls"),
+        ("unsloth_zoo/compiler.py", "Advanced obfuscation (marshal/compile/zlib) + exec/eval"),
+    }
     baseline = sp._load_baseline(str(path))
     for entry in targets:
         reviewed = _mk(
