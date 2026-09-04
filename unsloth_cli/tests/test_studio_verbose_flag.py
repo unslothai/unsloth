@@ -57,6 +57,17 @@ class _ExecCaptured(SystemExit):
         self.argv = list(argv)
 
 
+def _host_studio_layout(fake_venv):
+    # The layout run() resolves on this host: the entry point is unsloth.exe
+    # under Scripts on Windows, so a POSIX bin/unsloth fake makes the
+    # entry-point check exit before the re-exec these fixtures capture.
+    if sys.platform == "win32":
+        python = fake_venv / "Scripts" / "python.exe"
+        return python, python.parent / "unsloth.exe"
+    python = fake_venv / "bin" / "python"
+    return python, python.parent / "unsloth"
+
+
 def _invoke_run(monkeypatch, args):
     import typer as _typer
 
@@ -64,8 +75,8 @@ def _invoke_run(monkeypatch, args):
     captured = []
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
-    fake_bin = fake_venv / "bin" / "unsloth"
+    fake_python, fake_bin = _host_studio_layout(fake_venv)
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
