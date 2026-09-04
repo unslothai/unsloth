@@ -5498,6 +5498,7 @@ def _windows_arm64_skip_packages() -> set[str]:
         keep_skipping.add(package)
     return keep_skipping
 
+
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode). These
 # either *are* torch extensions or have unconditional ``Requires-Dist: torch``, so
 # installing them pulls torch back in. ``librosa`` is here despite not requiring

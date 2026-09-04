@@ -762,7 +762,9 @@ def windows_cuda_install_kind_for_arch(arch: str) -> str:
 
 
 def windows_cuda_upstream_asset_names(
-    llama_tag: str, runtime: str, arch: str = "x64"
+    llama_tag: str,
+    runtime: str,
+    arch: str = "x64",
 ) -> list[str]:
     return [
         f"llama-{llama_tag}-bin-win-cuda-{runtime}-{arch}.zip",
