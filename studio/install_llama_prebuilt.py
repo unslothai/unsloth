@@ -3733,7 +3733,13 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # upstream publishes -arm64 CUDA bundles), then the CPU bundle. Without this
         # branch the function fell through to the "no prebuilt policy" raise, which sent
         # every Windows ARM64 host that reached it to a source build.
-        if host.has_usable_nvidia:
+        #
+        # Gated on the opt-out like every other ARM64 CUDA branch: this resolver is
+        # reached through resolve_asset_choice on the fallback paths, so leaving it
+        # ungated made UNSLOTH_LLAMA_ARM64_CUDA=0 work in direct_upstream_release_plan
+        # and silently not work here -- an escape hatch that holds only on the path the
+        # user did not take is worse than none.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             attempts = _drop_blackwell_incapable_windows_cuda(
                 host,
                 resolve_windows_cuda_choices(host, llama_tag, upstream_assets, arch = "arm64"),

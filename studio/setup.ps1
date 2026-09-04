@@ -4934,6 +4934,47 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
 
 if (-not $SkipPythonDeps) {
 
+# ── Windows on ARM: recover what a fresh shell lost ──
+# Runs BEFORE the manifest is dropped just below, and outside the no-torch guard. The
+# ordering is not cosmetic: Get-PersistedWoaTorchIndex reads that very file, so recovering
+# after the drop read a file that no longer existed and always returned empty -- exactly
+# the fresh-shell case the manifest was written for.
+#
+# Outside the guard, unlike the torch-index USES further down, because neither thing this
+# recovers is about torch. install_python_stack.py installs studio.txt in every mode, and
+# that is where ddgs -> httpx[brotli] -> Brotli resolves; it also rewrites the manifest in
+# every mode, so an update that did not re-export the index would erase the record of it.
+#
+# Ask the interpreter uv resolves for, not PROCESSOR_ARCHITECTURE, which describes the host
+# process.
+$WinArm64Venv = Test-WinArm64Venv
+# The index install.ps1 probed and used. Without it the CUDA branch further down would
+# point at the driver-derived family (cu130), which publishes no win_arm64 CUDA wheel at
+# all, so a repair or a missing companion on this venv could not resolve. Absent -- an
+# older installer that recorded nothing -- this stays empty and every index choice is
+# exactly as before.
+$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
+} elseif ($WinArm64Venv) {
+    # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
+    # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
+    # channels, since write_manifest refuses any URL that could carry a credential, so a
+    # user's pinned mirror is not recovered here and is supplied through their own
+    # environment as before. Empty on every other host, leaving the index unchanged.
+    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
+} else { "" }
+# Put it back in the environment, not just in this variable: install_python_stack.py reads
+# UNSLOTH_WOA_SELECTED_TORCH_INDEX when it rewrites the manifest at the end of the run.
+# Recovering it locally and not re-exporting would have let the first fresh-shell update
+# write a manifest without the index, losing for good the one thing the manifest exists to
+# carry. Only ever set to a value that came from install.ps1 or from write_manifest's own
+# credential-free allowlist.
+if ($WinArm64TorchIndexUrl) {
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
+}
+# The other half of the lost handover: the generated requirement overrides and wheelhouse.
+Restore-WoaResolverEnvironment
+
 # install_python_stack.py drops the manifest before its own dependency pass, but
 # pip, torch and triton are replaced first here. Drop it now so a run killed in
 # those leaves the venv marked half-built, not behind a marker that verifies.
@@ -5081,41 +5122,11 @@ $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($Pi
 # no-torch mode never reaches the assignment below.
 $XpuIndexUrl = $null
 
-# ── Windows on ARM: recover what a fresh shell lost ──
-# Outside the no-torch guard, unlike the torch-index USES below, because neither thing this
-# recovers is about torch. install_python_stack.py installs studio.txt in every mode, and
-# that is where ddgs -> httpx[brotli] -> Brotli resolves; it also rewrites the manifest in
-# every mode, so an update that did not re-export the index would erase the record of it.
-#
-# Ask the interpreter uv resolves for, not PROCESSOR_ARCHITECTURE, which describes the host
-# process.
-$WinArm64Venv = Test-WinArm64Venv
-# The index install.ps1 probed and used. Without it the CUDA branch further down would
-# point at the driver-derived family (cu130), which publishes no win_arm64 CUDA wheel at
-# all, so a repair or a missing companion on this venv could not resolve. Absent -- an
-# older installer that recorded nothing -- this stays empty and every index choice is
-# exactly as before.
-$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
-    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
-} elseif ($WinArm64Venv) {
-    # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
-    # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
-    # channels, since write_manifest refuses any URL that could carry a credential, so a
-    # user's pinned mirror is not recovered here and is supplied through their own
-    # environment as before. Empty on every other host, leaving the index unchanged.
-    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
-} else { "" }
-# Put it back in the environment, not just in this variable: install_python_stack.py reads
-# UNSLOTH_WOA_SELECTED_TORCH_INDEX when it rewrites the manifest at the end of the run.
-# Recovering it locally and not re-exporting would have let the first fresh-shell update
-# write a manifest without the index, losing for good the one thing the manifest exists to
-# carry. Only ever set to a value that came from install.ps1 or from write_manifest's own
-# credential-free allowlist.
-if ($WinArm64TorchIndexUrl) {
-    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
-}
-# The other half of the lost handover: the generated requirement overrides and wheelhouse.
-Restore-WoaResolverEnvironment
+# The index torch was actually installed from, which is $TorchInstallIndexUrl on every path
+# but one: the native Windows-on-ARM CUDA install resolves from the channel install.ps1
+# probed instead. Only the branch that installs torch overwrites this, so every other path
+# publishes exactly what it published before.
+$_effectiveTorchIndexUrl = $TorchInstallIndexUrl
 
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
@@ -5357,6 +5368,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         # The win_arm64 CUDA wheels live on the index install.ps1 probed, not on the
         # driver-derived family; everywhere else this is empty and the URL is unchanged.
         $_cudaIndexUrl = if ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl } else { $TorchInstallIndexUrl }
+        $_effectiveTorchIndexUrl = $_cudaIndexUrl
         if ($script:UnslothVerbose) {
             Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             $torchInstallExit = $LASTEXITCODE
@@ -5412,7 +5424,14 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # Windows wheel is 2.11.0+cpu, and only install.ps1 -- never on the updater's path -- repaired
 # that. Vocabulary is Get-InstalledTorchTag's; an unknown leaf publishes nothing.
 if (-not $NoTorchMode) {
-    $_expectedLeaf = Get-TorchIndexLeaf $TorchInstallIndexUrl
+    # $_effectiveTorchIndexUrl, not $TorchInstallIndexUrl: on the native Windows-on-ARM path
+    # torch came from NVIDIA's out-of-tree channel, and publishing the driver-derived family
+    # instead would send install_python_stack.py's repair to an index carrying no win_arm64
+    # CUDA wheel, and would name the flavor cu130 when the wheel installed is +cu134. That
+    # channel's leaf is not a CUDA family name, so $_expectedTag resolves to $null and the
+    # tag is published as nothing -- the honest answer, since this run cannot name the
+    # flavor in Get-InstalledTorchTag's vocabulary. Identical everywhere else.
+    $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
     # $ROCmIndexUrl first: on the AMD path $TorchInstallIndexUrl still points at /cpu.
     $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
                     elseif (Test-CudaFamilyLeaf $_expectedLeaf) { $_expectedLeaf }
@@ -5427,8 +5446,8 @@ if (-not $NoTorchMode) {
     } else {
         Remove-Item Env:\UNSLOTH_EXPECTED_TORCH_TAG -ErrorAction SilentlyContinue
     }
-    if ($TorchInstallIndexUrl) {
-        $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+    if ($_effectiveTorchIndexUrl) {
+        $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $_effectiveTorchIndexUrl
     } else {
         Remove-Item Env:\UNSLOTH_TORCH_INSTALL_INDEX_URL -ErrorAction SilentlyContinue
     }

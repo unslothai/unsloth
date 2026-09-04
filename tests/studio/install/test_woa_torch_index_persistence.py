@@ -42,6 +42,7 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[3]
 MANIFEST_PY = PACKAGE_ROOT / "studio" / "install_manifest.py"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+STACK_LLAMA = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 
 
 def _load_manifest_module():
@@ -418,3 +419,118 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         ), "the studio.txt install is no longer unconditional inside install_python_stack()"
         skip_list = source[source.index("NO_TORCH_SKIP_PACKAGES = {") :][:400]
         assert "ddgs" not in skip_list, "ddgs is still installed when NO_TORCH is set"
+
+
+class TestTheRecoveryHappensWhileThereIsStillSomethingToRead:
+    """Ordering against the manifest drop, which decides whether any of this works.
+
+    setup.ps1 removes unsloth_install_manifest.json before it replaces pip, torch and
+    triton, so a run killed in those leaves the venv marked half-built. The recovery reads
+    that same file. Placed after the drop it read a file that no longer existed and
+    returned empty every time -- on precisely the fresh-shell path the manifest exists to
+    serve, and silently, because empty is also the legitimate answer for an older install.
+    """
+
+    def test_the_index_is_read_before_the_manifest_is_deleted(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        read = text.index("Get-PersistedWoaTorchIndex -VenvPath $VenvDir")
+        drop = text.index("install_manifest.remove_manifest()")
+        assert read < drop, (
+            "the recovery reads unsloth_install_manifest.json; after the drop there is "
+            "nothing left to read and the fresh-shell path silently gets no index"
+        )
+
+    def test_both_still_sit_inside_the_dependency_guard(self):
+        """No point recovering for a run that installs nothing."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        guard = text.index("if (-not $SkipPythonDeps) {")
+        read = text.index("Get-PersistedWoaTorchIndex -VenvPath $VenvDir")
+        restore = text.index("\nRestore-WoaResolverEnvironment")
+        assert guard < read and guard < restore
+
+
+class TestThePublishedIndexIsTheOneTorchCameFrom:
+    """What install_python_stack.py is told to repair from.
+
+    The native Windows-on-ARM install resolves torch from the channel install.ps1 probed,
+    while $TorchInstallIndexUrl still names the driver-derived family. Publishing the
+    latter pointed any repair at an index with no win_arm64 CUDA wheel, and named the
+    flavor cu130 when the installed wheel is +cu134.
+    """
+
+    def test_the_publish_block_reads_the_effective_index(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl" in text
+        assert "$env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $_effectiveTorchIndexUrl" in text
+
+    def test_it_defaults_to_the_old_value_and_only_torch_moves_it(self):
+        """Every non-CUDA path must publish exactly what it published before."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        default = text.index("$_effectiveTorchIndexUrl = $TorchInstallIndexUrl")
+        assign = text.index("$_effectiveTorchIndexUrl = $_cudaIndexUrl")
+        publish = text.index("$_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl")
+        assert default < assign < publish, "default, then the install, then the publish"
+        assert text.count("$_effectiveTorchIndexUrl = ") == 2, (
+            "only the CUDA install may move it"
+        )
+
+    def test_the_nvidia_channel_publishes_no_flavor_tag(self):
+        """
+        Get-TorchIndexLeaf on the NVIDIA channel yields `nvtorch_oot`, which is not a CUDA
+        family name, so the tag resolves to $null and nothing is published. That is the
+        honest answer -- the installed wheel is +cu134, which this vocabulary cannot name
+        -- and it is what stops a repair from "correcting" the venv to cu130.
+        """
+        if PWSH is None:
+            pytest.skip("pwsh not available")
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            _function_source(text, "Get-TorchIndexLeaf"),
+            _function_source(text, "Test-CudaFamilyLeaf"),
+            "$leaf = Get-TorchIndexLeaf 'https://pypi.nvidia.com/nvtorch_oot'",
+            "Write-Output \"$leaf|$(Test-CudaFamilyLeaf $leaf)\"",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        leaf, is_cuda = done.stdout.strip().splitlines()[-1].split("|")
+        assert leaf == "nvtorch_oot"
+        assert is_cuda == "False", "a CUDA family leaf here would publish a wrong flavor"
+
+
+class TestTheLlamaArm64CudaOptOut:
+    """UNSLOTH_LLAMA_ARM64_CUDA=0, honoured on every path that can reach the branch."""
+
+    def test_every_arm64_cuda_branch_is_gated(self):
+        """
+        resolve_upstream_asset_choice is reached through resolve_asset_choice on the
+        fallback paths. Ungated, the escape hatch worked in direct_upstream_release_plan
+        and silently did not work here -- which is worse than not having one, because the
+        user has no way to tell which path they took.
+        """
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        branches = [
+            line.strip() for line in source.splitlines()
+            if "host.has_usable_nvidia" in line and line.strip().startswith("if ")
+        ]
+        arm64_branches = [
+            b for b in branches if "_upstream_arm64_cuda_allowed" in b
+        ]
+        assert len(branches) >= 2
+        ungated = [b for b in branches if b not in arm64_branches]
+        for branch in ungated:
+            assert "arm64" not in branch.lower()
+        assert any("_upstream_arm64_cuda_allowed" in b for b in branches)
+
+    def test_the_upstream_resolver_branch_specifically(self):
+        source = STACK_LLAMA.read_text(encoding = "utf-8")
+        start = source.index("def resolve_upstream_asset_choice(")
+        end = source.index("\ndef ", start + 10)
+        body = source[start:end]
+        marker = body.index("if host.is_windows and host.is_arm64:")
+        arm64_block = body[marker : marker + 900]
+        assert "_upstream_arm64_cuda_allowed()" in arm64_block, (
+            "the Windows ARM64 CUDA branch of resolve_upstream_asset_choice is ungated"
+        )
