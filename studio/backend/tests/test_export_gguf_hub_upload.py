@@ -7,6 +7,8 @@ import importlib.util
 from fnmatch import fnmatch
 from pathlib import Path
 
+import pytest
+
 
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
     "export_gguf_hub_upload_helpers",
@@ -407,3 +409,59 @@ def test_gguf_hub_export_does_not_publish_appledouble_companions(tmp_path, monke
     assert success is True, message
     assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
     assert "._model.Q4_K_M.gguf" not in seen["card"]
+
+
+@pytest.mark.parametrize("is_vlm", [True, False])
+def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm):
+    """The Hub filters on vision-language-model, and only the exporter knows."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        f"test_export_gguf_hub_upload_vlm_{is_vlm}_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    save_dir = tmp_path / "export"
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            gguf = output / "model.Q4_K_M.gguf"
+            gguf.write_bytes(b"GGUF")
+            return {"gguf_files": [str(gguf)], "is_vlm": is_vlm}
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, _path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert ("- vision-language-model" in seen["card"]) is is_vlm
+    # The front matter stays valid either way.
+    assert seen["card"].startswith("---\ntags:\n")
+    assert (
+        seen["card"]
+        .split("---")[1]
+        .strip()
+        .endswith("vision-language-model" if is_vlm else "unsloth")
+    )

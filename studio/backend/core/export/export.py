@@ -418,7 +418,7 @@ GGUF_MODEL_CARD = """---
 tags:
 - gguf
 - llama.cpp
-- unsloth
+- unsloth{vlm_tag}
 ---
 
 # {name} : GGUF
@@ -1164,6 +1164,7 @@ class ExportBackend:
         # here because the temp root holding it is deleted before the upload.
         exported_ggufs: List[str] = []
         exported_modelfile = False
+        exported_is_vlm = False
         exported_config: Optional[bytes] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
@@ -1250,6 +1251,8 @@ class ExportBackend:
                             f"{abs_save_dir}"
                         )
                     exported_ggufs = [str(f) for f in drop_appledouble_metadata(relocated_ggufs)]
+                    # The Hub filters on this tag, and only the exporter knows.
+                    exported_is_vlm = bool(reported.get("is_vlm"))
                     # Kept in memory, not relocated: a config.json in the export folder
                     # would make _is_model_dir read it as a checkpoint directory.
                     merged_config = (
@@ -1362,6 +1365,7 @@ class ExportBackend:
                         GGUF_MODEL_CARD.format(
                             name = repo_id.split("/")[-1],
                             repo_id = repo_id,
+                            vlm_tag = "\n- vision-language-model" if exported_is_vlm else "",
                             files = "\n".join(f"- `{os.path.basename(f)}`" for f in exported_ggufs),
                         )
                     ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
