@@ -524,6 +524,20 @@ while IFS= read -r -d '' f; do
     if [ -e "$dst" ]; then
         rec="${LAST[$rel]:-}"
         if [ -z "$rec" ]; then
+            # An unrecorded file that is byte-identical to the clone is not a user
+            # edit. It is one WE published and then failed to record, which is what
+            # the rollback above leaves behind whenever it cannot unlink: a single
+            # FILE bind mount gives EBUSY there exactly as it does for the rename at
+            # line 562. Without this the file stays unrecorded for good, so the next
+            # refresh keeps reading it as a user edit and stamps the marker over it.
+            # Adopting the record costs nothing, because the bytes on disk already
+            # ARE the bytes we would publish, so nothing of the user's can be lost.
+            adopted="$(hash_of "$dst")"
+            if [ -n "$adopted" ] && [ "$adopted" = "$(hash_of "$f")" ]; then
+                record_tmpstate "$adopted" "$rel" || failed=$((failed + 1))
+                unchanged=$((unchanged + 1))
+                continue
+            fi
             kept=$((kept + 1))
             continue
         fi
@@ -620,7 +634,14 @@ if [ "${#LAST[@]}" -gt 0 ]; then
             # deliberately kept, so the next refresh read it as a user edit -- and
             # turning the option back off never recovered it, because by then it is no
             # longer in LAST.
-            record_tmpstate "${LAST[$rel]}" "$rel" || drop_unrecordable "$rel"
+            # and do NOT drop it if that append fails. Every other caller can drop a
+            # file it could not record because the clone still holds a copy to
+            # re-publish next start. This one cannot: upstream DELETED it, so the
+            # file on disk is the last copy in existence and removing it destroys
+            # exactly what the option was set to preserve, unrecoverably -- not by a
+            # retry, not by turning the option back off. Counting it failed holds the
+            # marker back so the next start retries the record.
+            record_tmpstate "${LAST[$rel]}" "$rel" || failed=$((failed + 1))
             continue
         fi
         if rm -f "$dst" 2>/dev/null; then

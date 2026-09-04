@@ -354,6 +354,131 @@ def test_keeping_a_removed_notebook_keeps_its_record_too(tmp_path: Path):
     )
 
 
+@needs_git
+def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path):
+    """When the publish rollback cannot unlink -- a single-FILE bind mount gives
+    EBUSY there, the same case the rename at line 562 already works around -- the
+    published bytes stay on disk with no record, and no further append is possible in
+    that run. Rolling the bytes back instead would not help, because the file is
+    still unrecorded and so still read as a user edit, and discarding the staged
+    state would strand every notebook the run DID record. The only repair is for a
+    later refresh to notice that a file identical to the clone was never a user edit
+    and take it back under management."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+
+    orphan = f"nb{7:09d}.ipynb"
+    state = dest / ".unsloth_sync_state"
+    surviving = [
+        ln
+        for ln in state.read_text(encoding = "utf-8").splitlines()
+        if not ln.endswith("  " + orphan)
+    ]
+    state.write_text("\n".join(surviving) + "\n", encoding = "utf-8")
+    # the run that lost the record withheld the marker, so the next start refreshes
+    (dest / ".unsloth_sync_commit").unlink(missing_ok = True)
+    assert orphan not in _recorded(dest)
+    assert (dest / orphan).exists()
+
+    run = _run(tpl, dest, up, refresh = True)
+    assert orphan in _recorded(dest), (
+        "a notebook byte-identical to the clone but missing from the state was read "
+        "as a user edit, so it stays unmanaged and stops tracking upstream for "
+        "good\n" + run.stdout + run.stderr
+    )
+
+
+@needs_git
+def test_a_genuinely_edited_unrecorded_notebook_is_still_left_alone(tmp_path: Path):
+    """The adoption above must key on the content matching the clone EXACTLY. An
+    unrecorded file whose bytes differ is the real user-edit case and must keep its
+    hands-off treatment."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+
+    orphan = f"nb{7:09d}.ipynb"
+    state = dest / ".unsloth_sync_state"
+    surviving = [
+        ln
+        for ln in state.read_text(encoding = "utf-8").splitlines()
+        if not ln.endswith("  " + orphan)
+    ]
+    state.write_text("\n".join(surviving) + "\n", encoding = "utf-8")
+    (dest / ".unsloth_sync_commit").unlink(missing_ok = True)
+    (dest / orphan).write_text("MINE, do not touch", encoding = "utf-8")
+
+    run = _run(tpl, dest, up, refresh = True)
+    assert (dest / orphan).read_text(encoding = "utf-8") == "MINE, do not touch", (
+        "an unrecorded notebook the user had edited was overwritten\n" + run.stdout + run.stderr
+    )
+    assert orphan not in _recorded(dest), (
+        "an unrecorded notebook the user had edited was adopted into the state\n" + run.stdout
+    )
+
+
+def _head(up: Path) -> str:
+    env = dict(os.environ, GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null")
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd = up,
+        check = True,
+        env = env,
+        capture_output = True,
+        text = True,
+    )
+    return out.stdout.strip()
+
+
+def _delete_upstream(up: Path, victim: str) -> None:
+    (up / victim).unlink()
+    env = dict(os.environ, GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null")
+    subprocess.run(["git", "add", "-A"], cwd = up, check = True, env = env)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "del"],
+        cwd = up,
+        check = True,
+        env = env,
+    )
+
+
+@needs_git
+def test_a_kept_removed_notebook_survives_a_failed_state_append(tmp_path: Path):
+    """Every other caller may delete a notebook it could not record, because the clone
+    still holds a copy to re-publish next start. This one may not: upstream DELETED
+    the file, so the copy in $DEST is the last one in existence. Dropping it destroys
+    exactly what UNSLOTH_KEEP_REMOVED_NOTEBOOKS was set to preserve, and no retry
+    recovers it -- not with the option on, not with it off, because by then it is in
+    neither the clone nor the state."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+    victim = f"nb{1:09d}.ipynb"
+    assert victim in _recorded(dest)
+    _delete_upstream(up, victim)
+
+    # The cap has to let the main loop's 499 records through and fail on the removal
+    # loop's single extra append, or the run aborts before ever reaching the branch.
+    # A record costs 67 + len(rel) = 84 B, so the window is 499*84 = 41916 <= cap <
+    # 500*84 = 42000, and 41 KiB = 41984 is the only multiple of 1024 inside it.
+    run = _run(tpl, dest, up, cap_kib = 41, refresh = True, keep_removed = True)
+
+    assert (dest / victim).exists(), (
+        "the last surviving copy of a notebook the user asked to KEEP was deleted "
+        "because its record would not fit\n" + run.stdout + run.stderr
+    )
+    assert not (dest / ".unsloth_sync_commit").exists() or (
+        dest / ".unsloth_sync_commit"
+    ).read_text(encoding = "utf-8").strip() != _head(up), (
+        "the record was lost but the run still counted as a success and stamped the "
+        "marker, so the next start exits early instead of retrying\n" + run.stdout
+    )
+
+
 # ---------------------------------------------------------------------------
 # Section 1b and the populate retry, both driven with the refresh switched off so
 # only the parent's own state writers are in play.
