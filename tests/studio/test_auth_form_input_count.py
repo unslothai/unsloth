@@ -173,7 +173,15 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
     assert "<SettingsDialogMount active={active && ready} />" in root
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
-    assert "if (!active || !mounted) return null;" in mount
+    # The mount must refuse to render anything on the auth routes, and it says so with
+    # an early `return null` guarded on `!active`. Lock that guard, not the name of the
+    # flag beside it: #10237 renamed `mounted` to `settingsMounted || monitorMounted`
+    # when it added the resource monitor, which left this assertion failing against a
+    # file that still had exactly the property it was written to protect.
+    assert re.search(r"if \(!active \|\| !.*\) return null;", mount), (
+        "settings-dialog-mount.tsx no longer refuses to render while inactive, so the "
+        "settings dialog can mount on the login and change-password routes"
+    )
     assert "useSettingsDialogStore.getState().closeDialog();" in root
     # The settings chord must stay inert on the auth routes. That used to be an
     # early return inside a hand-rolled keydown handler; once the chords became
