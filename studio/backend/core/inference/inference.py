@@ -36,6 +36,7 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
+    build_dac_tts_prompt,
     make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
@@ -2336,11 +2337,7 @@ class InferenceBackend:
         # (same as the OuteTTS notebook) to avoid degenerate repetition.
         self._patch_repetition_penalty_processor()
 
-        prompt = (
-            "<|im_start|>\n<|text_start|>"
-            + text
-            + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
-        )
+        prompt = build_dac_tts_prompt(text)
 
         with torch.inference_mode():
             # Derive the autocast device from the loaded model, not from the

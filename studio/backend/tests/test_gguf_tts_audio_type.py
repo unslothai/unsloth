@@ -15,6 +15,72 @@ from utils.models import gguf_metadata
 from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix, read_gguf_tts_audio_type
 
 
+def test_outetts_v3_speakerless_prompt_stops_before_generated_features():
+    from core.inference.chat_template_helpers import build_dac_tts_prompt
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    expected = "<|im_start|>\n<|text_start|>Read this aloud.<|text_end|>\n<|audio_start|>\n"
+
+    assert build_dac_tts_prompt("Read this aloud.") == expected
+    assert LlamaCppBackend._TTS_PROMPTS["dac"][0].format(text = "Read this aloud.") == expected
+    assert "<|global_features_start|>" not in expected
+
+
+def test_native_outetts_uses_the_same_speakerless_prompt(monkeypatch):
+    pytest.importorskip("peft")
+    import torch
+
+    from core.inference.inference import InferenceBackend
+
+    captured = {}
+
+    class _Inputs(dict):
+        def to(self, _device):
+            return self
+
+    class _Tokenizer:
+        def __call__(self, prompts, **_kwargs):
+            captured["prompt"] = prompts[0]
+            return _Inputs(input_ids = torch.tensor([[1]]))
+
+        def batch_decode(self, _generated, **_kwargs):
+            return ["<|c1_1|><|c2_2|>"]
+
+    class _Model:
+        device = torch.device("cpu")
+        dtype = torch.float32
+
+        def generate(self, **_kwargs):
+            return torch.tensor([[1, 2]])
+
+    class _CodecManager:
+        def decode_dac(self, generated, device):
+            captured["generated"] = generated
+            captured["device"] = device
+            return b"RIFFfake", 44100
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend._audio_codec_manager = _CodecManager()
+    monkeypatch.setattr(backend, "_patch_repetition_penalty_processor", lambda: None)
+
+    assert backend._generate_dac(
+        _Model(),
+        _Tokenizer(),
+        "Read this aloud.",
+        temperature = 0.6,
+        top_k = 50,
+        top_p = 0.95,
+        min_p = 0.0,
+        max_new_tokens = 64,
+        repetition_penalty = 1.1,
+    ) == (b"RIFFfake", 44100)
+    assert captured == {
+        "prompt": "<|im_start|>\n<|text_start|>Read this aloud.<|text_end|>\n<|audio_start|>\n",
+        "generated": "<|c1_1|><|c2_2|>",
+        "device": "cpu",
+    }
+
+
 def _string(value: str) -> bytes:
     data = value.encode()
     return struct.pack("<Q", len(data)) + data
