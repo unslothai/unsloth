@@ -7,10 +7,10 @@ import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
-import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
-import { ArrowLeft, ArrowRight, Minus, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, Minus, Square, X } from "lucide-react";
 import {
   type MouseEvent,
   type PointerEvent,
@@ -93,7 +93,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex h-[26px] w-[30px] shrink-0 items-center justify-center rounded-md text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+        "relative z-[80] inline-flex h-[26px] w-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -435,15 +435,20 @@ export function WindowTitlebar({
             }
           >
             {maximized ? (
-              <HugeiconsIcon
-                icon={CopyIcon}
+              <Copy
                 aria-hidden="true"
-                strokeWidth={1.75}
+                absoluteStrokeWidth
+                strokeWidth={1.5}
                 size={14}
                 className="rotate-180"
               />
             ) : (
-              <Square aria-hidden="true" strokeWidth={1.75} size={14} />
+              <Square
+                aria-hidden="true"
+                absoluteStrokeWidth
+                strokeWidth={1.5}
+                size={14}
+              />
             )}
           </WindowControlButton>
           <WindowControlButton
@@ -454,7 +459,7 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive hover:text-white focus-visible:ring-destructive/70"
+            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
           >
             <X
               aria-hidden="true"
