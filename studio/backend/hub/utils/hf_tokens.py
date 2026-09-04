@@ -114,7 +114,6 @@ def cache_reads_authorized(
 def _hub_offline() -> bool:
     try:
         from utils.utils import hf_env_offline
-
         return hf_env_offline()
     except Exception:
         return False
