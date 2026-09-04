@@ -929,7 +929,9 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
 
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
-        # never the miss, so a later online read still fetches the config.
+        # never the miss, so a later online read still fetches the config. An explicit token
+        # without a recent online probe is denied here (fail closed); ambient ``None`` keeps
+        # the cache path.
         if cache_denied:
             return None
         cfg = _config_json_from_hf_cache(model_name)

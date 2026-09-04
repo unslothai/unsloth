@@ -94,6 +94,33 @@ def test_a_verified_token_may_read_the_host_cache(monkeypatch):
     assert cache_reads_authorized("hf_real", repo_id = "org/private") is True
 
 
+def test_offline_explicit_token_is_denied_without_a_prior_probe(monkeypatch):
+    """Fail closed: no Hub round trip means no cache for an unverified credential."""
+    reset_repo_access_cache()
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: True)
+
+    assert cache_reads_authorized("hf_real", repo_id = "org/private") is False
+
+
+def test_offline_explicit_token_may_use_a_recent_online_probe(monkeypatch):
+    reset_repo_access_cache()
+    probes = {"n": 0}
+
+    def _probe(_repo_id, _token, _repo_type):
+        probes["n"] += 1
+        return True
+
+    monkeypatch.setattr("hub.utils.hf_tokens._probe_repo_access", _probe)
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
+
+    assert cache_reads_authorized("hf_real", repo_id = "org/private") is True
+    assert probes["n"] == 1
+
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: True)
+    assert cache_reads_authorized("hf_real", repo_id = "org/private") is True
+    assert probes["n"] == 1, "offline must reuse the memo, not re-probe"
+
+
 def test_normalizing_a_token_does_not_launder_the_sentinel():
     # `(hf_token or "").strip() or None` turns "stay anonymous" into "use the backend's".
     assert normalize_token(False) is False

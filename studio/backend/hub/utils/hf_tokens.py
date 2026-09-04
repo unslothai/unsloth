@@ -94,6 +94,12 @@ def cache_reads_authorized(
     token-shaped string leaves the sentinel and would otherwise take the disk
     fast paths. Ambient ``None`` is the operator and may use the cache. An
     explicit token is authorized only after it reaches the named repository.
+
+    Offline: the Hub probe cannot run, so an explicit token is denied unless a
+    recent online probe is still memoized (see ``_REPO_ACCESS_TTL_S``). That is
+    intentional fail-closed: without wire proof, the cache must not answer for a
+    credential that might be a token-shaped string from an API key. UI sessions
+    keep ``None`` and still read the cache offline.
     """
     if is_anonymous(hf_token):
         return False
@@ -103,6 +109,15 @@ def cache_reads_authorized(
     if not repo:
         return False
     return _explicit_token_reaches_repo(repo, hf_token, repo_type)
+
+
+def _hub_offline() -> bool:
+    try:
+        from utils.utils import hf_env_offline
+
+        return hf_env_offline()
+    except Exception:
+        return False
 
 
 def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bool:
@@ -115,6 +130,9 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
     cached = _repo_access_cache.get(key)
     if cached is not None and cached[0] > now:
         return cached[1]
+    if _hub_offline():
+        # No wire to verify against; only a memo from a recent online probe counts.
+        return False
     allowed = _probe_repo_access(repo_id, token, repo_type)
     with _repo_access_lock:
         if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
