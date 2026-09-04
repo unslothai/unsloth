@@ -361,6 +361,50 @@ def test_wsl_workdir_on_drvfs_is_ineligible(monkeypatch, tmp_path):
         os_sandbox._validate_linux_workdir_environment(str(tmp_path))
 
 
+def test_wsl_interop_paths_and_environment_are_removed(monkeypatch, tmp_path):
+    monkeypatch.setattr(os_sandbox.os, "pathsep", ":")
+    env = {
+        "PATH": "/usr/bin:/mnt/c/Windows/System32:/usr/lib/wsl/lib",
+        "WSL_INTEROP": "/run/WSL/1_interop",
+        "WSLENV": "TOKEN/u",
+        "DISPLAY": ":0",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "PULSE_SERVER": "unix:/mnt/wslg/PulseServer",
+        "XDG_RUNTIME_DIR": "/mnt/wslg/runtime-dir",
+    }
+    sanitized = os_sandbox._sanitize_linux_environment(env, "wsl2")
+
+    assert sanitized["PATH"] == "/usr/bin"
+    assert sanitized["XDG_RUNTIME_DIR"] == "/tmp/runtime"
+    assert not set(env).intersection(sanitized) - {"PATH", "XDG_RUNTIME_DIR"}
+
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    passwd = identity / "passwd"
+    group = identity / "group"
+    passwd.touch()
+    group.touch()
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "wsl2")
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_validate_linux_workdir_environment", lambda _path: None)
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(
+        os_sandbox, "_identity_files", lambda: (str(identity), str(passwd), str(group))
+    )
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+
+    prepared = backend.prepare(_spec(workdir))
+    try:
+        assert "/usr/lib/wsl" in _mount_sources(prepared.argv, "--tmpfs")
+    finally:
+        prepared.cleanup()
+
+
 def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration(
     monkeypatch, tmp_path
 ):

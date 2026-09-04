@@ -56,6 +56,7 @@ _LINUX_ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+_WSL_HIDDEN_PATHS = ("/usr/lib/wsl",)
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -924,6 +925,9 @@ class LinuxBubblewrapBackend:
                 argv.extend(("--tmpfs", mount.mount_point))
             else:
                 argv.extend(("--ro-bind", empty_mask, mount.mount_point))
+        if environment == "wsl2":
+            for path in _WSL_HIDDEN_PATHS:
+                argv.extend(("--tmpfs", path))
         argv.extend(("--dir", workdir, "--remount-ro", "/"))
         argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
         argv.extend(("--dir", "/tmp/runtime"))
@@ -1075,7 +1079,8 @@ try:
 except socket.gaierror:
     pass
 for forbidden in (
-    '/sys', '/run', '/var/run', '/init', '/mnt/c', '/mnt/wsl', '/mnt/wslg',
+    '/sys', '/run', '/var/run', '/init', '/mnt/c', '/mnt/e', '/mnt/wsl', '/mnt/wslg',
+    '/usr/lib/wsl',
     '/dev/kvm', '/dev/dxg', '/dev/dri', '/dev/fuse', '/dev/vsock', '/dev/mem',
     '/var/run/docker.sock', '/run/containerd/containerd.sock',
     '/var/run/podman/podman.sock', '/var/run/secrets/kubernetes.io',
