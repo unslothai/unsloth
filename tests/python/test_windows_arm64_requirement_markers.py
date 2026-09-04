@@ -333,6 +333,6 @@ def test_the_woa_pandas_split_covers_every_supported_python():
                 f"rows, expected exactly 1: {[str(r) for r in live]}"
             )
             if _minor(py) < (3, 11):
-                assert "3.0" not in str(live[0].specifier), (
-                    f"{label}: Python {py} must not be handed the pandas 3 row"
-                )
+                assert "3.0" not in str(
+                    live[0].specifier
+                ), f"{label}: Python {py} must not be handed the pandas 3 row"

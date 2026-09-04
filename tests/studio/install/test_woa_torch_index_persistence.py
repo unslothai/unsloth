@@ -731,15 +731,21 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
     def test_the_expected_kind_follows_the_opt_out(self, value: str, expected: str):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_arm64CudaOptOut =")
-        end = text.index("} else { @(\"windows-cuda\") }", start) + len("} else { @(\"windows-cuda\") }")
-        script = "\n".join([
-            "function Test-WinArm64Venv { $true }",
-            text[start:end].strip(),
-            "Write-Output ($_nvidiaKinds -join ',')",
-        ])
+        end = text.index('} else { @("windows-cuda") }', start) + len(
+            '} else { @("windows-cuda") }'
+        )
+        script = "\n".join(
+            [
+                "function Test-WinArm64Venv { $true }",
+                text[start:end].strip(),
+                "Write-Output ($_nvidiaKinds -join ',')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
             env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
         )
         assert done.returncode == 0, done.stderr
@@ -750,16 +756,22 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         """The flag is ARM64-only; an emulated x64 venv installs windows-cuda regardless."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_arm64CudaOptOut =")
-        end = text.index("} else { @(\"windows-cuda\") }", start) + len("} else { @(\"windows-cuda\") }")
+        end = text.index('} else { @("windows-cuda") }', start) + len(
+            '} else { @("windows-cuda") }'
+        )
         for value in ("", "0"):
-            script = "\n".join([
-                "function Test-WinArm64Venv { $false }",
-                text[start:end].strip(),
-                "Write-Output ($_nvidiaKinds -join ',')",
-            ])
+            script = "\n".join(
+                [
+                    "function Test-WinArm64Venv { $false }",
+                    text[start:end].strip(),
+                    "Write-Output ($_nvidiaKinds -join ',')",
+                ]
+            )
             done = subprocess.run(
                 [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output = True, text = True, timeout = 120,
+                capture_output = True,
+                text = True,
+                timeout = 120,
                 env = {**os.environ, "UNSLOTH_LLAMA_ARM64_CUDA": value},
             )
             assert done.returncode == 0, done.stderr
@@ -771,7 +783,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         flag asks for, so the CPU kind is expected INSTEAD of the CUDA kind, not as well.
         """
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        block = text[text.index("$_arm64CudaOptOut ="):][:700]
+        block = text[text.index("$_arm64CudaOptOut =") :][:700]
         assert '@("windows-arm64")' in block
         assert '@("windows-arm64-cuda", "windows-arm64")' not in block
 
@@ -782,6 +794,6 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         body = source[start : source.index("\ndef ", start + 10)]
         python_set = set(re.findall(r'"(0|false|no|off)"', body))
         ps_block = SETUP_PS1.read_text(encoding = "utf-8")
-        ps_line = ps_block[ps_block.index("$_arm64CudaOptOut ="):].split("\n")[0]
+        ps_line = ps_block[ps_block.index("$_arm64CudaOptOut =") :].split("\n")[0]
         ps_set = set(re.findall(r'"(0|false|no|off)"', ps_line))
         assert python_set == ps_set == {"0", "false", "no", "off"}
