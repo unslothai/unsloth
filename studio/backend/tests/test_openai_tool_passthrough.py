@@ -4052,6 +4052,7 @@ class TestGgufVisionMessages:
             ("openrouter", "openai/gpt-4o"),
             ("huggingface", "Qwen/Qwen2.5-VL-7B-Instruct"),
             ("mistral", "pixtral-large-latest"),
+            ("qwen", "qwen-vl-max"),
         ):
             info = get_provider_info(provider) or {}
             vision = info.get("supports_vision", False)
@@ -11064,3 +11065,32 @@ class TestMcpReplayDetectorProvenance:
         assert "get_llama_cpp_backend()" in probe
         assert "get_inference_backend" in probe
         assert 'entry.get("is_vision")' in probe
+
+
+def test_a_text_only_qwen_model_is_never_sent_an_mcp_picture():
+    """qwen reports supports_vision for the family and names no model, and every one
+    of its four registry defaults is a text model -- the DashScope vision line is
+    qwen-vl-*. Appending an image there fails the run upstream rather than degrading."""
+    from core.inference.providers import get_provider_info
+    from routes.inference import _external_takes_mcp_images
+
+    info = get_provider_info("qwen") or {}
+    vision = info.get("supports_vision", False)
+    assert vision is True, "the premise is that the family flag is permissive"
+    assert not (info.get("model_capabilities") or {}), "and that it names no model"
+
+    for model in info.get("default_models") or []:
+        assert _external_takes_mcp_images("qwen", vision, model, info) is False, model
+
+
+def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
+    """The opposite case, so the conservative set does not grow by reflex: kimi's
+    model_id_allowlist admits only the multimodal pair its own entry documents."""
+    from core.inference.providers import get_provider_info
+    from routes.inference import _external_takes_mcp_images
+
+    info = get_provider_info("kimi") or {}
+    vision = info.get("supports_vision", False)
+
+    for model in info.get("default_models") or []:
+        assert _external_takes_mcp_images("kimi", vision, model, info) is True, model

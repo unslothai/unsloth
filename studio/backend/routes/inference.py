@@ -7319,7 +7319,12 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # no catalog exists to consult, and refusing everything would turn the feature off
 # for local serving -- which is the case this PR exists for. Their permissive
 # registry default is the only signal available and is treated as the user's.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter"})
+# qwen belongs here on the evidence of its own registry entry: no allowlist narrows it
+# and every one of its four default_models is a text model (the DashScope vision line is
+# qwen-vl-*, and Qwen2.5-VL is a different id from qwen2.5-72b-instruct). kimi is NOT
+# here for the opposite reason -- its model_id_allowlist admits only kimi-k2.5/k2.6,
+# which its own comment records as the multimodal pair.
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
 
 
 def _external_takes_mcp_images(
