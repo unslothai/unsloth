@@ -137,6 +137,8 @@ SECRETS = [
         "opaqueCredential123456",
     ),
     ('["provider-cli", "--token", "opaqueCredential123456"]', "opaqueCredential123456"),
+    # YAML doubles an apostrophe inside a single-quoted scalar.
+    ("password: 'it''s-correct-horse-battery'", "s-correct-horse-battery"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -215,6 +217,8 @@ QUOTED = [
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
     ('llama-server --api-key="abcdef ghijklmnop"', 'llama-server --api-key="<redacted>"'),
     ('password = """opaqueSecret123"""', 'password = """<redacted>"""'),
+    ("password: 'it''s-correct-horse-battery'", "password: '<redacted>'"),
+    ('{"password": "", "model": "gpt-4o"}', '{"password": "<redacted>", "model": "gpt-4o"}'),
     (
         "ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes",
         "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes",

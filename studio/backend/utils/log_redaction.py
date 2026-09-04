@@ -114,7 +114,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # A backreference closes the same quote that opened the value. This lets a
 # single-quoted secret contain double quotes (and vice versa) without exposing
 # the suffix, while an escaped matching quote does not end the value early.
-_QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
+# a doubled quote is yaml's escape inside a single-quoted scalar ('it''s'), so it is part of the value, not its end
+_QUOTED_VALUE = r"(?:\\.|(?P=quote)(?P=quote)|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
 # python string prefixes: bytes, raw and unicode, so r"..." is read as a quoted value rather than a plain "r"
 _PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB]?|[uU])"
