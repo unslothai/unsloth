@@ -91,6 +91,7 @@ export const es = {
       hub: "Centro de modelos",
       projects: "Proyectos",
       train: "Entrenar",
+      notebooks: "Cuadernos",
       recipes: "Recetas",
       images: "Imágenes",
       video: "Vídeo",
@@ -2500,6 +2501,53 @@ export const es = {
       datasetStreaming:
         "Conjunto de datos: streaming (sin descarga completa)",
       modelWeights: "Pesos del modelo",
+    },
+  },
+  notebooks: {
+    routeTitle: "Cuadernos",
+    title: "Cuadernos de Unsloth",
+    subtitle:
+      "Recetas oficiales de fine-tuning de unslothai/notebooks. Ábrelas en Colab o rellena Fine-tuning Studio.",
+    searchPlaceholder: "Buscar cuadernos…",
+    pickerPlaceholder: "Busca y elige un cuaderno…",
+    pickerEmpty: "Ningún cuaderno coincide con tu búsqueda.",
+    pickedSection: "Cuaderno seleccionado",
+    resultsCount: "{count} cuadernos",
+    allCategories: "Todo",
+    featured: "Destacados",
+    featuredSection: "Cuadernos destacados",
+    allSection: "Todos los cuadernos",
+    loading: "Cargando cuadernos…",
+    loadFailed: "No se pudieron cargar los cuadernos",
+    emptyTitle: "No se encontraron cuadernos",
+    emptyDescription: "Prueba otra búsqueda o filtro de categoría.",
+    useInStudio: "Usar en Studio",
+    openInColab: "Abrir en Colab",
+    viewOnGitHub: "GitHub",
+    studioModelReady: "Rellena Studio: {model}",
+    studioManualConfigure:
+      "Abre Fine-tuning Studio — elige un modelo que coincida con este cuaderno.",
+    studioOpenedWithoutModel:
+      "Se abrió Fine-tuning Studio. Selecciona un modelo que coincida con este cuaderno.",
+    studioDisabled: {
+      mlxUnavailable:
+        "El entrenamiento necesita MLX. Ejecuta `unsloth studio update` para habilitar Usar en Studio.",
+      intelMac:
+        "El entrenamiento necesita Apple Silicon o una GPU. Los Mac Intel solo admiten chat.",
+      noGpu: "El entrenamiento necesita una GPU NVIDIA o AMD.",
+      generic: "El entrenamiento no está disponible en este dispositivo.",
+    },
+    categories: {
+      sft: "Fine-tuning",
+      vision: "Visión",
+      grpo: "GRPO / RL",
+      audio: "Audio / TTS",
+      embedding: "Embedding",
+      reasoning: "Razonamiento",
+      code: "Código",
+      inference: "Inferencia",
+      raft: "RAFT",
+      classification: "Clasificación",
     },
   },
   modelMemory: {

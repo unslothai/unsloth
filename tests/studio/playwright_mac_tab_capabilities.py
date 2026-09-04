@@ -135,6 +135,7 @@ TABS = [
     ("/studio", "train", "Train"),
     ("/video", "video", "Video"),
     ("/export", "export", "Export"),
+    ("/notebooks", "notebooks", "Notebooks"),
 ]
 
 # Routes that mean "not signed in". Landing on one invalidates every later assertion,
@@ -154,7 +155,7 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 # once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
 # the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
 # assertion here silently observing nothing.
-INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
+INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train", "notebooks")
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
 # Intercept pattern for the browser's health reads. Matches whether api-base.ts builds a
