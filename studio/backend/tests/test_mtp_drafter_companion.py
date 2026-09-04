@@ -3660,3 +3660,69 @@ def test_split_completeness_is_scoped_to_the_files_own_directory():
     assert not split_listing_is_complete(names, names[1])
     whole = ["Q4/model-00001-of-00002.gguf", "Q4/model-00002-of-00002.gguf"]
     assert split_listing_is_complete(whole, whole[0])
+
+
+def _write_drafter_gguf(
+    path: Path,
+    *,
+    tensors: list[str],
+    arch: str = "qwen35",
+    shared: bool = False,
+    split_count: int = 0,
+) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), arch)
+    if shared:
+        writer.add_bool(f"{arch}.nextn_shared_target_tensors", True)
+    if split_count:
+        writer.add_uint16("split.count", split_count)
+    for name in tensors:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+_HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_proj.weight"]
+
+
+@pytest.mark.parametrize(
+    "tensors,shared,split_count,expected",
+    [
+        # Published shapes: a head extract, unsloth's MTP/ head, a -shared- head, a shard.
+        (_HEAD_EXTRACT, False, 0, False),
+        (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, 0, True),
+        (_HEAD_EXTRACT, True, 0, True),
+        (_HEAD_EXTRACT, False, 2, True),
+    ],
+)
+def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, split_count, expected):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(
+        tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared, split_count = split_count
+    )
+    assert _mtp_drafter_loads_standalone(str(drafter)) is expected
+
+
+def test_mtp_drafter_loads_standalone_fails_open_on_an_unreadable_header(tmp_path):
+    """A refusal that rejects working input is worse than the crash it prevents."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    junk = tmp_path / "mtp-model.gguf"
+    junk.write_bytes(b"not a gguf")
+    assert _mtp_drafter_loads_standalone(str(junk))
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "missing.gguf"))
+
+
+def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(
+        tmp_path / "mtp-model.gguf",
+        tensors = ["token_embd.weight", "output.weight", "blk.48.nextn.eh_proj.weight"],
+        arch = "qwen4exp",
+    )
+    assert _mtp_drafter_loads_standalone(str(drafter))
