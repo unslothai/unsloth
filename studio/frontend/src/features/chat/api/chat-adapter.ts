@@ -5115,11 +5115,17 @@ export function createOpenAIStreamAdapter(
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
+          // An audio model answers with both a clip and the text it spoke. Render
+          // the player above that text, the way a normal message with an
+          // attachment reads -- discarding the text left the reply unsearchable,
+          // uncopyable, and unreadable to anyone who cannot play the audio.
+          const replyText = result.choices?.[0]?.message?.content?.trim() ?? "";
+          const player = `<audio-player src="${audioUrl}" />`;
           yield {
             content: [
               {
                 type: "text" as const,
-                text: `<audio-player src="${audioUrl}" />`,
+                text: replyText ? `${player}\n\n${replyText}` : player,
               },
             ],
           };
