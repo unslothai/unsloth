@@ -44,7 +44,6 @@ def web_search_provider() -> str:
     """
     try:
         from storage.studio_db import list_chat_settings
-
         if list_chat_settings().get("webSearchProvider") == PARALLEL_PROVIDER_ID:
             return PARALLEL_PROVIDER_ID
     except Exception:  # noqa: BLE001
@@ -59,7 +58,6 @@ def parallel_api_key() -> str | None:
     """
     try:
         from storage.studio_db import list_chat_settings
-
         raw = list_chat_settings().get("parallelSearchApiKey")
     except Exception:  # noqa: BLE001
         return None
@@ -128,7 +126,6 @@ def _post_json(
     body = json.dumps(payload).encode("utf-8")
     try:
         import httpx  # noqa: PLC0415
-
         with httpx.Client(timeout = timeout) as client:
             response = client.post(
                 PARALLEL_SEARCH_MCP_URL,
