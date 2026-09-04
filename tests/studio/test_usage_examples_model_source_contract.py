@@ -44,7 +44,7 @@ def test_examples_name_a_model_the_server_can_serve():
     assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in resolver
     # The snippet pins the quant so the request names the file on disk.
     assert "return pinQuant(pick.id, pick.quant);" in resolver
-    assert "return quant && !id.includes(\":\") ? `${id}:${quant}` : id;" in resolver
+    assert 'return quant && !id.includes(":") ? `${id}:${quant}` : id;' in resolver
 
     api = OPENAI_MODELS_TS.read_text(encoding = "utf-8")
     assert 'authFetch("/v1/models")' in api
@@ -98,8 +98,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # absent, and the snippets 404d instead of falling back.
     resolver = _resolver()
     assert (
-        'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));'
-        in resolver
+        'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in resolver
     )
     # resident, or downloaded with switching able to load this exact catalog entry.
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in resolver

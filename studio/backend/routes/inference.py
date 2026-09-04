@@ -25294,9 +25294,7 @@ async def _openai_catalog_objects() -> list[dict]:
             # it, keeping the ones it already advertises, so a client can pin any.
             listed = by_id[cid]
             if listed.get("quant") and quants:
-                listed["quants"] = _quant_list(
-                    listed["quant"], listed.get("quants", ()), quants
-                )
+                listed["quants"] = _quant_list(listed["quant"], listed.get("quants", ()), quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:

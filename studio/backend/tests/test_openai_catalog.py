@@ -517,7 +517,12 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     assert ids["publisher/Qwen3"]["loaded"] is True
 
 
-def _resident_repo_catalog(monkeypatch, *, on_disk, resident = "Q8_0"):
+def _resident_repo_catalog(
+    monkeypatch,
+    *,
+    on_disk,
+    resident = "Q8_0",
+):
     """A llama backend loaded straight from an HF repo, so the scan row for that repo
     meets a row the loaded pass already published under the same public id."""
 
@@ -533,9 +538,7 @@ def _resident_repo_catalog(monkeypatch, *, on_disk, resident = "Q8_0"):
         return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(
-        resolver, "local_servable_model", lambda info: (True, tuple(on_disk))
-    )
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, tuple(on_disk)))
 
 
 def test_the_resident_repo_row_gains_the_other_on_disk_quants(monkeypatch):
@@ -555,9 +558,7 @@ def test_an_already_listed_row_keeps_the_quants_it_advertises(monkeypatch):
     # custom scan folder). Merging must not drop quants the first row proved on disk.
     _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
     quant_sets = [("BF16",), ("Q4_K_M", "BF16")]
-    monkeypatch.setattr(
-        resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0))
-    )
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
 
     async def _two_rows():
         return [
