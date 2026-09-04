@@ -19,7 +19,7 @@ interface SanitizeSchema {
 
 /** Streamdown's default raw/sanitize/harden pipeline with `data` added to image source protocols. */
 export function withDataImageSupport(allowedTags: Record<string, string[]>): Pluggable[] {
-  const sanitize = defaultRehypePlugins.sanitize as [Plugin<Array<any>, any, any>, SanitizeSchema];
+  const sanitize = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
   const [sanitizePlugin, schema] = sanitize;
   // Positional by design: Streamdown itself builds its default pipeline as `Object.values` of this
   // same object, so spreading it in the same order reproduces that pipeline exactly. Naming the keys
