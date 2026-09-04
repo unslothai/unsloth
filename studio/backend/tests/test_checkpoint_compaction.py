@@ -867,7 +867,31 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
         in inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion).parameters
     )
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
-    assert body.count("tools_withheld = tools_withheld") == 2
+    # The property, not a count. This asserted `== 2`, which was the number of internal
+    # re-issues at the time: the respawn retry and the length continuation. Preemption
+    # added a third, the resume after a pause, and a literal count turns "one more path
+    # that must forward the flag" into a failure that says only that a number changed.
+    # Every self-call must forward it, however many there come to be, and a new one that
+    # forgets still fails here by name.
+    import ast, textwrap
+
+    tree = ast.parse(textwrap.dedent(body))
+    reissues = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "generate_chat_completion"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ]
+    assert len(reissues) >= 2, "the respawn retry and the length continuation, at least"
+    for call in reissues:
+        assert any(kw.arg == "tools_withheld" for kw in call.keywords), (
+            f"an internal re-issue at line {call.lineno} of generate_chat_completion does "
+            "not forward tools_withheld, so its refit re-asks the reset question with the "
+            "flag lost and the epoch resets behind a tool that never arrives"
+        )
 
     route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that

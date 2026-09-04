@@ -802,9 +802,23 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
             "deadline must reset on progress"
         )
 
-    def test_growth_is_not_progress(self):
-        """Otherwise the deadline never expires: other chats decoding into the cache is
-        the opposite of room appearing, and resetting on it would restore the hang."""
+    def test_growth_is_visible_in_the_signature(self):
+        """Growth must be VISIBLE. Whether it buys patience is a separate question, and
+        this test used to answer it the wrong way round.
+
+        It was called `test_growth_is_not_progress` and argued that resetting the stall
+        deadline on growth "would restore the hang". That is false for the hang actually
+        named in `await_resume`: three paused chats with NOTHING decoding leaves the
+        signature frozen, so the stall fires immediately either way.
+
+        It is true of a different case -- one chat decoding forever while a waiter never
+        fits -- which the stall detector cannot distinguish from healthy work and which
+        `hard_deadline` bounds instead. The cost of getting this wrong was measured: a
+        waiter abandoned its turn 15 ms before its blocker released, after 90s in which
+        the ledger rose monotonically and fell zero times out of 308 samples.
+
+        The assertions below are unchanged; only the claim they were filed under is.
+        """
         controller = PreemptionController("growing")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 1000, signal = PreemptSignal())
@@ -816,6 +830,55 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert after != before, "the signature must move when occupancy moves"
         assert after[0] > before[0], "and growth must be visible as growth"
         assert after[1] == before[1], "with the same holders"
+
+    def test_a_waiter_does_not_give_up_on_a_server_that_is_still_working(self):
+        """The live failure, as a test: a blocker that GROWS rather than drains.
+
+        `logs/spec_ab_studio_r1_base.log`, round 1 base: a waiter gave up "no progress
+        for 90.0s" 15 ms before the chat holding the cache finished. Across those 90s,
+        308 samples showed the ledger rising 7248 -> 18096 with zero falls, so the
+        server was decoding at full rate the whole time.
+
+        Under the previous predicate -- reset only when committed FALLS or a holder
+        LEAVES -- this fails at `timeout`. It must instead hold on, because the server
+        is plainly alive and the blocker will end.
+        """
+        import threading
+        import time
+
+        controller = PreemptionController("growing-blocker")
+        controller.configure(budget = 16384, kv_unified = True)
+        # Sized so the waiter genuinely CANNOT fit: the default buffer here leaves a
+        # ceiling near 16128, so 13000 + 4000 is over it and stays over it. An earlier
+        # version of this test used 6000 + 4000, which fits, so the waiter was granted
+        # room on its first look and the test measured nothing at all.
+        controller.register("holder", tokens = 13000, signal = PreemptSignal())
+        controller.note_tokens("holder", 13000)
+
+        stop = threading.Event()
+
+        def grow():
+            held = 13000
+            while not stop.is_set() and held < 15500:
+                time.sleep(0.05)
+                held += 100
+                controller.note_tokens("holder", held)
+
+        worker = threading.Thread(target = grow, daemon = True)
+        worker.start()
+        policy, loop = self._waiting_policy(controller, "waiter", 4000)
+        try:
+            started = time.monotonic()
+            policy.await_resume(timeout = 0.3)
+            elapsed = time.monotonic() - started
+        finally:
+            stop.set()
+            worker.join(timeout = 5)
+            self._shutdown(loop)
+        assert elapsed > 0.4, (
+            f"gave up after {elapsed}s while the server was decoding throughout; "
+            "growth is evidence of work, and the stall bound must not fire on it"
+        )
 
     def test_the_events_reach_the_logger_studio_actually_configures(self):
         """`paused` never appeared in the live log, which read as "the handshake never
@@ -1186,6 +1249,11 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         """
         from core.inference.llama_preemption import read_slot_occupancy
 
+        # `n_prompt_tokens` ALREADY includes them, so this asserts no addition. Measured
+        # over 128 processing samples of the live server (outputs/slot_probe.jsonl):
+        # `n_prompt_tokens - n_decoded` is constant within a request to within 3 tokens,
+        # e.g. slot 0 went n_prompt 3886 -> 16321 while decoded went 0 -> 11917. Adding
+        # them again scored 28238 residency in a 16384-cell cache.
         slots = [
             {
                 "id": 0,
@@ -1195,8 +1263,24 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
             },
         ]
         occupancy = read_slot_occupancy(lambda: slots)
-        assert occupancy["resident"] == 18955, (
-            "a decoding slot holds its prompt AND everything it has generated"
+        assert occupancy["resident"] == 12632, (
+            "n_prompt_tokens is total residency; adding the decoded count on top of it "
+            "charges every generated token twice"
+        )
+
+        # But they DO have to be added to the cache field, which does not track
+        # generation. This is the case the test was written for, on a build that reports
+        # it; the build measured above returns 0 for it in every sample.
+        slots = [
+            {
+                "id": 0,
+                "is_processing": True,
+                "n_prompt_tokens_cache": 12632,
+                "next_token": [{"n_decoded": 6323}],
+            },
+        ]
+        assert read_slot_occupancy(lambda: slots)["resident"] == 18955, (
+            "n_prompt_tokens_cache is the prompt only, so generation is still missing"
         )
 
     def test_a_finished_slot_is_not_counted_twice(self):
@@ -1223,9 +1307,12 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         """llama-server nests it in a one-element list here and a bare object elsewhere."""
         from core.inference.llama_preemption import read_slot_occupancy
 
+        # Against the CACHE field, because that is the only path that still adds the
+        # decoded count. Against `n_prompt_tokens` the answer is 1000 whatever shape the
+        # field takes, which would not test the reader at all.
         for shape in ([{"n_decoded": 500}], {"n_decoded": 500}):
             slots = [
-                {"id": 0, "is_processing": True, "n_prompt_tokens": 1000,
+                {"id": 0, "is_processing": True, "n_prompt_tokens_cache": 1000,
                  "next_token": shape},
             ]
             assert read_slot_occupancy(lambda: slots)["resident"] == 1500, shape

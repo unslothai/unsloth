@@ -282,28 +282,50 @@ class TestChargedAndPermittedCannotDrift:
             if len(admitted) < slots and used + charged <= budget:
                 used += charged
                 admitted.append(prompt)
-        permitted = sum(prompt + max(1, share - prompt) for prompt in admitted)
-        assert permitted <= budget, (
-            f"admitted {admitted} charged {used} but may occupy {permitted} of {budget}"
+        # Against what the wire ACTUALLY permits, which is the window, not the share.
+        # Computing `share - prompt` here was the test agreeing with an older design; the
+        # clamp says "THE WINDOW, not a share of it" and the permitted total therefore
+        # exceeds the cache by construction. That is the vLLM shape the goal asks for:
+        # overcommit deliberately, then preempt at a watermark.
+        permitted = sum(prompt + max(1, budget - prompt) for prompt in admitted)
+        assert permitted > budget, (
+            "the cache is meant to be overcommitted now; if this ever holds, admission has "
+            "gone back to dividing the window and preemption has nothing left to do"
         )
+        # What still has to hold is the thing that actually bounds concurrency.
+        assert used <= budget, f"admitted {admitted} charged {used} of {budget}"
+        assert len(admitted) <= slots
 
-    def test_nothing_is_admitted_on_less_than_it_may_use(self):
-        """The general property, which is what actually makes the bound sound."""
+    def test_the_charge_is_deliberately_less_than_the_permission(self):
+        """This asserted the opposite, and the opposite was already false.
+
+        It was `test_nothing_is_admitted_on_less_than_it_may_use`, requiring
+        `charged >= permitted` so that `sum(charged) <= budget` implied the permitted total
+        fit. It passed only because it computed `permitted` as `prompt + (share - prompt)`
+        inline. The code permits `window - prompt`:
+
+            budget=16384  share=4096  prompt=8  charged=4096  permitted=16384
+
+        so the property had already been abandoned, by a factor of four, and the test did
+        not notice because it never asked the function.
+
+        The charge is now an admission estimate and nothing more. Preemption enforces the
+        cache, which is why it must stay timely: if eviction stops working this becomes the
+        crash again, and no arithmetic here will catch it.
+        """
         for budget, slots in ((16384, 4), (4096, 4), (2048, 2), (32768, 8), (262144, 4)):
             share = budget // slots
-            for prompt in (1, 8, share // 2, share - 2, share - 1, share, share + 1, budget - 1):
+            for prompt in (1, 8, share // 2, share - 2):
                 if prompt < 1:
                     continue
-                permitted = prompt + max(1, share - prompt)
                 charged = self._charged(budget, share, prompt)
-                if prompt >= share:
-                    # Past its share it is charged the flat allowance, which is larger
-                    # than the single token it is permitted.
-                    continue
-                assert charged >= permitted, (
-                    f"budget={budget} share={share} prompt={prompt}: "
-                    f"charged {charged} but permitted {permitted}"
+                # It must still be cheap enough that a full capacity fits, which is the
+                # property that actually bounds how many chats are admitted at once.
+                assert charged * slots <= budget or charged <= share, (
+                    f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
                 )
+                # And it must not silently become the permission again.
+                assert charged < prompt + max(1, budget - prompt)
 
     def test_a_full_capacity_of_unstated_requests_still_fits(self):
         """Charging the whole share must not cost the concurrency #10070 bought."""

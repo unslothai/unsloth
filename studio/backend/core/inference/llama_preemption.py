@@ -502,6 +502,10 @@ class Participant:
     # SSE response alive; a shared cancel event could not express that, because six
     # separate consumers treat cancellation as terminal.
     preempt_event: PreemptSignal = field(default_factory = PreemptSignal)
+    # monotonic() at the moment this participant was CHOSEN, or 0.0 when it was not. Read
+    # once in on_preempted to report how long the victim went on holding its cells after
+    # the decision, which is the quantity the buffer is sized against.
+    preempt_chosen_at: float = 0.0
 
     @property
     def promoted(self) -> bool:
@@ -541,6 +545,7 @@ class PreemptionController:
         "_kv_unified", "_draft_tokens", "_slots", "_batch_tokens", "_resident",
         "_reclaimable",
         "_residency_probe",
+        "_drift_logged_at",
     )
 
     def __init__(self, key: str):
@@ -549,6 +554,8 @@ class PreemptionController:
         self._participants: Dict[str, Participant] = {}
         self._seq = 0
         self._epoch_winner: Optional[str] = None
+        # Last time the ledger-drift line was emitted. See where it is used.
+        self._drift_logged_at = 0.0
         self._budget = 0
         # Preemption reclaims only where an idle slot's cells can be purged, which
         # upstream gates on kv_unified ALONE (try_clear_idle_slots, server-context.cpp:1656,
@@ -1048,12 +1055,34 @@ class PreemptionController:
             # been either the ledger drifting low on code-heavy prompts or the sweep never
             # running during prefill, and nothing logged said which.
             ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
-            if self._resident is not None and abs(self._resident - ledger) > 256:
+            # Rate limited, because the sweep runs every 32 generated tokens per chat and
+            # drift over 256 is the normal case rather than the exception: a 569s four-chat
+            # run emitted 1947 of these, about one every three tenths of a second. That is
+            # a diagnostic drowning the events around it. Once every five seconds keeps the
+            # second opinion available without that. It became a problem only when the
+            # sweep started running for plain chats too, which is to say when preemption
+            # started working on the surface most requests use.
+            _now = time.monotonic()
+            if (
+                self._resident is not None
+                and abs(self._resident - ledger) > 256
+                and _now - self._drift_logged_at >= 5.0
+            ):
+                self._drift_logged_at = _now
+                # `ledger` is a raw sum and decides NOTHING; it is here only as a second
+                # opinion. `committed` is what the watermark compares against the ceiling,
+                # and its split matters more than either: `measured` is chats whose cells
+                # llama-server can see, `pending` is charges for prompts NOT yet in the
+                # cache, i.e. room reserved for text that does not exist. Logging only
+                # `ledger` led to that figure being reported as the deciding one.
+                holders = [p for p in self._participants.values() if p.holds_kv]
                 _log.info(
-                    "llama preemption ledger-drift: ledger=%s resident=%s ceiling=%s "
-                    "want=%s holders=%s",
-                    ledger, self._resident, ceiling, want,
-                    sum(1 for p in self._participants.values() if p.holds_kv),
+                    "llama preemption ledger-drift: committed=%s resident=%s measured=%s "
+                    "pending=%s ledger=%s ceiling=%s want=%s holders=%s",
+                    total, self._resident,
+                    sum(p.tokens for p in holders if p.measured),
+                    sum(p.tokens for p in holders if not p.measured),
+                    ledger, ceiling, want, len(holders),
                 )
             if total + want <= ceiling:
                 return []
@@ -1107,6 +1136,7 @@ class PreemptionController:
                 total -= victim.tokens
                 victim.consecutive_preemptions += 1
                 victim.state = ParticipantState.PREEMPTING
+                victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
                 chosen.append(victim)
             return chosen
@@ -1221,6 +1251,16 @@ class ControllerPreemptionPolicy:
         participant = self._controller.participant(self._gen_id)
         if participant is None:
             return
+        # Decision to cells-released, in milliseconds. Not derivable from any existing
+        # line: nothing logs the decision, and the `resident` figure is /metrics-polled,
+        # so it reports the poll interval rather than this.
+        chosen_at = participant.preempt_chosen_at
+        if chosen_at:
+            _log.info(
+                "llama preemption evict-latency: gen_id=%s ms=%.1f tokens=%s",
+                self._gen_id, (time.monotonic() - chosen_at) * 1000.0, participant.tokens,
+            )
+            participant.preempt_chosen_at = 0.0
         # Before the state change, so a sweep that runs between the two sees the larger
         # figure rather than the stale one.
         if checkpoint.charged_tokens and (
@@ -1310,12 +1350,31 @@ class ControllerPreemptionPolicy:
             self._controller.refresh_residency()
             now = time.monotonic()
             current = self._controller.progress_signature()
+            # A holder parked on a tool decodes nothing and moves nothing, so the
+            # signature freezes while a web search runs and a frozen signature is exactly
+            # what the stall bound below fires on. Observed: a waiter abandoned its turn
+            # after 90s while another chat sat in a tool call. An outstanding external
+            # call is work in progress, so it keeps the deadline alive; a tool that never
+            # returns is caught by `hard_deadline` instead of by this.
+            if self._controller.snapshot().parked > 0:
+                deadline = now + timeout
             if current != last:
-                committed, holders = current
-                was_committed, was_holders = last
-                # Room appeared, or somebody finished and is about to give theirs back.
-                if committed < was_committed or not (was_holders <= holders):
-                    deadline = now + timeout
+                # ANY change resets it. The earlier version reset only when `committed`
+                # fell or a holder left, i.e. only when room appeared, and so reported
+                # "no progress" about a server decoding at full rate: in one run a waiter
+                # abandoned its turn 15 ms before its blocker released, after 90s in which
+                # `ledger` rose monotonically 7248 -> 18096 and fell zero times out of 308
+                # samples.
+                #
+                # A rising `committed` is proof somebody decoded, which is exactly what
+                # this bound wants to know. Frozen for `timeout` is the failure it was
+                # added for -- three paused chats and a 33 minute hang with NOTHING
+                # decoding -- and that still trips immediately.
+                #
+                # A cache that churns forever while THIS chat is never fitted is not
+                # something a stall detector can see, and never was; `hard_deadline`
+                # covers it.
+                deadline = now + timeout
                 last = current
             if now >= deadline:
                 _log.info(
@@ -1404,14 +1463,28 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     idle_tokens = 0
     idle = []
     for slot in slots:
+        # WHICH field this came from decides whether the decoded tokens still have to be
+        # added, so the two cannot be collapsed into one `or` chain. Measured live over 128
+        # processing samples (outputs/slot_probe.jsonl): `n_prompt_tokens - n_decoded` is
+        # constant within a request to within 3 tokens, so `n_prompt_tokens` is TOTAL
+        # residency and already contains everything generated. `n_prompt_tokens_cache` was
+        # 0 in every sample on this build, so the old chain always fell through to
+        # `n_prompt_tokens` and then added the generated tokens a second time.
+        tokens = 0
+        counts_generated = False
         try:
-            tokens = int(
-                slot.get("n_prompt_tokens_cache")
-                or slot.get("n_prompt_tokens")
-                or 0
-            )
+            raw_total = int(slot.get("n_prompt_tokens") or 0)
         except (TypeError, ValueError):
-            tokens = 0
+            raw_total = 0
+        try:
+            raw_cache = int(slot.get("n_prompt_tokens_cache") or 0)
+        except (TypeError, ValueError):
+            raw_cache = 0
+        if raw_total > 0:
+            tokens = raw_total
+            counts_generated = True
+        elif raw_cache > 0:
+            tokens = raw_cache
         # Plus what it has GENERATED, which is the term this was missing and the reason
         # every watermark diagnostic came back innocent while chats died. `/slots`
         # reports the prompt; the tokens decoded since occupy cells too, and on a chat
@@ -1428,7 +1501,12 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
         # Only while processing. A finished slot's prompt cache already holds the whole
         # sequence it produced, so `n_prompt_tokens_cache` covers it and adding a stale
         # `n_decoded` on top would count the generated half twice.
-        if slot.get("is_processing"):
+        # Only when the figure above does not already include them. Adding them to
+        # `n_prompt_tokens` scores prompt + 2 x decoded: slot 0 in the sampled run reached
+        # n_prompt 16321 with 11917 decoded, which that formula calls 28238 cells resident
+        # in a 16384-cell cache. Live logs show the summed figure hitting 30775 at
+        # -c 16384, i.e. 1.88x the whole cache.
+        if slot.get("is_processing") and not counts_generated:
             tokens += _slot_decoded(slot)
         # Idle slots count too. Excluding them was tried on 2026-09-04, on the reasoning
         # that llama.cpp recycles an idle slot's cache by itself so charging for it evicts

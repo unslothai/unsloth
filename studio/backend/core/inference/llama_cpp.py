@@ -27324,6 +27324,15 @@ class LlamaCppBackend:
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
+        # Preemption on the NON-tool path. Both default to None, so every existing caller
+        # keeps exactly the behaviour it has: no signal, no policy, no pause.
+        preempt_event = None,
+        preempt_policy = None,
+        _preempt_resumes: int = 0,
+        # Running token count for THIS attempt, so the watermark sweep can see n_i grow
+        # and evict before the cache fills rather than after. Same contract as the tool
+        # loop's: batched by _TOKEN_REPORT_EVERY, must be cheap, must not raise.
+        on_tokens: Optional[Callable[[int], None]] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -27497,6 +27506,17 @@ class LlamaCppBackend:
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
+        # Per ATTEMPT, not per turn: a resumed attempt restarts at zero and the controller
+        # re-baselines on note_replayed, so a running total across attempts would count the
+        # replayed partial twice.
+        _tokens_this_stream = 0
+        # Bound out here, next to `cumulative`, because the preempt handler reads both and
+        # the pause can arrive before the stream is open: _open_stream raises
+        # LlamaStreamPreempted from the read installer, which runs before the inner
+        # `reasoning_text = ""` below. Unbound there, the handler would raise NameError and
+        # the pause would surface to the client as a 500 rather than a resume. The inner
+        # assignment stays: it resets per attempt, which is what a fresh stream wants.
+        reasoning_text = ""
         in_thinking = False
         _stream_done = False
         _metadata_usage = None
@@ -27504,7 +27524,13 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         try:
-            with self._open_stream(url, payload, cancel_event) as (
+            with self._open_stream(
+                url, payload, cancel_event,
+                # Conditional, never `preempt_event = preempt_event`. A test guards this
+                # and names the failure it is guarding: a monkeypatched double with the
+                # old signature must never be handed the kwarg.
+                **({} if preempt_event is None else {"preempt_event": preempt_event}),
+            ) as (
                 response,
                 first_token_deadline,
             ):
@@ -27516,6 +27542,7 @@ class LlamaCppBackend:
                     response,
                     cancel_event,
                     first_token_deadline = first_token_deadline,
+                    **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 ):
                     buffer += raw_chunk
                     while "\n" in buffer:
@@ -27579,6 +27606,30 @@ class LlamaCppBackend:
                                 if _fr:
                                     _metadata_finish_reason = _fr
 
+                                # The live n_i for THIS chat, which is the only thing that
+                                # makes preemption act rather than merely be armed.
+                                # Admission overcommits on purpose, so nothing in the
+                                # arithmetic keeps the cache inside its bounds; what does
+                                # is being told how big each generation has become while
+                                # it is still growing. Without this the plain surface
+                                # armed all four chats and then let them grow to 16354 of
+                                # a 16384 cache with zero evictions, because the sweep was
+                                # never told anything had changed.
+                                #
+                                # Counted per CHUNK, matching the tool loop, and one chunk
+                                # is about one token. Batched by _TOKEN_REPORT_EVERY
+                                # because the sweep takes a lock, and wrapped because this
+                                # must never fail a generation that is otherwise fine.
+                                _tokens_this_stream += 1
+                                if (
+                                    on_tokens is not None
+                                    and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                ):
+                                    try:
+                                        on_tokens(_tokens_this_stream)
+                                    except Exception:
+                                        pass
+
                                 # Reasoning/thinking tokens: llama-server
                                 # sends these as "reasoning_content"; wrap
                                 # in <think> tags for the frontend parser.
@@ -27631,6 +27682,109 @@ class LlamaCppBackend:
                         "finish_reason": _metadata_finish_reason,
                     }
 
+        except _preemption.LlamaStreamPreempted:
+            # Paused to free KV, which is not a cancel and must not end the turn. The
+            # checkpoint is built from the LIVE accumulators rather than read back off a
+            # trailing assistant row, for the reason StreamCheckpoint documents: an aborted
+            # attempt never writes that row, so it lags the stream by a whole attempt and
+            # resuming from it would replay text the user has already seen.
+            if preempt_policy is None:
+                return
+            checkpoint = _preemption.StreamCheckpoint(
+                visible_text = cumulative,
+                reasoning_text = reasoning_text,
+                charged_tokens = self._preempt_charged(cumulative, reasoning_text),
+                resumes = _preempt_resumes + 1,
+                reason = "kv-pressure",
+            )
+            # Hands the lease back, so the tokens are available to whoever was waiting.
+            # Only after the upstream response is closed, which the `with` above has done
+            # by the time this runs.
+            preempt_policy.on_preempted(checkpoint)
+            # Tell the client it is paused, not broken. The route turns this into the
+            # `: preempt-paused` SSE comment the frontend has been able to read since it
+            # was written and had never once received. Yielded AFTER on_preempted, so the
+            # signal cannot arrive before the lease it describes has gone back, and before
+            # the wait below, which can last minutes.
+            yield {"type": "preempt", "state": "paused"}
+            if _preempt_resumes + 1 > _preemption.DEFAULT_MAX_PREEMPT_RESUMES:
+                logger.warning(
+                    "llama preemption giving up after %s resumes on a non-tool chat",
+                    _preempt_resumes,
+                )
+                return
+            if not preempt_policy.await_resume():
+                # The room never came back. Ending here leaves the client with the partial
+                # it has already been streamed, which the length-continuation path can pick
+                # up, rather than an error.
+                return
+            # Tell the controller this one is decoding again. Without it the participant
+            # stays PAUSED in the ledger while it is in fact generating, so its cells are
+            # counted as reclaimable, it remains a candidate for a pause it is no longer
+            # in, and the winner/epoch logic reasons about a state that is two moves old.
+            preempt_policy.on_resumed()
+            # Clears the paused line. Paired with the yield above, so a client that shows
+            # one shows the other; an unpaired pause would leave "waiting" under an answer
+            # that is being written again.
+            yield {"type": "preempt", "state": "resumed"}
+            resumed = [dict(message) for message in messages]
+            continues = self._assemble_preempt_resume(
+                resumed, checkpoint, cumulative, reasoning_text
+            )
+            # `max_tokens` bounds NEW tokens, and the resumed attempt starts a fresh count
+            # with the partial moved into the prompt. Forwarding it unchanged would let a
+            # chat preempted n times emit up to (n+1) times the cap it asked for, which is
+            # both wrong for the client and wrong for admission, since the charge was made
+            # once. So spend it down by what has already been produced.
+            #
+            # The subtrahend is the same four-characters-per-token approximation used to
+            # charge the checkpoint, because the exact count is not available here: the
+            # usage metadata arrives with the final chunk and a preempted attempt never
+            # gets one. It can therefore be a little wrong in either direction. Being
+            # slightly over is the safer error, so the floor is 1 rather than 0: a request
+            # for zero tokens is a degenerate one that returns nothing at all, and that
+            # would turn a pause into a silently empty turn.
+            resume_max_tokens = max_tokens
+            if isinstance(max_tokens, int) and max_tokens > 0:
+                resume_max_tokens = max(1, max_tokens - checkpoint.charged_tokens)
+            # `continues` false means the pause landed before anything was produced, so
+            # there is nothing to continue FROM and the attempt is re-issued whole;
+            # continue_final_message refuses an empty assistant turn.
+            yield from self.generate_chat_completion(
+                messages = resumed if continues else messages,
+                image_b64 = image_b64,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_tokens = resume_max_tokens,
+                admission_output_allowance = admission_output_allowance,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
+                cancel_event = cancel_event,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continues,
+                seed = seed,
+                promote_reasoning_only = promote_reasoning_only,
+                perf_callback = perf_callback,
+                reasoning_provenance = reasoning_provenance,
+                context_overflow = context_overflow,
+                context_policy = context_policy,
+                compaction_headroom_ratio = compaction_headroom_ratio,
+                thread_id = thread_id,
+                tools_withheld = tools_withheld,
+                _allow_respawn_retry = _allow_respawn_retry,
+                **({} if preempt_event is None else {"preempt_event": preempt_event}),
+                preempt_policy = preempt_policy,
+                on_tokens = on_tokens,
+                _preempt_resumes = _preempt_resumes + 1,
+            )
+            return
         except _LlamaStreamCancelled:
             return
         except httpx.ConnectError as e:
@@ -27699,6 +27853,17 @@ class LlamaCppBackend:
             raise
 
     # ── Tool-calling agentic loop ──────────────────────────────
+
+    @staticmethod
+    def _preempt_charged(visible: str, reasoning: str) -> int:
+        """A rough token count for what the aborted attempt really produced.
+
+        Charged once, so the resumed attempt's `want` reflects the partial it carries back
+        as prompt. Four characters per token is the same approximation the rest of the
+        admission path uses; being a little wrong here costs a slightly early or late
+        watermark, not correctness.
+        """
+        return max(0, (len(visible or "") + len(reasoning or "")) // 4)
 
     def _assemble_preempt_resume(
         self, conversation, checkpoint, content_accum, reasoning_accum,

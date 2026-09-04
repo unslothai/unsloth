@@ -112,12 +112,28 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    drop = {"cancel_event", "perf_callback", "tools_withheld"}
+    # `preempt_event` and `preempt_policy` join the same list and for the same stated
+    # reason: they are fresh per request, so comparing them by identity fails for any pair
+    # of requests. They are asserted for presence below, exactly as perf_callback is, so
+    # dropping them cannot hide a path that quietly stopped arming preemption.
+    drop = {"cancel_event", "perf_callback", "tools_withheld",
+            "preempt_event", "preempt_policy", "on_tokens"}
     # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
     # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
+    # Same shape for preemption: presence first, then excluded from the comparison. A
+    # surface that takes an admission lease and does not arm decodes with no preemption at
+    # all, and that absence is invisible to every behavioural test, which is how it went
+    # unnoticed on this path for its whole life.
+    for _kwargs in (before_kwargs, after_kwargs):
+        assert _kwargs.get("preempt_event") is not None
+        assert _kwargs.get("preempt_policy") is not None
+        # And the sweep. Armed without this, preemption is inert: four chats reached
+        # 16354 of a 16384 cache with zero evictions because nothing told the controller
+        # they had grown.
+        assert callable(_kwargs.get("on_tokens"))
     # `tools_withheld` reaches the compaction gate, never the prompt: it tells
     # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
     # policy cannot see. A default install can still re-admit `search_conversation` alone

@@ -199,18 +199,25 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_the_charge_scales_with_the_cache(self):
-        """A bigger cache buys a bigger share, and the charge follows it.
+    def test_the_charge_does_not_scale_with_the_cache(self):
+        """A bigger cache does NOT buy a bigger charge. This has now flipped twice.
 
-        This previously asserted the opposite, that a large cache was UNCHANGED, because
-        the charge was a flat allowance the share could only lower. That is no longer the
-        rule: the charge is the share itself, so it has to scale or a large cache would be
-        priced as if it were small and admit far more than it can hold. What must not
-        change with the cache size is how MANY chats fit, which is asserted above.
+        It first asserted no scaling, was changed to require scaling when the charge became
+        the share, and is back: the share may only LOWER the flat allowance, never raise it.
+
+        Raising it bought nothing. The point of charging a whole share was to keep
+        `charged >= permitted`, and the wire clamp permits the WINDOW, so that never held --
+        on a 262144 cache the charge was 65536 against a permitted 262144. All the larger
+        charge did was reserve cells for text nobody had generated, which is `pending` in
+        `_committed_locked` and therefore spurious preemption: measured with correct
+        accounting, real occupancy peaked at 12350 of a 16384 cache, never reached the 14312
+        ceiling, and the run still preempted 9 times and lost two turns.
         """
-        assert self._cost(262144, 4) > self._cost(32768, 4)
+        assert self._cost(262144, 4) == self._cost(32768, 4), (
+            "a large cache must not be charged more for the same unstated request"
+        )
         for budget in (32768, 262144):
-            assert self._cost(budget, 4) == budget // 4
+            assert self._cost(budget, 4) < budget // 4
 
     def test_the_share_only_ever_lowers_the_allowance(self):
         base = _openai_llama_admission_output_allowance(
