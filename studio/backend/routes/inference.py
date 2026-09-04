@@ -7984,17 +7984,25 @@ async def _maybe_auto_switch_model(
         # resolve so only the reload-stash path runs and no name is ever matched.
         reload_only = requested_model == _RELOAD_ONLY_MODEL
         resolved = None
+        repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         if auto_switch_on and not reload_only:
             # Fresh hits and entries retained across an additions-only download are
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
-            resolved = resolve_trusted_cached_local_gguf(requested_model)
+            resolved = resolve_trusted_cached_local_gguf(
+                requested_model,
+                include_companion_scope = True,
+            )
             if resolved is not None:
                 warm_index_soon()
             else:
-                resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+                resolved = await asyncio.to_thread(
+                    resolve_local_gguf,
+                    requested_model,
+                    include_companion_scope = True,
+                )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -8049,7 +8057,15 @@ async def _maybe_auto_switch_model(
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
-            target_id, variant, override_id = resolved
+            if len(resolved) >= 4:
+                target_id, variant, override_id, repo_level_companion_resolution = resolved[:4]
+            else:
+                target_id, variant, override_id = resolved
+                requested_base, _requested_variant = split_model_ref(requested_model)
+                repo_level_companion_resolution = _matches_any(
+                    requested_base,
+                    (override_id, public_model_id(override_id)),
+                )
         # Not inferred from the quant: a GGUF loaded from a local directory carries none.
         target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         gguf_companion_roots: tuple[str, ...] = ()
@@ -8057,15 +8073,10 @@ async def _maybe_auto_switch_model(
             if resolved is None:
                 gguf_companion_roots = stashed_gguf_companion_roots
             else:
-                requested_base, _requested_variant = split_model_ref(requested_model)
-                repo_level = _matches_any(
-                    requested_base,
-                    (override_id, public_model_id(override_id)),
-                )
                 gguf_companion_roots = await asyncio.to_thread(
                     local_gguf_companion_roots,
                     target_id,
-                    repo_level = repo_level,
+                    repo_level = repo_level_companion_resolution,
                 )
         # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
         if (
@@ -8116,6 +8127,11 @@ async def _maybe_auto_switch_model(
             if advertised:
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                return False
+            loaded_companion_roots = tuple(
+                getattr(backend, "_openai_gguf_companion_roots", ()) or ()
+            )
+            if loaded_companion_roots != gguf_companion_roots:
                 return False
             if bare:
                 return True

@@ -1093,11 +1093,16 @@ def select_gguf_cache_snapshot_for_repo_dir(
     from hub.utils.hf_cache_state import snapshot_selection_key
 
     snapshots_dir = Path(repo_dir) / "snapshots"
+    snapshots = []
     try:
-        snapshots = [snapshot for snapshot in snapshots_dir.iterdir() if snapshot.is_dir()]
+        for snapshot in snapshots_dir.iterdir():
+            try:
+                if snapshot.is_dir():
+                    snapshots.append(snapshot)
+            except OSError as exc:
+                logger.debug("Skipping unreadable cache snapshot %s: %s", snapshot, exc)
     except OSError as exc:
-        logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
-        return None
+        logger.debug("Stopping at unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
     snapshots.sort(key = snapshot_selection_key, reverse = True)
     return _select_gguf_snapshot(snapshots)
 
