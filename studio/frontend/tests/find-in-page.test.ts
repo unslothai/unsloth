@@ -964,6 +964,26 @@ test("an open Hangul syllable cannot match the prefix of a closed one", () => {
   }
 });
 
+test("a half-composed Hangul syllable is found and covered whole", () => {
+  // Hangul composes in two steps, L+V into a syllable and then the trailing jamo into it, and text
+  // can stop after the first. NFC and NFD both write past that spelling, so a document holding one
+  // used to be invisible to every query, its own spelling included.
+  const closed = "각";
+  const spellings = [closed, closed.normalize("NFD"), `각`];
+  for (const written of spellings) {
+    const index = buildTextIndex(el("P", [text(written)]));
+    for (const query of spellings) {
+      assert.deepEqual(
+        findMatches(index, query),
+        [{ start: 0, end: written.length }],
+        `${escape(query)} did not cover ${escape(written)}`,
+      );
+    }
+    // The open syllable still stops at the trailing jamo, whichever way the closed one is written.
+    assert.deepEqual(findMatches(index, "가"), []);
+  }
+});
+
 test("the index itself is left in the form the document wrote", () => {
   // Normalizing it is the other way to fix the above, and it would change its length: every offset
   // in the index stands for one character of a text node, so a shorter index misplaces them all.
@@ -2124,6 +2144,28 @@ test("a reader inside a surface gives up its place when the workspace grows unde
   assert.equal(renumbersMatches(before, polled, readerInMonitor), false);
 });
 
+test("a surface reader only minds the text ahead of their occurrence", () => {
+  // A monitor rewrites a reading every second. Only what sits before the occurrence can move it, so
+  // an occurrence in the static label survives the number below it changing.
+  const reply = el("DIV", [el("P", [text("reply one")])]);
+  const labelled = (load: string) =>
+    el("DIV", [el("P", [text(`unsloth monitor ${load}`)])]);
+  const before = buildTextIndex(reply, [labelled("cpu 12%")]);
+  const reader = findMatches(before, "unsloth")[0].start;
+  assert.ok(reader >= before.rootLength);
+  const polled = buildTextIndex(reply, [labelled("cpu 345%")]);
+  assert.equal(renumbersMatches(before, polled, reader), false);
+  assert.equal(findMatches(polled, "unsloth")[0].start, reader);
+
+  // Text that grows AHEAD of the occurrence does move it, and that reader re-anchors.
+  const leading = (load: string) =>
+    el("DIV", [el("P", [text(`${load} unsloth monitor`)])]);
+  const wasLeading = buildTextIndex(reply, [leading("cpu 12%")]);
+  const readerAfter = findMatches(wasLeading, "unsloth")[0].start;
+  const grewLeading = buildTextIndex(reply, [leading("cpu 345%")]);
+  assert.equal(renumbersMatches(wasLeading, grewLeading, readerAfter), true);
+});
+
 test("history arriving above the reader still renumbers the list", () => {
   // The rule this all rests on has not been widened: a prepend is not an append on either side.
   const monitor = el("DIV", [el("P", [text("cpu 12%")])]);
@@ -2142,9 +2184,8 @@ test("history arriving above the reader still renumbers the list", () => {
     el("DIV", [el("P", [text("gpu 12%")])]),
   ]);
   assert.equal(renumbersMatches(before, replaced, 0), false);
-  // A reader inside that surface does lose their place to it, because their offset was in the text
-  // that got rewritten.
-  assert.equal(renumbersMatches(before, replaced, before.rootLength + 1), true);
+  // A reader deeper in that surface does lose their place, since the rewrite is ahead of them.
+  assert.equal(renumbersMatches(before, replaced, before.text.length - 1), true);
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {

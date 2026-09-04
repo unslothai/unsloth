@@ -465,21 +465,23 @@ export function renumbersMatches(
   /** Where the reader's occurrence started in `before`, or null when there was none. */
   activeStart: number | null,
 ): boolean {
-  const workspaceGrewAtTail = after.text
-    .slice(0, after.rootLength)
-    .startsWith(before.text.slice(0, before.rootLength));
+  // One slice, and none at all without a surface open, where the workspace is the whole text.
+  const workspaceGrewAtTail =
+    before.rootLength <= after.rootLength &&
+    after.text.startsWith(before.text.slice(0, before.rootLength));
   // The workspace is the prefix, so no surface can move an offset inside it. `search` re-anchors on
   // its own when there was no occurrence to keep.
   if (activeStart === null || activeStart < before.rootLength) {
     return !workspaceGrewAtTail;
   }
-  // Inside a surface the seam has to hold too: growing the workspace moves the whole tail along.
+  // Inside a surface the seam has to hold too, since growing the workspace moves the whole tail
+  // along. Only the surface text BEFORE the occurrence has to be unchanged: a monitor rewriting a
+  // reading further down its own panel leaves the offset where it was.
   return (
     !workspaceGrewAtTail ||
     after.rootLength !== before.rootLength ||
-    !after.text
-      .slice(after.rootLength)
-      .startsWith(before.text.slice(before.rootLength))
+    before.text.slice(before.rootLength, activeStart) !==
+      after.text.slice(after.rootLength, activeStart)
   );
 }
 
@@ -544,6 +546,21 @@ const OPEN_HANGUL_CLUSTER_PATTERN =
   /^[\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6]$/u;
 const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
 
+/** A closed syllable's L+V pair and everything after it. */
+const HANGUL_LVT_PATTERN =
+  /^([\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6])([\u11a8-\u11ff\ud7cb-\ud7fb][\s\S]*)$/u;
+
+/**
+ * The half-composed spelling of a closed syllable: the L+V pair precomposed, the trailing jamo left
+ * as it is. Neither NFC nor NFD writes it, so a document holding one is invisible to both.
+ */
+function partiallyComposedHangul(cluster: string): string | null {
+  const parts = HANGUL_LVT_PATTERN.exec(cluster);
+  if (!parts) return null;
+  const partial = parts[1].normalize("NFC") + parts[2];
+  return partial === cluster ? null : partial;
+}
+
 /**
  * The needle as a regex source in which each cluster may match either of its spellings.
  *
@@ -568,6 +585,10 @@ function canonicalSource(needle: string, dotted: boolean): string {
     const spellings = [cluster];
     const composed = cluster.normalize("NFC");
     if (composed !== cluster) spellings.push(composed);
+    // Hangul composes in two steps, and text can stop after the first.
+    const partial = partiallyComposedHangul(cluster);
+    if (partial !== null && !spellings.includes(partial))
+      spellings.push(partial);
     // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
     // NFC cannot put it back and the plain query would miss a word plainly on screen.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
