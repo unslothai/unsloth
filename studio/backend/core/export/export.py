@@ -1249,9 +1249,7 @@ class ExportBackend:
                             "GGUF conversion produced no files: no .gguf outputs for "
                             f"{abs_save_dir}"
                         )
-                    exported_ggufs = [
-                        str(f) for f in drop_appledouble_metadata(relocated_ggufs)
-                    ]
+                    exported_ggufs = [str(f) for f in drop_appledouble_metadata(relocated_ggufs)]
                     # Kept in memory, not relocated: a config.json in the export folder
                     # would make _is_model_dir read it as a checkpoint directory.
                     merged_config = (
