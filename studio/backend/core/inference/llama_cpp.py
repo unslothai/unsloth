@@ -28194,12 +28194,16 @@ class LlamaCppBackend:
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
-            trailing_assistant_text,
+            trailing_assistant_resumable,
         )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
-        continue_final_message = continue_final_message and bool(
-            trailing_assistant_text(openai_messages)
+        # Resumable, not merely text: a pause inside a thought puts the thought back as
+        # `reasoning_content` with no prose, and llama-server continues that too. Gated
+        # on text alone, such a resume re-issued the turn from scratch and the thought
+        # was spent for nothing.
+        continue_final_message = continue_final_message and trailing_assistant_resumable(
+            openai_messages
         )
 
         payload = {
@@ -28354,6 +28358,10 @@ class LlamaCppBackend:
 
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
+        # Prose alone, without the <think> markup `cumulative` carries for display. The
+        # checkpoint replays this as the trailing assistant content; replaying `cumulative`
+        # sent a paused thought back as "<think>..." in the answer, tag and all.
+        content_text = ""
         # Per ATTEMPT, not per turn: a resumed attempt restarts at zero and the controller
         # re-baselines on note_replayed, so a running total across attempts would count the
         # replayed partial twice.
@@ -28508,6 +28516,7 @@ class LlamaCppBackend:
                                 token = delta.get("content", "")
                                 if token:
                                     has_content_tokens = True
+                                    content_text += token
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False
@@ -28541,9 +28550,9 @@ class LlamaCppBackend:
             if preempt_policy is None:
                 return
             checkpoint = _preemption.StreamCheckpoint(
-                visible_text = cumulative,
+                visible_text = content_text,
                 reasoning_text = reasoning_text,
-                charged_tokens = self._preempt_charged(cumulative, reasoning_text),
+                charged_tokens = self._preempt_charged(content_text, reasoning_text),
                 resumes = _preempt_resumes + 1,
                 reason = "kv-pressure",
             )
@@ -28579,8 +28588,12 @@ class LlamaCppBackend:
             yield {"type": "preempt", "state": "resumed"}
             resumed = [dict(message) for message in messages]
             continues = self._assemble_preempt_resume(
-                resumed, checkpoint, cumulative, reasoning_text
+                resumed, checkpoint, content_text, reasoning_text
             )
+            # What this attempt showed, and whether it was showing a thought when it was
+            # cut. The resumed attempt's snapshots are stitched onto it below.
+            _paused_prefix = cumulative
+            _paused_in_thinking = in_thinking
             # `max_tokens` bounds NEW tokens, and the resumed attempt starts a fresh count
             # with the partial moved into the prompt. Forwarding it unchanged would let a
             # chat preempted n times emit up to (n+1) times the cap it asked for, which is
@@ -28600,7 +28613,7 @@ class LlamaCppBackend:
             # `continues` false means the pause landed before anything was produced, so
             # there is nothing to continue FROM and the attempt is re-issued whole;
             # continue_final_message refuses an empty assistant turn.
-            yield from self.generate_chat_completion(
+            for _resumed_item in self.generate_chat_completion(
                 messages = resumed if continues else messages,
                 image_b64 = image_b64,
                 temperature = temperature,
@@ -28633,7 +28646,26 @@ class LlamaCppBackend:
                 preempt_policy = preempt_policy,
                 on_tokens = on_tokens,
                 _preempt_resumes = _preempt_resumes + 1,
-            )
+            ):
+                if not isinstance(_resumed_item, str):
+                    yield _resumed_item
+                    continue
+                # Snapshots are cumulative and every consumer diffs them, so the resumed
+                # attempt's must extend this attempt's. Restarted at "", its first snapshot
+                # was SHORTER than the last one the consumer had seen: the diff came out
+                # empty, the cursor moved past the token, and the client read "Theigm" for
+                # "The Paradigm". Measured, not hypothetical: seed 1234, temperature 0.
+                #
+                # A thought cut open is stitched rather than re-opened. The inner attempt
+                # does not know one is open, so its opener is dropped, and prose arriving
+                # first closes it, which is exactly what the uninterrupted stream would do.
+                if _paused_in_thinking:
+                    if _resumed_item.startswith("<think>"):
+                        yield _paused_prefix + _resumed_item[len("<think>") :]
+                    else:
+                        yield _paused_prefix + "</think>" + _resumed_item
+                else:
+                    yield _paused_prefix + _resumed_item
             return
         except _LlamaStreamCancelled:
             return
@@ -29325,6 +29357,10 @@ class LlamaCppBackend:
         # list is rebuilt by `continue`. A truncation seen on an attempt that was
         # then paused rides across on this instead of being lost.
         _carried_truncations: list[dict] = []
+        # What a paused attempt had shown when it was cut, to seed the resumed attempt's
+        # display so its snapshots extend the paused one's rather than restarting at "".
+        # Every consumer diffs snapshots, and a shorter one loses the first emission.
+        _preempt_display_seed: Optional[tuple[str, str, bool]] = None
         iteration = -1
         while True:
             iteration += 1
@@ -29709,6 +29745,13 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
+                if _preempt_display_seed is not None:
+                    # Resumed after a pause: continue the display where it stopped. Only
+                    # the display; `content_accum` and `reasoning_accum` stay per attempt
+                    # because the checkpoint and the replay are built from them and the
+                    # conversation already carries the earlier attempts.
+                    cumulative_display, _last_emitted, in_thinking = _preempt_display_seed
+                    _preempt_display_seed = None
                 # Provisional tool_start cards already shown, keyed by tool_call_id.
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
@@ -32175,6 +32218,7 @@ class LlamaCppBackend:
                     # partial in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
                     break
+                _preempt_display_seed = (cumulative_display, _last_emitted, in_thinking)
                 continue
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.

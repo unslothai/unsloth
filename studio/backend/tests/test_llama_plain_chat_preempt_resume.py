@@ -201,7 +201,15 @@ class TestAPlainChatPauses:
 
     def test_the_visible_text_is_not_replayed(self, monkeypatch):
         """The client has already been streamed the partial, so the resumed attempt
-        must not send it a second time."""
+        must not send it a second time.
+
+        Judged the way a client would: the generator yields cumulative snapshots and
+        every route diffs consecutive ones, so the text a client assembles is the
+        concatenation of those diffs, not of the snapshots. This test once joined the
+        snapshots themselves, which passed only while the resumed attempt restarted its
+        snapshot at "", and that restart was the bug that dropped the first resumed
+        token (`test_preempt_resume_seam_is_seamless`).
+        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -215,7 +223,13 @@ class TestAPlainChatPauses:
         chunks = [
             c for c in _run(recorder.backend, signal = signal, policy = policy) if isinstance(c, str)
         ]
-        assert "".join(chunks).count("Once upon a time") == 1
+        prev = ""
+        assembled = ""
+        for cumulative in chunks:
+            assembled += cumulative[len(prev) :]
+            prev = cumulative
+        assert assembled == "Once upon a time there was a cat."
+        assert assembled.count("Once upon a time") == 1
 
 
 class TestThePauseIsVisibleToTheClient:
