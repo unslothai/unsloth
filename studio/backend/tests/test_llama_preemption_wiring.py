@@ -391,6 +391,38 @@ class TestSpeculativeDraftsAreReserved:
         )
 
 
+class TestALoneChatStillNeedsRoomForItsOwnBatch:
+    """`Context size has been exceeded` six times a run, on four consecutive runs.
+
+    The solo ceiling reserved drafts plus an estimate margin and nothing for the batch,
+    so a lone chat could occupy 16297 of a 16384 cache and leave 87 cells against a
+    2048-token `--batch-size`. Its own next prefill then could not fit. That reads like
+    contention and is nothing of the sort: there is only one chat.
+    """
+
+    def _controller(self, **kw):
+        controller = PreemptionController("solo-batch")
+        controller.configure(
+            budget = 16384, kv_unified = True, slots = 4, draft_tokens = 6, **kw
+        )
+        return controller
+
+    def test_the_solo_ceiling_leaves_a_batch_clear(self):
+        controller = self._controller(batch_tokens = 2048)
+        controller.register("only", tokens = 100, signal = PreemptSignal())
+        # Alone, so `others` is zero and only the solo ceiling can refuse it.
+        assert controller.room_for("only", 16297) is False, (
+            "87 cells is not enough for a 2048 token prefill batch"
+        )
+        assert controller.room_for("only", 14000) is True
+
+    def test_a_backend_without_a_stated_batch_is_unchanged(self):
+        """No batch figure, no new reservation: the old margin still applies."""
+        controller = self._controller(batch_tokens = 0)
+        controller.register("only", tokens = 100, signal = PreemptSignal())
+        assert controller.room_for("only", 16000) is True
+
+
 class TestTheBufferCanHoldOnePrefillChunk:
     """The term every earlier buffer was missing.
 

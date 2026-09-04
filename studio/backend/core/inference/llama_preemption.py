@@ -649,8 +649,23 @@ class PreemptionController:
                 self._epoch_winner = None
 
     def _solo_ceiling_locked(self) -> int:
-        """The cache less only what a lone chat's own drafts and estimate error need."""
-        margin = self._draft_tokens + max(64, self._budget // SOLO_MARGIN_DIVISOR)
+        """The cache less what a lone chat still needs clear to keep running.
+
+        Its own drafts and the estimate error, as before, and ALSO one prefill batch,
+        which the previous margin omitted. Being alone removes the need for reaction
+        headroom, because there is nobody to evict and nothing to react to; it does not
+        remove llama-server's need to fit the next batch, which it never had less of.
+
+        The omission let a lone chat occupy 16297 cells of a 16384 cache, leaving 87
+        against a `--batch-size` of 2048. Its own next prefill then could not fit, which
+        surfaces as `Context size has been exceeded` and reads like contention while
+        being nothing of the sort. Measured 2026-09-04: six of them per run, on four
+        consecutive runs, with peak residency pinned at the cache size.
+        """
+        margin = max(
+            self._draft_tokens + max(64, self._budget // SOLO_MARGIN_DIVISOR),
+            self._batch_tokens + self._draft_tokens,
+        )
         return max(1, self._budget - margin)
 
     def outgrew_the_shared_ceiling(self, want: int) -> bool:
