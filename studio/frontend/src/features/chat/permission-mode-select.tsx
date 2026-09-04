@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import {
+  ChevronDown,
+  CircleAlert,
+  Hand,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   AlertDialog,
@@ -21,6 +27,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -32,6 +39,7 @@ import {
   type PermissionMode,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { toolIsolationPresentation } from "./tool-isolation";
 
 /**
  * Permission levels for tool calls. Full access stays last because it disables
@@ -74,6 +82,9 @@ export const PERMISSION_MODE_OPTIONS: readonly {
 
 export const FULL_ACCESS_WARNING =
   "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
+
+export const TOOL_ISOLATION_UNAVAILABLE_WARNING =
+  "OS isolation isn’t available in this environment. Python and Terminal can run with Unsloth’s software safeguards, but they may access anything available to the Studio process.";
 
 export function permissionModeOption(mode: PermissionMode) {
   return (
@@ -154,9 +165,7 @@ export function FullAccessConfirmDialog({
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
           <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
-          </AlertDialogDescription>
+          <AlertDialogDescription>{FULL_ACCESS_WARNING}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -169,6 +178,161 @@ export function FullAccessConfirmDialog({
             }}
           >
             I understand
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function ToolIsolationMenuSection({
+  onRequestLimited,
+}: {
+  onRequestLimited: () => void;
+}) {
+  const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+  const presentation = toolIsolationPresentation(mode, capability, grant);
+
+  useEffect(() => {
+    if (capability || loading || error) {
+      return;
+    }
+    refresh().catch(() => undefined);
+  }, [capability, error, loading, refresh]);
+
+  const unavailable =
+    presentation.state === "unavailable" &&
+    capability?.protection_state === "unavailable";
+
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <div className="space-y-2 px-3 py-2.5" aria-live="polite">
+        <div className="flex items-start gap-2">
+          <ShieldCheck
+            className={cn(
+              "mt-0.5 size-4 shrink-0",
+              presentation.state === "unavailable" && "text-destructive",
+              presentation.state === "limited" && "text-amber-600",
+              presentation.state === "full" && "text-bypass",
+            )}
+            strokeWidth={2}
+          />
+          <div className="min-w-0 space-y-1">
+            <p className="text-ui-13 font-medium leading-tight">
+              {loading ? "Checking OS isolation…" : presentation.label}
+            </p>
+            <p className="text-xs leading-snug text-muted-foreground">
+              {presentation.description}
+            </p>
+          </div>
+        </div>
+        {capability ? (
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <dt>Environment</dt>
+            <dd className="truncate text-right text-foreground/80">
+              {capability.environment}
+            </dd>
+            <dt>Backend</dt>
+            <dd className="truncate text-right text-foreground/80">
+              {capability.backend ?? "None qualified"}
+            </dd>
+            {capability.profile_id ? (
+              <>
+                <dt>Profile</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {capability.profile_id}
+                </dd>
+              </>
+            ) : null}
+          </dl>
+        ) : null}
+        {capability?.reason ? (
+          <p className="text-xs leading-snug text-muted-foreground">
+            {capability.reason}
+          </p>
+        ) : null}
+        {capability?.remediation ? (
+          <p className="text-xs leading-snug text-muted-foreground">
+            {capability.remediation}
+          </p>
+        ) : null}
+        {presentation.state === "limited" || unavailable ? (
+          <p className="text-xs leading-snug text-muted-foreground">
+            Process Guard, sanitized environment, resource limits, descriptor
+            closure, workdir policy, timeout, cancellation, and cleanup remain
+            active. Limited is not an OS sandbox.
+          </p>
+        ) : null}
+        {error ? (
+          <p className="text-xs leading-snug text-destructive">{error}</p>
+        ) : null}
+      </div>
+      {unavailable ? (
+        <DropdownMenuItem
+          onSelect={() => setTimeout(onRequestLimited, 0)}
+          className="text-ui-13"
+        >
+          <CircleAlert className="size-4" strokeWidth={2} />
+          Use Limited mode for this session
+        </DropdownMenuItem>
+      ) : null}
+      {!loading && (!capability || capability.retryable) ? (
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault();
+            refresh().catch(() => undefined);
+          }}
+          className="text-ui-13"
+        >
+          <RefreshCw className="size-4" strokeWidth={2} />
+          Check again
+        </DropdownMenuItem>
+      ) : null}
+    </>
+  );
+}
+
+export function LimitedModeConfirmDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const requestGrant = useChatRuntimeStore((s) => s.requestLimitedToolGrant);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationGrantLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {TOOL_ISOLATION_UNAVAILABLE_WARNING}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? (
+          <p className="text-center text-xs text-destructive">{error}</p>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={loading}
+            onClick={(event) => {
+              event.preventDefault();
+              requestGrant()
+                .then(() => onOpenChange(false))
+                .catch(() => undefined);
+            }}
+          >
+            {loading ? "Enabling…" : "Use Limited mode for this session"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -190,8 +354,17 @@ export function PermissionModeDropdown({
   triggerClassName?: string;
 } = {}) {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
+  const isolation = toolIsolationPresentation(
+    toolExecutionMode,
+    capability,
+    grant,
+  );
   const ActiveIcon = active.icon;
 
   return (
@@ -208,11 +381,14 @@ export function PermissionModeDropdown({
               permissionMode === "full" &&
                 "text-bypass hover:text-bypass border-bypass/50",
             )}
-            aria-label="Permission level for tool calls"
+            aria-label={`Tool permissions: ${active.label}. ${isolation.label}`}
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
             <span className="min-w-0 flex-1 truncate text-left">
               {active.label}
+            </span>
+            <span className="truncate text-xs text-muted-foreground">
+              {isolation.label}
             </span>
             <ChevronDown className="size-3.5 shrink-0 opacity-60" />
           </Button>
@@ -233,11 +409,18 @@ export function PermissionModeDropdown({
               setTimeout(() => setConfirmOpen(true), 0)
             }
           />
+          <ToolIsolationMenuSection
+            onRequestLimited={() => setLimitedConfirmOpen(true)}
+          />
         </DropdownMenuContent>
       </DropdownMenu>
       <FullAccessConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
+      />
+      <LimitedModeConfirmDialog
+        open={limitedConfirmOpen}
+        onOpenChange={setLimitedConfirmOpen}
       />
     </>
   );
@@ -256,53 +439,74 @@ export function PermissionModeComposerPill({
   side?: "top" | "bottom";
 } = {}) {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
+  const isolation = toolIsolationPresentation(
+    toolExecutionMode,
+    capability,
+    grant,
+  );
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <button
-          type="button"
-          className="composer-pill-btn composer-pill-permissions"
-          data-pill-label={active.label}
-          data-active={fullAccess ? "true" : "false"}
-          data-variant={fullAccess ? "danger" : undefined}
-          aria-label="Permission level for tool calls"
-          title={`${active.label}: ${active.description}`}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            className="composer-pill-btn composer-pill-permissions"
+            data-pill-label={`${active.label} · ${isolation.label}`}
+            data-active={fullAccess ? "true" : "false"}
+            data-variant={fullAccess ? "danger" : undefined}
+            aria-label={`Tool permissions: ${active.label}. ${isolation.label}`}
+            title={`${active.label}: ${active.description}. ${isolation.label}.`}
+          >
+            <span className="composer-pill-glyph">
+              <ActiveIcon className="size-[15px]" strokeWidth={2} />
+            </span>
+            <span>{active.label}</span>
+            <span className="max-w-[190px] truncate text-ui-11 font-normal opacity-75">
+              {isolation.label}
+            </span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.5}
+              className="composer-pill-caret size-[15px]"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side={side}
+          align="start"
+          sideOffset={0}
+          avoidCollisions={true}
+          className="unsloth-plus-menu w-[300px]"
         >
-          <span className="composer-pill-glyph">
-            <ActiveIcon className="size-[15px]" strokeWidth={2} />
-          </span>
-          <span>{active.label}</span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={1.5}
-            className="composer-pill-caret size-[15px]"
+          <DropdownMenuLabel>
+            How should tool calls be approved?
+          </DropdownMenuLabel>
+          <PermissionModeMenuItems
+            // Defer past the menu-close focus restoration (see PermissionModeDropdown).
+            onRequestFullAccess={() =>
+              setTimeout(() => setBypassConfirmOpen(true), 0)
+            }
           />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        side={side}
-        align="start"
-        sideOffset={0}
-        avoidCollisions={true}
-        className="unsloth-plus-menu w-[300px]"
-      >
-        <DropdownMenuLabel>
-          How should tool calls be approved?
-        </DropdownMenuLabel>
-        <PermissionModeMenuItems
-          // Defer past the menu-close focus restoration (see PermissionModeDropdown).
-          onRequestFullAccess={() =>
-            setTimeout(() => setBypassConfirmOpen(true), 0)
-          }
-        />
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <ToolIsolationMenuSection
+            onRequestLimited={() => setLimitedConfirmOpen(true)}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <LimitedModeConfirmDialog
+        open={limitedConfirmOpen}
+        onOpenChange={setLimitedConfirmOpen}
+      />
+    </>
   );
 }

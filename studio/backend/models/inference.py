@@ -1926,6 +1926,7 @@ class ReasoningControlsRequest(BaseModel):
 # derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
 # it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
+ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
 
 
 def _normalize_permission_mode(value: Any) -> Any:
@@ -1934,6 +1935,10 @@ def _normalize_permission_mode(value: Any) -> Any:
     if value not in _KNOWN_PERMISSION_MODES:
         return "ask"
     return value
+
+
+def _normalize_tool_execution_mode(value: Any) -> Any:
+    return "os_isolation_required" if value is None else value
 
 
 class ChatCompletionRequest(BaseModel):
@@ -2172,6 +2177,22 @@ class ChatCompletionRequest(BaseModel):
             "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
             "newer client) is treated as 'ask'."
         ),
+    )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default. "
+            "'limited' requires a valid session-only Limited grant; 'full' preserves "
+            "the existing unrestricted permission semantics."
+        ),
+    )
+    limited_grant: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Opaque, session-only Limited-mode grant.",
+    )
+    tool_ui_session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Ephemeral page-memory identifier binding a Limited grant.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -2515,16 +2536,26 @@ class ChatCompletionRequest(BaseModel):
         # 422; mirrors the tool loops' unknown -> ask fallback.
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
         """permission_mode='full' is the documented equivalent of
         bypass_permissions=true, so fold it in before any route guard reads
         the flag (else a full request would trip the confirm-gate rejections)."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
@@ -2688,6 +2719,30 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+
+
+class ToolIsolationCapabilityResponse(BaseModel):
+    environment: str
+    backend: str
+    protection_state: str
+    profile_id: str
+    probe_generation: str
+    environment_fingerprint: str
+    reason: str
+    remediation: str
+    retryable: bool
+    qualified: bool
+
+
+class ToolIsolationLimitedGrantRequest(BaseModel):
+    ui_session_id: str = Field(min_length = 1, max_length = 512)
+    probe_generation: str = Field(min_length = 1, max_length = 512)
+
+
+class ToolIsolationLimitedGrantResponse(BaseModel):
+    grant: str
+    expires_at: str
+    probe_generation: str
 
 
 # ── OpenAI shell-tool container management ─────────────────────
@@ -3086,8 +3141,40 @@ class ResponsesRequest(BaseModel):
     user: Optional[str] = None
     text: Optional[Any] = None
     reasoning: Optional[Any] = None
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default; "
+            "Limited requires a session-only grant and Full preserves unrestricted semantics."
+        ),
+    )
+    limited_grant: Optional[str] = None
+    tool_ui_session_id: Optional[str] = None
+    permission_mode: Optional[str] = None
+    bypass_permissions: Optional[bool] = False
 
     model_config = {"extra": "allow"}
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ResponsesRequest":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
+            self.bypass_permissions = True
+        elif self.permission_mode == "full" or self.bypass_permissions:
+            self.permission_mode = "full"
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
+        return self
 
 
 # ── Response models ─────────────────────────────────────────────
@@ -3451,6 +3538,16 @@ class AnthropicMessagesRequest(BaseModel):
         None,
         description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default. "
+            "'limited' requires a valid session-only Limited grant; 'full' preserves "
+            "the existing unrestricted permission semantics."
+        ),
+    )
+    limited_grant: Optional[str] = None
+    tool_ui_session_id: Optional[str] = None
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
@@ -3523,15 +3620,25 @@ class AnthropicMessagesRequest(BaseModel):
         # 422; mirrors the tool loops' unknown -> ask fallback.
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
         """permission_mode='full' equals bypass_permissions=true (mirrors the
         Chat Completions request)."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False

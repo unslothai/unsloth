@@ -102,11 +102,26 @@ import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch
 import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
 import {
+  createToolIsolationUiSessionId,
+  fetchLimitedToolGrant,
+  fetchToolIsolationCapability,
+  isLimitedGrantCurrent,
+  type LimitedToolGrant,
+  type ToolExecutionMode,
+  type ToolIsolationCapability,
+} from "../tool-isolation";
+import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
 } from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
+
+export type {
+  LimitedToolGrant,
+  ToolExecutionMode,
+  ToolIsolationCapability,
+} from "../tool-isolation";
 
 export {
   CHAT_GPU_MEMORY_MODE_KEY,
@@ -2651,6 +2666,17 @@ type ChatRuntimeStore = {
    * keep working. "full" is session-only (never persisted).
    */
   permissionMode: PermissionMode;
+  /** Requested protection for Python and Terminal. Session-only. */
+  toolExecutionMode: ToolExecutionMode;
+  /** Random id scoped to this page lifetime; never copied to browser storage. */
+  toolIsolationUiSessionId: string;
+  /** Latest advisory capability; launch-time backend checks remain authoritative. */
+  toolIsolationCapability: ToolIsolationCapability | null;
+  /** Opaque Limited consent proof; page-memory only. */
+  limitedToolGrant: LimitedToolGrant | null;
+  toolIsolationCapabilityLoading: boolean;
+  toolIsolationGrantLoading: boolean;
+  toolIsolationError: string | null;
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -2987,6 +3013,10 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  setToolExecutionMode: (mode: ToolExecutionMode) => void;
+  refreshToolIsolationCapability: () => Promise<void>;
+  requestLimitedToolGrant: () => Promise<LimitedToolGrant>;
+  clearLimitedToolGrant: () => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -4457,6 +4487,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // dialog) each session rather than silently reactivating on reload.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  toolExecutionMode: "os_isolation_required",
+  toolIsolationUiSessionId: createToolIsolationUiSessionId(),
+  toolIsolationCapability: null,
+  limitedToolGrant: null,
+  toolIsolationCapabilityLoading: false,
+  toolIsolationGrantLoading: false,
+  toolIsolationError: null,
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -5711,6 +5748,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           permissionMode,
           bypassPermissions: true,
+          toolExecutionMode: "full" as ToolExecutionMode,
+          limitedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5719,9 +5758,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      const leavingFullAccess = state.permissionMode === "full";
       return {
         permissionMode,
         bypassPermissions: false,
+        ...(leavingFullAccess
+          ? {
+              toolExecutionMode:
+                "os_isolation_required" as ToolExecutionMode,
+              limitedToolGrant: null,
+            }
+          : {}),
         confirmToolCalls,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
@@ -5738,6 +5785,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           bypassPermissions,
           permissionMode: "full" as PermissionMode,
+          toolExecutionMode: "full" as ToolExecutionMode,
+          limitedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5749,10 +5798,136 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         bypassPermissions,
         permissionMode,
+        toolExecutionMode: "os_isolation_required" as ToolExecutionMode,
+        limitedToolGrant: null,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setToolExecutionMode: (toolExecutionMode) =>
+    set((state) => {
+      if (toolExecutionMode === "limited") {
+        if (
+          state.toolIsolationCapability?.protection_state !== "unavailable" ||
+          !isLimitedGrantCurrent(
+            state.limitedToolGrant,
+            state.toolIsolationCapability,
+          )
+        ) {
+          return {
+            toolIsolationError:
+              "Limited mode requires a current grant for this page session.",
+          };
+        }
+        return { toolExecutionMode, toolIsolationError: null };
+      }
+      if (toolExecutionMode === "full" && state.permissionMode !== "full") {
+        return {
+          toolIsolationError:
+            "Full access must be enabled through its confirmation dialog.",
+        };
+      }
+      return {
+        toolExecutionMode,
+        limitedToolGrant: null,
+        toolIsolationError: null,
+      };
+    }),
+  refreshToolIsolationCapability: async () => {
+    set(() => ({
+      toolIsolationCapabilityLoading: true,
+      toolIsolationError: null,
+    }));
+    try {
+      const capability = await fetchToolIsolationCapability();
+      set((state) => {
+        const grantRemainsValid =
+          capability.protection_state === "unavailable" &&
+          isLimitedGrantCurrent(state.limitedToolGrant, capability);
+        return {
+          toolIsolationCapability: capability,
+          limitedToolGrant: grantRemainsValid
+            ? state.limitedToolGrant
+            : null,
+          toolExecutionMode:
+            state.toolExecutionMode === "limited" && !grantRemainsValid
+              ? ("os_isolation_required" as ToolExecutionMode)
+              : state.toolExecutionMode,
+          toolIsolationCapabilityLoading: false,
+          toolIsolationError: null,
+        };
+      });
+    } catch (error) {
+      set((state) => ({
+        toolIsolationCapability: null,
+        limitedToolGrant: null,
+        toolExecutionMode:
+          state.toolExecutionMode === "limited"
+            ? ("os_isolation_required" as ToolExecutionMode)
+            : state.toolExecutionMode,
+        toolIsolationCapabilityLoading: false,
+        toolIsolationError:
+          error instanceof Error
+            ? error.message
+            : "Could not check OS isolation",
+      }));
+    }
+  },
+  requestLimitedToolGrant: async () => {
+    const before = get();
+    const capability = before.toolIsolationCapability;
+    if (!capability || capability.protection_state !== "unavailable") {
+      const message =
+        "Limited mode is only available when OS isolation is unavailable.";
+      set(() => ({ toolIsolationError: message }));
+      throw new Error(message);
+    }
+    const requestedGeneration = capability.probe_generation;
+    set(() => ({ toolIsolationGrantLoading: true, toolIsolationError: null }));
+    try {
+      const grant = await fetchLimitedToolGrant(
+        before.toolIsolationUiSessionId,
+        requestedGeneration,
+      );
+      const currentCapability = get().toolIsolationCapability;
+      if (
+        grant.probe_generation !== requestedGeneration ||
+        currentCapability?.probe_generation !== requestedGeneration ||
+        currentCapability.protection_state !== "unavailable" ||
+        !isLimitedGrantCurrent(grant, currentCapability)
+      ) {
+        throw new Error(
+          "OS isolation capability changed. Review the current state and try again.",
+        );
+      }
+      set(() => ({
+        limitedToolGrant: grant,
+        toolExecutionMode: "limited",
+        toolIsolationGrantLoading: false,
+        toolIsolationError: null,
+      }));
+      return grant;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not enable Limited mode";
+      set(() => ({
+        limitedToolGrant: null,
+        toolExecutionMode: "os_isolation_required",
+        toolIsolationGrantLoading: false,
+        toolIsolationError: message,
+      }));
+      throw error;
+    }
+  },
+  clearLimitedToolGrant: () =>
+    set((state) => ({
+      limitedToolGrant: null,
+      toolExecutionMode:
+        state.toolExecutionMode === "limited"
+          ? ("os_isolation_required" as ToolExecutionMode)
+          : state.toolExecutionMode,
+      toolIsolationError: null,
+    })),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
     set(() => ({ bypassConfirmOpen })),
   allowToolAlways: (sessionId, toolName) =>
