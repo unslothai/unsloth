@@ -340,7 +340,6 @@ def test_the_tts_route_refuses_an_audio_part():
 
 def _durable_run(content):
     from routes.chat_generation_runs import CreateChatGenerationRun
-
     return CreateChatGenerationRun(
         runId = "run-1",
         threadId = "thread-1",
