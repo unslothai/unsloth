@@ -30,8 +30,8 @@ export function buildResearchInferenceRequest(input: {
     providerId: string;
     providerType: string;
     modelId: string;
-    /** The connection's resolved per-model output ceiling. */
-    maxOutputTokens: number;
+    /** The connection's resolved output ceiling, or null when nothing grounds one. */
+    maxOutputTokens: number | null;
   };
   temperature: number;
   topP: number;
@@ -53,7 +53,8 @@ export function buildResearchInferenceRequest(input: {
           providerId: input.external.providerId,
           providerType: input.external.providerType,
           externalModel: input.external.modelId,
-          ...(Number.isFinite(input.external.maxOutputTokens) &&
+          ...(input.external.maxOutputTokens != null &&
+          Number.isFinite(input.external.maxOutputTokens) &&
           input.external.maxOutputTokens > 0
             ? { maxOutputTokens: Math.floor(input.external.maxOutputTokens) }
             : {}),

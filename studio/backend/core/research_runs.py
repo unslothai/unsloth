@@ -84,6 +84,7 @@ _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
 # Streaming progress is persisted as a full row snapshot; these bound how often that happens.
+_CAP_UNREADABLE = object()
 _PROGRESS_FLUSH_CHARS = 512
 _PROGRESS_FLUSH_SECONDS = 0.25
 _PROGRESS_FLUSH_CHARS_PER_SECOND = 1_048_576
@@ -439,7 +440,12 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     """
     if not inference.get("providerType"):
         return _SYNTHESIS_MAX_TOKENS
+    floor = _provider_output_floor(inference.get("providerType"))
     saved = _saved_connection_cap(inference.get("providerId"))
+    if saved is _CAP_UNREADABLE:
+        # The current cap could not be confirmed, so the client's older ceiling is not
+        # spendable; the default is the only budget known to have been allowed before.
+        return max(_SYNTHESIS_MAX_TOKENS, floor)
     resolved = _positive_int_or_none(inference.get("maxOutputTokens"))
     if resolved:
         # The client resolved this against the run's own model, but the run is durable: the
@@ -458,7 +464,7 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
     # The chat path never hands a connection less than its provider's floor, because below it
     # a thinking answer is cut off before the report starts. A saved cap is allowed to lower
     # the budget, but not past that.
-    return max(budget, _provider_output_floor(inference.get("providerType")))
+    return max(budget, floor)
 
 
 def _provider_output_floor(provider_type: object) -> int:
@@ -467,15 +473,20 @@ def _provider_output_floor(provider_type: object) -> int:
     return _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER.get(provider_type, _EXTERNAL_MIN_OUTPUT_TOKENS)
 
 
-def _saved_connection_cap(provider_id: object) -> int | None:
-    """The connection's currently saved Max Output Tokens, or None if it has none."""
+def _saved_connection_cap(provider_id: object) -> int | None | object:
+    """The connection's saved Max Output Tokens, None if it has none, else _CAP_UNREADABLE.
+
+    A caller cannot treat an unreadable row as an uncapped connection: the cap may have been
+    lowered since this durable run was created, and spending the client's older ceiling would
+    be exactly the request the user capped away.
+    """
     if not isinstance(provider_id, str):
         return None
     try:
         provider = providers_db.get_provider(provider_id) or {}
     except Exception:
         logger.debug("research.provider_cap_probe_failed", exc_info = True)
-        return None
+        return _CAP_UNREADABLE
     return _positive_int_or_none(provider.get("max_output_tokens"))
 
 

@@ -395,6 +395,35 @@ def test_a_provider_without_a_floor_keeps_the_saved_cap(monkeypatch):
     assert _synthesis_max_tokens(inference) == 8_000
 
 
+def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
+    """A locked row is not an uncapped connection; the cap may have been lowered since."""
+
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
+    """The loaded local window explains nothing about a report a connection generated."""
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(
+        usage, requested_max_tokens = 32_768, external = True
+    )
+    assert "Context Length" not in notice
+    assert "Local model" not in notice
+
+
+def test_a_local_truncation_still_names_the_context_window(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    assert "Context Length" in notice
+
+
 def test_a_local_run_keeps_the_default_report_budget():
     assert _synthesis_max_tokens({"model": "local-model"}) == research_runs._SYNTHESIS_MAX_TOKENS
 
