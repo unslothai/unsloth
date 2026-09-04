@@ -12,7 +12,7 @@ transformers, it is an ImportError at `import unsloth`.
 """
 
 from __future__ import annotations
-import os, sys, glob, json
+import os, sys, glob, json, re
 
 SIDECAR_ROOT = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT", "/opt/unsloth-venv/tf-sidecars")
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
@@ -144,6 +144,80 @@ def requested_version():
         return None
 
 
+# --- install-cell pin scanning -------------------------------------------------
+# Lives here rather than in unsloth_run because this module is the one copied into
+# site-packages, so it is the only one a kernel can import; unsloth_run reads these
+# back out. One implementation, so the headless path and the IPython hook cannot
+# disagree about what an install line is.
+
+_PIN_RE = re.compile(r"transformers\s*==\s*([0-9][0-9A-Za-z.\-]*)")
+
+# Only an actual install invocation may supply the pin: the pin outranks the model
+# tier, so a commented-out install line would pick the wrong sidecar with nothing
+# running afterwards to correct it.
+_INSTALL_RE = re.compile(
+    r"""^[ \t]*(?![ \t]*\#)[!%]?[ \t]*
+        (?: uv (?:[ \t]+-{1,2}\S+)* [ \t]+ )?
+        (?: \S+ [ \t]+ -m [ \t]+ )?
+        pip[0-9.]* [ \t]+
+        (?: -{1,2}\S+ [ \t]+ )*
+        install (?: [ \t] | $ )""",
+    re.VERBOSE,
+)
+
+
+def _strip_comment(line):
+    """Drop a trailing `# ...` from a shell/magic line. Only a `#` starting a token
+    counts, so a `git+https://...#egg=` fragment survives, as does a quoted #."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
+# A triple-quoted body is data, not code. Blanked keeping newlines, so the
+# continuation logic below is unaffected.
+_TRIPLE_RE = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
+
+
+def _live_source(src):
+    """Triple-quoted bodies and comments blanked out. Single-quoted strings stay
+    intact: the model name unsloth_run scans for lives inside one."""
+    blanked = _TRIPLE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
+    return "\n".join(_strip_comment(line) for line in blanked.splitlines())
+
+
+def _install_lines(src):
+    kept, cont = [], False
+    for line in src.splitlines():
+        if cont or _INSTALL_RE.match(line):
+            code = _strip_comment(line)
+            kept.append(code)
+            cont = code.rstrip().endswith("\\")
+        else:
+            cont = False
+    return "\n".join(kept)
+
+
+def pin_in_cell(source):
+    """transformers version pinned by an install command IN this cell, else None.
+
+    Same scan unsloth_run runs over a whole notebook, applied to one cell. Anything
+    that installs nothing has to lose: once transformers is imported the sidecar
+    choice is frozen for the life of the kernel, so a wrong guess is unrecoverable
+    while no guess merely leaves the base venv."""
+    if not source:
+        return None
+    m = _PIN_RE.search(_install_lines(_live_source(source)))
+    return m.group(1) if m else None
+
+
 def activate(version: str | None, *, quiet: bool = False):
     """Prepend the matching sidecar to sys.path, if transformers is not imported yet."""
     if not version:
@@ -161,7 +235,12 @@ def activate(version: str | None, *, quiet: bool = False):
         return None
     if d not in sys.path:
         sys.path.insert(0, d)
-    os.environ["PYTHONPATH"] = d + os.pathsep + os.environ.get("PYTHONPATH", "")
+    # guarded like the sys.path insert above: the hook runs on EVERY cell until
+    # transformers is imported, so an unconditional prepend grows PYTHONPATH by one
+    # copy per cell and every child process inherits the pile
+    _pp = os.environ.get("PYTHONPATH", "")
+    if d not in _pp.split(os.pathsep):
+        os.environ["PYTHONPATH"] = d + os.pathsep + _pp
     if not quiet and _logging_enabled():
         print(f"[unsloth-nb] activated transformers sidecar for {version}: {d}")
     return d
@@ -171,9 +250,19 @@ def resolve(model_name: str | None = None):
     return requested_version() or tier_for_model(model_name or "")
 
 
-def _pre_run_cell(_info = None):
-    v = requested_version()
-    if v and "transformers" not in sys.modules:
+def _pre_run_cell(info = None):
+    """Activate before the cell's first statement runs.
+
+    The marker is the shim's record of a PREVIOUS cell's install, so it cannot help a
+    cell that installs and then imports in one go: the shim writes it from a child
+    process partway through that same cell, long after this hook has returned. Reading
+    the pin out of the cell we are about to run covers that shape, which is how the
+    notebooks pin a new model. Without it the cell silently ran the base transformers
+    and every later cell got "already imported; cannot switch"."""
+    if "transformers" in sys.modules:
+        return
+    v = requested_version() or pin_in_cell(getattr(info, "raw_cell", None))
+    if v:
         activate(v)
 
 

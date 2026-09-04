@@ -21,61 +21,26 @@ try:
 except Exception:
     compat = None
 
-_PIN_RE = re.compile(r"transformers\s*==\s*([0-9][0-9A-Za-z.\-]*)")
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# Only an actual install invocation may supply the pin: `want = pin or tier` below
-# lets the first textual match outrank the model tier, so a commented-out install line
-# launches the kernel on the wrong sidecar and nothing runs to correct it.
-_INSTALL_RE = re.compile(
-    r"""^[ \t]*(?![ \t]*\#)[!%]?[ \t]*
-        (?: uv (?:[ \t]+-{1,2}\S+)* [ \t]+ )?
-        (?: \S+ [ \t]+ -m [ \t]+ )?
-        pip[0-9.]* [ \t]+
-        (?: -{1,2}\S+ [ \t]+ )*
-        install (?: [ \t] | $ )""",
-    re.VERBOSE,
-)
-
-
-def _strip_comment(line):
-    """Drop a trailing `# ...` from a shell/magic line. Only a `#` starting a token
-    counts, so a `git+https://...#egg=` fragment survives, as does a quoted #."""
-    quote = None
-    for i, ch in enumerate(line):
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
-            return line[:i]
-    return line
-
-
-# A triple-quoted body is data, not code. Blanked keeping newlines, so the
-# continuation logic below is unaffected.
-_TRIPLE_RE = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
-
-
-def _live_source(src):
-    """Triple-quoted bodies and comments blanked out. Single-quoted strings stay
-    intact: the model name this scans for lives inside one."""
-    blanked = _TRIPLE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), src)
-    return "\n".join(_strip_comment(line) for line in blanked.splitlines())
-
-
-def _install_lines(src):
-    kept, cont = [], False
-    for line in src.splitlines():
-        if cont or _INSTALL_RE.match(line):
-            code = _strip_comment(line)
-            kept.append(code)
-            cont = code.rstrip().endswith("\\")
-        else:
-            cont = False
-    return "\n".join(kept)
+# The install-cell scanner lives in unsloth_nb_compat, which is the copy the image puts
+# in site-packages and therefore the only one an IPython kernel can import. Sharing it
+# is what stops this path and the kernel hook from disagreeing about what counts as an
+# install line, which would put the kernel on one sidecar and the hook on another.
+if compat is not None:
+    _PIN_RE = compat._PIN_RE
+    _INSTALL_RE = compat._INSTALL_RE
+    _strip_comment = compat._strip_comment
+    _live_source = compat._live_source
+    _install_lines = compat._install_lines
+else:
+    # compat is also what turns a scan result into a sidecar, so with it gone there is
+    # nothing either half of the scan could select (see main, where sidecar stays None
+    # and the tier lookup is skipped). Degrade to no scan rather than keep a second
+    # copy of the rules here, which is the drift this move exists to prevent.
+    _PIN_RE = _INSTALL_RE = None
+    _strip_comment = _live_source = _install_lines = None
 
 
 def _load(path_or_url):
@@ -90,6 +55,8 @@ def _load(path_or_url):
 def _scan(nb):
     """(pinned_transformers, first_model_name); dead code must not count, as above."""
     pin = model = None
+    if compat is None:
+        return pin, model
     for cell in nb.get("cells", []):
         if cell.get("cell_type") != "code":
             continue
