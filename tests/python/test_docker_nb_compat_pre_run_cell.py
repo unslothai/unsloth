@@ -275,3 +275,55 @@ def test_a_different_distribution_is_not_the_pin(compat, spec):
 def test_a_pin_still_has_to_come_from_an_install_line(compat):
     assert compat.pin_in_cell("# %pip install Transformers==" + PIN) is None
     assert compat.pin_in_cell('doc = """\n%pip install Transformers==' + PIN + '\n"""\n') is None
+
+
+# A requirement whose PEP 508 marker is false is skipped outright by both real tools
+# ("Ignoring transformers: markers ... don't match your environment"), so it installs
+# nothing. Treating it as a pin activated a sidecar for a version the cell never got,
+# and activate() prepends that directory to sys.path AND to PYTHONPATH, so every child
+# process inherits it too.
+@pytest.mark.parametrize(
+    "cell, expected",
+    [
+        ("!pip install transformers==5.5.0", "5.5.0"),
+        ("!pip install \"transformers==5.5.0; python_version < '3.0'\"", None),
+        ("!pip install \"transformers==5.5.0; sys_platform == 'win32'\"", None),
+        ("!pip install \"transformers==5.5.0; python_version >= '3.0'\"", "5.5.0"),
+        ("!pip install \"transformers==5.5.0; platform_system == 'Linux'\"", "5.5.0"),
+        ("!uv pip install \"transformers==5.5.0; implementation_name == 'pypy'\"", None),
+        # unquoted: the shell cuts the line at the `;`, so pip only ever sees the
+        # bare pin and it really is unconditional
+        ('!pip install transformers==5.5.0; python_version < "3.0"', "5.5.0"),
+    ],
+    ids = [
+        "no-marker",
+        "false-python",
+        "false-platform",
+        "true-python",
+        "true-system",
+        "false-implementation",
+        "unquoted-shell-splits",
+    ],
+)
+def test_a_false_environment_marker_is_not_a_pin(compat, cell, expected):
+    assert compat.pin_in_cell(cell) == expected
+
+
+def test_the_marker_veto_survives_without_packaging(compat, monkeypatch):
+    """packaging is optional in this module, as it already is for version ordering, so
+    losing it must fall back to the old behaviour rather than raise."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_packaging(name, *a, **kw):
+        if name.startswith("packaging"):
+            raise ImportError("no packaging")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _no_packaging)
+    assert compat.pin_in_cell("!pip install transformers==5.5.0") == "5.5.0"
+    assert (
+        compat.pin_in_cell("!pip install \"transformers==5.5.0; python_version < '3.0'\"")
+        == "5.5.0"
+    )

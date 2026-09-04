@@ -12,7 +12,7 @@ transformers, it is an ImportError at `import unsloth`.
 """
 
 from __future__ import annotations
-import os, sys, glob, json, re
+import os, sys, glob, json, re, shlex
 
 SIDECAR_ROOT = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT", "/opt/unsloth-venv/tf-sidecars")
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
@@ -168,10 +168,48 @@ def _norm_req(name):
     return re.sub(r"[-_.]+", "-", name.strip()).lower()
 
 
+def _marker_skipped_versions(lines):
+    """transformers versions on these lines whose PEP 508 marker is FALSE here.
+
+    Both real tools skip such a requirement entirely ("Ignoring transformers: markers
+    ... don't match your environment"), so nothing is installed and no sidecar should
+    be activated for it. Splitting the way a shell does is the point: only a QUOTED
+    requirement reaches pip carrying its marker, while `pip install pkg==1; marker`
+    unquoted is cut at the `;` by the shell and really is an unconditional pin.
+
+    packaging is optional here, exactly as it is for the version ordering above, so a
+    missing or unparsable requirement simply yields no veto and the old behaviour."""
+    skipped = set()
+    try:
+        from packaging.requirements import Requirement
+    except Exception:
+        return skipped
+    for line in lines.splitlines():
+        try:
+            tokens = shlex.split(line, posix = True)
+        except ValueError:
+            continue
+        for tok in tokens:
+            try:
+                req = Requirement(tok)
+                if _norm_req(req.name) != "transformers" or req.marker is None:
+                    continue
+                if req.marker.evaluate():
+                    continue
+            except Exception:
+                continue
+            for spec in req.specifier:
+                if spec.operator == "==":
+                    skipped.add(spec.version)
+    return skipped
+
+
 def pin_from(text):
     """transformers version pinned by an install command in `text`, else None."""
-    for m in _PIN_RE.finditer(_install_lines(text)):
-        if _norm_req(m.group(1)) == "transformers":
+    lines = _install_lines(text)
+    skipped = _marker_skipped_versions(lines)
+    for m in _PIN_RE.finditer(lines):
+        if _norm_req(m.group(1)) == "transformers" and m.group(2) not in skipped:
             return m.group(2)
     return None
 

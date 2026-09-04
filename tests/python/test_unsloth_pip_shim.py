@@ -860,10 +860,20 @@ def test_normalization_does_not_merge_distinct_distributions(shim):
         ["--requirements-from-script=demo.py"],
     ],
 )
-def test_dependency_group_flags_are_install_targets(shim, args):
-    execd = _execd_full(shim, "pip", args)
-    for tok in args:
-        assert tok in execd, (args, execd)
+def test_dependency_group_flags_are_never_a_silent_no_op(shim, args):
+    """These flags ARE the install target, so treating them as ordinary option/value
+    pairs made the shim find nothing to install and print "ok" having done nothing.
+
+    They are now refused instead of forwarded, because their contents cannot be read
+    and a group holding a same-version local path over a baked package installs over
+    it. The property this test exists for is unchanged either way: never quietly
+    succeed while the requested packages go uninstalled."""
+    argv = ["pip", "install", *args]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim.sys, "argv", argv)
+        with pytest.raises(SystemExit) as exc:
+            shim.main()
+    assert "refusing" in str(exc.value), (args, exc.value)
 
 
 @pytest.mark.parametrize("args", [["--no-deps"], ["--quiet"], ["torch"]])
@@ -1789,3 +1799,149 @@ def test_nothing_is_added_when_no_hidden_target_is_set(shim, monkeypatch):
     assert ran is not None and "snac" in ran, ran
     assert "-r" not in ran and "-e" not in ran, f"a phantom target was added: {ran}"
     assert env is None, "the environment was rebuilt when nothing needed clearing"
+
+
+# pip's --root is a relocation PREFIX, not a destination directory: it keeps the
+# computed scheme path and re-anchors it under the root, so `--root /` is the identity
+# and still writes the venv's own site-packages. Measured with the real pip: `pip
+# install --root / idna==3.6` landed in the venv purelib, while `--root <dir>` put it
+# under that directory and left the venv untouched.
+IDENTITY_ROOT = "/" + ""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pip", "install", "--root", IDENTITY_ROOT, "torch==2.5.0"],
+        ["pip", "install", "--root=" + IDENTITY_ROOT, "torch==2.5.0"],
+        ["pip", "install", "--root", IDENTITY_ROOT + IDENTITY_ROOT, "torch==2.5.0"],
+    ],
+    ids = ["separated", "equals-form", "double-slash"],
+)
+def test_an_identity_root_still_protects_the_baked_venv(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    ran = _full_argv(shim, argv)
+    assert ran is None or "torch==2.5.0" not in ran, (
+        f"--root {IDENTITY_ROOT!r} relocates nothing, so this still replaces the baked "
+        f"CUDA stack: {ran}"
+    )
+
+
+def test_an_identity_root_from_the_environment_still_protects(shim, monkeypatch):
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    monkeypatch.setenv("PIP_ROOT", IDENTITY_ROOT)
+    ran = _full_argv(shim, ["pip", "install", "torch==2.5.0"])
+    assert (
+        ran is None or "torch==2.5.0" not in ran
+    ), f"PIP_ROOT={IDENTITY_ROOT!r} relocates nothing: {ran}"
+
+
+def test_a_real_root_relocation_is_still_a_bypass(shim, monkeypatch):
+    """Guard: a root that genuinely moves the install must keep bypassing, or we are
+    back to emptying the environment the caller actually named."""
+    _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
+    ran = _full_argv(shim, ["pip", "install", "--root", "/tmp/reloc", "torch==2.5.0"])
+    assert (
+        ran is not None and "torch==2.5.0" in ran
+    ), f"a genuine --root relocation was filtered: {ran}"
+
+
+# URL schemes are case insensitive and pip normalises them, so `name@GIT+HTTPS://...`
+# is the same direct reference as the lowercase spelling.
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "unsloth@GIT+HTTPS://github.com/unslothai/unsloth.git",
+        "unsloth@Git+Https://github.com/unslothai/unsloth.git",
+        "unsloth@HTTPS://example.com/unsloth-2026.6.9-py3-none-any.whl",
+        "unsloth[all]@GIT+HTTPS://github.com/unslothai/unsloth.git",
+    ],
+    ids = ["upper-vcs", "mixed-vcs", "upper-url-wheel", "extras"],
+)
+def test_an_uppercase_direct_reference_scheme_is_still_classified(shim, monkeypatch, spec):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    ran = _full_argv(shim, ["pip", "install", spec, "snac"])
+    assert (
+        ran is None or spec not in ran
+    ), f"a protected direct reference was forwarded because of scheme casing: {ran}"
+
+
+def test_an_unprotected_direct_reference_still_reaches_the_real_tool(shim, monkeypatch):
+    """Guard: matching schemes case insensitively must not start dropping things that
+    were never protected."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    spec = "snac@GIT+HTTPS://github.com/example/snac.git"
+    ran = _full_argv(shim, ["pip", "install", spec])
+    assert ran is not None and spec in ran, f"an unprotected direct reference was dropped: {ran}"
+
+
+def test_an_uppercase_scheme_without_a_double_slash_is_still_classified(shim, monkeypatch):
+    """`GIT+FILE:/path#egg=unsloth` carries no `://`, so the scheme prefix match is the
+    only thing that recognises it as a direct reference at all. Matching that prefix
+    case sensitively let the uppercase spelling fall through to "unknown" and be
+    forwarded."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    spec = "GIT+FILE:/tmp/checkout#egg=unsloth"
+    ran = _full_argv(shim, ["pip", "install", spec, "snac"])
+    assert (
+        ran is None or spec not in ran
+    ), f"a protected direct reference was forwarded because of scheme casing: {ran}"
+
+
+# --group (PEP 735, pip 25.3+ and uv) and --requirements-from-script (PEP 723, pip 26+,
+# which an image built today bakes because docker/Dockerfile installs pip unpinned)
+# supply install targets from a pyproject table or a script header. Nothing in the scan
+# can read those, and the injected constraints do not cover them: pip reinstalls a
+# same-version LOCAL PATH or sdist, so `unsloth @ file:///checkout` at the baked
+# version installs over the baked code.
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pip", "install", "--group", "dev"],
+        ["pip", "install", "--group=dev"],
+        ["uv", "pip", "install", "--group", "dev"],
+        ["pip", "install", "--requirements-from-script", "demo.py"],
+        ["pip", "install", "--group", "dev", "snac"],
+    ],
+    ids = ["pip-group", "pip-group-eq", "uv-group", "pip-script", "group-with-target"],
+)
+def test_an_uninspectable_target_source_is_refused(shim, monkeypatch, argv):
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    with pytest.raises(SystemExit) as exc:
+        _full_argv(shim, argv)
+    assert "refusing" in str(exc.value), exc.value
+
+
+def test_a_group_install_aimed_elsewhere_is_not_refused(shim, monkeypatch):
+    """Guard: the destination bypass runs first on purpose. A group installed into
+    another environment cannot touch the baked stack, so refusing it would break a
+    command that was never a threat."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    ran = _full_argv(shim, ["pip", "install", "--target", "/tmp/lib", "--group", "dev"])
+    assert ran is not None and "--group" in ran, f"a harmless group install was refused: {ran}"
+
+
+def test_an_ordinary_install_is_not_refused(shim, monkeypatch):
+    """Guard: the refusal must key on those flags alone."""
+    _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
+    ran = _full_argv(shim, ["pip", "install", "snac"])
+    assert ran is not None and "snac" in ran, ran
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("transformers==4.57.6", "4.57.6"),
+        ("transformers==4.57.6; python_version < '3.0'", None),
+        ("transformers==4.57.6; sys_platform == 'win32'", None),
+        ("transformers==5.5.0; python_version >= '3.0'", "5.5.0"),
+    ],
+    ids = ["no-marker", "false-marker", "false-marker-platform", "true-marker"],
+)
+def test_a_false_marker_does_not_record_a_transformers_pin(shim, monkeypatch, spec, expected):
+    """Both real tools skip a requirement whose marker is false ("Ignoring
+    transformers: markers ... don't match your environment"), so it installs nothing
+    and must not write the sidecar marker file that every later cell reads."""
+    _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
+    _execd, marker = _run(shim, "pip", [spec])
+    assert marker == expected, f"recorded {marker!r} for {spec!r}"

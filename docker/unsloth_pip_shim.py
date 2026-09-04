@@ -275,13 +275,23 @@ def _sdist_name(basename):
 def _canon(token):
     if token.startswith("-"):
         return None
+    # IGNORECASE: URL schemes are case insensitive and pip normalises them, so
+    # `unsloth@GIT+HTTPS://...` is the same direct reference as the lowercase
+    # spelling. Matching only lowercase missed the explicit name, fell through to the
+    # URL branch, and returned None (or, for a .whl URL, the wheel's own stem), so a
+    # protected package was classified unknown and forwarded.
     _dref = re.match(
         r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)",
         token,
+        re.IGNORECASE,
     )
     if _dref:
         return _norm_name(_dref.group(1))
-    if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
+    if (
+        re.match(r"^[a-z]+\+", token, re.IGNORECASE)
+        or "://" in token
+        or token.startswith((".", "/"))
+    ):
         _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
         if _egg:
             return _norm_name(_egg.group(1))
@@ -367,7 +377,26 @@ def _local_project_name(token):
     return None
 
 
+def _marker_is_false(token):
+    """True when this requirement carries a PEP 508 marker that does not hold here.
+
+    Both real tools then skip it entirely, so it pins nothing and must not reach the
+    sidecar marker file. packaging is treated as optional, as it is elsewhere: if it
+    is missing or the token does not parse, nothing is vetoed."""
+    try:
+        from packaging.requirements import Requirement
+        req = Requirement(token)
+    except Exception:
+        return False
+    try:
+        return req.marker is not None and not req.marker.evaluate()
+    except Exception:
+        return False
+
+
 def _version_pin(token):
+    if _marker_is_false(token):
+        return None
     m = re.search(r"==\s*([0-9][0-9A-Za-z.\-]*)", token)
     return m.group(1) if m else None
 
@@ -864,7 +893,14 @@ def _is_uv_pip_sync(argv):
 # pip documents --target as "Install packages into <dir>" and --python as "Run pip
 # with the specified Python interpreter"; uv documents --python as "The Python
 # interpreter into which packages should be installed".
-_DEST_DIR_FLAGS = {"--target", "-t", "--prefix", "--root"}
+_DEST_DIR_FLAGS = {"--target", "-t", "--prefix"}
+# --root is NOT a destination directory. pip documents it as "Install everything
+# relative to this alternate root directory" and applies it as a relocation PREFIX:
+# the computed scheme path is unchanged and then re-anchored under the root, so
+# `--root /` is the identity and still writes the venv's own site-packages. Measured:
+# `pip install --root / idna==3.6` put idna in the venv's purelib, while a real root
+# relocated it under that directory and left the venv untouched.
+_DEST_ROOT_FLAGS = {"--root"}
 _DEST_PYTHON_FLAGS = {"--python", "-p"}
 # pip honours PIP_<OPTION> for every option and uv documents --python as
 # [env: UV_PYTHON=]; both redirect with nothing on the command line at all.
@@ -876,8 +912,19 @@ _DEST_PYTHON_FLAGS = {"--python", "-p"}
 # --target/--prefix at all.
 # pip options that carry INSTALL TARGETS rather than a destination, in their
 # environment spelling. Both are space separated when they name more than one.
+# Flags that supply install TARGETS the shim cannot read. --group names a PEP 735
+# table inside a pyproject.toml (pip 25.3+ and uv), --requirements-from-script a PEP
+# 723 header inside a script (pip 26+). Measured: both are consumed for real, and a
+# group holding `unsloth @ file:///checkout` at the baked version installs over it
+# because pip reinstalls a same-version LOCAL PATH or sdist. --upgrade-group is NOT
+# here: `uv pip install` rejects it outright and pip has no such option, so it can
+# never supply a target on the command lines this shim sees.
+_UNINSPECTABLE_TARGET_FLAGS = {"--group", "--requirements-from-script"}
 _PIP_TARGET_ENV = {"PIP_REQUIREMENT": "-r", "PIP_EDITABLE": "-e"}
-_DEST_DIR_ENV = {"pip": ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"), "uv": ()}
+_DEST_DIR_ENV = {"pip": ("PIP_TARGET", "PIP_PREFIX"), "uv": ()}
+# PIP_ROOT is the environment spelling of --root, so it relocates rather than names a
+# destination and has to be resolved the same way
+_DEST_ROOT_ENV = {"pip": ("PIP_ROOT",), "uv": ()}
 _DEST_PYTHON_ENV = {"pip": ("PIP_PYTHON",), "uv": ("UV_PYTHON",)}
 
 
@@ -903,8 +950,24 @@ def _flag_values(argv, flags):
     return [v for v in out if v]
 
 
+def _base_venv_root():
+    """The venv that owns the REAL pip/uv, i.e. the one this shim exists to guard."""
+    return os.path.realpath(os.path.dirname(os.path.dirname(REAL["pip"])))
+
+
+def _relocated_under_root(root, path):
+    """Where `path` ends up once pip re-anchors it under `--root <root>`.
+
+    pip keeps the whole absolute path and hangs it beneath the root, so `--root /`
+    yields `path` itself and anything else lands outside the venv. Anchored on the
+    venv ROOT rather than on site-packages so it agrees with _inside_base_venv even
+    when the two are derived differently."""
+    _drive, rest = os.path.splitdrive(path)
+    return os.path.join(root, rest.lstrip(os.sep))
+
+
 def _inside_base_venv(path):
-    root = os.path.realpath(os.path.dirname(os.path.dirname(REAL["pip"])))
+    root = _base_venv_root()
     resolved = os.path.realpath(path)
     return resolved == root or resolved.startswith(root + os.sep)
 
@@ -923,6 +986,11 @@ def _installs_elsewhere(tool, argv):
     a tool that does not accept one fails loudly on it rather than silently."""
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
     dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if os.environ.get(v)]
+    roots = _flag_values(argv, _DEST_ROOT_FLAGS)
+    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if os.environ.get(v)]
+    # a root re-anchors the venv's OWN paths beneath it, so resolve where each one
+    # actually lands rather than classifying the root value itself
+    dirs += [_relocated_under_root(r, _base_venv_root()) for r in roots]
     if any(not _inside_base_venv(d) for d in dirs):
         return True
     pythons = _flag_values(argv, _DEST_PYTHON_FLAGS)
@@ -963,6 +1031,22 @@ def main():
     if i is None:
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
+
+    # after the install check, so a subcommand that merely mentions one of these is
+    # left alone, and after the destination bypass, so a group installed into another
+    # environment is not our problem
+    if _flag_values(argv, _UNINSPECTABLE_TARGET_FLAGS):
+        raise SystemExit(
+            "[unsloth-nb] refusing an install whose targets this shim cannot read: "
+            + " ".join(sorted(_UNINSPECTABLE_TARGET_FLAGS))
+            + ". A dependency group or a PEP 723 script block supplies package "
+            "specifications the same way a requirements file does, but they live "
+            "inside a pyproject.toml table or a script header rather than a plain "
+            "list, so they are forwarded uninspected: a same-version local path or "
+            "sdist naming a baked package resolves cleanly against the injected "
+            "constraints and replaces the stack this image is built on. Pass the "
+            "same requirements with `-r <file>`, which IS filtered."
+        )
 
     # pip reads PIP_<OPTION> for every option, so a requirements file or an editable
     # target can arrive with nothing on the command line to show for it. The scan below
