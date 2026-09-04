@@ -17,6 +17,7 @@ UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
+UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
 
 # Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
 # the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
@@ -41,6 +42,11 @@ resolve_git_ref() {
 }
 UNSLOTH_REF="$(resolve_git_ref https://github.com/unslothai/unsloth "$UNSLOTH_REF")"
 UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UNSLOTH_ZOO_REF")"
+# The baked notebooks are one more RUN layer keyed on a mutable ref, and the publish
+# workflow already freezes this one; leaving it out here meant a rebuild after
+# unslothai/notebooks moved silently kept the old set, and stamped the old commit
+# into .unsloth_template_commit so the image misreported which set it carried.
+UNSLOTH_NOTEBOOKS_REF="$(resolve_git_ref https://github.com/unslothai/notebooks "$UNSLOTH_NOTEBOOKS_REF")"
 
 # Resolved to a concrete tag here, so the build-arg changes only on a new release and
 # layer caching stays correct. Pin with LLAMA_PREBUILT_TAG=... for a frozen build.
@@ -64,6 +70,7 @@ echo "  CUDA           ${CUDA_VERSION}  Ubuntu ${UBUNTU_VERSION}  Python ${PYTHO
 echo "  unsloth        @${UNSLOTH_REF}"
 echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
 echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
+echo "  notebooks      @${UNSLOTH_NOTEBOOKS_REF}"
 # Read the arch list out of the Dockerfile rather than repeating it: the hand-copied
 # banner had already drifted. Bare filename because the script cd'd to its own dir.
 ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
@@ -79,6 +86,7 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
     --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
     --build-arg LLAMA_PREBUILT_TAG="${LLAMA_PREBUILT_TAG}" \
+    --build-arg UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF}" \
     -t "${IMAGE_NAME}:${TAG}" \
     .
 

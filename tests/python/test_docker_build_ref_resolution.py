@@ -27,6 +27,7 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs ba
 
 UNSLOTH_SHA = "a" * 40
 ZOO_SHA = "b" * 40
+NB_SHA = "c" * 40
 
 
 def _stub(path: Path, body: str) -> None:
@@ -73,6 +74,7 @@ LS_REMOTE_STUB = f"""
 if [ "$1" = "ls-remote" ]; then
     case "$2" in
         *unsloth-zoo*) echo -e "{ZOO_SHA}\\tHEAD" ;;
+        *notebooks*) echo -e "{NB_SHA}\\tHEAD" ;;
         *) echo -e "{UNSLOTH_SHA}\\tHEAD" ;;
     esac
     exit 0
@@ -88,6 +90,9 @@ def test_the_default_main_refs_are_frozen_to_commits(tmp_path):
         "reuses the cached install layer and silently ships a stale image"
     )
     assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
+    # the baked notebooks are the same shape of mutable-ref RUN layer, and the
+    # publish workflow already freezes this one
+    assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == NB_SHA
 
 
 def test_an_explicit_tag_is_frozen_too(tmp_path):
@@ -112,6 +117,7 @@ def test_a_sha_is_passed_through_without_a_lookup(tmp_path):
 def test_an_unreachable_remote_warns_and_still_builds(tmp_path):
     proc, argv = _run(tmp_path, 'if [ "$1" = "ls-remote" ]; then exit 128; fi\nexit 0\n')
     assert _build_arg(argv, "UNSLOTH_REF") == "main", "offline: the name is passed through"
+    assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == "main"
     assert "unreachable" in proc.stdout + proc.stderr
 
 

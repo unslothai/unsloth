@@ -159,3 +159,40 @@ def test_the_next_refresh_recovers_everything_that_was_rolled_back(tmp_path: Pat
     )
     # seed.ipynb is template-only, so the refresh drops it as deleted upstream
     assert len(_recorded(dest)) == NOTEBOOKS, sorted(_recorded(dest))[:5]
+
+
+def _commit_upstream_change(up: Path):
+    """A second commit so the next refresh does not exit early on remote == last."""
+    (up / f"nb{NOTEBOOKS + 1:09d}.ipynb").write_text("N", encoding = "utf-8")
+    env = dict(os.environ, GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_SYSTEM = "/dev/null")
+    subprocess.run(["git", "add", "-A"], cwd = up, check = True, env = env)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "more"],
+        cwd = up,
+        check = True,
+        env = env,
+    )
+
+
+@needs_git
+def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
+    """The rollback removes OUR copy to make a lost record recoverable. It must never
+    touch a notebook the user changed, whose record is also the one most likely to be
+    dropped, since an edited file takes the `kept` branch on every refresh."""
+    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)  # uncapped: everything published and recorded
+
+    edited = {f"nb{i:09d}.ipynb" for i in range(1, NOTEBOOKS + 1, 25)}
+    for name in edited:
+        (dest / name).write_text("USER EDIT", encoding = "utf-8")
+    _commit_upstream_change(up)
+
+    run = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
+    assert "could not be written" in run.stdout, run.stdout + run.stderr
+
+    lost = {n for n in edited if not (dest / n).exists()}
+    assert not lost, f"user edits destroyed by the rollback: {sorted(lost)[:5]}"
+    for name in sorted(edited):
+        assert (dest / name).read_text(encoding = "utf-8") == "USER EDIT", name

@@ -409,7 +409,26 @@ updated=0; kept=0; unchanged=0; failed=0
 # path the copy failures already take. The three sites that already increment `failed`
 # are left alone: their gate fires regardless of whether the append landed.
 record_tmpstate() {
-    printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE" || { failed=$((failed + 1)); return 1; }
+    printf '%s  %s\n' "$1" "$2" >> "$TMPSTATE"
+}
+
+# A record we could not write cannot be left alone, whatever else went wrong first.
+# Counting the failure only withholds the marker for THIS run: the truncated state is
+# published regardless, so the next refresh finds no entry, reads the file as a user
+# edit, keeps it, sees nothing fail and stamps the marker over it. Removing our own
+# copy is the only recovery that does not need the disk space that just ran out, and
+# it is safe exactly while the file still hashes to what we last published. A
+# user-edited file is left alone, which is the outcome it would have had anyway.
+drop_unrecordable() {
+    local _d="$DEST/$1"
+    [ -e "$_d" ] || return 0
+    [ "$(hash_of "$_d")" = "${LAST[$1]:-}" ] || return 0
+    rm -f "$_d" 2>/dev/null || true
+}
+
+unrecorded() {
+    failed=$((failed + 1))
+    drop_unrecordable "$1"
 }
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
@@ -422,18 +441,18 @@ while IFS= read -r -d '' f; do
             continue
         fi
         if [ -n "$rec" ] && [ "$(hash_of "$dst")" != "$rec" ]; then
-            record_tmpstate "$rec" "$rel"
+            record_tmpstate "$rec" "$rel" || unrecorded "$rel"
             kept=$((kept + 1))
             continue
         fi
         if [ -n "$rec" ] && middle_unchanged "$dst" "$f"; then
             # a changed package spec is NOT cosmetic and falls through below
-            record_tmpstate "$rec" "$rel"
+            record_tmpstate "$rec" "$rel" || unrecorded "$rel"
             unchanged=$((unchanged + 1))
             continue
         fi
     elif [ -n "${LAST[$rel]:-}" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" = "1" ]; then
-        record_tmpstate "${LAST[$rel]}" "$rel"
+        record_tmpstate "${LAST[$rel]}" "$rel" || unrecorded "$rel"
         kept=$((kept + 1))
         continue
     fi
@@ -447,7 +466,7 @@ while IFS= read -r -d '' f; do
         staged="$(hash_of "$new")"
         if [ -e "$dst" ] && [ "$(hash_of "$dst")" != "${LAST[$rel]:-}" ]; then
             rm -f "$new"
-            record_tmpstate "${LAST[$rel]:-}" "$rel"
+            record_tmpstate "${LAST[$rel]:-}" "$rel" || unrecorded "$rel"
             kept=$((kept + 1))
             continue
         fi
@@ -458,6 +477,7 @@ while IFS= read -r -d '' f; do
             if record_tmpstate "$staged" "$rel"; then
                 updated=$((updated + 1))
             else
+                failed=$((failed + 1))
                 # PUBLISHED but not recordable, the one combination that cannot be left
                 # alone. Withholding the marker is not enough: the truncated state is
                 # still published below, so the NEXT refresh reads this file as a user
@@ -473,11 +493,11 @@ while IFS= read -r -d '' f; do
         else
             # carry the PREVIOUS record forward, or the next refresh reads $dst as
             # user-owned and keeps the stale copy forever
-            printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+            record_tmpstate "${LAST[$rel]:-}" "$rel" || drop_unrecordable "$rel"
             failed=$((failed + 1))
         fi
     else
-        printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+        record_tmpstate "${LAST[$rel]:-}" "$rel" || drop_unrecordable "$rel"
         failed=$((failed + 1))
     fi
 done < <(find "$TMP" -type f -print0)
@@ -519,7 +539,7 @@ if [ "${UNSLOTH_KEEP_REMOVED_NOTEBOOKS:-0}" != "1" ] && [ "${#LAST[@]}" -gt 0 ];
             # with nothing claiming it, and the next refresh would read it as
             # user-owned and never retry. Counting it failed also holds the sync
             # marker back, which is what makes the retry happen at all.
-            printf '%s  %s\n' "${LAST[$rel]}" "$rel" >> "$TMPSTATE"
+            record_tmpstate "${LAST[$rel]}" "$rel" || drop_unrecordable "$rel"
             failed=$((failed + 1))
         fi
     done

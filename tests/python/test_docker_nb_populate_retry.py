@@ -415,30 +415,34 @@ def test_the_retry_after_a_failed_append_converges(tmp_path: Path):
 _STAGED_STATE_TARGETS = ('>> "$STATE.tmp"', '>> "$TMPSTATE"', '>> "$RS_TMP"')
 
 # an append is accounted for if it handles its own failure, or if the very next lines
-# count one; `record_tmpstate` is the shared helper that does the former
+# count one
 _ACCOUNTED = (
     "|| populate_failed=",
     "|| failed=",
     "|| rs_ok=0",
+    "|| unrecorded ",
+    "|| drop_unrecordable ",
     "populate_failed=$((populate_failed + 1))",
     "failed=$((failed + 1))",
     "rs_ok=0",
 )
 
 
-def _record_state_body(lines):
-    """Line range of record_state(), which is EXEMPT below because it is dead code:
-    it has no caller anywhere in the tree, so its unchecked append cannot fire. The
-    companion test asserts it stays uncalled, because the moment it gains one this
-    exemption is wrong."""
-    start = next(i for i, l in enumerate(lines) if l.startswith("record_state() {"))
-    end = next(i for i in range(start, len(lines)) if lines[i] == "}")
-    return range(start, end + 1)
+def _exempt_lines(lines):
+    """record_state() is dead code (no caller anywhere; the companion test below
+    keeps it that way), and record_tmpstate() is the shared helper whose whole job is
+    to perform the append and report the status its CALLERS must handle."""
+    out = set()
+    for name in ("record_state() {", "record_tmpstate() {"):
+        start = next(i for i, l in enumerate(lines) if l.startswith(name))
+        end = next(i for i in range(start, len(lines)) if lines[i] == "}")
+        out.update(range(start, end + 1))
+    return out
 
 
 def test_every_staged_state_append_is_checked():
     lines = SYNC.read_text(encoding = "utf-8").splitlines()
-    exempt = _record_state_body(lines)
+    exempt = _exempt_lines(lines)
     unchecked = []
     for i, line in enumerate(lines):
         if i in exempt:
@@ -454,6 +458,41 @@ def test_every_staged_state_append_is_checked():
         "truncated state and advance the commit marker:\n"
         + "\n".join(f"  line {n}: {t}" for n, t in unchecked)
     )
+
+
+def test_every_record_tmpstate_call_handles_a_failed_write():
+    """The class that keeps recurring is not the raw append, it is the UNHANDLED
+    record failure. Counting it is not enough on its own: the truncated state is
+    published either way, so the file must also be rolled back or the write retried.
+    Every call site has to say which."""
+    lines = SYNC.read_text(encoding = "utf-8").splitlines()
+    exempt = _exempt_lines(lines)
+    bare = []
+    for i, line in enumerate(lines):
+        if i in exempt or "record_tmpstate " not in line:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if "||" in stripped or stripped.startswith("if record_tmpstate"):
+            continue
+        bare.append((i + 1, stripped))
+    assert not bare, (
+        "these record_tmpstate calls ignore a failed write, so the notebook stays on "
+        "disk with no record and the next refresh treats it as a user edit:\n"
+        + "\n".join(f"  line {n}: {t}" for n, t in bare)
+    )
+
+
+def test_a_failed_record_can_roll_the_notebook_back():
+    """drop_unrecordable must only ever remove OUR copy, never a user edit."""
+    body = SYNC.read_text(encoding = "utf-8")
+    assert "drop_unrecordable() {" in body
+    fn = body[body.index("drop_unrecordable() {") :]
+    fn = fn[: fn.index("\n}")]
+    assert (
+        'hash_of "$_d"' in fn and "${LAST[$1]:-}" in fn
+    ), "the rollback must be gated on the file still matching the last record"
 
 
 def test_the_marker_advance_is_gated_on_the_failure_counters():
