@@ -57,6 +57,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    _reject_json_constant,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
@@ -360,11 +361,6 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
-
-
-def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
-    raise ValueError(f"{name} is not JSON")
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
