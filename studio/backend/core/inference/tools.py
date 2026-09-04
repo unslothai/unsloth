@@ -11259,9 +11259,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
         Re-renders only when something is dropped. None when not even the first
         ``keep_first`` passages fit: the block joins the current turn, which the
-        window may not evict, so it fails the request rather than answering from
-        a truncated attachment. ``keep_first`` is the floor of the tail: one for
-        ranked retrieval, but a whole document must never be eaten into.
+        window may not evict, so it fails the request rather than degrading it.
+        ``keep_first`` is the floor of the tail: one for ranked retrieval, but a
+        whole document must never be eaten into.
         """
         floor = max(1, keep_first)
         kept, rendered = list(hit_sources), hit_text
