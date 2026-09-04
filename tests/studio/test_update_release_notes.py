@@ -143,10 +143,30 @@ def _without_comments(source: str) -> str:
     it would satisfy the assertion that the class is there after the class
     itself had been deleted.
     """
-    return _COMMENT_SPAN.sub(
-        lambda match: "".join(char if char == "\n" else " " for char in match.group()),
-        source,
-    )
+    out = list(source)
+    index = 0
+    while index < len(source):
+        char = source[index]
+        # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
+        # blanking from its `//` would eat the rest of the line and its quote.
+        if char in "\"'`":
+            index = _skip_literal(source, index)
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            end = len(source) if end == -1 else end
+        elif source.startswith("/*", index):
+            end = source.find("*/", index)
+            assert end != -1, "unterminated block comment"
+            end += 2
+        else:
+            index += 1
+            continue
+        for blank in range(index, end):
+            if out[blank] != "\n":
+                out[blank] = " "
+        index = end
+    return "".join(out)
 
 
 def _skip_literal(source: str, at: int) -> int:
@@ -244,24 +264,82 @@ def _class_value(tag: str, what: str) -> str:
     if tag[at] == '"':
         return tag[at + 1 : _skip_literal(tag, at) - 1]
     assert tag[at] == "{", f"{what}'s className is neither a literal nor an expression"
+    return _always_rendered(tag[at + 1 : _balanced(tag, at) - 1])
+
+
+def _arguments(call: str) -> list[str]:
+    """The arguments of a call, split on its top-level commas."""
+    at = call.index("(")
     parts: list[str] = []
+    current: list[str] = []
     depth = 0
     index = at
-    while index < len(tag):
-        char = tag[index]
+    while index < len(call):
+        char = call[index]
         if char in "\"'`":
-            end = _skip_literal(tag, index)
-            parts.append(tag[index + 1 : end - 1])
+            end = _skip_literal(call, index)
+            current.append(call[index:end])
             index = end
             continue
-        if char == "{":
+        if char in "([{":
             depth += 1
-        elif char == "}":
+            if depth == 1:
+                index += 1
+                continue
+        elif char in ")]}":
             depth -= 1
             if depth == 0:
                 break
+        elif char == "," and depth == 1:
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
         index += 1
-    return " ".join(parts)
+    parts.append("".join(current))
+    return parts
+
+
+def _always_rendered(expression: str) -> str:
+    """The classes `expression` renders in every state, joined.
+
+    Only an argument that is a bare literal. `cn(open && "x")` renders `x`
+    sometimes and a rule the card must always carry is not satisfied by
+    sometimes; written against a constant, `cn(false && "x")` renders it never,
+    while the text of the class sits there in the file either way. Reading the
+    literals out of the whole expression would call all three the same.
+    """
+    text = expression.strip()
+    if text[:1] in ('"', "'", "`") and _skip_literal(text, 0) == len(text):
+        return text[1:-1]
+    if "(" not in text:
+        return ""
+    literals = []
+    for argument in _arguments(text):
+        part = argument.strip()
+        if part[:1] in ('"', "'", "`") and _skip_literal(part, 0) == len(part):
+            literals.append(part[1:-1])
+    return " ".join(literals)
+
+
+def _balanced(source: str, at: int) -> int:
+    """The index just past the bracket group opening at `at`."""
+    depth = 0
+    index = at
+    while index < len(source):
+        char = source[index]
+        if char in "\"'`":
+            index = _skip_literal(source, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    raise AssertionError("unbalanced brackets")
 
 
 def _assert_classes(class_string: str, *rules: str) -> None:
@@ -1607,7 +1685,9 @@ def _card_slot(source: str) -> str:
     key = "className={cn("
     tag = clean[start:end]
     assert key in tag, "the card's root no longer builds its classes with cn()"
-    return _unpositioned_branch(clean[start + tag.index(key) : end])
+    # The classes it always renders, not the text of the branch: a floor put
+    # behind a constant is still written in the file while reaching no DOM.
+    return _always_rendered(_unpositioned_branch(clean[start + tag.index(key) : end]))
 
 
 def _card_surface(source: str) -> str:
@@ -1720,9 +1800,15 @@ def test_the_class_anchors_do_not_depend_on_any_order():
     # first arm does not read as the separator, and only the second is returned.
     branch = _unpositioned_branch('positioned ? "fixed dark:bg-card" : cn("rail shrink-0")')
     assert "rail" in branch and "fixed" not in branch
-    # A class expression renders the same DOM as a literal and must read the same.
-    assert _class_value('<div className={cn("a b", open && "c")}>', "x").split() == ["a", "b", "c"]
+    # A class expression renders the same DOM as a literal and must read the
+    # same, but only what it renders in every state. A rule the card must
+    # always carry is not satisfied by one that renders sometimes, and a
+    # constant guard renders it never while leaving the text in the file.
     assert _class_value('<div className="a b">', "x") == "a b"
+    assert _class_value('<div className={cn("a b")}>', "x") == "a b"
+    assert _class_value('<div className={cn("a b", open && "c")}>', "x").split() == ["a", "b"]
+    assert _class_value('<div className={cn(false && "a", "b")}>', "x").split() == ["b"]
+    assert _class_value('<div className={cn(open ? "a" : "z", "b")}>', "x").split() == ["b"]
     # Comments are neither code nor classes. Prose can hold an apostrophe or an
     # unmatched brace, and the banners' own comment names `shrink-0`.
     for comment in ("// notes don't shrink", "/* an unmatched } is prose */"):
@@ -1731,6 +1817,10 @@ def test_the_class_anchors_do_not_depend_on_any_order():
     blanked = _without_comments("/* shrink-0 */ flex")
     assert blanked.split() == ["flex"], "a class named in prose still reads as a class"
     assert len(blanked) == len("/* shrink-0 */ flex"), "blanking a comment moved every later index"
+    # A `//` inside a literal is a URL, not a comment, so the rest of the line
+    # and its closing quote survive.
+    url = '"bg-[url(https://example.com/a.svg)] flex" // gone'
+    assert _without_comments(url).rstrip() == '"bg-[url(https://example.com/a.svg)] flex"'
 
 
 def test_the_overlay_stack_fits_the_viewport():
