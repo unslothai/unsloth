@@ -933,9 +933,7 @@ def test_the_embed_server_is_launched_with_a_batch_that_fits_the_context(tmp_pat
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
-    model = _gguf(
-        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 2048)]
-    )
+    model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 2048)])
     cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = False)
     assert "-ub" in cmd and "-b" in cmd
     assert cmd[cmd.index("-ub") + 1] == "2048"
