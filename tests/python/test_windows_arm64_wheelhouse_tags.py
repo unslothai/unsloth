@@ -189,7 +189,10 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
 
     def test_hosting_tensorboard_without_grpcio_keeps_the_skip(self, ips, tmp_path, monkeypatch):
         skips = self._skips(
-            ips, tmp_path, monkeypatch, ("tensorboard", "py3", "none", "any"),
+            ips,
+            tmp_path,
+            monkeypatch,
+            ("tensorboard", "py3", "none", "any"),
         )
         assert "tensorboard" in skips
 
@@ -197,7 +200,9 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
         skips = self._skips(
-            ips, tmp_path, monkeypatch,
+            ips,
+            tmp_path,
+            monkeypatch,
             ("tensorboard", "py3", "none", "any"),
             ("grpcio", tag, tag, _this_platform()),
         )
@@ -207,17 +212,24 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
         skips = self._skips(
-            ips, tmp_path, monkeypatch,
+            ips,
+            tmp_path,
+            monkeypatch,
             ("librosa", "py3", "none", "any"),
             ("llvmlite", tag, tag, _this_platform()),
         )
         assert "librosa" in skips
 
-    def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(self, ips, tmp_path, monkeypatch):
+    def test_a_package_with_no_blockers_still_lifts_on_its_own_wheel(
+        self, ips, tmp_path, monkeypatch
+    ):
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
         skips = self._skips(
-            ips, tmp_path, monkeypatch, ("tiktoken", tag, tag, _this_platform()),
+            ips,
+            tmp_path,
+            monkeypatch,
+            ("tiktoken", tag, tag, _this_platform()),
         )
         assert "tiktoken" not in skips
 
@@ -233,17 +245,15 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
         free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-        matched = ips._wheel_matches_interpreter(
-            _wheel("tiktoken", tag, f"{tag}t")
-        )
+        matched = ips._wheel_matches_interpreter(_wheel("tiktoken", tag, f"{tag}t"))
         assert matched is free_threaded
 
     def test_install_ps1_checks_the_abi_not_just_the_python_tag(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = source[source.index("$WoaWheelNames = @{}"):]
-        block = block[:block.index("$WoaDropCandidates")]
-        first = block[block.index("foreach ($pyTag in"):]
-        first = first[:first.index("$compatible = $true; break") + 30]
-        assert "$abiTags -contains $WoaWheelTag" in first, (
-            "the exact-python-tag branch must also require a usable ABI"
-        )
+        block = source[source.index("$WoaWheelNames = @{}") :]
+        block = block[: block.index("$WoaDropCandidates")]
+        first = block[block.index("foreach ($pyTag in") :]
+        first = first[: first.index("$compatible = $true; break") + 30]
+        assert (
+            "$abiTags -contains $WoaWheelTag" in first
+        ), "the exact-python-tag branch must also require a usable ABI"
