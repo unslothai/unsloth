@@ -988,6 +988,31 @@ def _call_delta(index, call_id, name, arguments):
     }
 
 
+def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
+    """A provider that decodes ``function.arguments`` before forwarding the delta (llama-server,
+    some OpenAI-compatible servers) sends a dict where a string fragment is expected. The
+    accumulator used to keep only string fragments, so the call executed with ``{}`` and its
+    authoritative tool_start then overwrote the payload the frontend had recovered.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {"tool_calls": [_call_delta(0, "call_obj", "web_search", {"query": "value"})]}
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "value"}]
+    assert _events(lines, "tool_start")[0]["arguments"] == {"query": "value"}
+
+
 def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     """A tool result is only legal next to the call it answers.
 

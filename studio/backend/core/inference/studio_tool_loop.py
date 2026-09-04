@@ -281,6 +281,22 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+def _argument_fragment(value: Any) -> Any:
+    """A decoded-object ``arguments`` delta as the text it would have streamed as.
+
+    llama-server and some OpenAI-compatible servers decode the arguments before forwarding
+    the delta, so a dict or list arrives where a string fragment is expected. Anything else
+    passes through untouched: ``None`` still means "announced, no arguments field", and the
+    string path stays byte-exact. Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``.
+    """
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+        except (TypeError, ValueError, RecursionError):
+            return ""
+    return value
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -642,7 +658,7 @@ class _Turn:
             # id would claim the finished call and append to it (issue #9807).
             held = self.by_index.get(key)
             new_function = raw_call.get("function")
-            new_arguments = (
+            new_arguments = _argument_fragment(
                 new_function.get("arguments") if isinstance(new_function, dict) else None
             )
             new_name = new_function.get("name") if isinstance(new_function, dict) else None
@@ -797,8 +813,8 @@ class _Turn:
                         current["function"]["name"] = fragment
                     else:
                         current["function"]["name"] = name_before + fragment
-                if isinstance(function.get("arguments"), str) and not resends_this_call:
-                    current["function"]["arguments"] += function["arguments"]
+                if isinstance(new_arguments, str) and not resends_this_call:
+                    current["function"]["arguments"] += new_arguments
                     if not (isinstance(call_id, str) and call_id):
                         # The id fork cannot see this: an id-less stream has no ids to differ on, so appending glued two
                         # calls into one blob (issue #9807).
