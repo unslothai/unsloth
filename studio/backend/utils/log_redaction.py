@@ -170,18 +170,21 @@ _KV_RE = re.compile(
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
     r"(?P<val>[^\"'\s,}\]]+)"
 )
+# a flag takes its value after whitespace or "=": --token=<value> is as common as --token <value>
 _QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
-    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+    r"(?P<sep>\s+|=)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
-    r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
+    r"(?P<sep>\s+|=)(?P<quote>[\"'])(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
 _FLAG_RE = re.compile(
-    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))(?P<sep>\s+)(?P<val>[^\s\"']+)"
+    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))(?P<sep>\s+|=)(?P<val>[^\s\"']+)"
 )
+# a posix or windows path root, which is what the shell's PWD holds and a password does not
+_PATH_START_RE = re.compile(r"(?:[/~]|[A-Za-z]:[\\/])")
 
 # YAML and similar structured logs may put a credential value on the next
 # physical line. ``redact_log_text`` can mask that shape when it receives both
@@ -302,10 +305,10 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
-    # the uppercase shell variable is the working directory; "pwd" stays for odbc style connection strings
-    if match.group("key") == "PWD":
-        return match.group(0)
     value = match.group("val")
+    # the shell's PWD names the working directory; an odbc PWD= field, whatever its case, holds a password
+    if match.group("key") == "PWD" and _PATH_START_RE.match(value):
+        return match.group(0)
     boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
     tail = ""
     if boundary is not None:

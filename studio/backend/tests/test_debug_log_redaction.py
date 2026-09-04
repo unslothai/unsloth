@@ -108,6 +108,11 @@ SECRETS = [
     # survived untouched.
     ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
     ("provider-cli --token opaqueCredential123456789 --verbose", "opaqueCredential123456789"),
+    # The equals form of the same flags, and an ODBC PWD= field in any case.
+    ("provider-cli --token=opaqueCredential123456789 --verbose", "opaqueCredential123456789"),
+    ('provider-cli --token="opaque Credential123456789"', "Credential123456789"),
+    ("ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes", "hunter2hunter2"),
+    ("Driver={SQL Server};Server=db;UID=app;Pwd=s3cretvalue", "s3cretvalue"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -181,6 +186,8 @@ QUOTED = [
     ('password="correct horse battery staple"', 'password="<redacted>"'),
     ("password='correct horse battery staple'", "password='<redacted>'"),
     ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
+    ('llama-server --api-key="abcdef ghijklmnop"', 'llama-server --api-key="<redacted>"'),
+    ("ODBC: UID=alice;PWD=hunter2hunter2;Encrypt=yes", "ODBC: UID=alice;PWD=<redacted>;Encrypt=yes"),
     # The value ends at its own closing quote, so the fields after it survive.
     (
         '{"password": "correct horse battery staple", "model": "gpt-4o"}',
