@@ -4412,11 +4412,11 @@ def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monk
     folder replaced at the same pathname is handed to the old session, and a
     surviving fork's file cards start listing a directory nobody chose.
 
-    The replacement is moved into place rather than created in the gap: Linux hands
-    the same inode straight back to a directory made at a pathname one was just
-    removed from, and within one coarse tick of the change-time clock the two are
-    indistinguishable. A directory that existed elsewhere never collides, which is
-    also the shape a replacement usually arrives in.
+    The replacement is moved into place rather than created in the gap: Linux can
+    hand the same inode straight back to a directory made at a pathname one was
+    just removed from, and the identity does not tell those apart. A directory
+    that existed elsewhere never collides, which is also the shape a replacement
+    usually arrives in.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
@@ -5515,6 +5515,27 @@ def test_resolving_a_workspace_does_not_write_in_it(tmp_path, monkeypatch):
 
     assert probes == []
     assert sorted(p.name for p in chosen.iterdir()) == []
+
+
+def test_writing_in_a_folder_does_not_change_its_identity(tmp_path):
+    """Accepting a folder writes a probe in it and every tool call after that
+    writes files, and each of those moves the directory's change time on Linux
+    and macOS. An identity that carried it called the folder a stranger on the
+    first resolve after the probe."""
+    from storage import studio_db
+
+    folder = tmp_path / "chosen"
+    folder.mkdir()
+    before = studio_db._directory_identity(str(folder))
+
+    probe = folder / ".unsloth-workspace-probe"
+    probe.write_text("", encoding = "utf-8")
+    probe.unlink()
+    (folder / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    assert studio_db._directory_identity(str(folder)) == before
+    assert studio_db.same_directory_identity((before[0], f"{before[1]}.1f"), before)
+    assert not studio_db.same_directory_identity(before, (before[0], "0"))
 
 
 def test_the_chat_sandbox_check_scans_descendants(tmp_path, monkeypatch):

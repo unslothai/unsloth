@@ -552,31 +552,29 @@ def _ensure_external_project_workspace(
 
 
 def _directory_identity(path: str) -> tuple[str, str]:
-    """(st_dev, st_ino.st_ctime_ns) as hex.
+    """(st_dev, st_ino) as hex, the spelling the shell's grant uses.
 
-    The change time is in there because an inode is not a name for a directory
-    that lasted. Linux hands the same inode straight back when a directory is
-    removed and one is created at that pathname, so dev and inode alone say two
-    different directories are the same one. Creation moves ctime, which does not
-    come back.
+    Not the change time: a directory's ctime moves whenever an entry is made or
+    removed in it, so the probe that accepts a folder and the first tool call
+    that writes there each turned it into a stranger on Linux and macOS.
     """
     metadata = os.stat(path)
-    return f"{metadata.st_dev:x}", f"{metadata.st_ino:x}.{metadata.st_ctime_ns:x}"
+    return f"{metadata.st_dev:x}", f"{metadata.st_ino:x}"
 
 
 def same_directory_identity(
     recorded: "tuple[str | None, str | None]", current: "tuple[str | None, str | None]"
 ) -> bool:
-    """Whether two identities name one directory, tolerating a pre-ctime record."""
+    """Whether two identities name one directory.
+
+    A record from a build that carried the change time behind a dot compares on
+    what both sides still share.
+    """
     if not all(recorded) or not all(current):
         return False
     if recorded[0] != current[0]:
         return False
-    if recorded[1] == current[1]:
-        return True
-    # Written before the change time was part of it: compare what it does carry
-    # rather than declaring every record from an older build a stranger.
-    return "." not in str(recorded[1]) and str(current[1]).split(".")[0] == recorded[1]
+    return str(recorded[1]).split(".")[0] == str(current[1]).split(".")[0]
 
 
 def _project_workspace_identity(project: dict) -> tuple[str, str] | None:
