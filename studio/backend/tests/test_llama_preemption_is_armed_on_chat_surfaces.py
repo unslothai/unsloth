@@ -57,7 +57,7 @@ CHAT_HANDLER = "produce_openai_chat_completions"
 
 
 def _handler() -> ast.AST:
-    tree = ast.parse(ROUTES.read_text())
+    tree = ast.parse(ROUTES.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == CHAT_HANDLER:
             return node
@@ -112,7 +112,7 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         handler = _handler()
         probes = _calls(handler, "get_preemption_controller")
         armed = _calls(handler, "_openai_llama_preemption_arm")
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         assert source.count("set_residency_probe") >= armed, (
             f"{armed} arm site(s) but only {source.count('set_residency_probe')} probe "
             "registration(s); a surface that arms without one can livelock its own resume"
@@ -126,7 +126,7 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         the difference between a chat that waits its turn and one that either serialises
         everybody or dies with them.
         """
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         assert "_anthropic_preempt_signal = PreemptSignal()" in source
         assert "preempt_policy = _anthropic_preempt_policy" in source
         assert "on_tokens = _anthropic_observe_tokens" in source
@@ -139,10 +139,10 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         exactly its size and then evicts a chat to make room the passthrough is holding.
         Counted and unpreemptable is the truth about it.
         """
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         assert "_openai_llama_count_raw_holder" in source
         assert source.count("_openai_llama_count_raw_holder") >= 2, "defined but never called"
-        preemption = PREEMPTION.read_text()
+        preemption = PREEMPTION.read_text(encoding = "utf-8")
         assert "STREAMING_RAW" in preemption
         # In _HOLDS_KV so it counts, out of _PREEMPTABLE so it is never chosen.
         #
@@ -171,7 +171,7 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         never checks, which looks identical in the logs to one that is simply never chosen
         as a victim.
         """
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         assert "preempt_event = _plain_preempt_signal" in source
         assert "preempt_policy = _plain_preempt_policy" in source
 
@@ -196,7 +196,7 @@ class TestEveryLeaseIsAccountedFor:
     """
 
     def test_the_numbers_add_up(self):
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         tree = ast.parse(source)
 
         def count(name):
@@ -223,7 +223,7 @@ class TestEveryLeaseIsAccountedFor:
         An over-counted ledger only ever grows, and once it reads full the next chat waits
         for room that cannot arrive.
         """
-        source = ROUTES.read_text()
+        source = ROUTES.read_text(encoding = "utf-8")
         tree = ast.parse(source)
         counted = sum(
             1

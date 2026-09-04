@@ -31,7 +31,7 @@ ROUTES = BACKEND / "routes" / "inference.py"
 
 def _frontend_comments() -> set[str]:
     """The comment payloads the client will act on, read from the source of truth."""
-    text = ADMISSION_TS.read_text()
+    text = ADMISSION_TS.read_text(encoding = "utf-8")
     return set(re.findall(r'^export const ADMISSION_COMMENT_\w+ = "([^"]+)";', text, re.M))
 
 
@@ -48,7 +48,7 @@ class TestTheSignalsLineUp:
         }
 
     def test_every_readable_signal_is_emitted_somewhere(self):
-        routes = ROUTES.read_text()
+        routes = ROUTES.read_text(encoding = "utf-8")
         missing = sorted(c for c in _frontend_comments() if f": {c}" not in routes)
         assert not missing, (
             f"the client understands {missing} and the server never sends them. That is "
@@ -62,7 +62,7 @@ class TestTheSignalsLineUp:
         `_OPENAI_PREEMPT_SSE_PAUSED` could sit next to its sibling, spelled correctly,
         referenced nowhere, and both tests above would pass.
         """
-        routes = ROUTES.read_text()
+        routes = ROUTES.read_text(encoding = "utf-8")
         for name in (
             "_OPENAI_ADMISSION_SSE_WAIT",
             "_OPENAI_ADMISSION_SSE_DONE",
@@ -81,7 +81,7 @@ class TestTheSignalsLineUp:
         the route translates. A route branch with no producer is the same dead end one
         layer up.
         """
-        llama_cpp = (BACKEND / "core" / "inference" / "llama_cpp.py").read_text()
+        llama_cpp = (BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")
         assert '{"type": "preempt", "state": "paused"}' in llama_cpp
         assert '{"type": "preempt", "state": "resumed"}' in llama_cpp
-        assert '"type") == "preempt"' in ROUTES.read_text()
+        assert '"type") == "preempt"' in ROUTES.read_text(encoding = "utf-8")

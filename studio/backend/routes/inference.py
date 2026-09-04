@@ -2610,12 +2610,35 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
     except Exception:
         # Never let bookkeeping fail a response that already succeeded.
         pass
-    # Then the cells, so the two stay in step. Best effort and last: a failure here
-    # leaves the cache holding a finished chat's prefix, which the watermark sweep will
-    # reclaim on its next pass, whereas raising would fail a completed response.
+    # Then the cells, but ONLY when somebody is waiting for them.
+    #
+    # Erasing an idle slot throws away its prompt cache, which is exactly what makes the
+    # next turn of the same conversation fast. While this ran on the tool path alone that
+    # was rare enough not to matter; it now runs after every ordinary chat, and CI caught
+    # the consequence immediately: `cached_tokens=0` on turn two of a two-turn exchange,
+    # where llama.cpp had had a complete prefix hit to offer and Studio had just deleted it.
+    #
+    # Reclaiming is worth a prefix cache only when the room is actually wanted. With nobody
+    # paused, nobody queued and nothing else registered, there is no one to give it to, and
+    # the watermark sweep will reclaim on its next pass if that changes. The ledger is
+    # unregistered above either way, which is the part that has to be exact.
     try:
         base = str(getattr(llama_backend, "base_url", "") or "")
         if not base:
+            return
+        snapshot = get_preemption_controller(key).snapshot()
+        # "Somebody else is still in the cache" is the whole test, and ``committed`` is the
+        # broadest way to ask it: it sums every participant that holds KV, including the
+        # raw streams the counted-but-never-chosen surfaces register. With this generation
+        # already unregistered above, a committed of zero means this was the only chat, so
+        # the cells it leaves behind are a free prefix cache for its own next turn.
+        contended = (
+            int(getattr(snapshot, "committed", 0) or 0) > 0
+            or int(getattr(snapshot, "paused", 0) or 0) > 0
+            or int(getattr(snapshot, "decoding", 0) or 0) > 0
+            or int(getattr(snapshot, "parked", 0) or 0) > 0
+        )
+        if not contended:
             return
         occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base))
         if not occupancy or not occupancy.get("idle"):
