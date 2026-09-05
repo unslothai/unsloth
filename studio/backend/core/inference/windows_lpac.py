@@ -42,6 +42,11 @@ _ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
 _ALL_RESTRICTED_APPLICATION_PACKAGES_SID = "S-1-15-2-2"
 _LIMITATION_AMBIENT_READ = "all_application_packages_ambient_read"
 _LIMITATION_IPV6 = "ipv6_unavailable_on_host"
+# An AppContainer token gets no access to \Device\Null or to named pipes it did
+# not create with an AppContainer-aware descriptor, so inside the sandbox
+# open(os.devnull) and multiprocessing.Pipe() raise PermissionError. Code that
+# needs them (multiprocessing, torch through dill) runs in Limited or Full mode.
+_LIMITATION_NULL_DEVICE_PIPES = "null_device_and_named_pipes_denied"
 _STATUS_ACCESS_DENIED = -1073741790
 _STATUS_DLL_NOT_FOUND = -1073741515
 _ERROR_ACCESS_DENIED = 5
@@ -1700,7 +1705,7 @@ class WindowsLpacBackend:
                     available = True,
                     protection_state = "preview",
                     profile_id = _PROFILE_ID,
-                    limitations = self._last_probe_limitations,
+                    limitations = (_LIMITATION_NULL_DEVICE_PIPES, *self._last_probe_limitations),
                 )
             returncode, reason = outcome
             if returncode in (_STATUS_ACCESS_DENIED, _STATUS_DLL_NOT_FOUND):
@@ -1719,7 +1724,11 @@ class WindowsLpacBackend:
                         available = True,
                         protection_state = "preview",
                         profile_id = _APPCONTAINER_PROFILE_ID,
-                        limitations = (_LIMITATION_AMBIENT_READ, *self._last_probe_limitations),
+                        limitations = (
+                            _LIMITATION_AMBIENT_READ,
+                            _LIMITATION_NULL_DEVICE_PIPES,
+                            *self._last_probe_limitations,
+                        ),
                     )
                 reason = f"{reason}; the AppContainer fallback probe also failed: {fallback[1]}"
             return SandboxCapability(self.identity, False, reason, available = False)

@@ -1101,7 +1101,8 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
         assert specs[0].argv[0:2] == (sys.executable, "-u")
         assert specs[0].argv[2].endswith(".py")
     else:
-        assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok"))
+        # Required mode: on Windows this is cmd even when Git bash exists.
+        assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok", os_isolated = True))
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])

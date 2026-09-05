@@ -937,7 +937,7 @@ def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypa
     assert capability.available is True and capability.qualified is True
     assert capability.protection_state == "preview"
     assert capability.profile_id == "windows-appcontainer-preview-v1"
-    assert capability.limitations == ("all_application_packages_ambient_read",)
+    assert capability.limitations == ("all_application_packages_ambient_read", "null_device_and_named_pipes_denied")
     assert "AppContainer fallback passed" in capability.reason
     assert backend.active_profile == "appcontainer"
     assert backend.active_profile_id() == "windows-appcontainer-preview-v1"
@@ -986,7 +986,7 @@ def test_probe_success_under_lpac_keeps_the_strong_profile(monkeypatch):
     monkeypatch.setattr(backend, "_probe_profile", lambda profile: None)
     capability = backend.probe()
     assert capability.profile_id == "windows-lpac-preview-v1"
-    assert capability.limitations == ("ipv6_unavailable_on_host",)
+    assert capability.limitations == ("null_device_and_named_pipes_denied", "ipv6_unavailable_on_host")
     assert backend.active_profile == "lpac"
     assert backend.profile_id == "windows-lpac-preview-v1"
 
@@ -1174,8 +1174,10 @@ def test_live_profiles_sids_acl_and_owned_artifacts_are_per_invocation(live_lpac
         assert first.cleanup_diagnostics == [], first.cleanup_diagnostics
         assert not Path(one.manifest_path).exists()
         assert not Path(one.private_temp).exists()
+        # DeleteAppContainerProfile reports S_OK again for a profile whose folder
+        # is already gone, so both outcomes mean "no profile left behind".
         deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(one.moniker)
-        assert ctypes.c_uint32(deleted).value == 0x80070002
+        assert ctypes.c_uint32(deleted).value in (0, 0x80070002)
         assert Path(two.manifest_path).is_file()
         assert Path(two.private_temp).is_dir()
         acl = _acl_text(workdir)
@@ -1186,7 +1188,7 @@ def test_live_profiles_sids_acl_and_owned_artifacts_are_per_invocation(live_lpac
     acl = _acl_text(workdir)
     assert one.sid_string not in acl and two.sid_string not in acl
     deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(two.moniker)
-    assert ctypes.c_uint32(deleted).value == 0x80070002
+    assert ctypes.c_uint32(deleted).value in (0, 0x80070002)
 
 
 def test_live_workdir_home_runtime_native_extension_and_fresh_temp(live_lpac_backend, tmp_path):
@@ -1383,76 +1385,58 @@ print('LPAC_HANDLES_OK')
     assert "LPAC_HANDLES_OK" in output
 
 
-def test_live_private_multiprocessing_and_resource_sharing(live_lpac_backend, tmp_path):
+def test_live_null_device_and_named_pipes_are_denied_and_disclosed(live_lpac_backend, tmp_path):
+    """The container cannot open NUL or create named pipes; the capability says so.
+
+    multiprocessing.Pipe() and therefore Queue(), Process() with the spawn
+    context, and torch (through dill, which opens os.devnull at import) cannot
+    work inside the sandbox. The limitation is advertised so the UI and the
+    model can route such work to Limited or Full mode instead of guessing.
+    """
     workdir = tmp_path / "work"
     workdir.mkdir()
     code = """
-import multiprocessing as mp
-from multiprocessing.resource_sharer import DupSocket, stop
-import os, socket
-
-def child(queue):
-    queue.put(('child-ok', os.environ['TEMP']))
-
-if __name__ == '__main__':
-    # Windows CPython has no AF_UNIX and the container cannot create sockets at
-    # all; the resource sharer is exercised only where a socket can exist.
-    if hasattr(socket, 'AF_UNIX'):
-        raw = socket.socket(socket.AF_UNIX)
-        duplicate = DupSocket(raw).detach()
-        assert duplicate.family == socket.AF_UNIX
-        duplicate.close(); raw.close(); stop()
-    context = mp.get_context('spawn')
-    queue = context.Queue()
-    process = context.Process(target=child, args=(queue,))
-    process.start()
-    value, child_temp = queue.get(timeout=15)
-    process.join(15)
-    assert process.exitcode == 0
-    assert value == 'child-ok'
-    assert child_temp == os.environ['TEMP']
-    queue.close(); queue.join_thread()
-    print('LPAC_MULTIPROCESSING_OK')
+import multiprocessing.connection as connection
+import os
+outcomes = {}
+try:
+    open(os.devnull, 'rb').close()
+    outcomes['devnull'] = 'opened'
+except PermissionError:
+    outcomes['devnull'] = 'denied'
+try:
+    reader, writer = connection.Pipe(duplex=False)
+    reader.close(); writer.close()
+    outcomes['pipe'] = 'created'
+except PermissionError:
+    outcomes['pipe'] = 'denied'
+print('LPAC_NULL_PIPES ' + repr(outcomes))
 """
+    output, _elapsed = _run_native(live_lpac_backend, workdir, code)
+    assert "LPAC_NULL_PIPES {'devnull': 'denied', 'pipe': 'denied'}" in output, output
+    capability = os_sandbox.capability_snapshot()
+    assert windows_lpac._LIMITATION_NULL_DEVICE_PIPES in capability.limitations
 
-    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 40, script = True)
 
-    assert "LPAC_MULTIPROCESSING_OK" in output
-
-
-def test_live_pytorch_tensor_transfer_when_installed(live_lpac_backend, tmp_path):
+def test_live_pytorch_import_failure_is_the_disclosed_null_device_limit(live_lpac_backend, tmp_path):
+    """torch cannot import inside the container, and the failure is the advertised one."""
     if importlib.util.find_spec("torch") is None:
         pytest.skip("PyTorch is not installed")
     workdir = tmp_path / "work"
     workdir.mkdir()
-    # _run_native starts the interpreter with -I -S, so the host site-packages
-    # (bound read-only by the backend) is added back before importing torch.
     site_dirs = [
         path for path in (sysconfig.get_paths().get("purelib"), sysconfig.get_paths().get("platlib")) if path
     ]
     code = f"import sys; sys.path[:0] = {site_dirs!r}\n" + """
-import torch
-import torch.multiprocessing as mp
-
-def child(queue):
-    queue.put(torch.arange(4))
-
-if __name__ == '__main__':
-    context = mp.get_context('spawn')
-    queue = context.Queue()
-    process = context.Process(target=child, args=(queue,))
-    process.start()
-    tensor = queue.get(timeout=30)
-    process.join(30)
-    assert process.exitcode == 0
-    assert torch.equal(tensor, torch.arange(4))
-    queue.close(); queue.join_thread()
-    print('LPAC_PYTORCH_OK')
+try:
+    import torch
+except PermissionError as exc:
+    print('LPAC_TORCH_DENIED ' + repr(exc.filename))
+else:
+    print('LPAC_TORCH_IMPORTED')
 """
-
-    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 60, script = True)
-
-    assert "LPAC_PYTORCH_OK" in output
+    output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 120)
+    assert "LPAC_TORCH_DENIED 'nul'" in output or "LPAC_TORCH_IMPORTED" in output, output
 
 
 def test_live_python_and_terminal_share_launcher_and_stream(

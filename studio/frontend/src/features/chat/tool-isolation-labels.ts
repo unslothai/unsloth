@@ -19,6 +19,8 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "IPv6 loopback is unavailable on this host, so the IPv6 leg of the isolation probe was skipped.",
   all_application_packages_ambient_read:
     "This Windows AppContainer can read files shared with all application packages, such as Program Files and Windows. The user profile, the network and other processes stay out of reach.",
+  null_device_and_named_pipes_denied:
+    "Inside the Windows sandbox, Python cannot open NUL or create named pipes, so multiprocessing and imports that need them (such as torch) fail; use Limited or Full access for that work.",
 };
 
 /** Human label for the sandbox backend. The Windows backend has two profiles: the
