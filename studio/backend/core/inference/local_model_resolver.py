@@ -381,7 +381,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local model entry.
 
     Scans the same roots Unsloth's model picker lists (./models, the active plus
-    legacy/default HF caches, LM Studio dirs, and user scan folders) so a named
+    legacy/default HF caches, LM Studio and Hermes dirs, and user scan folders) so a named
     local model is never missed and silently served as the loaded one. Ollama's
     scanner is skipped: it creates symlinks as a side effect and this runs on the
     request path.
@@ -451,6 +451,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             found += _scan_lmstudio_dir(lm_dir)
     except Exception as exc:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
+    # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
+    # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
+    try:
+        from hub.services.models.hermes import scan_hermes_dir
+        from utils.paths import hermes_model_dirs
+        for hermes_dir in hermes_model_dirs():
+            found += scan_hermes_dir(hermes_dir)
+    except Exception as exc:
+        logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
 

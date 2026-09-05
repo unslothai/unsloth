@@ -77,6 +77,8 @@ function sourceLabel(model: LocalModelInfo): string {
       return "LM Studio";
     case "ollama":
       return "Ollama";
+    case "hermes":
+      return "Hermes";
     case "custom":
       return "Custom folder";
     default:

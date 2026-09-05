@@ -232,6 +232,31 @@ def test_detect_dspark_file_prefers_matching_q8_sidecar(tmp_path):
     assert detect_dspark_file(str(weight)) == str(q8.resolve())
 
 
+def test_detect_dspark_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    # Hermes' catalog ships DeepSeek V4 Flash with its DSpark drafter under models/assets/,
+    # the folder its router never lists; the weight sits one level up as a flat split.
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf").write_bytes(b"target")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    sidecar = assets / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"q8")
+    (assets / "mmproj-Qwen3.8-27B-BF16.gguf").write_bytes(b"projector")
+
+    assert detect_dspark_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_mtp_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    (tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf").write_bytes(b"x")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "mtp-gemma-4-12B-it.gguf").write_bytes(b"x")
+
+    found = detect_mtp_file(str(tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf"))
+    assert found == str((assets / "mtp-gemma-4-12B-it.gguf").resolve())
+
+
 def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
     """``<model>-dspark.gguf`` pairs too, the same second scheme MTP accepts."""
     weight = tmp_path / "model-Q4_K_M.gguf"
@@ -2016,6 +2041,16 @@ def _write_gguf(path: Path, architecture: str) -> Path:
     blob += struct.pack("<I", 8) + struct.pack("<Q", len(value)) + value
     path.write_bytes(blob)
     return path
+
+
+def test_detect_dflash_file_leaves_a_shared_assets_pool_alone(tmp_path):
+    # The published sidecar names no family, so one under a Hermes assets/ pool could be any
+    # download's; DSpark and MTP sidecars name their weight, DFlash keeps the root-only rule.
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    (tmp_path / "assets").mkdir()
+    _write_gguf(tmp_path / "assets" / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) is None
 
 
 def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):

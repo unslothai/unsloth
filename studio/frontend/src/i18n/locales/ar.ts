@@ -1893,6 +1893,7 @@ export const ar = {
       sourceHfCache: "ذاكرة HF المؤقتة",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "مجلد مخصّص",
       sourceLocalModel: "نموذج محلي",
       vramOomBadge: "OOM",

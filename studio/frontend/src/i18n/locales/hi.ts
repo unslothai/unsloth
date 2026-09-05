@@ -1902,6 +1902,7 @@ export const hi = {
       sourceHfCache: "HF कैश",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "कस्टम फ़ोल्डर",
       sourceLocalModel: "स्थानीय मॉडल",
       vramOomBadge: "OOM",

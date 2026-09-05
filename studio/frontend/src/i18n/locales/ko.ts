@@ -1861,6 +1861,7 @@ export const ko = {
       sourceHfCache: "HF 캐시",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "사용자 지정 폴더",
       sourceLocalModel: "로컬 모델",
       scanningLocal: "로컬 모델을 스캔하는 중…",
