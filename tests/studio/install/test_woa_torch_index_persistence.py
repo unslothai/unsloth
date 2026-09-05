@@ -4283,7 +4283,11 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
     def test_it_is_applied_around_the_native_install_only(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         swap = text.index("$env:UV_OVERRIDE = New-WoaTorchStepOverrideValue")
-        guard = text.rindex("if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq \"win-arm64\" -and $env:UV_OVERRIDE) {", 0, swap)
+        guard = text.rindex(
+            'if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64" -and $env:UV_OVERRIDE) {',
+            0,
+            swap,
+        )
         assert guard < swap, "every other host must keep the overrides it had"
 
     def test_the_original_value_is_restored(self):
@@ -4298,11 +4302,21 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
     @pytest.mark.parametrize(
         "lines, expect_kept, why",
         [
-            (["torch>=2.4", "torchvision>=0.19", "hf-transfer ; platform_machine == \"AMD64\""],
-             ["hf-transfer"], "the trio goes, the drop list stays"),
-            (["hf-transfer ; platform_machine == \"AMD64\"", "pyarrow==21.0.0"],
-             ["hf-transfer", "pyarrow"], "nothing to drop: the file is passed through untouched"),
-            (["torch_geometric>=2.0"], ["torch_geometric"], "a different package that starts with torch"),
+            (
+                ["torch>=2.4", "torchvision>=0.19", 'hf-transfer ; platform_machine == "AMD64"'],
+                ["hf-transfer"],
+                "the trio goes, the drop list stays",
+            ),
+            (
+                ['hf-transfer ; platform_machine == "AMD64"', "pyarrow==21.0.0"],
+                ["hf-transfer", "pyarrow"],
+                "nothing to drop: the file is passed through untouched",
+            ),
+            (
+                ["torch_geometric>=2.0"],
+                ["torch_geometric"],
+                "a different package that starts with torch",
+            ),
         ],
     )
     def test_what_survives_the_filter(self, tmp_path, lines, expect_kept, why):
@@ -4350,7 +4364,9 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
         claim to be NVIDIA evidence."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_nvidiaEvidence = ")
-        assert "Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl" in text[start : start + 400]
+        assert (
+            "Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl" in text[start : start + 400]
+        )
 
     def test_rocm_still_wins_the_branch(self):
         """The ROCm arm is first and unchanged: this only widens the NVIDIA one."""

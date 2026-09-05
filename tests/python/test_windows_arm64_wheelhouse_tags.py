@@ -961,7 +961,13 @@ class TestThePublicIndexClaimNeedsTheIndex:
     def _native(self, ips, monkeypatch):
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
-        for var in ("UV_OFFLINE", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL", "PIP_NO_INDEX"):
+        for var in (
+            "UV_OFFLINE",
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX_URL",
+            "PIP_INDEX_URL",
+            "PIP_NO_INDEX",
+        ):
             monkeypatch.delenv(var, raising = False)
 
     def test_the_default_case_still_claims_them(self, ips):
