@@ -167,9 +167,22 @@ DEFAULT_RESUME_WAIT_TIMEOUT_S = 90.0
 
 # The absolute bound on one resume wait, as a multiple of the stall timeout above. Only
 # reached when the cache keeps moving but never has room for THIS chat, which the stall
-# detector cannot distinguish from healthy queueing. 20 x 90s = 30 minutes, comfortably
-# longer than the slowest answer measured here and still finite.
-MAX_RESUME_WAIT_MULTIPLE = 20
+# detector cannot distinguish from healthy queueing.
+#
+# 80 x 90s = 2 hours, raised from 20 (30 minutes). 30 minutes was shorter than a single
+# legitimate answer: on the 35B at -c 8192 with the GPU shared, the four-chat run of
+# 2026-09-05 decoded at 2.3 tok/s on its slowest chat and 9.7 tok/s on average, so one
+# 8192-token answer is about an hour on its own and a waiter can be queued behind more
+# than one of them. The product rule is that an evicted chat waits for as long as the
+# others need; a backstop that fires inside one answer is not a backstop, it is a second
+# give-up with a longer fuse.
+#
+# It stays finite because the stall clock cannot see one failure: a cache that churns
+# forever while THIS chat is never quite fitted. That is the only case left for this
+# bound, and starvation is already handled elsewhere -- PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS
+# puts a chat that lost three times in a row at the front of the eviction order -- so this
+# only has to catch a genuine hang, and a genuine hang can afford to be caught late.
+MAX_RESUME_WAIT_MULTIPLE = 80
 
 
 class LlamaStreamPreempted(Exception):
@@ -622,6 +635,11 @@ class Participant:
     # deliberately True because most of the prompt IS already resident.
     pending_prefill: int = 0
     pending_prefill_at: float = 0.0
+    # The last count `observe` was given for this participant, so the controller can turn
+    # a stream of cumulative "n tokens so far" reports into the DELTA it adds to
+    # `_progress_tokens`. Falls back to zero rather than going negative when a resumed
+    # attempt restarts llama-server's counter.
+    generated_seen: int = 0
 
     def prefill_pending(self, now: float) -> int:
         """Outstanding prefill worth reserving a batch for. Zero when there is none.
@@ -699,6 +717,7 @@ class PreemptionController:
         "_reclaimable",
         "_residency_probe",
         "_drift_logged_at",
+        "_progress_tokens",
     )
 
     def __init__(self, key: str):
@@ -734,6 +753,12 @@ class PreemptionController:
         # Set by the route to a callable that re-reads GET /slots and calls
         # note_resident. Optional: everything works from the ledger alone, less precisely.
         self._residency_probe: Optional[Callable[[], None]] = None
+        # Every token this controller has ever been told about, across every participant,
+        # and never decreasing. The one figure that moves whenever ANYBODY decodes: see
+        # `progress_signature`, which a waiter watches to tell a busy backend from a stuck
+        # one. Deliberately not derived from `committed`, which is a maximum over two
+        # estimates and can sit still through thousands of generated tokens.
+        self._progress_tokens = 0
 
     def configure(
         self,
@@ -985,11 +1010,19 @@ class PreemptionController:
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
-                participant.tokens = participant.base_tokens + max(0, int(generated or 0))
+                reported = max(0, int(generated or 0))
+                # Somebody decoded. Counted here, at the one point every surface already
+                # reports through, because it is the only progress signal a waiter can
+                # trust: see `progress_signature`. A fall means a resumed attempt started
+                # its own count from zero, not that tokens were taken back.
+                previous = participant.generated_seen
+                participant.generated_seen = reported
+                self._progress_tokens += (reported - previous) if reported >= previous else reported
+                participant.tokens = participant.base_tokens + reported
                 # A token came back, so the prompt behind it is prefilled and resident.
                 participant.measured = True
                 participant.cells_reclaimed = False
-                if int(generated or 0) > 0:
+                if reported > 0:
                     # A generated token can only follow a finished prefill, so whatever
                     # was announced is now in the cache and the batch term comes off.
                     # Guarded on `generated`, because the round-boundary sweep calls this
@@ -1079,6 +1112,10 @@ class PreemptionController:
                 growth = participant.tokens - previous
                 if growth > 0:
                     participant.announce_prefill(growth)
+                    # A round boundary that grew is work finishing: a tool result came
+                    # back, or a resumed partial was folded into the prompt. Same counter
+                    # as `observe`, for the same reason -- a waiter must be able to see it.
+                    self._progress_tokens += growth
                 # Re-baselined: a round boundary restates the whole conversation, so
                 # later growth is measured from here rather than from admission.
                 participant.base_tokens = participant.tokens
@@ -1238,15 +1275,42 @@ class PreemptionController:
     def progress_signature(self) -> tuple:
         """What a waiter watches to tell "busy" from "stuck".
 
-        Only two things can end a wait for room: the cache gives some back, or a holder
-        leaves. Both are visible here. Growth is deliberately NOT progress -- other chats
-        decoding into the cache is the opposite of room appearing -- so a waiter that
-        reset its patience on any change at all would never time out.
+        Four things, and a change in ANY of them means the backend is working:
+
+          * `committed` -- the cache gave room back, or somebody's charge moved,
+          * the set of holders -- a chat left, so its cells are on their way back,
+          * `_progress_tokens` -- a token was generated ANYWHERE, or a round boundary
+            folded a tool result in,
+          * how many holders are inside a tool call -- one started or one returned.
+
+        The token term is the one that was missing, and it is the one that matters most.
+        This used to be `(committed, holders)` alone, argued as "growth is deliberately
+        NOT progress, other chats decoding into the cache is the opposite of room
+        appearing". That reads the question backwards. The waiter is not asking "is room
+        appearing", it is asking "is this backend alive"; a chat that waits its turn
+        behind three live answers is queued, not stuck, and the product rule is that it
+        waits however long that takes.
+
+        And `committed` cannot answer the alive question. It is
+        `max(resident, measured) + pending`: a maximum over two independent readings of
+        the same cells, so while llama-server's resident figure is the larger one, every
+        token the ledger adds to `measured` is invisible. Measured on 2026-09-05, four
+        chats on the 35B at -c 8192 (logs/studio_gpu0_swap_20260905_154407.log): resident
+        3254 against measured 2343 at 15:47:18, and chatcmpl-ef6143032791 abandoned its
+        turn at 15:47:16 for "no progress for 90.0s" while the other three decoded to
+        completion. It had generated nothing, so the client got 0 tokens, 0 characters,
+        no error and a blank turn.
         """
         with self._lock:
             return (
                 self._committed_locked(),
                 frozenset(p.gen_id for p in self._participants.values() if p.holds_kv),
+                self._progress_tokens,
+                sum(
+                    1
+                    for p in self._participants.values()
+                    if p.state == ParticipantState.TOOLS_RUNNING
+                ),
             )
 
     def _pending_prefill_locked(self, *, exclude: Optional[str] = None) -> int:
@@ -1714,17 +1778,31 @@ class ControllerPreemptionPolicy:
             if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
                 deadline = now + timeout
             if current != last:
-                # ANY change resets it. The earlier version reset only when `committed`
-                # fell or a holder left, i.e. only when room appeared, and so reported
-                # "no progress" about a server decoding at full rate: in one run a waiter
-                # abandoned its turn 15 ms before its blocker released, after 90s in which
-                # `ledger` rose monotonically 7248 -> 18096 and fell zero times out of 308
-                # samples.
+                # ANY change resets it. The signature covers the whole backend, not just
+                # this chat's prospects: room returned, a holder left, a token generated
+                # anywhere, a tool started or finished. "No progress for `timeout`" is
+                # therefore a claim that NOTHING moved, which is the only claim that
+                # justifies abandoning a turn.
                 #
-                # A rising `committed` is proof somebody decoded, which is exactly what
-                # this bound wants to know. Frozen for `timeout` is the failure it was
-                # added for -- three paused chats and a 33 minute hang with NOTHING
-                # decoding -- and that still trips immediately.
+                # It took two corrections to get there. It first reset only when
+                # `committed` fell or a holder left, i.e. only when room appeared, and so
+                # reported "no progress" about a server decoding at full rate: in one run
+                # a waiter abandoned its turn 15 ms before its blocker released, after 90s
+                # in which `ledger` rose monotonically 7248 -> 18096 and fell zero times
+                # out of 308 samples. Resetting on any change to `(committed, holders)`
+                # fixed that run and not the general case, because `committed` is
+                # `max(resident, measured) + pending` and a decoding chat whose cells are
+                # already inside the larger of those two readings moves it not at all: on
+                # 2026-09-05, four chats on the 35B at -c 8192,
+                # chatcmpl-ef6143032791 gave up after 90s in which the other three decoded
+                # to completion, and its client got a blank turn with no error.
+                # `progress_signature` now carries the generated-token total and the
+                # tool-call count as well, which no reading of the cache can mask.
+                #
+                # Frozen for `timeout` is still the failure this was added for -- three
+                # paused chats and a 33 minute hang with NOTHING decoding -- and that
+                # still trips immediately, because nothing decoding is exactly what a
+                # motionless token counter says.
                 #
                 # A cache that churns forever while THIS chat is never fitted is not
                 # something a stall detector can see, and never was; `hard_deadline`
