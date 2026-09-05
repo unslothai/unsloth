@@ -107,6 +107,7 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     fi
 fi
 
+export UNSLOTH_JUPYTER_NOTE="${JUPYTER_NOTE}"  # for the ready summary (studio-password)
 STUDIO_AUTH="${UNSLOTH_STUDIO_HOME}/auth"
 if [[ -e "${STUDIO_AUTH}/auth.db" && ! -s "${STUDIO_AUTH}/.bootstrap_password" ]]; then
     # A password is stored (Studio deletes the bootstrap file on the first change).

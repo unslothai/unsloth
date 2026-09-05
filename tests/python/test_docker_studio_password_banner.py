@@ -35,11 +35,27 @@ def _run(
     *,
     env: dict | None = None,
     wait: str = "3",
+    services_up: bool = True,
 ) -> subprocess.CompletedProcess:
+    """Run the shipped script against *home*, with curl stubbed: the ready probes
+    must never reach a real Studio on the test host."""
+    bin_dir = home / "stub-bin"
+    bin_dir.mkdir(exist_ok = True)
+    (bin_dir / "curl").write_text(
+        "#!/usr/bin/env bash\n" + ("exit 0\n" if services_up else "exit 7\n"), encoding = "utf-8"
+    )
+    (bin_dir / "curl").chmod(0o755)
     e = {k: v for k, v in os.environ.items() if not k.startswith("UNSLOTH_STUDIO")}
-    e.update(UNSLOTH_STUDIO_HOME = str(home), UNSLOTH_STUDIO_PASSWORD_WAIT = wait)
+    e["PATH"] = f"{bin_dir}{os.pathsep}" + e["PATH"]
+    e.update(
+        UNSLOTH_STUDIO_HOME = str(home),
+        UNSLOTH_STUDIO_PASSWORD_WAIT = wait,
+        UNSLOTH_STUDIO_READY_WAIT = "2",
+    )
     e.update(env or {})
-    return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
+    return subprocess.run(
+        ["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60
+    )
 
 
 @behavioural
@@ -57,6 +73,30 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "username: unsloth" in res.stdout
     assert "password: s3cret pass" in res.stdout, res.stdout
     assert "60 min" in res.stdout, "the change-it-or-shut-down window is not explained"
+    assert "Unsloth container ready" in res.stdout
+    assert "Studio      http://localhost:8000   username: unsloth   password: s3cret pass" in res.stdout
+
+
+@behavioural
+def test_the_summary_carries_the_jupyter_note_and_port(tmp_path: Path):
+    res = _run(
+        tmp_path,
+        env = {
+            "UNSLOTH_STUDIO_PASSWORD": "hunter22hunter",
+            "JUPYTER_PORT": "9999",
+            "UNSLOTH_JUPYTER_NOTE": "generated password: abc123",
+        },
+    )
+    assert "JupyterLab  http://localhost:9999   generated password: abc123" in res.stdout, res.stdout
+    assert res.stdout.rstrip().endswith("=" * 72)
+
+
+@behavioural
+def test_services_that_never_answer_are_reported_not_hidden(tmp_path: Path):
+    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_PASSWORD": "hunter22hunter"}, services_up = False)
+    assert res.returncode == 0
+    assert "startup incomplete" in res.stdout, res.stdout
+    assert res.stdout.count("not answering") == 2
 
 
 @behavioural
@@ -75,7 +115,8 @@ def test_a_disabled_timeout_drops_the_shutdown_note(tmp_path: Path, value: str):
     auth.mkdir()
     (auth / ".bootstrap_password").write_bytes(b"abc\n")
     res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
-    assert res.stdout.rstrip().endswith("password: abc"), repr(res.stdout)
+    assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(res.stdout)
+    assert "change it on first sign-in" not in res.stdout
 
 
 @behavioural
