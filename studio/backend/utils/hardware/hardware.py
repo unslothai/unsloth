@@ -4315,7 +4315,7 @@ def _match_adapter_used_to_devices(
         # Keeps 40 GiB over 48/8 GiB -> [40, None].
         assigned = [None] * n
         for rank, pos in enumerate(ranked_positions):
-            if rank + 1 < n and ranked_useds[rank] > ranked_totals[rank + 1]:
+            if n == 1 or (rank + 1 < n and ranked_useds[rank] > ranked_totals[rank + 1]):
                 assigned[pos] = min(ranked_useds[rank], device_totals[pos])
         return assigned
     # No hidden adapters: every counter is a visible card, so ranking is a permutation.
