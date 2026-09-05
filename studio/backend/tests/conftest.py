@@ -102,6 +102,39 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _isolate_os_sandbox_state():
+    """Keep one test's OS-sandbox probe result from deciding another test's launch.
+
+    ``core.inference.os_sandbox`` caches its live probe per environment
+    fingerprint for the whole process. A test that fakes ``subprocess.Popen``
+    while a tool call probes the sandbox would otherwise leave a poisoned
+    "unavailable" entry behind, which is exactly how the Seatbelt live tests
+    failed on macOS when the suites ran in one session.
+    """
+    os_sandbox = sys.modules.get("core.inference.os_sandbox")
+    if os_sandbox is None:
+        yield
+        os_sandbox = sys.modules.get("core.inference.os_sandbox")
+        if os_sandbox is not None:
+            os_sandbox._capability_cache.clear()
+            os_sandbox._forget_system_scan_memo()
+        return
+    cache_before = dict(os_sandbox._capability_cache)
+    linux_backend = getattr(os_sandbox, "_LINUX_BACKEND", None)
+    bwrap_before = getattr(linux_backend, "_bwrap", None)
+    userns_before = getattr(linux_backend, "_disable_userns_supported", True)
+    try:
+        yield
+    finally:
+        os_sandbox._capability_cache.clear()
+        os_sandbox._capability_cache.update(cache_before)
+        os_sandbox._forget_system_scan_memo()
+        if linux_backend is not None:
+            linux_backend._bwrap = bwrap_before
+            linux_backend._disable_userns_supported = userns_before
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()

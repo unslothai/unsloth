@@ -34,9 +34,24 @@ env:
 
 jobs:
   linux-bubblewrap:
-    name: Native Linux capability and fail-closed behavior
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    name: ${{ matrix.runner }} native Linux Protected qualification
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 ships bubblewrap 0.6.1, which predates --disable-userns:
+          # the seccomp fallback must qualify here.
+          - runner: ubuntu-22.04
+            apparmor_profile: false
+            expect_limitation: nested_userns_blocked_by_seccomp
+          # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor by
+          # default; without the profile the backend must explain and fail closed,
+          # with it the full Protected path runs.
+          - runner: ubuntu-24.04
+            apparmor_profile: true
+            expect_limitation: ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,27 +59,74 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install probe dependency
+      - name: Install Bubblewrap and test dependencies
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: 2
+          RETRY_ATTEMPT_TIMEOUT: 120
         run: |
-          python -m pip install structlog
-      - name: Qualify when available, otherwise prove explicit unavailability
+          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get update
+          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get install -y bubblewrap
+          bwrap --version
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          python -m pip install 'transformers>=4.51,<5.5'
+      - name: Without an AppArmor profile the backend explains itself and fails closed
+        if: matrix.apparmor_profile
         working-directory: studio/backend
         run: |
           python - <<'PY'
-          import shutil
           from core.inference.os_sandbox import capability_snapshot
           capability = capability_snapshot(force=True)
           print(capability)
-          assert capability.environment == "native_linux", capability
-          if shutil.which("bwrap"):
-              assert capability.qualified, capability
-              assert capability.protection_state == "protected", capability
-          else:
-              assert not capability.qualified, capability
+          restricted = open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read().strip() == "1"
+          if restricted:
+              assert not capability.available, capability
               assert capability.protection_state == "unavailable", capability
-              assert "not installed" in capability.reason, capability
-              print("NATIVE_LINUX_UNVERIFIED: hosted runner has no root-controlled Bubblewrap")
+              assert "AppArmor" in capability.reason, capability
+              assert "/etc/apparmor.d/bwrap" in capability.remediation, capability
+          else:
+              print("host does not restrict user namespaces; nothing to explain")
           PY
+      - name: Allow Bubblewrap through AppArmor (the documented remediation)
+        if: matrix.apparmor_profile
+        run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' '' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '  include if exists <local/bwrap>' '}' | sudo tee /etc/apparmor.d/bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+      - name: Require native Linux Protected qualification
+        working-directory: studio/backend
+        env:
+          EXPECT_LIMITATION: ${{ matrix.expect_limitation }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from core.inference.os_sandbox import capability_snapshot
+          started = time.monotonic()
+          capability = capability_snapshot(force=True)
+          print(f"probe took {time.monotonic() - started:.2f}s")
+          print(capability)
+          assert capability.environment == "native_linux", capability
+          assert capability.qualified, capability
+          assert capability.protection_state == "protected", capability
+          expected = os.environ.get("EXPECT_LIMITATION", "")
+          if expected:
+              assert expected in capability.limitations, capability
+          else:
+              assert "nested_userns_blocked_by_seccomp" not in capability.limitations, capability
+          PY
+      - name: Live enforcement and shared regression tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_os_sandbox.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
 
   windows-lpac:
     name: ${{ matrix.runner }} LPAC Preview qualification
@@ -88,12 +150,15 @@ jobs:
           python -m pip install -r studio/backend/requirements/studio.txt
           python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
           python -m pip install 'torch>=2.4,<2.11' 'transformers>=4.51,<5.5'
-      - name: Require production LPAC Preview
+      - name: Report the Windows capability state
         shell: pwsh
         working-directory: studio/backend
         run: |
-          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.backend == 'windows-lpac', c; assert c.available and c.qualified, c; assert c.protection_state == 'preview', c"
-      - name: Run LPAC enforcement and shared regression tests
+          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.environment == 'windows', c; open(r'$env:GITHUB_STEP_SUMMARY', 'a', encoding='utf-8').write(f'Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\nreason: {c.reason}\n')"
+      - name: Run Windows enforcement and shared regression tests
+        # Runs whatever the probe reported: the suites skip the live legs when
+        # no backend qualifies, so a regression in the shared tool paths is
+        # visible even on a host that cannot sandbox.
         working-directory: studio/backend
         shell: pwsh
         run: >-

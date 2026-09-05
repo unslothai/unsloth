@@ -131,7 +131,13 @@ def captured_popen(monkeypatch):
         cap["kwargs"] = kwargs
         return _FakeProc()
 
-    monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+    # Intercept the tool's own spawn seam, not ``subprocess.Popen`` itself: the
+    # shared module object is what ``os_sandbox`` runs its live probe with, and a
+    # probe that meets ``_FakeProc`` caches a bogus "unavailable" for the process
+    # (that is how the Seatbelt live tests failed when the suites ran together).
+    monkeypatch.setattr(
+        tools, "spawn_prepared_launch", lambda prepared, **kwargs: fake_popen(prepared.argv, **kwargs)
+    )
     return cap
 
 

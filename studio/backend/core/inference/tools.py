@@ -13,6 +13,7 @@ import hashlib
 import json
 import http.client
 import os
+import secrets
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -7195,9 +7196,14 @@ def _limited_resource_limits() -> tuple[int, int, int, int]:
 
 
 def _limited_preexec() -> None:
-    """Establish every resource limit promised by Limited mode or abort exec."""
-    os.setsid()
-    os.umask(0o077)
+    """Establish every resource limit promised by Limited mode or abort exec.
+
+    The shared guard (session leader, umask, ``PR_SET_NO_NEW_PRIVS``,
+    ``PR_SET_PDEATHSIG`` and the best-effort limits) runs first so Limited mode
+    keeps every protection the pre-isolation sandboxed path had; the limits below
+    are then re-applied fail-closed. NPROC is left to the fail-closed pass.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = False)
     if _resource is None:
         raise RuntimeError("POSIX resource limits are unavailable")
 
@@ -14794,6 +14800,60 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
+# Limited mode has no pid namespace, so a `setsid` grandchild leaves the captured
+# process group and survives `_killpg_captured`. Every Limited launch therefore
+# carries a per-call random marker in its environment; after the leader is gone
+# the sweep kills every process of our uid still carrying that exact marker.
+_LIMITED_RUN_MARKER_ENV = "UNSLOTH_STUDIO_TOOL_RUN_ID"
+_LIMITED_SWEEP_PASSES = 2
+_LIMITED_SWEEP_PAUSE_SECONDS = 0.05
+
+
+def _sweep_marked_descendants(marker: str) -> int:
+    """SIGKILL processes of this uid whose environment carries the Limited run marker.
+
+    Linux only (it reads ``/proc/<pid>/environ``); elsewhere it is a no-op and
+    the Limited execution record discloses ``detached_descendant_cleanup_unverified``.
+    Pids without the marker are never signalled; unreadable or vanished pids are
+    skipped. A child that scrubs its own environment escapes the sweep, which is
+    why Limited mode is offered only where no OS sandbox qualifies.
+    """
+    if not marker or sys.platform != "linux" or not os.path.isdir("/proc"):
+        return 0
+    needle = f"{_LIMITED_RUN_MARKER_ENV}={marker}".encode()
+    own_pid = os.getpid()
+    own_uid = os.getuid()
+    killed = 0
+    for _pass in range(_LIMITED_SWEEP_PASSES):
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return killed
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == own_pid:
+                continue
+            try:
+                if os.stat(f"/proc/{pid}").st_uid != own_uid:
+                    continue
+                with open(f"/proc/{pid}/environ", "rb") as stream:
+                    environ = stream.read()
+            except OSError:
+                continue
+            if needle not in environ.split(b"\0"):
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if _pass + 1 < _LIMITED_SWEEP_PASSES:
+            time.sleep(_LIMITED_SWEEP_PAUSE_SECONDS)
+    return killed
+
+
 def _killpg_captured(pgid) -> None:
     """SIGKILL a process group captured before its leader was waited on.
 
@@ -16336,6 +16396,7 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     prepared_launch = None
+    run_marker = None
     workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
@@ -16363,6 +16424,10 @@ def _python_exec(
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
+        elif effective_execution_mode == "limited":
+            run_marker = secrets.token_hex(16)
+            safe_env = dict(safe_env)
+            safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
         launch_argv = (sys.executable, "-u", tmp_path)
         launch_preexec = (
             _bypass_preexec
@@ -16527,6 +16592,8 @@ def _python_exec(
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
         _forget_tool_pid(locals().get("proc"))
+        if run_marker is not None:
+            _sweep_marked_descendants(run_marker)
         if prepared_launch is not None:
             prepared_launch.cleanup()
         if tmp_path and os.path.exists(tmp_path):
@@ -16590,6 +16657,7 @@ def _bash_exec(
     spill_scope = None
     call_token = None
     prepared_launch = None
+    run_marker = None
     try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
@@ -16600,6 +16668,10 @@ def _bash_exec(
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
+        if not full_access and effective_execution_mode == "limited":
+            run_marker = secrets.token_hex(16)
+            safe_env = dict(safe_env)
+            safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
         launch_argv = tuple(_get_shell_cmd(command))
         launch_preexec = (
             _bypass_preexec
@@ -16737,5 +16809,7 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+        if run_marker is not None:
+            _sweep_marked_descendants(run_marker)
         if prepared_launch is not None:
             prepared_launch.cleanup()
