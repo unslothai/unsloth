@@ -86,6 +86,53 @@ except Exception:
     transformers_version = Version("0.0.0")
 
 
+def _restore_valid_grpo_train_batch_size(args, requested_batch_size):
+    """Undo the GRPO compatibility rewrite when the effective batch is valid.
+
+    Some TRL compatibility paths require the generation batch to be divisible
+    by ``num_generations``. Unsloth historically satisfied that requirement by
+    replacing a smaller per-device training batch with ``num_generations``.
+    That is unnecessarily expensive when gradient accumulation already makes
+    the effective generation batch divisible, and it multiplies the peak memory
+    used by generation before the first training step.
+
+    Only undo the exact compatibility rewrite (the current batch was set to
+    ``num_generations``). Other changes to the batch size may have a different
+    owner and are deliberately left untouched.
+    """
+    if not isinstance(requested_batch_size, int) or isinstance(requested_batch_size, bool):
+        return False
+    if requested_batch_size <= 0:
+        return False
+
+    num_generations = getattr(args, "num_generations", None)
+    current_batch_size = getattr(args, "per_device_train_batch_size", None)
+    if not isinstance(num_generations, int) or isinstance(num_generations, bool):
+        return False
+    if num_generations <= 0 or current_batch_size != num_generations:
+        return False
+    if current_batch_size == requested_batch_size:
+        return False
+
+    generation_batch_size = getattr(args, "generation_batch_size", None)
+    if not isinstance(generation_batch_size, int) or isinstance(generation_batch_size, bool):
+        generation_batch_size = None
+    if generation_batch_size is None or generation_batch_size <= 0:
+        gradient_accumulation_steps = getattr(args, "gradient_accumulation_steps", 1)
+        if (
+            not isinstance(gradient_accumulation_steps, int)
+            or isinstance(gradient_accumulation_steps, bool)
+            or gradient_accumulation_steps <= 0
+        ):
+            return False
+        generation_batch_size = requested_batch_size * gradient_accumulation_steps
+    if generation_batch_size % num_generations != 0:
+        return False
+
+    args.per_device_train_batch_size = requested_batch_size
+    return True
+
+
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
 
@@ -544,7 +591,14 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         **kwargs
     ):
         if args is None: args = Unsloth{RLConfig_name}()
+        _unsloth_requested_train_batch_size = getattr(
+            args, "per_device_train_batch_size", None
+        )
 {RLTrainer_extra_args}
+        from unsloth.models.rl import _restore_valid_grpo_train_batch_size
+        _restore_valid_grpo_train_batch_size(
+            args, _unsloth_requested_train_batch_size
+        )
         # [TODO] Fix up DataParallel multiplying batch sizes
         # [TODO] DDP works, but DP seems to not work? [TODO]
         if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
