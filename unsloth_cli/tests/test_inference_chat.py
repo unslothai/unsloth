@@ -2453,6 +2453,46 @@ def test_catalog_local_gguf_folder_picks_the_preferred_quant(monkeypatch, tmp_pa
     assert entries and entries[0].model.endswith("mymodel-Q4_K_M.gguf"), entries[0].model
 
 
+def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path):
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    ling = folder / "Ling-3.0-tiny-Uncensored-Abliterated.f16.gguf"
+    minimax = folder / "MiniMax-H3-ref2va-curve-zs05-Q8_0.gguf"
+    for file in (ling, minimax):
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
+    multi = tmp_path / "multi"
+    multi.mkdir()
+    (multi / "mymodel-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 4096)
+    (multi / "mymodel-F16.gguf").write_bytes(b"GGUF" + b"\0" * 4096 * 4)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(ling), row(minimax), row(multi)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        ling.stem: str(ling),
+        minimax.stem: str(minimax),
+        "multi": str(multi / "mymodel-Q4_K_M.gguf"),
+    }
+
+
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
     """A LoRA resolved by bare repo id takes the REMOTE branch of
     get_base_model_from_lora_identifier, which downloads adapter_config.json with no
