@@ -8,13 +8,17 @@ Most providers use OpenAI-compatible /v1/chat/completions; Anthropic uses
 the native Messages API, translated in this client.
 """
 
+import asyncio
 import base64
+import io
 import json as _json
 import mimetypes
 import re
+import threading
 import time
+import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -52,6 +56,90 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+_MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
+_MAX_CONCATENATED_WAV_SEGMENTS = 1_024
+
+
+def _merge_concatenated_wav_segments(
+    audio: bytes, cancelled: Optional[threading.Event] = None
+) -> bytes:
+    """Join a byte stream containing multiple complete WAV files into one WAV."""
+    cancelled = cancelled or threading.Event()
+    if len(audio) > _MAX_CONCATENATED_WAV_BYTES:
+        return audio
+
+    def _segment_offsets():
+        offset = 0
+        while offset < len(audio):
+            if audio[offset : offset + 4] != b"RIFF" or audio[offset + 8 : offset + 12] != b"WAVE":
+                raise ValueError("not a concatenated WAV stream")
+            segment_end = offset + 8 + int.from_bytes(audio[offset + 4 : offset + 8], "little")
+            if segment_end <= offset + 12 or segment_end > len(audio):
+                raise ValueError("invalid RIFF segment length")
+            yield offset, segment_end
+            offset = segment_end
+
+    try:
+        params = None
+        source = io.BytesIO(audio)
+        segment_count = 0
+        for segment_start, _segment_end in _segment_offsets():
+            if cancelled.is_set():
+                return audio
+            segment_count += 1
+            if segment_count > _MAX_CONCATENATED_WAV_SEGMENTS:
+                return audio
+            source.seek(segment_start)
+            with wave.open(source, "rb") as reader:
+                current = (
+                    reader.getnchannels(),
+                    reader.getsampwidth(),
+                    reader.getframerate(),
+                    reader.getcomptype(),
+                    reader.getcompname(),
+                )
+                if params is None:
+                    params = current
+                elif current != params:
+                    return audio
+        if segment_count < 2:
+            return audio
+        assert params is not None
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(params[0])
+            writer.setsampwidth(params[1])
+            writer.setframerate(params[2])
+            writer.setcomptype(params[3], params[4])
+            for segment_start, _segment_end in _segment_offsets():
+                if cancelled.is_set():
+                    return audio
+                source.seek(segment_start)
+                with wave.open(source, "rb") as reader:
+                    expected_bytes = (
+                        reader.getnframes() * reader.getnchannels() * reader.getsampwidth()
+                    )
+                    observed_bytes = 0
+                    while frames := reader.readframes(65_536):
+                        if cancelled.is_set():
+                            return audio
+                        observed_bytes += len(frames)
+                        writer.writeframesraw(frames)
+                    if observed_bytes != expected_bytes:
+                        return audio
+        return output.getvalue()
+    except MemoryError:
+        raise
+    except Exception:
+        return audio
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -308,6 +396,56 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
+
+
+def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an OpenAI web_search_call action into card arguments.
+
+    gpt-5.x agentic search emits three action types, discriminated by
+    `action.type`: `search` carries queries, `open_page` a url, `find_in_page` a
+    url and a pattern. Reading only `action.query` renders the last two as an
+    empty `Searching ""` card. Shapes per WebSearchToolCall in
+    https://github.com/openai/openai-openapi (openapi.yaml).
+    """
+    if not isinstance(item, dict):
+        return {}
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    action_type = action.get("type") if isinstance(action.get("type"), str) else ""
+    # `queries` is the current field and holds every query the call ran; the
+    # singular `query` is deprecated in the spec, so it is only the fallback.
+    # Neither is required, so a search action can carry no query at all.
+    query = ""
+    for source in (action.get("queries"), item.get("queries")):
+        if isinstance(source, list):
+            joined = ", ".join(q for q in source if isinstance(q, str) and q)
+            if joined:
+                query = joined
+                break
+    if not query:
+        for legacy in (action.get("query"), item.get("query")):
+            if isinstance(legacy, str) and legacy:
+                query = legacy
+                break
+    url = action.get("url") if isinstance(action.get("url"), str) else ""
+    pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
+    arguments: dict[str, Any] = {}
+    if query:
+        arguments["query"] = query
+    if url:
+        arguments["url"] = url
+    if pattern:
+        arguments["pattern"] = pattern
+    if action_type:
+        arguments["action_type"] = action_type
+    return arguments
+
+
+# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s
+# with "prompt_cache_retention is not supported on this model" and the turn
+# dies (openai/codex#39397), while an unmatched model just falls back to
+# in-memory caching -- so guess narrow.
+# https://developers.openai.com/api/docs/guides/prompt-caching
+_OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -581,6 +719,36 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "none"
         elif enable_thinking is True:
             body["reasoning_effort"] = "high"
+
+
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
+# https://docs.ollama.com/api/openai-compatibility
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
+_OLLAMA_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "xhigh": "max",
+}
+
+
+def _apply_ollama_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
+
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in _OLLAMA_REASONING_EFFORT_ALIASES:
+        effort = _OLLAMA_REASONING_EFFORT_ALIASES[effort]
+    if effort in _OLLAMA_REASONING_EFFORTS:
+        body["reasoning_effort"] = effort
+        return
+    if enable_thinking is False:
+        body["reasoning_effort"] = "none"
+        return
+    if enable_thinking is True:
+        body["reasoning_effort"] = "medium"
 
 
 # Shared client reused across all requests for HTTP connection pooling.
@@ -1149,6 +1317,8 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+        elif self.provider_type == "ollama":
+            _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -1234,7 +1404,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1396,7 +1571,7 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
                         # the frames this server writes to paint tool cards ride
                         # the same stream, so an endpoint that echoes them forges
                         # a card for a tool that never ran.
@@ -1534,7 +1709,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1625,7 +1805,12 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1639,7 +1824,7 @@ class ExternalProviderClient:
                                 break
                             if line.strip():
                                 # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
+                                # endpoint speak Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1730,7 +1915,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1775,7 +1965,7 @@ class ExternalProviderClient:
                                                         str(ann.get("type") or "?")
                                                     )
                         # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
+                        # speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -2375,7 +2565,12 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -4152,7 +4347,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 if web_search_active:
@@ -4858,7 +5058,7 @@ class ExternalProviderClient:
                 # OpenAI requires the reasoning items that came back alongside a
                 # tool call to be replayed with the function_call /
                 # function_call_output pair whenever the history is managed by
-                # hand, which is exactly what the Studio tool loop does: "any
+                # hand, which is exactly what the Unsloth tool loop does: "any
                 # reasoning items returned in model responses with tool calls
                 # must also be passed back with tool call outputs"
                 # (https://developers.openai.com/api/docs/guides/function-calling).
@@ -5015,9 +5215,10 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # gpt-5.x / o3 / gpt-4.5 reject temperature/top_p (400 "Unsupported
-        # parameter"); the openai allowlist scopes the picker to these families,
-        # so never forward sampling knobs.
+        # Reasoning families reject temperature/top_p, and the UI hides both
+        # sliders for the rest (provider-capabilities.ts), so the only values
+        # arriving here are ChatCompletionRequest's 0.6/0.95 defaults, which
+        # would override OpenAI's own with a number the user never chose.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
         body: dict[str, Any] = {
@@ -5076,9 +5277,14 @@ class ExternalProviderClient:
                 }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
-        # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
-        # presets reach this path too and would 400 on the unknown field.
-        if is_openai_cloud and enable_prompt_caching is not False:
+        # Gated on the cloud host because ollama / llama.cpp / "custom" presets
+        # reach this path and 400 on the unknown field, and on the model
+        # because most cloud families reject the value itself.
+        if (
+            is_openai_cloud
+            and enable_prompt_caching is not False
+            and _OPENAI_EXTENDED_CACHE_FAMILY.match(model.strip().lower())
+        ):
             body["prompt_cache_retention"] = "24h"
 
         # Server-side context compaction (OpenAI cloud only).
@@ -5274,7 +5480,12 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion --
@@ -5693,7 +5904,10 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if isinstance(item, dict) and item.get("type") == "web_search_call":
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    web_search_calls.setdefault(item_id, {"query": ""})
+                                    web_search_calls.setdefault(
+                                        item_id,
+                                        _extract_web_search_action(item),
+                                    )
                                 # Register shell_call eagerly so out-of-order
                                 # output links back. Probe env.container_id to
                                 # emit container_ready before response.completed.
@@ -5748,26 +5962,31 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # done carries the query; emit tool_start +
+                                    # done carries the action; emit tool_start +
                                     # tool_end here. Citations are aggregated and
                                     # the last call's result is overwritten at
                                     # response.completed.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    action = item.get("action")
-                                    query = (
-                                        action.get("query", "") if isinstance(action, dict) else ""
-                                    )
-                                    web_search_calls[item_id] = {"query": query}
+                                    # Overlay, don't replace: a partial done event
+                                    # would drop what the added event carried.
+                                    arguments = {
+                                        **web_search_calls.get(item_id, {}),
+                                        **_extract_web_search_action(item),
+                                    }
+                                    web_search_calls[item_id] = dict(arguments)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": ({"query": query} if query else {}),
+                                            "arguments": arguments,
                                         }
                                     )
                                     # Per-card text; last call gets overwritten
-                                    # with citations at response.completed.
+                                    # with citations at response.completed. The
+                                    # url variants have no query to echo, and the
+                                    # card names the page from `url` instead.
+                                    query = arguments.get("query") or ""
                                     per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
                                         {
@@ -6278,6 +6497,59 @@ class ExternalProviderClient:
         response.raise_for_status()
         return response.json()
 
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+        instructions: Optional[str] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        if instructions is not None:
+            body["instructions"] = instructions
+        response = await _http_client.post(
+            _append_provider_path(self.base_url, "/audio/speech"),
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        audio = response.content
+        if response_format.strip().lower() == "wav":
+            merge_cancelled = threading.Event()
+            merge_task = asyncio.create_task(
+                asyncio.to_thread(_merge_concatenated_wav_segments, audio, merge_cancelled)
+            )
+            try:
+                audio = await asyncio.shield(merge_task)
+            except asyncio.CancelledError:
+                merge_cancelled.set()
+                while not merge_task.done():
+                    try:
+                        await asyncio.shield(merge_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    merge_task.result()
+                except BaseException:
+                    pass
+                raise asyncio.CancelledError
+        return audio, media_type or f"audio/{response_format}"
+
     async def create_transcription(
         self,
         audio: bytes,
@@ -6286,6 +6558,7 @@ class ExternalProviderClient:
         model: str,
         language: Optional[str] = None,
         response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
     ) -> tuple[bytes, str]:
         """Post audio to an OpenAI-compatible transcription endpoint."""
         data = {
@@ -6294,6 +6567,9 @@ class ExternalProviderClient:
         }
         if language:
             data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _http_client.post(
@@ -6610,19 +6886,27 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
-    """Format an error as an SSE data line in OpenAI error format."""
+def _error_sse_line(
+    status_code: int,
+    message: str,
+    provider_type: str,
+    retry_after: str | None = None,
+) -> str:
+    """Format an error as an SSE data line in OpenAI error format.
+
+    ``retry_after`` carries the upstream Retry-After through: this stream is delivered under a
+    200, so a client that backs off has nowhere else to read the delay from."""
     import json
 
-    error_obj = {
-        "error": {
-            "message": _readable_provider_error(status_code, message, provider_type),
-            "type": "provider_error",
-            "code": str(status_code),
-            "provider": provider_type,
-        }
+    error: dict[str, str] = {
+        "message": _readable_provider_error(status_code, message, provider_type),
+        "type": "provider_error",
+        "code": str(status_code),
+        "provider": provider_type,
     }
-    return f"data: {json.dumps(error_obj)}"
+    if retry_after:
+        error["retry_after"] = retry_after
+    return f"data: {json.dumps({'error': error})}"
 
 
 def _build_usage_chunk(

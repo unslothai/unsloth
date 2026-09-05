@@ -92,7 +92,7 @@ def _data_parallel_world_size() -> int:
     extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
 
     The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
-    model-parallel one (device_map="balanced", which is what Studio's own multi-GPU
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
     load uses) forces it to 1 as well. Rounding up when the model turns out to be
     sharded rather than replicated only tokenizes a larger subset of a corpus this
     bound is orders of magnitude below anyway; rounding down means the run silently
@@ -735,6 +735,143 @@ def _pre_detect_training_model(
         local_files_only = local_files_only,
         model_revision = model_revision,
     )
+    _check_finetune_targets_after_detect(trainer, config)
+
+
+_NOTHING_TO_TRAIN = (
+    "Nothing to train: select at least one layer family (finetune_language_layers or "
+    "finetune_vision_layers) and at least one module type (finetune_attention_modules or "
+    "finetune_mlp_modules)."
+)
+
+
+def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
+    """(vision, language, attention, mlp), read exactly the way the consumers read them.
+
+    A guard that models the run differently from the code it guards rejects runs that would
+    have trained, so every default here is the CUDA consumer's own default for an omitted key.
+    Only the MLX consumer defaults vision False, and _check_mlx_finetune_targets discards the
+    vision element, so True is safe there too.
+    """
+    return (
+        bool(config.get("finetune_vision_layers", True)),
+        bool(config.get("finetune_language_layers", True)),
+        bool(config.get("finetune_attention_modules", True)),
+        bool(config.get("finetune_mlp_modules", True)),
+    )
+
+
+def _requests_all_linear(config: dict) -> bool:
+    """Whether target_modules is PEFT's bare "all-linear" keyword rather than a leaf list.
+
+    get_peft_model forces every selector True for the keyword, so all-linear with the
+    selectors off trains every linear layer today and rejecting it would break the very
+    requests the selectors are not consulted for. A list naming all-linear alongside other
+    leaves is not the keyword: the caller strips it and the rest take the scoped path.
+    """
+    target_modules = config.get("target_modules")
+    if isinstance(target_modules, str):
+        return target_modules == "all-linear"
+    if isinstance(target_modules, (list, tuple)):
+        return list(target_modules) == ["all-linear"]
+    return False
+
+
+def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
+    """Reject a LoRA run that selects no adapter layers, once detection has settled which
+    branch it takes. The request model cannot decide this: the codec/ASR branches ignore the
+    selectors that is_audio_vlm reads, is_vlm needs a vision-capable model and not just an
+    image-tagged dataset, and only the probe in pre_detect separates those. pre_detect is
+    config/tokenizer only, so this still fires before any weights load, instead of surfacing
+    as get_peft_regex's "No layers to finetune" with the model already in memory."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
+        return  # Full Finetuning / CPT build adapters from target_modules alone
+    if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
+        return  # the text branch ignores these four
+    if _requests_all_linear(config):
+        return  # get_peft_model turns all five selectors on for the keyword; see below
+    vision, language, attention, mlp = _finetune_selectors(config)
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
+    if not (vision or language) or not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+# Targets the MLX loader trains regardless of the layer-family flags: on the CPT path
+# embed_tokens becomes a full trainable module and lm_head its own adapter.
+_CPT_TARGET_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _names_a_cpt_target(target_modules) -> bool:
+    """Whether an explicit target list names something that trains on its own."""
+    if isinstance(target_modules, str):
+        return target_modules in _CPT_TARGET_NAMES
+    try:
+        return any(name in _CPT_TARGET_NAMES for name in target_modules)
+    except TypeError:  # not iterable -> not a list of names, so nothing is guaranteed
+        return False
+
+
+def _check_mlx_finetune_targets(config: dict) -> None:
+    """MLX equivalent, called from the LoRA branch of the MLX worker.
+
+    Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
+    selectors for text models too, so there is no is_vlm gate. And the caller back-fills
+    finetune_language_layers whenever a module type is on, so only an empty module selection
+    can survive here.
+
+    Surviving the module-type filter is NOT enough to train. get_peft_model drops only the
+    names it recognises as attention or MLP leaves, so a fused qkv, a c_fc or an expanded
+    all-linear survives with both module types off -- but the text branch then gates the LoRA
+    application on finetune_language_layers, and with all four selectors off the caller's
+    back-fill never fires. Those runs apply no adapters at all: the model warns and trains
+    nothing, and a VLM raises only once the weights are loaded.
+
+    The exception is a target the loader handles independently of the layer families: naming
+    embed_tokens or lm_head puts it on the CPT path, which trains whatever the flags say.
+
+    An explicit list that merely filters down to nothing still gets the loader's own message,
+    which names the two flags."""
+    targets = config.get("target_modules")
+    if targets:
+        if _names_a_cpt_target(targets):
+            return
+        _, language, attention, mlp = _finetune_selectors(config)
+        # Vision read the way the MLX call site reads it, NOT the way _finetune_selectors
+        # does: that helper carries the CUDA consumer's defaults, where an omitted vision
+        # selector means True, while MLX defaults it False and forces it False for a text
+        # model. Taking True from an omitted key would wave through every legacy config
+        # that never sent the selectors at all.
+        vision = bool(config.get("finetune_vision_layers", False))
+        # Any one of them leaves something that can train, or leaves the loader to say so
+        # with a better message. Vision counts because this runs BEFORE detection, so a VLM
+        # whose vision tower is the only selection must not be refused here;
+        # _check_mlx_effective_targets catches the text case once is_vlm is known.
+        if attention or mlp or language or vision:
+            return
+        raise ValueError(_NOTHING_TO_TRAIN)
+    _, _, attention, mlp = _finetune_selectors(config)
+    if not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_effective_targets(
+    config: dict, *, finetune_language: bool, finetune_vision: bool
+) -> None:
+    """The same refusal, re-asked with the values get_peft_model will actually receive.
+
+    ``_check_mlx_finetune_targets`` runs before the model is loaded, so it cannot tell a VLM
+    from a text model and has to let a vision-only selection through. The call site can: it
+    has forced vision to False for a text model and applied the language back-fill, so if
+    both layer families are still off here, no adapter is coming and the run would train
+    nothing but its own warning.
+
+    Later than the preflight deliberately: this is the first point the answer is knowable,
+    and it is still before the trainer is built and before a single step runs."""
+    if finetune_language or finetune_vision:
+        return
+    if _names_a_cpt_target(config.get("target_modules") or ()):
+        return
+    raise ValueError(_NOTHING_TO_TRAIN)
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -2669,6 +2806,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: unlike the CUDA path, this needs none of the model.
+    if use_lora:
+        _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)
@@ -2802,6 +2942,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
+
+        # is_vlm and the back-fill's outcome are known now; the preflight could only guess.
+        _check_mlx_effective_targets(
+            config,
+            finetune_language = finetune_language,
+            finetune_vision = finetune_vision,
+        )
 
         peft_kwargs["finetune_language_layers"] = finetune_language
         peft_kwargs["finetune_attention_modules"] = finetune_attention
@@ -3741,16 +3888,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
@@ -4198,6 +4339,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )
@@ -4493,12 +4635,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
             _send_status(event_queue, "Configuring LoRA for continued pretraining...")
-            # embed_tokens (if included) goes to modules_to_save -- trained full-precision at
-            # embedding_learning_rate. lm_head stays a LoRA target for merges (unsloth PR #4106).
+            # Both go to modules_to_save: trained full-precision at
+            # embedding_learning_rate, since LoRA on either never trains.
+            # By leaf: PEFT resolves model.embed_tokens to the same module.
+            _embedding_modules = ("embed_tokens", "lm_head")
             _user_modules = config.get("target_modules") or []
-            wants_embed = "embed_tokens" in _user_modules
-            cpt_trains_embeddings = wants_embed
-            cpt_target_modules = [m for m in _user_modules if m != "embed_tokens"]
+            _leaf = lambda m: str(m).rsplit(".", 1)[-1]  # noqa: E731
+            _wants = [m for m in _user_modules if _leaf(m) in _embedding_modules]
+            # Either module in modules_to_save fills the embedding_learning_rate group.
+            cpt_trains_embeddings = bool(_wants)
+            cpt_target_modules = [m for m in _user_modules if _leaf(m) not in _embedding_modules]
             if not cpt_target_modules:
                 cpt_target_modules = [
                     "q_proj",
@@ -4508,12 +4654,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "gate_proj",
                     "up_proj",
                     "down_proj",
-                    "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
                 use_lora = True,
                 target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
+                modules_to_save = _wants or None,
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
@@ -4584,8 +4729,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
             elif embedding_lr_value is not None:
                 logger.warning(
-                    "CPT: embedding_learning_rate was provided but embed_tokens is "
-                    "not being trained; ignoring the override.\n"
+                    "CPT: embedding_learning_rate was provided but neither embed_tokens "
+                    "nor lm_head is being trained; ignoring the override.\n"
                 )
                 embedding_lr_value = None
 
@@ -4616,7 +4761,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training directly — no inner thread, we ARE the subprocess.
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,

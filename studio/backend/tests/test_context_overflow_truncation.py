@@ -39,10 +39,13 @@ from routes.inference import (
 )
 from core.inference import context_window
 from core.inference.context_window import (
+    estimate_message_tokens,
+    estimate_message_tokens_without_unpriced_media,
+    estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
     group_turns,
-    messages_have_media,
+    messages_without_unpriced_media,
 )
 from models.inference import ChatCompletion
 import routes.inference as routes_mod
@@ -233,19 +236,96 @@ def test_rolling_truncation_keeps_task_when_a_synthetic_user_nudge_is_latest():
     assert new[-1] is nudge
 
 
-def test_rolling_media_detection_covers_image_and_audio_parts():
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]
-    )
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "input_audio", "input_audio": {}}]}]
-    )
-    # llama.cpp's own part type; missing it would send a video prompt through a
-    # preflight that does not count its tokens.
-    assert messages_have_media(
-        [{"role": "user", "content": [{"type": "input_video", "input_video": {"data": "AAAA"}}]}]
-    )
-    assert not messages_have_media([{"role": "user", "content": "text only"}])
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+        {"type": "audio", "audio": {"data": "AAAA", "format": "wav"}},
+        {"type": "input_image", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "input_video", "input_video": {"data": "AAAA"}},
+    ],
+)
+def test_rolling_token_count_strips_unpriced_media_without_mutating_the_request(media):
+    text = {"type": "text", "text": "describe this"}
+    messages = [{"role": "user", "content": [text, media]}]
+
+    countable = messages_without_unpriced_media(messages)
+
+    assert countable == [{"role": "user", "content": [text]}]
+    assert messages == [{"role": "user", "content": [text, media]}]
+    assert messages_without_unpriced_media([{"role": "user", "content": [media]}]) == [
+        {"role": "user", "content": ""}
+    ]
+
+
+def test_rolling_token_count_reuses_text_only_messages():
+    messages = [{"role": "user", "content": "text only"}]
+
+    assert messages_without_unpriced_media(messages) is messages
+
+
+def test_media_free_estimates_do_not_change_shared_admission_estimates():
+    message = {
+        "role": "user",
+        "content": [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            }
+        ],
+    }
+
+    assert estimate_message_tokens(message) > 20_000
+    assert estimate_messages_tokens_dense([message]) > 20_000
+    assert estimate_message_tokens_without_unpriced_media(message) < 20
+
+
+def test_rolling_eviction_does_not_charge_protected_media_transport_bytes():
+    history = [
+        {"role": role, "content": marker * 10}
+        for marker in "abcde"
+        for role in ("user", "assistant")
+    ]
+
+    def count_text(candidate):
+        total = 0
+        for message in messages_without_unpriced_media(candidate):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    results = []
+    for payload_size in (4, 100_000):
+        latest = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "final"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "A" * payload_size, "format": "wav"},
+                },
+            ],
+        }
+        messages = [*history, latest]
+
+        fitted, truncation = fit_rolling_context(
+            messages,
+            context_length = 120,
+            max_tokens = 20,
+            count_tokens = count_text,
+            estimate_message = estimate_message_tokens_without_unpriced_media,
+        )
+
+        assert truncation and truncation["fits"]
+        assert fitted[-1] is latest
+        assert fitted[-1]["content"][-1]["input_audio"]["data"] == "A" * payload_size
+        results.append((truncation["dropped_messages"], len(fitted)))
+
+    assert results == [(2, 9), (2, 9)]
 
 
 def test_rolling_truncation_preserves_nonleading_system_messages():
@@ -479,6 +559,165 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     # and dropping turns off a doomed request loses them for nothing.
     assert info["dropped_messages"] == 0
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_is_past_the_window():
+    """Use an eviction that fits the window when the original does not."""
+    # 450 chars: past the 400-token target, inside the 500-token window.
+    latest = {"role": "user", "content": "latest" * 75}
+    messages = [
+        {"role": "user", "content": "old" * 100},
+        {"role": "assistant", "content": "answer" * 100},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) > 500 >= counter(fitted)
+    assert fitted == [latest]
+    # Still a refusal: the diagnosis is what the client explains the short reply with.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == counter(fitted) < info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == counter(fitted)
+
+
+def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
+    """Keep full history when only the reply reserve is exhausted."""
+    messages = [
+        {"role": "user", "content": "old" * 10},
+        {"role": "assistant", "content": "answer" * 5},
+        # 480 chars on its own, so evicting the pair still misses the 450-token target.
+        {"role": "user", "content": "latest" * 80},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 600,
+        max_tokens = 150,
+        count_tokens = counter,
+    )
+
+    assert 450 < counter(messages) <= 600
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
+def test_an_irreducible_fit_refuses_an_eviction_that_fills_the_window():
+    """An eviction landing on `n_ctx` exactly is refused, so it is not a rescue."""
+    # 500 chars in a 500-token window: serving this would drop turns and still fail.
+    messages = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 600},
+        {"role": "user", "content": "x" * 500},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+    assert info["irreducible_tokens"] == 500
+
+
+def test_an_irreducible_fit_serves_the_eviction_when_the_original_fills_the_window():
+    """An original of exactly `n_ctx` is refused too, so an eviction under it wins."""
+    latest = {"role": "user", "content": "x" * 450}
+    messages = [
+        {"role": "user", "content": "o" * 20},
+        {"role": "assistant", "content": "a" * 30},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    assert counter(messages) == 500 > counter(fitted)
+    assert fitted == [latest]
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_after"] == 450
+
+
+def test_an_irreducible_fit_refuses_a_rescue_that_leaves_no_room_to_answer():
+    """A rescue has to buy an ANSWER, not just an accepted request.
+
+    Serving a prompt one token under the window evicts the history and comes back with a
+    one-token reply stopped on `length`: the turns are gone and the user has nothing. The
+    refusal it replaces at least kept them and named the turn that was too big, so below a
+    floor of reply room the old behaviour wins.
+    """
+    latest = {"role": "user", "content": "x" * 495}
+    messages = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 300},
+        latest,
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+
+    # The eviction it reached is under the window, so the old gate would have served it
+    # with five tokens to answer in. `irreducible_tokens` is that floor.
+    assert counter(messages) > 500
+    assert info is not None and info["irreducible_tokens"] == 495
+    # Refused instead, with the history intact.
+    assert fitted is messages
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+    # And one that DOES leave room is still rescued: the floor is 500 // 16 = 31.
+    roomy = [
+        {"role": "user", "content": "o" * 300},
+        {"role": "assistant", "content": "a" * 300},
+        {"role": "user", "content": "x" * 460},
+    ]
+    fitted_roomy, info_roomy = fit_rolling_context(
+        roomy,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = counter,
+    )
+    assert fitted_roomy == roomy[-1:]
+    assert info_roomy["dropped_messages"] == 2
+    assert info_roomy["prompt_tokens_after"] == 460
 
 
 def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
@@ -1019,6 +1258,89 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
     assert len(plain) > len(sticky)
 
 
+def test_a_request_can_override_compaction_headroom_ratio():
+    """Studio's extra-trim control is a per-request override of the process default."""
+    messages = []
+    for index in range(20):
+        messages.append({"role": "user", "content": f"q{index} " + "u" * 80})
+        messages.append({"role": "assistant", "content": f"a{index} " + "a" * 80})
+    messages.append({"role": "user", "content": "latest"})
+
+    kwargs = dict(
+        context_length = 2000,
+        max_tokens = 200,
+        count_tokens = _length_counter,
+        keeps_boundary = True,
+    )
+    _, default_info = fit_rolling_context(list(messages), **kwargs)
+    _, none_info = fit_rolling_context(list(messages), headroom_ratio = 0.0, **kwargs)
+
+    assert default_info["fits"] and none_info["fits"]
+    assert none_info["prompt_tokens_after"] > default_info["prompt_tokens_after"]
+
+
+def test_zero_headroom_drops_only_the_oldest_turn_needed_to_fit():
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = True,
+        headroom_ratio = 0.0,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["prompt_tokens_before"] == 1001
+    assert info["prompt_tokens_after"] == 991
+    assert info["dropped_messages"] == 2
+    assert fitted == messages[2:]
+
+
+def test_a_request_that_chose_nothing_keeps_the_eviction_size_it_always_had():
+    """`keeps_boundary = False` is not a request for no extra trim.
+
+    Threadless API requests and incognito chats zero the headroom because there is no
+    boundary to remember a deeper cut with, not because anyone picked the "no extra trim"
+    option. Keying the 5% floor on `headroom` instead of the requested ratio handed them
+    the new setting anyway: measured on the messages below, eviction went from 12 messages
+    to 2 for a caller that sent no new field at all.
+    """
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = False,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["dropped_messages"] == 12
+    assert info["prompt_tokens_after"] == 941
+
+
+def test_clamp_compaction_headroom_ratio_rejects_junk():
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+
+    assert clamp_compaction_headroom_ratio(None) is None
+    assert clamp_compaction_headroom_ratio("nope") is None
+    assert clamp_compaction_headroom_ratio(float("nan")) is None
+    assert clamp_compaction_headroom_ratio(-1) == 0.0
+    assert clamp_compaction_headroom_ratio(2) == 0.9
+    assert clamp_compaction_headroom_ratio(0.05) == 0.05
+
+
 # --- Keeping the user's standing instruction when everything else is evicted ---
 #
 # `truncate_oldest_messages` protects the newest USER group, so an instruction is safe only
@@ -1215,6 +1537,69 @@ def test_a_pin_is_charged_for_everything_it_holds():
     assert instruction_pin.pinned_instruction_ids(modest, groups = 2, max_tokens = 1024) == {
         id(instruction)
     }
+
+
+def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
+    """The pinless retry fires on a REFUSAL, not on a prompt that was merely reduced.
+
+    `_fit_with_instruction_pins` drops the pins and refits when the pinned attempt does
+    not fit, since pinning turning a servable request into a refusal is worse than losing
+    the instruction. A rescued fit reports `fits` false too, but it is servable and is
+    what gets sent, so retrying there loses the instruction for nothing.
+    """
+    from core.inference import instruction_pin, llama_cpp
+
+    instruction = _instruction("A" * 300)
+    messages = [
+        {"role": "system", "content": "S" * 40},
+        instruction,
+        # Rides along with the pin: the evictor protects by GROUP.
+        {"role": "assistant", "content": "B" * 160},
+        {"role": "user", "content": "C" * 280},
+        {"role": "assistant", "content": "D" * 280},
+        {"role": "user", "content": "L" * 420},
+    ]
+    counter = lambda candidate: sum(  # noqa: E731
+        len(str(message.get("content", ""))) for message in candidate
+    )
+    # ctx 1000 -> prompt_target 872, reply floor 62. Pinned floor is 40+300+160+420 =
+    # 920: past the target, and 920+62 is inside the window, so a rescue. Pinless floor
+    # is 40+420 = 460, which fits outright -- which is exactly why the retry is tempting
+    # and exactly why it must not fire.
+    assert counter(messages) == 1480
+
+    calls = []
+    # Captured before the patch, or the spy calls itself.
+    original = llama_cpp._fit_context
+
+    def _spy(msgs, **kwargs):
+        calls.append(kwargs.get("protected_message_ids"))
+        return original(msgs, **kwargs)
+
+    original_pins = instruction_pin.pinned_instruction_ids
+    llama_cpp._fit_context = _spy
+    # Stubbed: which turns get pinned is the pin heuristic's own business and has its own
+    # tests. What is under test here is what the fitter does once something IS pinned.
+    instruction_pin.pinned_instruction_ids = lambda *_a, **_k: {id(instruction)}
+    try:
+        fitted, info = llama_cpp._fit_with_instruction_pins(
+            messages,
+            anchor_ids = None,
+            context_length = 1000,
+            max_tokens = 128,
+            count_tokens = counter,
+        )
+    finally:
+        llama_cpp._fit_context = original
+        instruction_pin.pinned_instruction_ids = original_pins
+
+    # A rescue, not a refusal: shorter than the original and inside the window.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] > 0
+    assert counter(fitted) < 1000 <= counter(messages)
+    # Fitted once. No pinless retry, so the standing instruction survived.
+    assert len(calls) == 1
+    assert any(message is instruction for message in fitted)
 
 
 def test_a_pin_charges_token_dense_text_at_its_real_rate():

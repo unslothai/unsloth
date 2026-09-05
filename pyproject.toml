@@ -30,6 +30,7 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    "huggingface-hub>=0.34.0",
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
@@ -70,7 +71,7 @@ studio = [
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
-    # /docs and /redoc pages render blank in an installed Studio.
+    # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
@@ -83,24 +84,23 @@ exclude = [
     "tests*",
     "studio.backend.tests*",
     "studio.backend.*.tests*",
+    "unsloth_cli.tests*",
+    "unsloth.kernels.moe.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
     "*.node_modules.*",
 ]
 
-# packages.find only decides what is importable. include-package-data then hands
-# every tracked file to the nearest parent package that survived, so dropping
-# studio.backend.tests above just re-shipped the same 505 files as data of
-# studio.backend (pypa/setuptools#3260). exclude-package-data has the highest
-# precedence of the file selection options, so the veto has to be repeated here.
-# Source layout, not the wheel, so the sdist keeps the suites either way.
+# Excluding a tests package above is not enough: include-package-data re-ships its
+# files as data of the surviving parent (pypa/setuptools#3260), and only
+# exclude-package-data outranks that.
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
 
 [project.optional-dependencies]
-# Studio's server stack, mirroring studio/backend/requirements/studio.txt.
+# Unsloth's server stack, mirroring studio/backend/requirements/studio.txt.
 # test_studio_extra_matches_requirements.py catches drift.
 studio = [
     "typer==0.27.1 ; python_version >= '3.10'",
@@ -119,6 +119,7 @@ studio = [
     "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
     "urllib3>=2.3.0",
+    "jinja2>=3.1.0",
     "structlog>=24.1.0",
     "diceware==1.0.1",
     "ddgs==9.14.4 ; python_version >= '3.10'",
@@ -142,7 +143,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.9.1",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -160,7 +161,7 @@ huggingfacenotorch = [
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
     # diffusers, so advertised models failed to load until the user upgraded by hand.
-    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # Unsloth's installer requirements carry the temporary MiniMax-H3 commit pin. A
     # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
     # diffusers dropped 3.9 in 0.37, and we still support it (requires-python >= 3.9),
     # so the floor is conditional: pinning it outright leaves pip no candidate at all
@@ -189,7 +190,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.9.1",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -217,7 +218,7 @@ huggingface = [
 # torch, and PyPI's Windows torch is CPU-only, so without it pip lands a cu130
 # extension beside a '2.10.0+cpu' torch -- the same silent mismatch, inverted.
 # install.ps1 needs none of this: it picks the wheel from the index it installed
-# torch from, so Studio never reaches the extra below.
+# torch from, so Unsloth never reaches the extra below.
 #
 # The extra below is what a `pip install "unsloth[windows]"` resolves, and it
 # stays CUDA-agnostic because it has nothing to key off. It is deliberately NOT
@@ -457,16 +458,73 @@ cu130onlytorch291 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post2-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu126onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    # Pin torch so ARM64 (x86-64-only xformers wheel skipped) stays on 2.10.
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch2110 = [
+    # Pin the trio to +cuNNN: torch 2.11+ defaults to a CUDA-13 wheel and xformers 0.0.35
+    # does not pin torch. == not a range (+cu126 wins, PEP 440) and not === (force-replaces).
+    "torch==2.11.0+cu126",
+    "torchvision==0.26.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu128onlytorch2110 = [
+    "torch==2.11.0+cu128",
+    "torchvision==0.26.0+cu128",
+    "torchaudio==2.11.0+cu128",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2110 = [
+    "torch==2.11.0+cu130",
+    "torchvision==0.26.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+# torch 2.12 ships on cu126/cu130 only, so no cu128 leaf; torchaudio has no 2.12 release.
+cu126onlytorch2120 = [
+    "torch==2.12.0+cu126",
+    "torchvision==0.27.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2120 = [
+    "torch==2.12.0+cu130",
+    "torchvision==0.27.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch2121 = [
+    # torchvision exact-pins torch, so the 2.12.1 patch takes 0.27.1.
+    "torch==2.12.1+cu126",
+    "torchvision==0.27.1+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2121 = [
+    "torch==2.12.1+cu130",
+    "torchvision==0.27.1+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -676,6 +734,41 @@ cu130-torch2100 = [
     "unsloth[cu130onlytorch2100]",
     "unsloth[audio-torch210]",
 ]
+cu126-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2110]",
+]
+cu128-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch2110]",
+]
+cu130-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2110]",
+]
+cu126-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2120]",
+]
+cu130-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2120]",
+]
+cu126-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2121]",
+]
+cu130-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2121]",
+]
 kaggle = [
     "unsloth[huggingface]",
 ]
@@ -713,7 +806,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.9.1",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -977,6 +1070,41 @@ cu130-ampere-torch2100 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2100]",
     "unsloth[audio-torch210]",
+]
+cu126-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2110]",
+]
+cu128-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch2110]",
+]
+cu130-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2110]",
+]
+cu126-ampere-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2120]",
+]
+cu130-ampere-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2120]",
+]
+cu126-ampere-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2121]",
+]
+cu130-ampere-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2121]",
 ]
 flashattentiontorch260abiFALSEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp39-cp39-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.9'",
@@ -1484,3 +1612,23 @@ ignore = [
 # etc. The CI security job runs `pytest tests/security` explicitly.
 testpaths = ["tests/security"]
 pythonpath = ["."]
+
+# testpaths only protects a bare `pytest`. Anyone who types `pytest tests/`
+# gets the whole walk, and a handful of files in it download and merge real
+# checkpoints: measured, `pytest tests/ -n 16` was 16m22s, and 34 of the 17.5k
+# tests accounted for 11 of those minutes. Markers are what make that opt-in.
+#
+# `slow` predates this: seven uses in
+# tests/python/test_embed_lm_head_target_modules_redirect.py, never registered
+# and never consumed, so the author's intent was inert. Registering it is what
+# turns the existing annotations on.
+markers = [
+    "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
+    "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+]
+
+# Deselected by default, not deleted: CI runs them in their own leg with
+# `-m 'gpu or slow'`, and `pytest -m gpu tests/` gets them back locally.
+# A run that names one of these files directly will report "no tests ran"
+# until you pass `-m gpu` -- that is the cost of the default being fast.
+addopts = "-m 'not gpu and not slow'"

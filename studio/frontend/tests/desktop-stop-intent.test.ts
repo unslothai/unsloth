@@ -231,8 +231,9 @@ test("stopping records the intent before the shutdown it can outlive", async () 
 test("a second stop cannot run while the first is in flight", async () => {
   const hook = await hookSource();
 
-  // The tray item is never disabled and the toggle branches on statusRef, which stays
-  // "running" for the whole invoke, so two Stop clicks reach stopServer concurrently.
+  // The tray item stays enabled while the server runs and the toggle branches on
+  // statusRef, which stays "running" for the whole invoke, so two Stop clicks reach
+  // stopServer concurrently.
   const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
   assert.match(
     tray.slice(0, tray.indexOf("});")),

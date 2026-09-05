@@ -60,7 +60,7 @@ SECRETS = [
     # credential after it was never looked at.
     ("Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=", "dXNlcm5hbWU6c3VwZXJzZWNyZXQ="),
     ("headers={'authorization': 'Basic dXNlcjpwdw=='}", "dXNlcjpwdw=="),
-    # Studio's UI session cookie gates these very endpoints.
+    # Unsloth's UI session cookie gates these very endpoints.
     ("Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e", "8f3c9d1ab77e4f0a9c2b3d4e"),
     ("set-cookie: refresh=8f3c9d1ab77e4f0a9c2b; HttpOnly", "8f3c9d1ab77e4f0a9c2b"),
     ("CI token glpat-ABCDEFGHIJKLMNOPQRST", "glpat-ABCDEFGHIJKLMNOPQRST"),
@@ -99,7 +99,7 @@ KEEP = [
     '  File "/opt/venv/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1518 in _call_impl',
     "llama-server --port 8080 --n-gpu-layers 99 --ctx-size 32768",
     '{"timestamp":"2026-08-13T09:00:00Z","level":"error","event":"llama_start_failed"}',
-    # Words a credential rule is tempted by, as Studio actually writes them.
+    # Words a credential rule is tempted by, as Unsloth actually writes them.
     # Blanking any of these hides the failure being diagnosed.
     "provider rejected the request: Bearer credentials expired",
     "Authorization header missing, expected Bearer authentication",

@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  type ContextTruncation,
   compactionBoundary,
   mergeContextTruncation,
+  promptWasShortened,
 } from "../src/features/chat/utils/context-truncation.ts";
 
 const adapter = readFileSync(
@@ -20,7 +22,8 @@ const transport = readFileSync(
 
 test("local chat opts into the rolling context policy", () => {
   assert.match(adapter, /isGguf === true/);
-  assert.match(adapter, /context_overflow:\s*"truncate_oldest"/);
+  assert.match(adapter, /autoCompactEnabled/);
+  assert.match(adapter, /ggufCompactionRequestFields\(/);
   assert.match(adapter, /This conversation was compacted/);
 });
 
@@ -28,6 +31,17 @@ test("the transport preserves standard chunks with context metadata", () => {
   assert.doesNotMatch(transport, /parsed\.type === "context_truncated"/);
   assert.match(adapter, /chunk\.context_truncated/);
   assert.match(adapter, /contextTruncation = mergeContextTruncation\(/);
+});
+
+test("durable replay persists context-truncation metadata", () => {
+  const runtimeProvider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(runtimeProvider, /contextTruncation: mergeContextTruncation\(/);
+  assert.match(runtimeProvider, /generationChunkCount/);
+  assert.match(adapter, /generationFirstChunkAt/);
+  assert.match(adapter, /generationChunkCount \+= 1/);
 });
 
 test("the compaction notice follows the boundary, not the accumulated drops", () => {
@@ -45,6 +59,105 @@ test("the compaction notice follows the boundary, not the accumulated drops", ()
     0,
   );
   assert.equal(compactionBoundary(undefined), 0);
+});
+
+test("a shortened prompt still counts as a compaction, whatever fits says", () => {
+  // A fit that lands under the physical window but misses the reply reserve sends the
+  // eviction with fits:false. The turns are gone from the model's view, so the notice
+  // and the toast must fire; only a fit that returned the ORIGINAL messages stays quiet.
+  assert.equal(promptWasShortened({ dropped_messages: 2, fits: false }), true);
+  assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
+  assert.equal(promptWasShortened(undefined), false);
+});
+
+test("a shortened refusal records its boundary, so the notice survives a reload", () => {
+  // A rescue evicts for real, so it reports its depth like any other compaction and the
+  // persisted notice can find it. Saving the depth is not the same as replaying it:
+  // `_sticky_compaction_boundary` still declines any record whose `fits` is false.
+  const rescued = { fits: false, dropped_messages: 6, boundary_messages: 6 };
+  assert.equal(compactionBoundary(rescued), 6);
+  assert.equal(promptWasShortened(rescued), true);
+
+  // A boundary is absolute, so refitting three times does not inflate it.
+  let refits: ContextTruncation = {
+    fits: false,
+    dropped_messages: 4,
+    boundary_messages: 4,
+  };
+  for (const chunk of [
+    { fits: false, dropped_messages: 6, boundary_messages: 6 },
+    { fits: false, dropped_messages: 6, boundary_messages: 6 },
+  ]) {
+    refits = mergeContextTruncation(refits, chunk);
+  }
+  assert.equal(refits.dropped_messages, 16);
+  assert.equal(compactionBoundary(refits), 6);
+});
+
+test("a record with no boundary never guesses one from a summed drop count", () => {
+  // The legacy fallback exists for turns saved before boundary_messages was recorded, and
+  // those all fit. On anything else the count is a per-refit SUM, not a position, and
+  // reading it as one sets a high-water mark `showsNotice` cannot see exceeded again.
+  const oneRefit = { dropped_messages: 2, fits: false };
+  let toolLoop: ContextTruncation = { fits: false, dropped_messages: 4 };
+  for (const chunk of [
+    { fits: false, dropped_messages: 6 },
+    { fits: false, dropped_messages: 6 },
+  ]) {
+    toolLoop = mergeContextTruncation(toolLoop, chunk);
+  }
+
+  assert.equal(toolLoop.dropped_messages, 16);
+  assert.equal(compactionBoundary(oneRefit), 0);
+  assert.equal(compactionBoundary(toolLoop), 0);
+  // The notice still fires: that reads promptWasShortened, not the boundary.
+  assert.equal(promptWasShortened(toolLoop), true);
+  // And a fit that SUCCEEDED still gets the legacy fallback, for turns saved before
+  // boundary_messages existed.
+  assert.equal(compactionBoundary({ dropped_messages: 3, fits: true }), 3);
+  assert.equal(
+    compactionBoundary({ dropped_messages: 16, fits: false, boundary_messages: 4 }),
+    4,
+  );
+});
+
+test("a rescued turn cannot silence the compactions that follow it", () => {
+  // The `showsNotice` scan in thread.tsx, which only announces a boundary that ROSE.
+  const boundariesShown = (records: any[]) => {
+    let high = 0;
+    const shown: number[] = [];
+    records.forEach((rec, index) => {
+      const b = compactionBoundary(rec);
+      if (b > high) {
+        shown.push(index);
+        high = b;
+      }
+    });
+    return shown;
+  };
+
+  assert.deepEqual(
+    boundariesShown([
+      { fits: true, dropped_messages: 4, boundary_messages: 4 },
+      { fits: false, dropped_messages: 16 }, // rescued, three refits
+      { fits: true, dropped_messages: 2, boundary_messages: 6 },
+      { fits: true, dropped_messages: 2, boundary_messages: 8 },
+    ]),
+    [0, 2, 3],
+  );
+});
+
+test("the notice and the toast read the same predicate as the boundary", () => {
+  const notice = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/compaction-notice.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(notice, /promptWasShortened\(truncation\)/);
+  assert.doesNotMatch(notice, /truncation\?\.fits/);
+  assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
 });
 
 test("the compaction boundary takes the latest value, never the sum", () => {
@@ -276,7 +389,9 @@ test("the too-long advice depends on WHICH part does not fit", () => {
   // already been evicted and the single message is what overflows.
   assert.match(adapterSource, /contextTruncation\?\.fits === false/);
   assert.match(adapterSource, /shortening the conversation will not help/);
-  assert.match(adapterSource, /latest_turn_tokens/);
+  // Matching the wire field name would pin nothing: after the floor fix its only
+  // occurrence in that file is prose in a comment.
+  assert.match(adapterSource, /latestTurnOwnTokens\(irreducible\)/);
 });
 
 test("a fits:false diagnosis is not a compaction", () => {
@@ -285,10 +400,10 @@ test("a fits:false diagnosis is not a compaction", () => {
     "utf8",
   );
   // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
-  // were removed" is untrue, and toasting it burns the once-per-thread flag.
-  assert.match(source, /const reallyCompacted =/);
-  assert.match(source, /context_truncated\.fits === true/);
-  assert.match(source, /dropped_messages \?\? 0\) > 0/);
+  // were removed" is untrue, and toasting it burns the once-per-thread flag. Asserted on
+  // the predicate rather than the literal expression, so it survives a rewording.
+  assert.match(source, /const reallyCompacted = promptWasShortened\(/);
+  assert.equal(promptWasShortened({ dropped_messages: 0, fits: false }), false);
 });
 
 test("the advice depends on WHOSE turn does not fit", () => {
@@ -316,5 +431,7 @@ test("the too-long check uses the prompt budget, not the raw window", () => {
   // message cannot fit a 4,096-token context. The raw window would blame the
   // conversation and send the user to a new chat that fails identically.
   assert.match(source, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
-  assert.match(source, /latest_turn_tokens \?\? 0\) > budget/);
+  // Still measured against the budget, but through the helper that takes the prompt's
+  // shared floor off the turn first.
+  assert.match(source, /latestTurnIsTheProblem\(\s*irreducible,\s*budget,?\s*\)/);
 });

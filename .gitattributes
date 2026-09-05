@@ -9,7 +9,7 @@
 # The vendored Swagger UI / ReDoc bundles are pinned by sha256 in
 # studio/backend/assets/docs_ui/docs_ui_manifest.json and must stay byte-identical to the
 # releases they came from. Without this a Windows clone (core.autocrlf=true) rewrites the
-# .js/.css/LICENSE files to CRLF, so every digest drifts and the bytes Studio serves are no
+# .js/.css/LICENSE files to CRLF, so every digest drifts and the bytes Unsloth serves are no
 # longer the ones that were reviewed. -text disables conversion in both directions.
 studio/backend/assets/docs_ui/** -text
 

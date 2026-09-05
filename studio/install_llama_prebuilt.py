@@ -60,6 +60,7 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     environment_backend_override,
     install_kinds_for_backend,
     is_requestable_backend,
+    marker_backend,
     marker_backend_request,
     normalize_backend_request,
 )
@@ -538,6 +539,14 @@ class UnknownBackendRequest(RuntimeError):
 
 _os_error_messages = _core._os_error_messages
 is_busy_lock_error = _core.is_busy_lock_error
+
+
+def is_cross_device_error(exc: BaseException) -> bool:
+    """True for an EXDEV "cross-device link" rename failure, e.g. inside a Docker
+    build where the staging tree and the install dir land on different overlayfs
+    layers. Unlike a busy/in-use error, such a move is safely completed by copy +
+    remove of the (idle) source."""
+    return isinstance(exc, OSError) and exc.errno == errno.EXDEV
 
 
 # Status logs default to stderr so resolver modes keep stdout machine-readable
@@ -1975,13 +1984,17 @@ def _fetch_download_host_json(url: str) -> Any:
     )
 
 
-def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
-    """Resolve the latest fork release from the download host with zero
-    api.github.com calls, reusing the API path's parsing and validation. The latest
-    tag is the authoritative /releases/latest redirect tag, and the checksum asset's
+def _download_host_resolved_release(
+    repo: str, published_release_tag: str = ""
+) -> ResolvedPublishedRelease | None:
+    """Resolve a fork release from the download host with zero api.github.com calls,
+    reusing the API path's parsing and validation.
+
+    When *published_release_tag* is set, that tag is fetched directly. Otherwise the
+    latest tag comes from the /releases/latest redirect and the checksum asset's
     self-reported release_tag is cross-checked against it. Returns None (caller falls
     back to the API) on a missing JSON asset or a tag mismatch."""
-    release_tag = _download_host_latest_release_tag(repo)
+    release_tag = (published_release_tag or "").strip() or _download_host_latest_release_tag(repo)
     if not release_tag:
         return None
     sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
@@ -2108,6 +2121,48 @@ def iter_resolved_published_releases(
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
 
+    # Fast path: resolve a pinned or latest fork release from the download host (no
+    # api.github.com rate limit). Latest surfaces only the single newest release, so
+    # the caller disables it when the multi-release walk-back is needed (macOS
+    # skipping too-new prebuilts); a broken latest then drops to source build, not
+    # an older release. Pinned tags use the same CDN path so in-app updates avoid
+    # the API entirely (#9970). Any rejection/network error is non-fatal and falls
+    # through to the API.
+    fast_path_tag: str | None = None
+    if published_release_tag:
+        fast_path_tag = published_release_tag
+    elif normalized_requested == "latest":
+        fast_path_tag = ""
+
+    if (
+        fast_path_tag is not None
+        and allow_download_host_fast_path
+        and repo == DEFAULT_PUBLISHED_REPO
+        and _download_host_resolve_enabled()
+    ):
+        tag_label = fast_path_tag or "latest"
+        try:
+            resolved = _download_host_resolved_release(repo, fast_path_tag)
+        except PrebuiltFallback as exc:
+            log(f"download-host release rejected for {repo}@{tag_label} ({exc}); trying GitHub API")
+            resolved = None
+        except Exception as exc:
+            log(
+                f"download-host resolve unavailable for {repo}@{tag_label} ({exc}); trying GitHub API"
+            )
+            resolved = None
+        if resolved is not None:
+            if published_release_tag and not published_release_matches_request(
+                resolved.bundle, normalized_requested
+            ):
+                raise PrebuiltFallback(
+                    "published release "
+                    f"{repo}@{resolved.bundle.release_tag} targeted upstream tag "
+                    f"{resolved.bundle.upstream_tag}, but requested {normalized_requested}"
+                )
+            yield resolved
+            return
+
     if published_release_tag:
         bundle = pinned_published_release_bundle(repo, published_release_tag)
         if not published_release_matches_request(bundle, normalized_requested):
@@ -2121,29 +2176,6 @@ def iter_resolved_published_releases(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
-
-    # Fast path: resolve the fork's latest release from the download host (no
-    # api.github.com rate limit). It surfaces only the single latest release, so the
-    # caller disables it when the multi-release walk-back is needed (macOS skipping
-    # too-new prebuilts); a broken latest then drops to source build, not an older
-    # release. Any rejection/network error is non-fatal and falls through to the API.
-    if (
-        allow_download_host_fast_path
-        and repo == DEFAULT_PUBLISHED_REPO
-        and normalized_requested == "latest"
-        and _download_host_resolve_enabled()
-    ):
-        try:
-            resolved = _download_host_resolved_release(repo)
-        except PrebuiltFallback as exc:
-            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        except Exception as exc:
-            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        if resolved is not None:
-            yield resolved
-            return
 
     matched_any = False
     skipped_invalid = 0
@@ -2364,6 +2396,8 @@ def run_capture(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **windows_hidden_subprocess_kwargs(),
@@ -2537,8 +2571,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     int(cuda_match.group(1)),
                     int(cuda_match.group(2)),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
             caps = run_capture(
@@ -3360,6 +3394,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             if result.returncode == 0:
@@ -3370,11 +3406,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks. Mirrors install.sh::get_torch_index_url
-    # and _detect_rocm_version() in install_python_stack.py so package-managed
-    # ROCm hosts without /opt/rocm/.info/version still report a usable version
-    # and the <= host version filter in resolve_upstream_asset_choice picks
-    # the correct upstream prebuilt instead of the newest-regardless fallback.
+    # Distro package-manager fallbacks. Deliberately diverges from install.sh and
+    # _detect_rocm_version(): stops at the first answer, no "installed" status word gate.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
@@ -3388,6 +3421,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
         except Exception:
@@ -4438,20 +4473,94 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     ``os.replace`` failure means the directory is genuinely in use, and a
     silent copy + ``rmtree`` could partially delete a live install.
 
-    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
-    else (disk full, cross-device, missing path) re-raises so it cannot leave
-    a partially copied install behind. A copy is preferred over retrying the
-    rename because antivirus scans of large DLLs can outlast any reasonable
-    retry window.
+    Only busy/lock errors (``is_busy_lock_error``) and cross-device links
+    (``is_cross_device_error``, hit when a Docker build lands the staging tree
+    and the install dir on different overlay layers) trigger the copy; anything
+    else (disk full, missing path) re-raises so it cannot leave a partially
+    copied install behind. A copy is preferred over retrying the rename because
+    antivirus scans of large DLLs can outlast any reasonable retry window.
     """
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        if not is_busy_lock_error(exc):
+        # busy/in-use (Windows AV) or cross-device (Docker overlayfs) are both safe to
+        # complete by copy + remove; anything else re-raises
+        if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        # symlinks = True, like the aside-move and rollback-restore copies below. The
+        # default DEREFERENCES every link, so each soname alias is written out as a
+        # full second copy of its library. Measured on the linux-x64-cuda12 bundle
+        # this branch exists for (Docker overlayfs EXDEV): 5 symlinks, 13.1 MiB
+        # duplicated. Not the headline number one might expect -- the 358 MB
+        # libggml-cuda.so is a regular file and is copied once either way -- but it is
+        # wasted bytes and it replaces the link topology the loader resolves against.
+        # dirs_exist_ok stays for the empty-dst case
+        # os.replace also accepts; a NON-empty dst never reaches here on one device
+        # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
+        # behind, os.symlink's FileExistsError fails the activation into the rollback
+        # path instead of silently half-merging two installs.
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
+
+
+def move_install_dir_aside(
+    src: Path,
+    dst: Path,
+    *,
+    busy_retry: bool = False,
+) -> None:
+    """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
+
+    os.replace is the fast path, falling back to copy + remove on EXDEV. A busy/in-use
+    failure is deliberately NOT copy-faked: the source is a live install and a partial
+    copy + rmtree would be worse than failing.
+
+    ``busy_retry`` is opt-in per call site: the aside-move of the *live* install is the
+    one this installer most needs to survive, while the recovery path's move of an
+    already-failed tree has a cheaper answer (drop the tree) than blocking on a scanner.
+
+    Callers treat ``dst.exists()`` as proof of a COMPLETE tree, so the copy goes to a
+    temp sibling and is published with one atomic rename; a copy that dies halfway
+    leaves nothing at ``dst`` and ``src`` untouched.
+    """
+    try:
+        if busy_retry:
+            replace_with_busy_retry(src, dst)
+        else:
+            os.replace(src, dst)
+    except OSError as exc:
+        if not is_cross_device_error(exc):
+            raise
+        if _is_link_or_junction(src):
+            # copytree always follows the ROOT it is given, so copying a linked
+            # install would duplicate a checkout this installer does not own
+            log("install path is a link; not copying it aside")
+            raise
+        copy_tmp = dst.with_name(dst.name + ".copying")
+        counter = 0
+        while copy_tmp.exists():
+            counter += 1
+            copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
+        log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
+        try:
+            # symlinks = True, matching the rollback-restore copy below. The default
+            # DEREFERENCES links inside the tree, and a Linux llama.cpp bundle is full
+            # of soname links (libllama.so.0 -> libllama.so), so the aside copy would
+            # duplicate every shared library and, restored after a failed activation,
+            # replace the install's link topology with independent files. Safe here
+            # only because copy_tmp is a fresh uniquified path: combined with
+            # dirs_exist_ok it raises FileExistsError on any name the destination
+            # already holds, which is why the remaining dirs_exist_ok calls in this
+            # file (which merge into populated trees) cannot simply be given the same
+            # flag. activate_staged_dir can, because a dst os.replace refused is empty
+            # or absent.
+            shutil.copytree(src, copy_tmp, symlinks = True)
+            os.replace(copy_tmp, dst)
+        except BaseException:
+            remove_tree(copy_tmp)
+            raise
+        remove_tree(src)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4464,7 +4573,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            replace_with_busy_retry(install_dir, rollback_dir)
+            move_install_dir_aside(install_dir, rollback_dir, busy_retry = True)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4499,7 +4608,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
                 try:
-                    os.replace(install_dir, failed_dir)
+                    # not a bare os.replace: in a Docker build the failed tree and
+                    # the staging root can sit on different overlay layers, and EXDEV
+                    # there must not cost the retained copy
+                    move_install_dir_aside(install_dir, failed_dir)
                 except Exception as failed_move_exc:
                     failed_dir = None
                     log(f"failed active install could not be moved aside: {failed_move_exc}")
@@ -5191,6 +5303,38 @@ def looks_like_macos_incompatibility(text: str) -> bool:
     return "Symbol not found" in text and "MTLResidency" in text
 
 
+_MACOS_LOADER_FAILURE_MARKERS = (
+    "library not loaded",
+    "symbol not found",
+    "image not found",
+    "no suitable image found",
+    "incompatible library version",
+    "code signature",
+)
+
+
+def looks_like_macos_loader_failure(text: str) -> bool:
+    """True when output is dyld refusing to load the image, rather than a program
+    that started and exited non-zero.
+
+    The distinction is the whole point: llama-quantize answers --version by
+    printing its quantization table and exiting non-zero, so an exit code cannot
+    separate "never reached main" from "ran and disagreed". dyld failures are
+    recognisable by what they say, and they say it before any program output.
+    Deliberately narrow -- a false positive here rejects a working prebuilt and
+    spends a source build, so anything unrecognised is treated as healthy and
+    left to the runtime validation that follows.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in _MACOS_LOADER_FAILURE_MARKERS):
+        return True
+    # No bare "dyld[pid]:" rule: DYLD_PRINT_LIBRARIES narrates a healthy load
+    # under that same prefix. It says who is speaking, not that anything failed.
+    return looks_like_macos_incompatibility(text)
+
+
 def macos_binary_minos_issues(
     binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> list[str]:
@@ -5221,19 +5365,84 @@ def macos_binary_minos_issues(
     return issues
 
 
+def macos_dyld_load_issues(
+    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+) -> list[str]:
+    """Issue strings for every installed executable dyld refuses to load.
+
+    `--version` costs a process spawn and still makes dyld resolve the whole link
+    graph, so it catches a missing dylib, a missing symbol or a too-new slice --
+    unlike validate_server, which loads a model and is off for checksummed bundles
+    (#5854). Executables only: a broken dylib surfaces through whatever links it."""
+    issues: list[str] = []
+    seen: set[Path] = set()
+    for binary_path in binaries:
+        try:
+            resolved = binary_path.resolve()
+        except Exception:
+            resolved = binary_path
+        if resolved in seen or not binary_path.is_file():
+            continue
+        seen.add(resolved)
+        env = binary_env(binary_path, install_dir, host)
+        # Keep the user's dyld diagnostics out of output we are about to parse:
+        # DYLD_PRINT_* narrates, DYLD_INSERT_LIBRARIES can fail and blame the bundle.
+        for noisy in [k for k in env if k.startswith("DYLD_PRINT_")]:
+            env.pop(noisy, None)
+        env.pop("DYLD_INSERT_LIBRARIES", None)
+        try:
+            result = run_capture([str(binary_path), "--version"], timeout = 60, env = env)
+        except Exception as exc:
+            # A timeout or a refusal to spawn is not evidence of a bad link, and
+            # calling it one would reject a healthy bundle on a loaded machine.
+            log(f"macos load probe could not run {binary_path.name}: {exc}")
+            continue
+        if result.returncode == 0:
+            continue
+        output = (result.stdout + result.stderr).strip()
+        # A non-zero exit is not evidence of a bad link: llama-quantize answers
+        # --version by printing its table and exiting 1. Reading the code as the
+        # verdict rejected every published prebuilt and fell back to a source
+        # build. Require dyld's own signature instead -- it also names the dylib
+        # that asked, which otool -L cannot, since an absolute install name absent
+        # from disk is the normal case for /usr/lib's shared-cache members.
+        if not looks_like_macos_loader_failure(output):
+            continue
+        detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
+        issues.append(f"{binary_path.name}: {detail}")
+    return issues
+
+
 def preflight_macos_installed_binaries(
     binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> None:
-    """Reject a macos prebuilt whose minimum-OS is newer than the host. The
-    upstream selector pins a loadable release up front, so here this is the
-    post-download backstop; the published/fork path also uses it to advance the
-    walk-back. No-op when the host macOS version is unknown (runtime validates)."""
-    if not host.is_macos or host.macos_version is None:
+    """Reject a macos prebuilt whose minimum-OS is newer than the host, or that
+    dyld will not load at all. The upstream selector pins a loadable release up
+    front, so here this is the post-download backstop; the published/fork path
+    also uses it to advance the walk-back.
+
+    The load probe is the macOS counterpart of preflight_linux_installed_binaries'
+    ldd sweep, which this side went without: a bundle whose libggml-rpc.0.dylib
+    links a /usr/lib/librdma.dylib that exists on the builder and nowhere else
+    passed the minos scan, was logged "prebuilt installed and validated", and
+    then died on first launch. Raising PrebuiltFallback here spends a source
+    build instead of installing something that cannot start.
+
+    Only the static comparison needs the host version; dyld does not. Skipping
+    both on an unparseable ``platform.mac_ver()`` left that host with no check at
+    all, since the runtime validation it deferred to is off by default (#5854)."""
+    if not host.is_macos:
         return
-    issues = macos_binary_minos_issues(binaries, install_dir, host)
-    if issues:
+    if host.macos_version is not None:
+        issues = macos_binary_minos_issues(binaries, install_dir, host)
+        if issues:
+            raise PrebuiltFallback(
+                "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
+            )
+    load_issues = macos_dyld_load_issues(binaries, install_dir, host)
+    if load_issues:
         raise PrebuiltFallback(
-            "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
+            "macos prebuilt does not load on this host:\n" + "\n".join(load_issues)
         )
 
 
@@ -5607,6 +5816,8 @@ def validate_quantize(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
@@ -5697,6 +5908,8 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
@@ -5794,7 +6007,7 @@ def _validation_server_kwargs() -> "dict[str, Any]":
     """Popen kwargs tying a validation server to this installer's lifetime.
 
     Its own group keeps whatever the server starts reachable through the leader
-    alone, but it also takes the server out of the group Studio force-kills, so
+    alone, but it also takes the server out of the group Unsloth force-kills, so
     the parent-death signal is armed alongside it: an installer that is killed
     mid-validation must not leave a server holding the GPU and the staged files
     until some later startup sweeps the breadcrumb.
@@ -5830,7 +6043,7 @@ def _validation_server_kwargs() -> "dict[str, Any]":
 def _announce_child(state: str, pid: int) -> None:
     """Tell whoever runs this script about a server it started.
 
-    Studio adopts the pid so its own sweep can reach it; run by hand the line is
+    Unsloth adopts the pid so its own sweep can reach it; run by hand the line is
     just noise on stdout.
     """
     print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
@@ -5863,7 +6076,7 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
     keeps the pid announced so a later sweep can still reach it.
 
     Where it does not lead one it shares this installer's group, and killpg
-    would take the installer and Studio with it, so only the server itself is
+    would take the installer and Unsloth with it, so only the server itself is
     signalled.
     """
     pgid = None
@@ -6356,7 +6569,7 @@ def write_prebuilt_metadata(
         # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
-        # Kept for older Studio versions that only understand Vulkan overrides.
+        # Kept for older Unsloth versions that only understand Vulkan overrides.
         "llama_backend": _persisted_backend,
         # What the installed bundle runs on.
         "backend": backend_for_install_kind(choice.install_kind),
@@ -6369,6 +6582,7 @@ def write_prebuilt_metadata(
         # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
+        "runtime_asset": choice.runtime_name,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
         # CPU/HIP prebuilts). published_repo/release_tag always refer to the
@@ -6535,6 +6749,9 @@ def _marker_selection_patch(
     sms = [str(s).strip() for s in (choice.supported_sms or []) if str(s).strip()]
     if sms and marker.get("supported_sms") != sms:
         patch["supported_sms"] = sms
+    # Set, never cleared: reuse needs a fingerprint match, so a pair-less bundle matches.
+    if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
+        patch["runtime_asset"] = choice.runtime_name
     return patch
 
 
@@ -6697,8 +6914,14 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
-def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
-    if choice.install_kind in {"linux-cpu", "linux-arm64"}:
+def runtime_payload_health_groups(
+    install_kind: str,
+    *,
+    source_label: str | None = None,
+    runtime_name: str | None = None,
+) -> list[list[str]]:
+    """Return required runtime file groups for an install kind."""
+    if install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6707,7 +6930,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
-    if choice.install_kind in {"linux-cuda", "linux-arm64-cuda"}:
+    if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6717,13 +6940,13 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
         ]
-    if choice.install_kind in {"macos-arm64", "macos-x64"}:
+    if install_kind in {"macos-arm64", "macos-x64"}:
         return [
             ["libllama*.dylib"],
             ["libggml*.dylib"],
             ["libmtmd*.dylib"],
         ]
-    if choice.install_kind == "linux-rocm":
+    if install_kind == "linux-rocm":
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6733,7 +6956,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
-    if choice.install_kind == "linux-vulkan":
+    if install_kind == "linux-vulkan":
         groups = [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6747,31 +6970,24 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-vulkan.so*"],
         ]
-        if choice.source_label == "published":
+        if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
-    if choice.install_kind in {"windows-cpu", "windows-arm64"}:
+    if install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
-    if choice.install_kind == "windows-cuda":
+    if install_kind == "windows-cuda":
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
-        # When the cudart bundle was paired in (#5106) require all
-        # three of its DLLs alongside the main archive's payload.
-        # install_kind alone is not enough -- legacy installs without
-        # the cudart pair must still pass the health check on the
-        # no-pair fallback path, otherwise pair-less builds would loop
-        # on reinstall forever. The upstream cudart bundle ships
-        # cudart64_X.dll + cublas64_X.dll + cublasLt64_X.dll; missing
-        # any one of them still breaks GPU initialisation.
-        if choice.runtime_name:
+        # Require the complete cudart trio only when it was paired with this install.
+        if runtime_name:
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
         return groups
-    if choice.install_kind in {"windows-hip", "windows-rocm"}:
+    if install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
-    if choice.install_kind == "windows-vulkan":
+    if install_kind == "windows-vulkan":
         groups = [["llama.dll"], ["ggml-vulkan.dll"]]
-        if choice.source_label == "published":
+        if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
     return []
@@ -6783,11 +6999,11 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
-def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[str]]) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
         return False
-    for pattern_group in runtime_payload_health_groups(choice):
+    for pattern_group in groups:
         matched = False
         for pattern in pattern_group:
             if any(runtime_dir.glob(pattern)):
@@ -6796,6 +7012,137 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
         if not matched:
             return False
     return True
+
+
+def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+    return _runtime_payload_has(
+        install_dir,
+        host,
+        runtime_payload_health_groups(
+            choice.install_kind,
+            source_label = choice.source_label,
+            runtime_name = choice.runtime_name,
+        ),
+    )
+
+
+def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
+    """Check the payload shared by install kinds allowed by the tree's marker."""
+    marker = load_prebuilt_metadata(install_dir)
+    backend = marker_backend(marker)
+    platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
+    kinds = sorted(
+        kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
+    )
+    if not kinds:
+        # An unknown backend still owes the payload every kind on this platform shares.
+        kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
+    if not kinds:
+        return True
+    # A backend can map to multiple kinds, so require only their shared payload.
+    runtime_asset = (marker or {}).get("runtime_asset")
+    source_label = (marker or {}).get("source")
+    shared = set.intersection(
+        *(
+            {
+                tuple(group)
+                for group in runtime_payload_health_groups(
+                    kind, source_label = source_label, runtime_name = runtime_asset
+                )
+            }
+            for kind in kinds
+        )
+    )
+    return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
+
+
+# SIGKILL is absent: that is an OOM, not a broken image.
+_BROKEN_IMAGE_SIGNALS = frozenset(
+    {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}
+    | ({signal.SIGBUS} if hasattr(signal, "SIGBUS") else set())
+)
+# Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
+_ERROR_BAD_EXE_FORMAT = 193
+# A Windows loader failure is not a signal: it exits the NTSTATUS (0xC0000135) positive.
+_NTSTATUS_FAILURE_FLOOR = 0xC0000000
+
+
+def _binary_image_runs(
+    path: Path,
+    install_dir: Path,
+    host: HostInfo,
+    runtime_line: str | None = None,
+) -> bool:
+    """Whether the OS will actually start ``path``. ``os.access`` asks "may I execute this", not
+    "is this an executable": a truncated file keeps its mode bits and ``ldd`` on a non-ELF only
+    says it is not a dynamic executable, while execve raises ENOEXEC (measured on Linux, for
+    zero-byte and non-ELF alike). The exit code is NOT the verdict: llama-quantize answers
+    ``--version`` by printing its table and exiting non-zero, the same reason
+    ``macos_dyld_load_issues`` reads output. So a timeout, a failed spawn or an ordinary
+    non-zero exit all read as healthy, since a false positive spends a source build on a
+    working install."""
+    try:
+        result = run_capture(
+            [str(path), "--version"],
+            timeout = 60,
+            # runtime_line puts the CUDA toolkit on PATH; a pair-less Windows install
+            # cannot start without it.
+            env = binary_env(path, install_dir, host, runtime_line = runtime_line),
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOEXEC or getattr(exc, "winerror", None) == _ERROR_BAD_EXE_FORMAT:
+            log(f"kept install rejected: {path.name} is not an executable image ({exc})")
+            return False
+        return True
+    except Exception:
+        return True
+    if result.returncode < 0 and -result.returncode in _BROKEN_IMAGE_SIGNALS:
+        log(f"kept install rejected: {path.name} died on signal {-result.returncode}")
+        return False
+    if result.returncode >= _NTSTATUS_FAILURE_FLOOR:
+        log(f"kept install rejected: {path.name} exited 0x{result.returncode:08X} (loader failure)")
+        return False
+    return True
+
+
+def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
+    """Check whether the setup scripts could reuse and run this install."""
+    if not _install_tree_is_usable(install_dir, host):
+        return False
+    if not _kept_install_payload_is_healthy(install_dir, host):
+        return False
+    recorded_runtime_line = (load_prebuilt_metadata(install_dir) or {}).get("runtime_line")
+    if not isinstance(recorded_runtime_line, str):
+        recorded_runtime_line = None
+    runtime_dir = install_runtime_dir(install_dir, host)
+    ext = ".exe" if host.is_windows else ""
+    binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
+    if not all(os.access(binary, os.X_OK) for binary in binaries):
+        return False
+    try:
+        # Each preflight is a no-op outside its platform.
+        preflight_linux_installed_binaries(binaries, install_dir, host)
+        preflight_macos_installed_binaries(binaries, install_dir, host)
+    except Exception:
+        return False
+    # Root copies first: _find_llama_server_binary reaches them first, and without a
+    # symlink they can rot alone.
+    probes: list[Path] = []
+    seen: set[Path] = set()
+    for binary in [install_dir / p.name for p in binaries] + binaries:
+        if not binary.exists():
+            continue
+        try:
+            key = binary.resolve()
+        except OSError:
+            key = binary
+        if key in seen:
+            continue
+        seen.add(key)
+        probes.append(binary)
+    return all(
+        _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
+    )
 
 
 def existing_install_matches_choice(
@@ -6831,6 +7178,18 @@ def existing_install_matches_choice(
     if host.is_linux:
         try:
             preflight_linux_installed_binaries(
+                [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
+                install_dir,
+                host,
+            )
+        except Exception:
+            return False
+    # The macOS side, and the one that reaches most affected users: a bundle that
+    # cannot load is usually already installed by the time the installer learns to
+    # reject it, so a matching fingerprint would reuse the broken tree forever.
+    elif host.is_macos:
+        try:
+            preflight_macos_installed_binaries(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
@@ -7177,11 +7536,11 @@ def effective_backend_request(
         return explicit, True
     stored = persisted_backend_request(install_dir)
     if not is_requestable_backend(stored):
-        # Written by a newer Studio. Detection would quietly rewrite the choice
+        # Written by a newer Unsloth. Detection would quietly rewrite the choice
         # to "auto", so refuse instead and leave the install exactly as it is.
         raise UnknownBackendRequest(
             f"this install records an unsupported llama.cpp backend choice ({stored!r}); "
-            "update Studio before replacing it"
+            "update Unsloth before replacing it"
         )
     return stored, False
 
@@ -7747,6 +8106,17 @@ def install_prebuilt(
     instruction_cleanup_root: Path | None = None,
 ) -> None:
     choice: AssetChoice | None = None
+    # Anything this RUN asked for that keeping the old tree would silently ignore. Read
+    # before the body mutates force_cpu, which it sets True for a stored "cpu" choice.
+    explicit_version_request = (
+        normalized_requested_llama_tag(llama_tag) != "latest"
+        or bool((published_release_tag or "").strip())
+        or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
+        # --cpu-fallback is setup.sh's deliberate arm64 recovery, so it counts. --has-rocm
+        # and --rocm-gfx do not: both entrypoints forward a DETECTED GPU on every AMD host,
+        # so counting them would take the keep path away from all of them.
+        or force_cpu
+    )
     # The failure handler can run before selection assigns these.
     host: HostInfo | None = None
     backend = "auto"
@@ -7800,8 +8170,8 @@ def install_prebuilt(
             #
             # Not dead code despite the download-host fast path: macOS skips it
             # entirely (see allow_download_host_fast_path below), as does a
-            # pinned UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
-            # --published-repo, and any CDN outage.
+            # non-latest requested tag without a published-release pin, a
+            # non-default --published-repo, and any CDN outage.
             #
             # Transport shapes only: URLError covers HTTPError and the socket/DNS
             # errors urllib wraps, JSONDecodeError is a ValueError, and
@@ -8013,12 +8383,31 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
+        # A stored preference may reuse a matching install; one requested on this run may not.
+        satisfied_stored_backend = (
+            preserve_backend
+            and not backend_mandatory
+            and marker_backend(load_prebuilt_metadata(install_dir)) == backend
+        )
+        if (
+            (not preserve_backend or satisfied_stored_backend)
+            and not explicit_version_request
+            # Even "auto" is a live instruction: it asks for re-detection.
+            and not backend_mandatory
+            and host is not None
+            and _existing_install_runs(install_dir, host)
+        ):
+            log("prebuilt update unavailable; keeping the existing complete install")
+            log(f"prebuilt update reason: {exc}")
+            return
         log(
             "prebuilt install failed; preserving the selected backend"
             if preserve_backend
             else "prebuilt install path failed; falling back to source build"
         )
-        log(f"prebuilt fallback reason: {exc}")
+        # log_lines, not log: a preflight failure lists one library per line, and
+        # only prefixed lines are distinguishable from the system report below.
+        log_lines(f"prebuilt fallback reason: {exc}".splitlines())
         # Diagnostics must never change the verdict: a probe that raises here
         # would replace the fallback with EXIT_ERROR, which never source builds.
         try:
@@ -8154,7 +8543,7 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = (
             "Report every llama.cpp backend installable on this host, plus what "
-            "--install-dir currently runs, without downloading. Feeds the Studio "
+            "--install-dir currently runs, without downloading. Feeds the Unsloth "
             "backend picker. Use --output-format json."
         ),
     )
@@ -8463,7 +8852,9 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
+        log(
+            f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
+        )
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

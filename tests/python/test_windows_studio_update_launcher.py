@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Focused regression tests for the Windows Studio updater launcher transaction."""
+"""Focused regression tests for the Windows Unsloth updater launcher transaction."""
 
 from __future__ import annotations
 
@@ -88,12 +88,11 @@ def _configure_windows(
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
     monkeypatch.setattr(studio, "_windows_hidden_subprocess_kwargs", lambda: {})
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: None)
-    # The runtime gate's process scan is Windows-only, so off Windows it never runs and
-    # nothing here noticed it was unstubbed. On a real Windows host it shells out to
-    # powershell.exe through the same subprocess.run these tests replace, then reads
-    # .stdout off a fake that only carries a returncode, and every test in this file
-    # dies before reaching what it meant to assert.
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_args: None)
+    # The runtime gate's process scan is Windows-only, so off Windows it never runs and nothing here noticed it was
+    # unstubbed. On a real Windows host it shells out to powershell.exe through the same subprocess.run these tests
+    # replace, then reads .stdout off a fake that only carries a returncode, and every test in this file dies before
+    # reaching what it meant to assert.
     monkeypatch.setattr(
         studio._studio_runtime_gate,
         "ensure_managed_environment_is_idle",
@@ -122,6 +121,27 @@ def _successful_version_run(calls = None):
 
 def _update(studio, *, verify = True):
     studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows DLL locking only")
+@pytest.mark.parametrize("entry", ["unsloth", "-m"])
+@pytest.mark.parametrize("command", ["setup", "update"])
+def test_windows_mutating_entry_does_not_load_pydantic_core(entry, command):
+    code = f"""
+import sys
+sys.argv = [{entry!r}, "studio", {command!r}]
+from unsloth_cli import app
+assert "pydantic_core" not in sys.modules
+assert "unsloth_cli.commands.train" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, tmp_path):
@@ -154,6 +174,26 @@ def test_a_recoverable_copy_exists_while_setup_runs(monkeypatch, studio, tmp_pat
     _update(studio)
 
 
+def test_installer_setup_frees_the_running_launcher_for_metadata_repair(
+    monkeypatch, studio, tmp_path
+):
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    replacement = b"MZ-reinstalled-launcher"
+
+    def setup(**_kwargs):
+        assert not launcher.exists()
+        assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
+        launcher.write_bytes(replacement)
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    studio.setup(verbose = False)
+
+    assert launcher.read_bytes() == replacement
+    assert not (scripts / "unsloth.exe.update-backup").exists()
+
+
 def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp_path):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
 
@@ -171,9 +211,8 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
 
 
 def test_setup_publishing_no_launcher_restores_it_and_succeeds(monkeypatch, studio, tmp_path):
-    # The bug this transaction exists for: pip finds unsloth already current,
-    # writes no launcher, and the old updater then deleted its own .deleteme and
-    # left the venv with none at all. Restoring is the right answer, not failing.
+    # The bug this transaction exists for: pip finds unsloth already current, writes no launcher, and the old updater
+    # then deleted its own .deleteme and left the venv with none at all. Restoring is the right answer, not failing.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -223,7 +262,9 @@ def test_no_verify_still_checks_launcher_but_skips_integrity_scan(monkeypatch, s
     calls = []
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
     integrity_calls = []
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: integrity_calls.append(True))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda *_args: integrity_calls.append(True)
+    )
 
     _update(studio, verify = False)
 
@@ -282,7 +323,7 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
     calls = []
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: calls.append("verify"))
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_args: calls.append("verify"))
     monkeypatch.setattr(
         studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
     )
@@ -301,6 +342,41 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
     assert list(tmp_path.rglob("unsloth.exe*")) == []
 
 
+def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
+    """`stage` defaults to typer's OptionInfo, and that sentinel is truthy.
+
+    Only the CLI resolves it to a bool, so a plain `if stage:` sends every
+    in-process call down the staging path and skips the update entirely.
+    """
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
+    monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
+    staged = []
+    monkeypatch.setattr(studio, "_stage_update", lambda **kwargs: staged.append(kwargs))
+    calls = []
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda *_a, **_k: calls.append("verify")
+    )
+    monkeypatch.setattr(
+        studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
+    )
+    for name in (
+        "SKIP_STUDIO_BASE",
+        "STUDIO_PACKAGE_NAME",
+        "STUDIO_LOCAL_INSTALL",
+        "STUDIO_LOCAL_REPO",
+        "UNSLOTH_TAURI_UPDATE",
+        "UNSLOTH_STUDIO_STAGE_ROOT",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+    _update(studio)
+
+    assert staged == []
+    assert calls == ["setup", "verify", "refresh"]
+
+
 def _shim(studio, payload = ORIGINAL_LAUNCHER):
     """The hardlinked PATH shim install.ps1 creates beside the managed venv."""
     path = studio.STUDIO_HOME / "bin" / "unsloth.exe"
@@ -310,9 +386,8 @@ def _shim(studio, payload = ORIGINAL_LAUNCHER):
 
 
 def test_a_missing_launcher_is_recovered_from_the_path_shim(monkeypatch, studio, tmp_path):
-    # The old updater renamed the launcher away and then unlinked the .deleteme,
-    # so an affected install has neither. install.ps1 hardlinks the shim to the
-    # same file, so it survives that unlink and can repair the launcher.
+    # The old updater renamed the launcher away and then unlinked the .deleteme, so an affected install has neither.
+    # install.ps1 hardlinks the shim to the same file, so it survives that unlink and can repair the launcher.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     _shim(studio)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
@@ -324,9 +399,9 @@ def test_a_missing_launcher_is_recovered_from_the_path_shim(monkeypatch, studio,
 
 
 def test_an_invalid_launcher_is_recovered_from_the_backup(monkeypatch, studio, tmp_path):
-    # Recovery gated on existence rather than validity left a zero-byte launcher
-    # in place while a usable backup sat beside it. The old updater restored on
-    # exactly this shape (st_size == 0), so gating on exists() regressed it.
+    # Recovery gated on existence rather than validity left a zero-byte launcher in place while a usable backup sat
+    # beside it.
+    # The old updater restored on exactly this shape (st_size == 0), so gating on exists() regressed it.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"")
     (scripts / "unsloth.exe.update-backup").write_bytes(ORIGINAL_LAUNCHER)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
@@ -338,9 +413,8 @@ def test_an_invalid_launcher_is_recovered_from_the_backup(monkeypatch, studio, t
 
 
 def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio, tmp_path):
-    # Refusing here would strand exactly the users the transaction exists for:
-    # the previous updater could leave no launcher and no .deleteme, and before
-    # this the update simply carried on and let setup reinstall it.
+    # Refusing here would strand exactly the users the transaction exists for: the previous updater could leave no
+    # launcher and no .deleteme, and before this the update simply carried on and let setup reinstall it.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     ran = []
 
@@ -358,8 +432,7 @@ def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio
 
 
 def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_path):
-    # A backup is a safety net, not a precondition. Antivirus holding the temp
-    # copy used to surface as a bare OSError traceback before setup ever ran.
+    # A backup is a safety net, not a precondition.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     ran = []
     original = studio._WindowsLauncherUpdateTransaction._atomic_copy
@@ -383,10 +456,9 @@ def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_pat
 
 
 def test_an_existing_backup_survives_an_unvalidated_launcher(monkeypatch, studio, tmp_path):
-    # A backup outlives __enter__ only when a previous run died before
-    # validating, so it holds the last launcher known to run while the canonical
-    # file has passed nothing but the two-byte header check. Overwriting it here
-    # destroyed the only recovery copy.
+    # A backup outlives __enter__ only when a previous run died before validating, so it holds the last launcher known
+    # to run while the canonical file has passed nothing but the two-byte header check. Overwriting it here destroyed
+    # the only recovery copy.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"MZ-broken")
     backup = scripts / "unsloth.exe.update-backup"
     backup.write_bytes(ORIGINAL_LAUNCHER)
@@ -404,10 +476,8 @@ def test_an_existing_backup_survives_an_unvalidated_launcher(monkeypatch, studio
 
 
 def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, studio, tmp_path):
-    # A pip-installed or checkout CLI drives an update of the separate managed
-    # environment, so sys.executable belongs to the caller while setup.ps1
-    # installs into STUDIO_HOME/unsloth_studio. Guarding the caller's launcher
-    # left the one actually being replaced unprotected.
+    # A pip-installed or checkout CLI drives an update of the separate managed environment, so sys.executable belongs to
+    # the caller while setup.ps1 installs into STUDIO_HOME/unsloth_studio.
     scripts, caller_launcher = _configure_windows(monkeypatch, studio, tmp_path)
     managed = tmp_path / "studio_home" / "unsloth_studio"
     (managed / "Scripts").mkdir(parents = True)
@@ -426,9 +496,8 @@ def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, stud
 
 
 def test_a_replacement_published_by_setup_is_kept(monkeypatch, studio, tmp_path):
-    # The point of freeing the canonical path. uv only self-replaces its own
-    # executable, so it deletes a third-party console script outright and
-    # hard-errors when the file is in use; the pip fallback then no-ops on the
+    # The point of freeing the canonical path. uv only self-replaces its own executable, so it deletes a third-party
+    # console script outright and hard-errors when the file is in use; the pip fallback then no-ops on the
     # already-satisfied bare unsloth and the upgrade is silently skipped.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     new_launcher = b"MZ-upgraded-launcher"
@@ -446,10 +515,6 @@ def test_a_replacement_published_by_setup_is_kept(monkeypatch, studio, tmp_path)
 
 
 def test_an_invalid_replacement_is_restored_but_still_fails(monkeypatch, studio, tmp_path):
-    # Setup writing an unusable launcher is a real failure. Putting the previous
-    # one back must not turn it into a reported success, which is how a
-    # restore-then-revalidate reads when it cannot tell "published nothing"
-    # from "published something broken".
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b""))
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -482,9 +547,9 @@ def test_a_backup_that_cannot_run_falls_back_to_the_moved_aside_copy(monkeypatch
 
 
 def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp_path):
-    # __exit__ took the first PE-shaped candidate, so an interrupted run's
-    # non-runnable backup was installed over the working launcher this run had
-    # moved aside, and it could also undo a restore validate_launcher just made.
+    # Backups are taken after only the two-byte header check, so an interrupted run can leave a PE-shaped but
+    # non-runnable backup. __exit__ took the first PE-shaped candidate, so that backup was installed over the
+    # working launcher this run had moved aside, and it could also undo a restore validate_launcher just made.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     bad_backup = b"MZ-unrunnable"
     (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
@@ -507,10 +572,9 @@ def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp
 
 
 def test_a_non_runnable_backup_falls_through_to_the_legacy_copy(monkeypatch, studio, tmp_path):
-    # An interrupted run can leave a PE-shaped but non-runnable backup while the
-    # legacy .deleteme or the PATH shim is still good. Accepting the backup on
-    # its MZ header alone and stopping there left the update failing forever
-    # with the broken bytes canonical.
+    # An interrupted run can leave a PE-shaped but non-runnable backup while the legacy .deleteme or the PATH shim is
+    # still good. Accepting the backup on its MZ header alone and stopping there left the update failing forever with
+    # the broken bytes canonical.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     bad_backup = b"MZ-unrunnable"
     (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
@@ -551,10 +615,9 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
 def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     monkeypatch, studio, tmp_path, capsys
 ):
-    # Aborting here would make an antivirus hold enough to render the
-    # environment unupdatable, which main did not do either. But the cost has to
-    # be visible: uv cannot replace a launcher it could not move, and the pip
-    # fallback drops --upgrade-package, so unsloth stays at its old version.
+    # Aborting here would make an antivirus hold enough to render the environment unupdatable, which main did not do
+    # either. But the cost has to be visible: uv cannot replace a launcher it could not move, and the pip fallback
+    # drops --upgrade-package, so unsloth stays at its old version.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     ran = []
     seen = {}
@@ -562,9 +625,8 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     real_replace = studio.os.replace
 
     def refuse_move(source, destination):
-        # Only the move aside: patching os.replace wholesale would also break
-        # _atomic_copy's backup, and the test would then be passing on a
-        # compound failure rather than the one it names.
+        # Only the move aside: patching os.replace wholesale would also break _atomic_copy's backup, and the test would
+        # then be passing on a compound failure rather than the one it names.
         if str(destination).endswith(".update-stale"):
             raise OSError("access is denied")
         return real_replace(source, destination)
@@ -585,9 +647,11 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     err = capsys.readouterr().err
     assert "could not move the Unsloth launcher aside" in err
     assert "may not be upgraded" in err
-    # The backup still succeeded, so this is the move-aside failure alone.
     assert "could not back up" not in err
     assert seen["backup"] == ORIGINAL_LAUNCHER
+
+
+# Issue #8490:
 
 
 # ── Application Control (issue #8490) ─────────────────────────────────
@@ -596,8 +660,6 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
 # python.exe beside it still runs. The launcher --version probe is then
 # impossible, and reading that as "the update broke" rolled a perfectly good
 # install back on every single update.
-
-
 def _blocked_exe_run(interpreter_result, calls = None):
     """subprocess.run where only the launcher is denied by policy."""
 
@@ -626,20 +688,14 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
     _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
-    # A successful update cleans its recovery copies up; a rollback would keep them.
     assert not (scripts / "unsloth.exe.update-backup").exists()
     assert not (scripts / "unsloth.exe.update-stale").exists()
 
     assert calls[0][0] == [str(launcher), "--version"]
     interpreter_call = calls[1][0]
     # Spelled out rather than imported, so an edit to the constant fails here.
-    # -I here and nowhere else in this module: this probe predicts the desktop
-    # updater's launch, and build_update_command runs that under
-    # Isolation::Isolated with PYTHONHOME/PYTHONPATH cleared. A probe that
-    # inherited them could be answered by a foreign checkout on PYTHONPATH and
-    # would keep an update the next launch cannot start. -X utf8 precedes -I
-    # because -I implies -E, which drops PYTHONUTF8 but cannot touch a
-    # command-line -X.
+    # -I here and nowhere else in this module: this probe predicts the desktop updater's launch, and
+    # build_update_command runs that under Isolation::Isolated with PYTHONHOME/PYTHONPATH cleared.
     assert interpreter_call == [
         str(scripts / "python.exe"),
         "-X",
@@ -650,8 +706,7 @@ def test_a_policy_blocked_launcher_falls_back_to_the_interpreter(monkeypatch, st
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())",
         "--version",
     ]
-    # The launcher probe gets 10s, a process start. This one has to import the whole
-    # CLI package first, so it gets the import probe's ceiling instead.
+    # The launcher probe gets 10s, a process start.
     assert calls[0][1]["timeout"] == 10
     assert calls[1][1]["timeout"] == studio._MANAGED_CLI_IMPORT_PROBE_TIMEOUT
     assert calls[1][1]["timeout"] > calls[0][1]["timeout"]
@@ -747,8 +802,8 @@ def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, 
     _update(studio)
 
     assert not launcher.exists()
+    # A successful update cleans its recovery copies up; a rollback would keep them.
     assert not (scripts / "unsloth.exe.update-backup").exists()
-    # Only the interpreter was asked; there was no file to probe.
     assert [call[0][0] for call in calls] == [str(scripts / "python.exe")]
 
 
@@ -770,12 +825,10 @@ def test_only_the_updater_probe_isolates_the_interpreter(studio, tmp_path):
     assert "-I" not in inherited
 
     isolated = studio._managed_cli_argv(python, "--version", isolated = True)
-    # -X utf8 first: -I implies -E, so PYTHONUTF8 would be discarded, while a
-    # command-line -X survives it.
+    # -X utf8 first: -I implies -E, so PYTHONUTF8 would be discarded, while a command-line -X survives it.
     assert isolated[:4] == [str(python), "-X", "utf8", "-I"]
 
-    # Isolation is the only difference. Same trampoline, same caller arguments,
-    # in the same order.
+    # Isolation is the only difference.
     assert [arg for arg in isolated if arg != "-I"] == inherited
 
 
@@ -843,7 +896,6 @@ def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studi
     (site_packages / "unsloth-2026.8.1.dist-info").mkdir()
     assert studio._managed_cli_package_present(python)
 
-    # POSIX proves a CLI with the console script itself; nothing changes there.
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     assert not studio._managed_cli_package_present(python)
 
@@ -881,7 +933,7 @@ def test_orphaned_install_metadata_is_not_a_runnable_cli(monkeypatch, studio, re
     moved, leaves an ``unsloth-*.dist-info`` behind with nothing to import. This
     check stands in front of the headless-public strip of .bootstrap_password,
     so answering yes here lands exactly the lockout the gate's placement exists
-    to prevent: a public Studio with no login page and no recovery credential.
+    to prevent: a public Unsloth with no login page and no recovery credential.
     """
     python, site_packages = real_venv
     windows_layout = python.parent.parent / "Lib" / "site-packages"
@@ -908,7 +960,6 @@ def test_an_importable_package_still_answers_for_the_quarantined_stub(
     monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
     assert studio._managed_cli_package_present(python)
 
-    # And POSIX is untouched: there the console script is what gets exec'd.
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     assert not studio._managed_cli_package_present(python)
 
@@ -930,11 +981,9 @@ def bare_probe_venv(real_venv):
 @pytest.mark.parametrize(
     "shape, files",
     [
-        # An emptied directory. find_spec calls this a namespace package and
-        # returns a spec for it, so a spec lookup answers yes to a venv the
-        # trampoline's `from unsloth_cli import app` cannot start. This is the
-        # shape antivirus leaves when it takes the module files out from under a
-        # package it decided it disliked.
+        # An emptied directory. find_spec calls this a namespace package and returns a spec for it, so a spec lookup
+        # answers yes to a venv the trampoline's `from unsloth_cli import app` cannot start. This is the shape
+        # antivirus leaves when it takes the module files out from under a package it decided it disliked.
         ("an emptied package directory", {}),
         # An interrupted install: the package landed, its dependencies did not.
         (
@@ -956,7 +1005,7 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
     """The gate has to fail on everything the launch would fail on.
 
     It stands in front of the headless-public strip of .bootstrap_password, so a
-    yes here that the trampoline then contradicts is a public Studio with no
+    yes here that the trampoline then contradicts is a public Unsloth with no
     login page and no plaintext recovery credential. Locating the package is not
     the question; importing it and getting `app` back is, which is why the probe
     runs that exact import rather than a cheaper find_spec.
@@ -972,8 +1021,8 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
         python
     ), f"{shape} must not pass the gate: the trampoline cannot start it"
 
-    # Anti-vacuity: the same venv with a package that does import passes, so the
-    # assertion above is about the shape and not about the fixture being broken.
+    # Anti-vacuity: the same venv with a package that does import passes, so the assertion above is about the shape and
+    # not about the fixture being broken.
     (package / "__init__.py").write_text("app = None\n", encoding = "utf-8")
     assert studio._managed_cli_package_present(python)
 
@@ -985,7 +1034,7 @@ def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, stu
     interpreter that will not start means the re-exec will not either, and the
     on-disk layout cannot say otherwise. The caller strips .bootstrap_password
     before that re-exec on a headless public launch, so passing here would leave
-    a public Studio with no login page and no plaintext recovery credential.
+    a public Unsloth with no login page and no plaintext recovery credential.
     """
     scripts = tmp_path / "Scripts"
     site_packages = tmp_path / "Lib" / "site-packages"
@@ -995,8 +1044,6 @@ def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, stu
     python.write_bytes(b"python")
     monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
 
-    # The layout says yes, so any pass below is the fallback and not the layout
-    # being empty.
     assert studio._managed_cli_site_packages_layout(python)
 
     def blocked(*_args, **_kwargs):
@@ -1005,9 +1052,8 @@ def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, stu
     monkeypatch.setattr(studio.subprocess, "run", blocked)
     assert not studio._managed_cli_package_present(python)
 
-    # A timeout is the other kind of no verdict, and it keeps the fallback: slow
-    # is not broken, a cold venv under an antivirus scan is exactly this, and the
-    # re-exec has no timeout of its own to trip over.
+    # A timeout is the other kind of no verdict, and it keeps the fallback: slow is not broken, a cold venv under an
+    # antivirus scan is exactly this, and the re-exec has no timeout of its own to trip over.
     def slow(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd = "probe", timeout = 60)
 
@@ -1028,7 +1074,6 @@ def test_the_interpreter_fallback_waits_as_long_as_the_import_probe(studio):
     source = inspect.getsource(transaction._interpreter_health_error)
     assert "_MANAGED_CLI_IMPORT_PROBE_TIMEOUT" in source
     assert "_VERSION_TIMEOUT_SECONDS" not in source
-    # And the two are actually different, so the assertion above is not vacuous.
     assert studio._MANAGED_CLI_IMPORT_PROBE_TIMEOUT > transaction._VERSION_TIMEOUT_SECONDS
 
 
@@ -1055,8 +1100,7 @@ def test_a_custom_root_survives_the_launcher_being_quarantined(monkeypatch, stud
     )
     assert studio._looks_like_installer_managed_studio_home(root)
 
-    # The launcher still answers on its own, so an install that never lost it is
-    # unaffected either way.
+    # The launcher still answers on its own, so an install that never lost it is unaffected either way.
     shim.unlink()
     (root / "bin" / "unsloth.exe").write_bytes(b"MZ")
     assert studio._looks_like_installer_managed_studio_home(root)
@@ -1065,8 +1109,8 @@ def test_a_custom_root_survives_the_launcher_being_quarantined(monkeypatch, stud
 @pytest.mark.parametrize(
     "label, body",
     [
-        # This decides which tree the CLI manages and the directory is on PATH,
-        # so any file of that name would otherwise be enough to redirect a root.
+        # This decides which tree the CLI manages and the directory is on PATH, so any file of that name would otherwise
+        # be enough to redirect a root.
         ("a hand-rolled wrapper", b'@echo off\r\npython -c "from unsloth_cli import app" %*\r\n'),
         ("the marker without the call", b"@echo off\r\nrem unsloth-studio-managed-launcher\r\n"),
         ("an unrelated batch file", b"@echo off\r\necho hello\r\n"),

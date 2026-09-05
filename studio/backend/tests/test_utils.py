@@ -8,6 +8,9 @@ is imported at top level; tests needing torch/mlx internals skip when unavailabl
 """
 
 import platform
+import sys
+import types
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -233,6 +236,105 @@ class TestGetGpuMemoryInfo:
         assert 0 <= result["utilization_pct"] <= 100
         assert "device_name" in result
 
+    @contextmanager
+    def _mlx_machine(
+        self,
+        *,
+        available_gb,
+        recommended_gb,
+        used_gb = 1.2,
+        legacy_mlx = False,
+    ):
+        props = {
+            "device_name": "Apple M2",
+            "max_recommended_working_set_size": int(recommended_gb * (1024**3)),
+        }
+        fake_core = types.ModuleType("mlx.core")
+        if legacy_mlx:
+            # mlx below 0.30 only has mx.metal.device_info().
+            fake_metal = types.ModuleType("mlx.core.metal")
+            fake_metal.device_info = lambda: props
+            fake_core.metal = fake_metal
+        else:
+            fake_core.device_info = lambda: props
+        fake_pkg = types.ModuleType("mlx")
+        fake_pkg.core = fake_core
+
+        with (
+            patch.dict(sys.modules, {"mlx": fake_pkg, "mlx.core": fake_core}),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch(
+                "psutil.virtual_memory",
+                return_value = types.SimpleNamespace(
+                    total = 16 * (1024**3),
+                    available = int(available_gb * (1024**3)),
+                ),
+            ),
+            patch(
+                "utils.hardware.hardware._read_apple_gpu_stats",
+                return_value = {"vram_used_bytes": int(used_gb * (1024**3))},
+            ),
+        ):
+            yield
+
+    def _mlx_memory_info(self, **machine):
+        with self._mlx_machine(**machine):
+            return get_gpu_memory_info()
+
+    def test_mlx_free_is_what_a_new_allocation_can_get(self):
+        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 11)
+
+        assert result["available"] is True
+        assert abs(result["total_gb"] - 16.0) < 0.01
+        assert abs(result["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_free_is_bounded_by_the_metal_working_set(self):
+        result = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+
+        assert abs(result["free_gb"] - 11.0) < 0.01
+
+    def test_mlx_free_is_not_reduced_by_whole_device_gpu_use(self):
+        """The working set is a per-process budget, and the AGX counter behind
+        used_gb is whole-device and only the active subset, so charging one
+        against the other would let another app's GPU work pick the training
+        method."""
+        busy = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 8)
+        idle = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 0.4)
+
+        assert abs(busy["free_gb"] - idle["free_gb"]) < 0.01
+        assert abs(busy["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_free_reads_the_working_set_on_pre_0_30_mlx(self):
+        """The stack gate accepts mlx >= 0.22.0, and mlx below 0.30 spells this
+        mx.metal.device_info(). Reading only mx.device_info() left the cap
+        unapplied on an M1 running mlx 0.29.3, which the gate calls usable."""
+        legacy = self._mlx_memory_info(available_gb = 15, recommended_gb = 11, legacy_mlx = True)
+        current = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+
+        assert abs(legacy["free_gb"] - 11.0) < 0.01
+        assert abs(legacy["free_gb"] - current["free_gb"]) < 0.01
+        assert legacy["device_name"] == current["device_name"]
+
+    def test_mlx_free_survives_a_missing_working_set_size(self):
+        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)
+
+        assert abs(result["free_gb"] - 6.0) < 0.01
+
+    def test_mlx_utilization_device_publishes_the_same_free_as_the_summary(self):
+        """The Resources tab reads the per-device figure, and /api/system falls
+        back to total - used for any device that does not report free. On
+        unified memory that fallback is the 14.8 GB overstatement the tests
+        above reject, so this probe has to carry free itself."""
+        from utils.hardware.hardware import get_visible_gpu_utilization
+
+        with self._mlx_machine(available_gb = 6, recommended_gb = 11):
+            summary_free = get_gpu_memory_info()["free_gb"]
+            device = get_visible_gpu_utilization()["devices"][0]
+
+        assert abs(device["vram_free_gb"] - summary_free) < 0.01
+        assert abs(device["vram_free_gb"] - 6.0) < 0.01
+        assert device["vram_total_gb"] - device["vram_used_gb"] > 14.0
+
     # --- CUDA-specific mocked test ---
 
     @needs_torch
@@ -247,6 +349,16 @@ class TestGetGpuMemoryInfo:
             patch("torch.cuda.get_device_properties", return_value = mock_props),
             patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
             patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
+            # Driver truth from a context-free SMI/sysfs probe: another process
+            # and torch's cache leave only 9 of 16 GiB free.
+            patch(
+                "utils.hardware.hardware._context_free_cuda_memory_info",
+                return_value = 9 * (1024**3),
+            ),
+            patch(
+                "utils.hardware.hardware.trusted_mem_get_info",
+                side_effect = AssertionError("native telemetry must avoid mem_get_info"),
+            ),
         ):
             result = get_gpu_memory_info()
 
@@ -255,8 +367,101 @@ class TestGetGpuMemoryInfo:
         assert result["device_name"] == "NVIDIA Test GPU"
         assert abs(result["total_gb"] - 16.0) < 0.01
         assert abs(result["allocated_gb"] - 4.0) < 0.01
-        assert abs(result["free_gb"] - 12.0) < 0.01
+        assert abs(result["free_gb"] - 9.0) < 0.01
         assert abs(result["utilization_pct"] - 25.0) < 0.1
+
+    @needs_torch
+    def test_cuda_free_falls_back_to_reserved_when_probe_fails(self):
+        mock_props = MagicMock()
+        mock_props.total_memory = 16 * (1024**3)
+        mock_props.name = "NVIDIA Test GPU"
+
+        def _boom():
+            raise RuntimeError("driver unavailable")
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("torch.cuda.current_device", return_value = 0),
+            patch("torch.cuda.get_device_properties", return_value = mock_props),
+            patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
+            patch("utils.hardware.hardware._context_free_cuda_memory_info", return_value = None),
+            patch("utils.hardware.hardware.trusted_mem_get_info", side_effect = _boom),
+        ):
+            result = get_gpu_memory_info()
+
+        # Reserved includes allocated, so the fallback bound is 16 - 6, not
+        # the old allocated-only 12.
+        assert abs(result["free_gb"] - 10.0) < 0.01
+
+    @needs_torch
+    def test_rocm_apu_free_uses_the_matching_driver_total(self):
+        mock_props = MagicMock()
+        mock_props.total_memory = 8 * (1024**3)
+        mock_props.name = "AMD Radeon 8060S Graphics"
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.IS_ROCM", True),
+            patch("torch.cuda.current_device", return_value = 0),
+            patch("torch.cuda.get_device_properties", return_value = mock_props),
+            patch("torch.cuda.memory_allocated", return_value = 1 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value = 2 * (1024**3)),
+            patch("utils.hardware.hardware._rocm_props_total_is_carve_out", return_value = True),
+            patch(
+                "utils.hardware.hardware._context_free_cuda_memory_info",
+                side_effect = AssertionError("an APU needs hipMemGetInfo's GTT total"),
+            ),
+            patch(
+                "utils.hardware.hardware.trusted_mem_get_info",
+                return_value = (98 * (1024**3), 100 * (1024**3)),
+            ),
+        ):
+            result = get_gpu_memory_info()
+
+        assert abs(result["total_gb"] - 100.0) < 0.01
+        assert abs(result["free_gb"] - 98.0) < 0.01
+
+    # --- XPU (Intel GPU) ---
+
+    def _xpu_torch(self, mem_get_info):
+        """A torch stub exposing only what the XPU branch touches."""
+        props = types.SimpleNamespace(total_memory = 16 * (1024**3), name = "Intel Arc A770")
+        xpu = types.SimpleNamespace(
+            current_device = lambda: 0,
+            get_device_properties = lambda _o: props,
+            memory_allocated = lambda _o: 2 * (1024**3),
+            memory_reserved = lambda _o: 3 * (1024**3),
+        )
+        if mem_get_info is not None:
+            xpu.mem_get_info = mem_get_info
+        return types.SimpleNamespace(xpu = xpu)
+
+    def _xpu_result(self, monkeypatch, mem_get_info):
+        monkeypatch.setitem(sys.modules, "torch", self._xpu_torch(mem_get_info))
+        monkeypatch.setattr(_hw_module, "get_device", lambda: DeviceType.XPU)
+        monkeypatch.setattr(_hw_module, "rocm_windows_free_is_untrusted", lambda: False)
+        return get_gpu_memory_info()
+
+    def test_xpu_free_comes_from_the_driver(self, monkeypatch):
+        # 12 of 16 GiB free system-wide, against 2 GiB allocated by this process:
+        # the old total - allocated would have claimed 14.
+        result = self._xpu_result(monkeypatch, lambda _o: (12 * (1024**3), 16 * (1024**3)))
+        assert abs(result["free_gb"] - 12.0) < 0.01
+        assert abs(result["total_gb"] - 16.0) < 0.01
+
+    def test_xpu_falls_back_to_reserved_when_the_probe_fails(self, monkeypatch):
+        def _boom(_o):
+            raise RuntimeError("level zero unavailable")
+
+        result = self._xpu_result(monkeypatch, _boom)
+        assert abs(result["free_gb"] - 13.0) < 0.01
+
+    def test_xpu_falls_back_on_a_torch_without_mem_get_info(self, monkeypatch):
+        # torch.xpu.mem_get_info is newer than the floor this backend supports,
+        # so its absence must degrade, not raise.
+        result = self._xpu_result(monkeypatch, None)
+        assert abs(result["free_gb"] - 13.0) < 0.01
 
     # --- MLX-specific mocked test ---
 

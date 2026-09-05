@@ -189,6 +189,11 @@ test("an m4a keeps going to audio even though mp4 is a video container", () => {
   assert.equal(dispatch({ name: "voice.m4a", type: "audio/mp4" }), "audio");
 });
 
+test("an audio-only 3gp reaches audio while a video 3gp stays video", () => {
+  assert.equal(dispatch({ name: "voice.3gp", type: "audio/3gpp" }), "audio");
+  assert.equal(dispatch({ name: "clip.3gp", type: "video/3gpp" }), "video");
+});
+
 test("adding the video adapter did not steal any pre-existing attachment type", () => {
   // Same corpus, with the video adapter removed: the answer must be unchanged
   // for everything that is not a video.

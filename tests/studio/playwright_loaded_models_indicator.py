@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     install_view_transition_killer,
+    install_wall_clock_watchdog,
     wait_for_health,
 )
 
@@ -50,6 +51,13 @@ ART.mkdir(parents = True, exist_ok = True)
 
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
+
+# The wall this suite did not have. Its siblings (playwright_chat_ui.py, playwright_extra_ui.py) have carried one
+# since a `page.evaluate` -- which takes no `timeout=` at all -- hung a job for 27 minutes in #5387. This suite has
+# four raw `page.evaluate` calls of its own and is the LAST thing the Windows chat lane runs, so a wedge here used to
+# be indistinguishable from the job simply never finishing. Same 720s default and same env knob as the siblings, so a
+# slow runner is tuned in one place.
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
 # The card polls every 5s; two ticks plus slack is enough to see a change land.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_INDICATOR_SETTLE_MS", "12000"))
@@ -149,8 +157,8 @@ class Runtime:
         self.hang: set[str] = set()
         self.status_reads = 0
         self.unloads: list[str] = []
-        # Routes deliberately left unanswered, kept so teardown can settle them
-        # instead of cancelling them out from under the handler.
+        # Routes deliberately left unanswered, kept so teardown can settle them instead of cancelling them out from
+        # under the handler.
         self.parked: list = []
 
 
@@ -159,8 +167,7 @@ def install_routes(context, state: Runtime) -> None:
         def handler(route):
             state.status_reads += 1
             if key in state.hang:
-                # Accept the connection and never answer: the read must time
-                # out rather than wedge the card forever.
+                # Accept the connection and never answer: the read must time out rather than wedge the card forever.
                 state.parked.append(route)
                 return
             route.fulfill(
@@ -210,18 +217,17 @@ def install_routes(context, state: Runtime) -> None:
 
 
 def rows(page) -> list[str]:
-    # One round trip, deliberately. Reading count() and then indexing nth(i)
-    # races the very thing the eject checks watch for: the row disappears
-    # between the two calls, and nth(1) then blocks for the whole locator
-    # timeout. evaluate_all snapshots the list in a single evaluation.
+    # One round trip, deliberately. Reading count() and then indexing nth(i) races the very thing the eject checks
+    # watch for: the row disappears between the two calls, and nth(1) then blocks for the whole locator timeout.
+    # evaluate_all snapshots the list in a single evaluation.
     return page.locator(EJECT).evaluate_all(
         "els => els.map((el) => el.getAttribute('aria-label') || '')"
     )
 
 
 def card_text(page) -> str:
-    # Bounded and absence-tolerant rather than count()-then-read, which has the
-    # same race as rows() when the card is mid-change.
+    # Bounded and absence-tolerant rather than count()-then-read, which has the same race as rows() when the card is
+    # mid-change.
     try:
         return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text(timeout = 5000)
     except Exception:
@@ -237,8 +243,8 @@ def boot(
 ) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
     page.goto(BASE, wait_until = "domcontentloaded")
-    # The indicator ships off, so every check that wants the card has to switch
-    # it on. Pass show = False to exercise the default.
+    # The indicator ships off, so every check that wants the card has to switch it on. Pass show = False to
+    # exercise the default.
     seeded = dict(seed or {})
     if show:
         seeded.setdefault(SHOW_KEY, "true")
@@ -252,8 +258,8 @@ def boot(
     )
     page.reload(wait_until = "domcontentloaded")
     page.wait_for_timeout(SETTLE_MS // 2)
-    # The card is deliberately hidden on /login, so an auth slip would make
-    # every "no card" check pass for the wrong reason.
+    # The card is deliberately hidden on /login, so an auth slip would make every "no card" check pass for the wrong
+    # reason.
     path = page.evaluate("location.pathname")
     if path.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {path}")
@@ -266,7 +272,6 @@ def main() -> int:
     try:
         api("/api/auth/change-password", {"current_password": OLD, "new_password": NEW}, token)
     except urllib.error.HTTPError as exc:
-        # Already rotated by a previous run on the same install.
         if exc.code not in (400, 401, 403):
             raise
     session = api("/api/auth/login", {"username": "unsloth", "password": NEW})
@@ -274,9 +279,8 @@ def main() -> int:
         info("FAIL bootstrap left must_change_password set")
         return 1
 
-    # add_init_script takes raw source, not a function to call: an arrow
-    # expression here would evaluate to a function nobody invokes, the SPA would
-    # find no token, and every check would silently run against /login.
+    # add_init_script takes raw source, not a function to call: an arrow expression here would evaluate to a function
+    # nobody invokes, the SPA would find no token, and every check would silently run against /login.
     seed_js = (
         "(() => {"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
@@ -290,6 +294,11 @@ def main() -> int:
         return 1
 
     with sync_playwright() as p:
+        install_wall_clock_watchdog(
+            WALL_TIMEOUT_S,
+            label = "ui-indicator",
+            info = info,
+        )
         browser_type = getattr(p, PLAYWRIGHT_BROWSER)
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
@@ -313,9 +322,8 @@ def main() -> int:
             run(page, state)
         finally:
             page.screenshot(path = str(ART / f"final-{PLAYWRIGHT_BROWSER}.png"))
-            # Settle the deliberately-hung routes before tearing down: closing
-            # over a parked one dumps a CancelledError traceback that reads
-            # like a failure.
+            # Settle the deliberately-hung routes before tearing down: closing over a parked one dumps a
+            # CancelledError traceback that reads like a failure.
             for parked in state.parked:
                 try:
                     parked.abort()
@@ -337,7 +345,6 @@ def main() -> int:
 
 
 def run(page, state: Runtime) -> None:
-    # ── Nothing loaded ──────────────────────────────────────────────────
     state.reset()
     boot(page, state)
     check("no card when nothing is loaded", page.locator(CARD).count() == 0)
@@ -357,7 +364,6 @@ def run(page, state: Runtime) -> None:
     check("chat row names its quant", "Q4_K_M" in text)
     check("dictation row is distinguished", "Dictation" in text)
 
-    # The card mounts from the root, so it must survive a route change.
     for route in ("/hub", "/train", "/images"):
         page.goto(BASE + route, wait_until = "domcontentloaded")
         page.wait_for_timeout(3000)
@@ -422,8 +428,7 @@ def run(page, state: Runtime) -> None:
         page.wait_for_selector(CARD, timeout = 30_000)
         check(name, expected in card_text(page), card_text(page).replace("\n", " | "))
 
-    # An audio VLM answers prompts, so it is a chat model that happens to
-    # listen -- neither Speech nor Dictation.
+    # An audio VLM answers prompts, so it is a chat model that happens to listen -- neither Speech nor Dictation.
     state.diffusion = dict(NOTHING_DIFFUSION)
     state.chat = chat(active_model = "unsloth/gemma-3n-E4B-it", is_audio = True, audio_type = "audio_vlm")
     boot(page, state)
@@ -435,7 +440,6 @@ def run(page, state: Runtime) -> None:
         text.replace("\n", " | "),
     )
 
-    # ── A backend too old to have the video route ───────────────────────
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     page.context.route(
         "**/api/inference/video/status",
@@ -446,7 +450,7 @@ def run(page, state: Runtime) -> None:
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     check("a 404 video route does not blank the other rows", len(rows(page)) == 1, str(rows(page)))
-    install_routes(page.context, state)  # restore the stub
+    install_routes(page.context, state)
 
     # ── A runtime that accepts the connection and never answers ─────────
     state.hang = {"video"}
@@ -456,9 +460,8 @@ def run(page, state: Runtime) -> None:
     state.hang = set()
 
     # ── A blip on a runtime that IS holding something ───────────────────
-    # A failed read is not evidence the runtime is empty. Dropping the rows for
-    # it takes a loaded model off the card, and on a remote Studio a blip can
-    # take all four at once, so the whole card would go while everything stayed
+    # A failed read is not evidence the runtime is empty. Dropping the rows for it takes a loaded model off the card,
+    # and on a remote Unsloth a blip can take all four at once, so the whole card would go while everything stayed
     # resident. The row must survive the failure and outlive it.
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     boot(page, state)
@@ -473,15 +476,14 @@ def run(page, state: Runtime) -> None:
         )
 
     page.context.route("**/api/inference/status", fail_chat_status)
-    # Long enough for several polls at the 5s cadence, so this is the steady
-    # state rather than a single unlucky read.
+    # Long enough for several polls at the 5s cadence, so this is the steady state rather than a single unlucky read.
     page.wait_for_timeout(12_000)
     check(
         "a failing status read keeps the row it cannot confirm",
         failing["count"] > 0 and len(rows(page)) == 1,
         f"{failing['count']} failed reads, rows={rows(page)}",
     )
-    install_routes(page.context, state)  # restore the stub
+    install_routes(page.context, state)
 
     # ── And a readable empty answer still clears it ─────────────────────
     state.chat = chat()
@@ -597,12 +599,10 @@ def run(page, state: Runtime) -> None:
     )
     state.diffusion = NOTHING_DIFFUSION
 
-    # The expanded grip and the collapsed pill share one drag sentinel, but only
-    # the pill has a click to consume it. Drag by the grip, collapse, then click
-    # the pill ONCE: without the sentinel being dropped when a click-less handle
-    # finishes its drag, that first click reads someone else's drag and refuses
-    # to expand, so the user has to click twice. No reload in between, since a
-    # reload would clear the in-memory flag and hide the bug.
+    # The expanded grip and the collapsed pill share one drag sentinel, but only the pill has a click to consume it.
+    # Drag by the grip, collapse, then click the pill ONCE: without the sentinel being dropped when a click-less handle
+    # finishes its drag, that first click reads someone else's drag and refuses to expand, so the user has to click
+    # twice. No reload in between, since a reload would clear the in-memory flag and hide the bug.
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     grip = page.locator(HANDLE).first.bounding_box()
@@ -640,8 +640,8 @@ def run(page, state: Runtime) -> None:
     check("the chat row is present before ejecting", index is not None, str(labels))
     if index is not None:
         page.locator(EJECT).nth(index).click()
-        # Watch across more than one poll: a read already in flight when the
-        # eject lands used to put the row straight back.
+        # Watch across more than one poll: a read already in flight when the eject lands used to put the row
+        # straight back.
         reappeared = False
         gone = False
         for _ in range(60):
@@ -681,10 +681,9 @@ def run(page, state: Runtime) -> None:
         str(state.unloads),
     )
 
-    # A row over a runtime that is already idle: nothing is unloaded, so the
-    # toast must not report an eject. The row is up to one poll old and the
-    # dictation sidecars release themselves, so this is reached without anyone
-    # doing anything.
+    # A row over a runtime that is already idle: nothing is unloaded, so the toast must not report an eject. The row
+    # is up to one poll old and the dictation sidecars release themselves, so this is reached without anyone doing
+    # anything.
     state.reset()
     state.diffusion = dict(
         NOTHING_DIFFUSION,
@@ -708,7 +707,7 @@ def run(page, state: Runtime) -> None:
         f"unloads={state.unloads} toasts={said!r}",
     )
 
-    # ── The preference ──────────────────────────────────────────────────
+    # ── The preference ────────────────────────────────────────────────────
     state.reset()
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     # Nothing stored: a fresh install shows no card even with a model resident.

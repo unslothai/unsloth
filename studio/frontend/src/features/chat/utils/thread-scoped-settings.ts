@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The chat settings that describe one conversation rather than the installation: the composer
-// pills, the permission level, the retrieval controls and the sampling params. Editing one with
-// a chat open writes this snapshot onto the thread, and reopening that thread applies it back.
+// pills, the permission level, the retrieval controls and the sampling params. Editing one with a
+// chat open writes this snapshot onto the thread, and reopening that thread applies it back.
 
 import type {
   PermissionMode,
@@ -12,6 +12,7 @@ import type {
   RagSource,
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
+import { MAX_SAMPLING_SEED } from "../types/runtime.ts";
 import {
   isRecord,
   sanitizeBoundedNumber,
@@ -44,6 +45,8 @@ export interface ThreadScopedSettings {
   minP?: number;
   repetitionPenalty?: number;
   presencePenalty?: number;
+  /** null is the cleared pin, and is the only thread-scoped value that is not undefined. */
+  seed?: number | null;
   systemPrompt?: string;
   systemVariables?: string;
 }
@@ -56,6 +59,7 @@ export const THREAD_SCOPED_PARAM_KEYS = [
   "minP",
   "repetitionPenalty",
   "presencePenalty",
+  "seed",
   "systemPrompt",
   "systemVariables",
 ] as const satisfies readonly (keyof ThreadScopedSettings)[];
@@ -105,6 +109,7 @@ const THREAD_SCOPED_NUMBER_BOUNDS = {
   minP: { min: 0, max: 1, integer: false },
   repetitionPenalty: { min: 1, max: 2, integer: false },
   presencePenalty: { min: 0, max: 2, integer: false },
+  seed: { min: 0, max: MAX_SAMPLING_SEED, integer: true },
 } as const satisfies Partial<
   Record<
     keyof ThreadScopedSettings,
@@ -143,7 +148,7 @@ export function isThreadScopedSettingKey(
   return THREAD_SCOPED_SETTING_KEY_SET.has(key);
 }
 
-// derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
+// Derived on apply, so unstored, but loadPermissionMode falls back to the confirm toggle: writing
 // it globally would turn one chat's permission level into every other browser's default.
 const THREAD_DERIVED_SETTING_KEYS: ReadonlySet<string> = new Set([
   "confirmToolCalls",
@@ -183,6 +188,8 @@ export function sanitizeThreadScopedSettings(
   for (const key of THREAD_SCOPED_STRING_KEYS) {
     if (typeof value[key] === "string") target[key] = value[key];
   }
+  // null is a value here, not an absence, and sanitizeBoundedNumber reads it as one.
+  if (value.seed === null) settings.seed = null;
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;
   return settings;

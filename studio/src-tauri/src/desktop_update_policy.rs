@@ -173,7 +173,7 @@ fn normalize_version(version: &str) -> Option<String> {
     }
 }
 
-fn compare_versions(left: &str, right: &str) -> i8 {
+pub(crate) fn compare_versions(left: &str, right: &str) -> i8 {
     let Some(left) = parse_version(left) else {
         return 0;
     };

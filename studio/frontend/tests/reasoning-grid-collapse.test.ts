@@ -132,8 +132,13 @@ test("nothing writes a ref during render", () => {
   assert.ok(code.includes("const next = !open;"));
 });
 
-test("the flag is off by default", () => {
-  assert.match(FLAGS, /export const GRID_COLLAPSE_REASONING_ENABLED = false;/);
+test("the flag is on", () => {
+  // Was "off by default" while the A/B was outstanding. It has run: two independent waves at the
+  // 100K rung, each with its own in-band null control, and `reasoning_toggle.open_ms` cleared all
+  // three gates in both. The assertion is kept rather than deleted so that the flag's value stays
+  // a deliberate, reviewed choice instead of something that can drift silently in either
+  // direction.
+  assert.match(FLAGS, /export const GRID_COLLAPSE_REASONING_ENABLED = true;/);
 });
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {

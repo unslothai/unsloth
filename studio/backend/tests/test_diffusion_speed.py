@@ -60,6 +60,23 @@ def _family(*, compile_ok = True):
     return types.SimpleNamespace(supports_torch_compile = compile_ok)
 
 
+@pytest.fixture(autouse = True)
+def _compile_runtime_independent_of_the_host(monkeypatch):
+    """Keep these tests off the HOST's toolchain, which is what "hermetic" above claims.
+
+    ``torch_compile_runtime_available`` asks whether THIS machine can run inductor, and on
+    Windows that means asking whether a Triton wheel is installed. Without this, every
+    compile-tier assertion in the file fails on a Windows checkout with no ``triton-windows``
+    for a reason that has nothing to do with tiering (measured: 15 failures on a
+    ``windows-latest`` runner, all green on Linux and macOS). Pin the non-Windows branch; the
+    tests that are *about* Windows set ``sys.platform`` themselves and a later setattr wins.
+    The lru_cache is dropped either side so one test's answer is never another test's."""
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    monkeypatch.setattr(ds_mod.sys, "platform", "linux")
+    yield
+    ds_mod.torch_compile_runtime_available.cache_clear()
+
+
 def _stub_torch(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
@@ -710,7 +727,7 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
 
 
 # ── the inductor runtime gate ────────────────────────────────────────────────
-# The Studio workers already refuse torch.compile when Triton is missing on Windows; the diffusion
+# The Unsloth workers already refuse torch.compile when Triton is missing on Windows; the diffusion
 # and video backends run in the SERVER process, which those gates never reach.
 
 
@@ -719,12 +736,24 @@ def _clear_runtime_cache():
     torch_compile_runtime_available.cache_clear()
 
 
-def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch):
+def _set_crt_headers(monkeypatch, reachable: bool):
+    from core import _msvc_env
+    monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: reachable)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch, platform):
     from core.inference import diffusion_speed as ds_mod
 
     # compile_eligible reads torch to test the dtype, and without the stub it returns False for
     # every input -- which would make the assertions below pass whatever the gate did.
     _stub_torch(monkeypatch)
+    # Both platforms, or the name is a claim the test never checks. The positive control must
+    # clear the Windows toolchain question first, or the negatives hold for the wrong reason.
+    monkeypatch.setattr(ds_mod.sys, "platform", platform)
+    if platform == "win32":
+        monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+        _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
     # The positive control. Without it the two `is False` lines below prove nothing.
@@ -753,10 +782,62 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
     assert ds_mod.torch_compile_runtime_available() is False
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
 
-    # A Windows install that DOES have the wheel is not held back.
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     assert ds_mod.torch_compile_runtime_available() is True
+    _clear_runtime_cache()
+
+
+def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(ds_mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+
+    _set_crt_headers(monkeypatch, False)
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is False
+
+    _set_crt_headers(monkeypatch, True)
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is True
+    _clear_runtime_cache()
+
+
+def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
+    from core.inference import diffusion_speed as ds_mod
+
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(ds_mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+
+    _set_crt_headers(monkeypatch, False)
+    _clear_runtime_cache()
+    applied = apply_speed_optims(
+        object(),
+        _target(),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert called["compiled_dequant"] == 0
+    assert not applied.get("compiled_dequant")
+
+    _set_crt_headers(monkeypatch, True)
+    _clear_runtime_cache()
+    applied = apply_speed_optims(
+        object(),
+        _target(),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert called["compiled_dequant"] == 1
+    assert applied.get("compiled_dequant") is True
     _clear_runtime_cache()
 
 

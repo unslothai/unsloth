@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The provider-agnostic Studio tool loop.
+"""The provider-agnostic Unsloth tool loop.
 
 The transport is faked so these exercise the loop itself: turn cycling, the
 budget, approvals, and the text-form healing that self-hosted models need. The
@@ -258,7 +258,7 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
     # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
-    # roughly 4K tokens to a prompt this loop replays. Studio cannot measure an external
+    # roughly 4K tokens to a prompt this loop replays. Unsloth cannot measure an external
     # model's window, so the cap is one ordinary recall's worth.
     from core.rag import config as rag_config
 
@@ -771,12 +771,27 @@ def test_a_stalled_model_is_nudged_to_act(executed):
             [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
     # The nudge is a user turn appended after the stall.
     second = transport.requests[1]["messages"]
     assert second[-1]["role"] == "user"
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed):
+    """The external loop must not invent a retry for an omitted opt-in flag."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -1078,7 +1093,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     ends = _events(lines, "tool_end")
     assert len(ends) == 2
     assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
-    assert ends[1]["result"].startswith("Studio did not run this call")
+    assert ends[1]["result"].startswith("Unsloth did not run this call")
     # Opened as well as closed. The client retires a card id when it closes it,
     # so a second tool_end on the same id resolves to no card and the adapter
     # drops it -- the skip would be invisible again. Announcing it first draws

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Server-side mirror of the per-model config. ../model-config/per-model-config.ts lives in
-// browser localStorage, so an API auto-switch load (no browser in the loop) came up with none of
-// the user's settings. routes/inference.py reads this map and rebuilds the picker's LoadRequest.
+// Server-side mirror of the per-model config. per-model-config.ts lives in browser
+// localStorage, so an API auto-switch load came up with none of the user's settings.
+// routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -12,7 +12,12 @@ import {
   normalizeModelIdentity,
   splitQuantSuffix,
 } from "../model-config/model-identity";
-import type { PerModelConfig } from "../model-config/per-model-config";
+import {
+  DEFAULT_PER_MODEL_CONFIG,
+  type PerModelConfig,
+  deletePerModelConfigsForOverrideKeys,
+  normalizePerModelConfig,
+} from "../model-config/per-model-config";
 
 const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
 
@@ -64,11 +69,8 @@ export interface ApiModelOverride {
 
 export type ApiModelOverrides = Record<string, ApiModelOverride>;
 
-/**
- * The key one model's config is stored under: the `repo:VARIANT` form an OpenAI
- * request names a quant by, so two quants of one repo keep separate configs and the
- * backend matches the requested name directly. Bare id when there is no variant.
- */
+/** The key one model's config is stored under: the `repo:VARIANT` form an OpenAI request
+ *  names a quant by, so two quants of one repo keep separate configs. Bare id if no variant. */
 export function modelOverrideKey(
   modelId: string,
   ggufVariant?: string | null,
@@ -76,26 +78,10 @@ export function modelOverrideKey(
   return ggufVariant ? `${modelId}:${ggufVariant}` : modelId;
 }
 
-/**
- * The stored pass-through args for a model, under any key the backend would resolve.
- *
- * The overrides route folds identities before it reads a row: a repo id and a quant
- * differing only in case resolve to the same entry, and it falls back from
- * `repo:QUANT` to the bare repo. A literal lookup on the two keys this panel happens
- * to use would show an empty box for a model that will launch with arguments, and
- * the first edit would then replace a list nobody saw. Keys are tried most specific
- * first, then folded, mirroring that order.
- */
-/**
- * A path that names one file whatever the casing, folded for comparison, or null
- * when the path is case-sensitive.
- *
- * The rules are _fold_case_insensitive_path's, and they have to be, because the
- * server applies an override this resolver has to find: a Windows drive path, a UNC
- * share and a WSL drive mount all fold, the separator is interchangeable, and
- * trailing separators are trimmed down to the root. A POSIX path is not folded, or
- * "/models/Foo.gguf" would collect the arguments stored for "/models/foo.gguf".
- */
+/** A path that names one file whatever the casing, folded for comparison, or null when the
+ *  path is case-sensitive. Rules are _fold_case_insensitive_path's and must be, since the
+ *  server applies an override this resolver has to find. A POSIX path is not folded, or
+ *  "/models/Foo.gguf" would collect the arguments stored for "/models/foo.gguf". */
 const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
 const WSL_DRIVE_PATH = /^\/mnt\/[a-zA-Z](\/|$)/;
 
@@ -118,35 +104,28 @@ function foldCaseInsensitivePath(key: string): string | null {
   return trimmed.toLowerCase();
 }
 
-function foldOverrideKey(key: string): string {
+export function foldOverrideKey(key: string): string {
   // A path that folds does so whole, separators and casing together.
   const path = foldCaseInsensitivePath(key);
   if (path !== null) {
     return path;
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
-  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would
-  // fold it onto the real, different file "/models/foo:bar.gguf". This is the check
-  // the backend's split_quant_suffix makes.
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
+  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
+  // split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
-  // A POSIX path keeps its case; only the quant folds, because the browser
-  // lowercases that before storing. A repo id folds whole.
+  // A POSIX path keeps its case; only the quant folds, because the browser lowercases that
+  // before storing. A repo id folds whole.
   return id.startsWith("/") ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
 }
 
-/**
- * The stored arguments, with "the row carried an empty list" kept apart from "no
- * row carried the field at all".
- *
- * The distinction is what the settings page's tombstone is for: clearing the box
- * for one quant saves an explicit [], and that is what stops the server's lookup
- * before it reaches a legacy bare-repository row that still holds arguments.
- * Collapsing the two left the panel with llamaExtraArgs undefined, its next Load
- * omitted the field, and /load carried the resident model's arguments over: the
- * very ones that had just been cleared.
- */
+/** The stored arguments, keeping "the row carried an empty list" apart from "no row carried
+ *  the field". That is what the settings page's tombstone is for: clearing the box saves an
+ *  explicit [], which stops the lookup before a legacy bare-repository row. Collapsing the
+ *  two left llamaExtraArgs undefined and /load carried the cleared arguments over. */
 export type ResolvedExtraArgs = {
   tokens: string[];
   explicit: boolean;
@@ -158,46 +137,55 @@ function resolvedFrom(entry: ApiModelOverride): ResolvedExtraArgs {
   return { tokens: tokens ?? [], explicit: Array.isArray(tokens) };
 }
 
+function presentOverride(
+  value: ApiModelOverride | undefined | null,
+): ApiModelOverride | null {
+  return value && Object.keys(value).length > 0 ? value : null;
+}
+
+export function resolveStoredOverride(
+  overrides: ApiModelOverrides,
+  keys: readonly string[],
+): ApiModelOverride | null {
+  // The overrides route folds identities before reading a row and falls back from `repo:QUANT`
+  // to the bare repo. Keys are tried most specific first, then folded, as whole ENTRIES,
+  // stopping at the first that exists. The auto-switch loader breaks on the first non-empty
+  // override, so falling through to a bare repo because the variant row carries no arguments
+  // would launch with flags an API load would not use. An entry with no fields is skipped,
+  // because that is what `if override: break` does on the server.
+  const folded = new Map<string, ApiModelOverride | null>();
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!presentOverride(value)) {
+      continue;
+    }
+    const foldedKey = foldOverrideKey(key);
+    // Ambiguous folds resolve to nothing, as resolve_model_override_key does: duplicate case
+    // variants left by an upgrade must not be picked at enumeration order, which is another
+    // model's settings half the time.
+    folded.set(foldedKey, folded.has(foldedKey) ? null : value);
+  }
+  for (const key of keys) {
+    const exact = presentOverride(overrides[key]);
+    if (exact) {
+      return exact;
+    }
+    // Folding by the backend's rule: a POSIX path is case-sensitive, so lowercasing one whole
+    // would hand /models/foo.gguf the arguments stored for /models/Foo.gguf. Windows, UNC and
+    // WSL paths do fold, as does the quant suffix the browser lowercases before storing.
+    const match = folded.get(foldOverrideKey(key));
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 export function resolveStoredExtraArgs(
   overrides: ApiModelOverrides,
   keys: readonly string[],
 ): ResolvedExtraArgs {
-  // Whole ENTRIES, in the order the backend tries them, stopping at the first one
-  // that exists. The auto-switch loader breaks on the first non-empty override and
-  // reads its fields from there, so falling through to a bare repo id because the
-  // variant row happens to carry no arguments would launch the picker with flags an
-  // API load would not use.
-  // An entry with no fields is skipped rather than stopping the search, because
-  // that is what `if override: break` does on the server.
-  const present = (value: ApiModelOverride | undefined | null) =>
-    value && Object.keys(value).length > 0 ? value : null;
-  const folded = new Map<string, ApiModelOverride | null>();
-  for (const [key, value] of Object.entries(overrides)) {
-    if (!present(value)) {
-      continue;
-    }
-    const foldedKey = foldOverrideKey(key);
-    // Ambiguous folds resolve to nothing, as resolve_model_override_key does:
-    // duplicate case variants left by an upgrade must not have one of them picked
-    // at enumeration order, which is another model's settings half the time.
-    folded.set(foldedKey, folded.has(foldedKey) ? null : value);
-  }
-  for (const key of keys) {
-    const exact = present(overrides[key]);
-    if (exact) {
-      return resolvedFrom(exact);
-    }
-    // Folding, by the same rule the backend resolves with: a POSIX path is
-    // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
-    // arguments stored for /models/Foo.gguf and then send them explicitly on Load.
-    // Windows, UNC and WSL paths do fold, and so does the quant suffix the browser
-    // lowercases before storing.
-    const match = folded.get(foldOverrideKey(key));
-    if (match) {
-      return resolvedFrom(match);
-    }
-  }
-  return { tokens: [], explicit: false };
+  const resolved = resolveStoredOverride(overrides, keys);
+  return resolved ? resolvedFrom(resolved) : { tokens: [], explicit: false };
 }
 
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
@@ -211,24 +199,17 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   return body.overrides ?? {};
 }
 
-/**
- * The pass-through arguments the LOAD of this model would apply.
- *
- * Asked of the server rather than worked out here, because the resolution is
- * Python's: casefold is not toLowerCase (Straße and STRASSE are one path to the
- * loader and two to a browser), and an ambiguous fold deliberately matches nothing.
- * A client mirroring those rules can only approximate them, and the approximation
- * shows up as a cold load launching without arguments an API load applies.
- *
- * Falls back to resolving locally against the whole map when the backend predates
- * the parameter, which is the same answer in every case but the exotic ones.
- */
-export async function fetchLoadExtraArgs(
+/** The pass-through arguments the LOAD of this model would apply. Asked of the server rather
+ *  than derived here, because the resolution is Python's: casefold is not toLowerCase, and
+ *  an ambiguous fold deliberately matches nothing. A client can only approximate that, and
+ *  the approximation shows as a cold load launching without arguments an API load applies.
+ *  Falls back to resolving locally when the backend predates the parameter. */
+export async function fetchLoadModelOverride(
   loadId: string,
   aliasId: string,
   ggufVariant?: string | null,
   fallbackKeys: readonly string[] = [],
-): Promise<ResolvedExtraArgs> {
+): Promise<ApiModelOverride | null> {
   const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
@@ -246,17 +227,12 @@ export async function fetchLoadExtraArgs(
     resolved_key?: string | null;
   };
   if (body.resolved !== undefined) {
-    // An explicit empty list is a cleared box, not an absence, and the caller has
-    // to send it as one: omitting the field lets /load carry the resident model's
-    // arguments over, which is exactly what was cleared.
-    return resolvedFrom(body.resolved ?? {});
+    return presentOverride(body.resolved);
   }
-  // A backend that predates the resolved field answers with the whole map, and the
-  // caller has to say which keys to look under. Derived here when it did not: the
-  // panel passes its own richer list (it knows the alias the settings page used),
-  // while the auto-load and compare callers have only these two identities, and
-  // defaulting to none made them read an empty map and launch without the stored
-  // arguments against an older server.
+  // A backend that predates the resolved field answers with the whole map and needs to be told
+  // which keys to look under. Derived here when it was not: the panel passes its own richer
+  // list, while the auto-load and compare callers have only these two identities, and
+  // defaulting to none made them read an empty map against an older server.
   const derived =
     fallbackKeys.length > 0
       ? fallbackKeys
@@ -266,15 +242,96 @@ export async function fetchLoadExtraArgs(
           loadId,
           aliasId,
         ].filter((key, index, all) => all.indexOf(key) === index);
-  return resolveStoredExtraArgs(body.overrides ?? {}, derived);
+  return resolveStoredOverride(body.overrides ?? {}, derived);
 }
 
-/**
- * Translate the UI's per-model config into the backend's schema. Only fields the user set are
- * sent: an absent field reads as "app default", so nulls would pin defaults and stop the model
- * following later global changes. A `null` config clears the entry. Exported so the backfill
- * can compare it against the stored entry.
- */
+export async function fetchLoadExtraArgs(
+  loadId: string,
+  aliasId: string,
+  ggufVariant?: string | null,
+  fallbackKeys: readonly string[] = [],
+): Promise<ResolvedExtraArgs> {
+  const resolved = await fetchLoadModelOverride(
+    loadId,
+    aliasId,
+    ggufVariant,
+    fallbackKeys,
+  );
+  // An explicit empty list is a cleared box, not an absence, and must be sent as one: omitting
+  // the field lets /load carry the resident model's arguments over.
+  return resolvedFrom(resolved ?? {});
+}
+
+/** Translate one server-resolved override into the picker's config shape. The row is
+ *  authoritative for the fields it CARRIES and only those: an absent field is not evidence
+ *  the user chose the default, since a failed PUT, a refused value and an old row all leave
+ *  the same gap. `localConfig` fills it, or opening the panel would delete settings typed
+ *  here. The cost is that clearing ONE field on another origin does not travel until this
+ *  one saves again, which the schema cannot express anyway. */
+export function fromApiOverride(
+  override: ApiModelOverride,
+  localConfig?: PerModelConfig,
+): PerModelConfig {
+  const local = localConfig ?? DEFAULT_PER_MODEL_CONFIG;
+  // Three states, so the winning source is chosen once and restored below: the row's list when
+  // it has one, else whatever this browser held.
+  const extraArgs = Array.isArray(override.llama_extra_args)
+    ? override.llama_extra_args
+    : local.llamaExtraArgs;
+  // Only a physical pin travels (toApiOverride drops the rest), so a row without ids says
+  // nothing about placement and a local Vulkan ordinal keeps its own namespace.
+  const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
+  // The pin is ONE setting in one of two fields, and an edit clears the other
+  // (contextPinPatch). Filling them from different sources mints a record that loads at
+  // two lengths, since the picker reads customContextLength first and the API's
+  // auto-switch max_seq_length first. So a row stating either field owns both.
+  const serverStatesPin =
+    override.custom_context_length != null || override.max_seq_length != null;
+  const normalized = normalizePerModelConfig({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    customContextLength: serverStatesPin
+      ? (override.custom_context_length ?? null)
+      : local.customContextLength,
+    maxSeqLength: serverStatesPin
+      ? (override.max_seq_length ?? null)
+      : local.maxSeqLength,
+    kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
+    mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
+    speculativeType: override.speculative_type ?? local.speculativeType,
+    specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
+    specDraftCacheDtype:
+      override.spec_draft_cache_type ?? local.specDraftCacheDtype,
+    nParallel: override.n_parallel ?? local.nParallel,
+    nBatch: override.n_batch ?? local.nBatch,
+    nUbatch: override.n_ubatch ?? local.nUbatch,
+    loadMode: override.load_mode ?? local.loadMode,
+    ctxCheckpoints: override.ctx_checkpoints ?? local.ctxCheckpoints,
+    cacheRam: override.cache_ram ?? local.cacheRam,
+    // Both are stored only when true, so an absent one is a gap like any other.
+    tensorParallel: override.tensor_parallel ?? local.tensorParallel,
+    disableVision: override.disable_vision ?? local.disableVision,
+    chatTemplateOverride:
+      override.chat_template_override ?? local.chatTemplateOverride,
+    llamaExtraArgs: extraArgs,
+    gpuMemoryMode: override.gpu_memory_mode ?? local.gpuMemoryMode,
+    gpuLayers: override.gpu_layers ?? local.gpuLayers,
+    nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
+    selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    selectedGpuIndexKind: serverGpuIds
+      ? "physical"
+      : (local.selectedGpuIndexKind ?? null),
+  });
+  // normalizePerModelConfig collapses an empty list to null. The server uses [] as a tombstone
+  // that stops fallback to a broader override, so hydration must retain that third state.
+  if (Array.isArray(extraArgs)) {
+    normalized.llamaExtraArgs = [...extraArgs];
+  }
+  return normalized;
+}
+
+/** Translate the UI's per-model config into the backend's schema. Only fields the user set are
+ *  sent: an absent field reads as "app default", so nulls would pin defaults and stop the
+ *  model following later global changes. A `null` config clears the entry. */
 export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
     return {};
@@ -289,8 +346,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.kvCacheDtype) {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
-  // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX
-  // model at full precision.
+  // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
   if (config.mlxKvBits != null) {
     payload.mlx_kv_bits = config.mlxKvBits;
   }
@@ -311,9 +367,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.nUbatch && config.nUbatch > 0) {
     payload.n_ubatch = config.nUbatch;
   }
-  // Blank follows llama.cpp's own default for each: auto, f16, 32 and 8192.
-  // cacheRam is compared against null rather than tested for truth, because 0 and
-  // -1 are both meaningful values here (disable, and no limit).
+  // Blank follows llama.cpp's own default for each: auto, f16, 32 and 8192. cacheRam is
+  // compared against null rather than truth, since 0 and -1 both mean something.
   if (config.loadMode) {
     payload.load_mode = config.loadMode;
   }
@@ -336,9 +391,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.chat_template_override = config.chatTemplateOverride;
   }
   // The one field where absent does NOT mean "app default": the route preserves
-  // llama_extra_args it is not sent, which is what kept CLI-set flags alive while
-  // this panel had no control for them. So `undefined` (never read) stays omitted,
-  // and a cleared box has to say so with an explicit empty list.
+  // llama_extra_args it is not sent, which kept CLI-set flags alive while this panel had no
+  // control. So `undefined` stays omitted and a cleared box sends an explicit empty list.
   if (config.llamaExtraArgs !== undefined) {
     payload.llama_extra_args = config.llamaExtraArgs ?? [];
   }
@@ -354,9 +408,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.n_cpu_moe = config.nCpuMoe;
   }
   // Only a physical pin travels. The same integers are a Vulkan ordinal under Vulkan and a
-  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend change
-  // the server would pin a different device with ids its availability check accepts. An absent
-  // kind predates the field, which was physical-only. Dropping the pin leaves auto placement.
+  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend
+  // change the server would pin a different device. An absent kind predates the field.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (
     config.selectedGpuIds &&
@@ -370,20 +423,22 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 
 // One in-flight write per model, so writes commit in issue order: otherwise the older
 // response can land last and resurrect the entry the newer one replaced. Models overlap.
-const writesByKey = new Map<string, Promise<void>>();
+const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
+
+export interface ModelOverrideWriteResult {
+  overrides: ApiModelOverrides;
+  /** Empty for a save, and from a backend that predates the field. */
+  removedKeys: string[];
+}
 
 export interface PutModelOverrideOptions {
-  /**
-   * Fill in only what is missing: every value already on the server stays as it is. The backfill
-   * reads the map once then writes each model in turn, so another tab's save would be overwritten
-   * by this browser's older copy. Field level, so a legacy entry gains the browser-only fields.
-   */
+  /** Fill in only what is missing: every value already on the server stays. The backfill reads
+   *  the map once then writes each model in turn, so another tab's save would be overwritten
+   *  by this browser's older copy. Field level, so a legacy entry gains browser-only fields. */
   fillAbsentFields?: boolean;
-  /**
-   * Clear the fields this UI mirrors but leave the server's own launch flags alone. Evicting a
-   * local entry for the storage budget is not a forget, so it must not take `llama_extra_args`
-   * the page can neither show nor restore. The route drops the row once nothing is left in it.
-   */
+  /** Clear the fields this UI mirrors but leave the server's own launch flags alone. Evicting a
+   *  local entry for the storage budget is not a forget, so it must not take
+   *  `llama_extra_args` the page can neither show nor restore. */
   keepLaunchFlags?: boolean;
 }
 
@@ -392,7 +447,7 @@ export async function putModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
-): Promise<void> {
+): Promise<ModelOverrideWriteResult> {
   // Keyed by the folded identity: the backend resolves a legacy casing and the
   // normalized one to one row, so raw strings would open two queues and race again.
   const key = modelOverrideKey(
@@ -406,7 +461,7 @@ export async function putModelOverride(
     .then(() => sendModelOverride(modelId, ggufVariant, config, options));
   writesByKey.set(key, write);
   try {
-    await write;
+    return await write;
   } finally {
     // Only the last writer clears the slot, so a queue still building keeps order.
     if (writesByKey.get(key) === write) {
@@ -420,24 +475,30 @@ async function sendModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
-): Promise<void> {
+): Promise<ModelOverrideWriteResult> {
   const res = await authFetch(OVERRIDES_URL, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
+      // This build mirrors the llama-server tuning group, so an omission here is the
+      // user clearing it rather than a client that predates the fields. Without this
+      // the backend preserves the stored values, which is what stops a cached older
+      // bundle from deleting settings it never knew to send. An older backend ignores
+      // the key.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_server_tuning: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { fill_absent_fields: true }
         : {}),
-      // Say which operation this is: an all-default save carries no fields, shape-identical
-      // to a forget, and guessing wrong wipes flags the UI cannot show or restore.
+      // Say which operation this is: an all-default save carries no fields, shape-identical to a
+      // forget, and guessing wrong wipes flags the UI cannot show or restore.
       remove: config === null && !options?.keepLaunchFlags,
-      // The backend preserves the flags when omitted, which is what a save that
-      // never opened the box relies on; a forget means all of it, so that path
-      // sends an explicit [].
+      // The backend preserves the flags when omitted, which a save that never opened the box relies
+      // on; a forget means all of it, so that path sends an explicit [].
       ...(config === null && !options?.keepLaunchFlags
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: [] }
@@ -450,12 +511,27 @@ async function sendModelOverride(
       await readFastApiError(res, "Failed to save model settings for the API"),
     );
   }
+  const body = (await res.json()) as {
+    overrides?: ApiModelOverrides;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    removed_keys?: unknown;
+  };
+  return {
+    overrides: body.overrides ?? {},
+    removedKeys: Array.isArray(body.removed_keys)
+      ? body.removed_keys.filter(
+          (key): key is string => typeof key === "string",
+        )
+      : [],
+  };
 }
 
 /**
  * Mirror a per-model config save to the backend without blocking the UI. Best-effort: the
  * localStorage write already happened, so a failed sync must not fail the save. Logged, not
  * toasted: an API load falls back to defaults until the next save.
+ *
+ * A forget also drops the local records for every spelling the server reports clearing.
  */
 export function syncModelOverride(
   modelId: string,
@@ -463,12 +539,18 @@ export function syncModelOverride(
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
 ): void {
-  void putModelOverride(modelId, ggufVariant, config, options).catch(
-    (error: unknown) => {
+  void putModelOverride(modelId, ggufVariant, config, options)
+    .then(({ removedKeys }) => {
+      if (!deletePerModelConfigsForOverrideKeys(removedKeys)) {
+        console.warn(
+          "Forgot model settings on the server, but this browser kept its own copy.",
+        );
+      }
+    })
+    .catch((error: unknown) => {
       console.warn(
         "Failed to mirror model settings to the server; an API load of this model will use defaults.",
         error,
       );
-    },
-  );
+    });
 }

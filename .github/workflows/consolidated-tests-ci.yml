@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 17
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -145,6 +145,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: consolidated
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -231,7 +232,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist httpx \
+            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
@@ -406,7 +407,7 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci, which
+        # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
         # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
@@ -442,10 +443,12 @@ jobs:
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
             tests/test_bad_mappings_redirect.py \
+            tests/test_ollama_eos_token_order.py \
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
-            tests/test_map_eos_token.py
+            tests/test_map_eos_token.py \
+            tests/test_apertus_instruct_mapping.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.
@@ -462,64 +465,74 @@ jobs:
         # the test never stubbed; this fails on every platform regardless
         # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
         # here unblocks unsloth CI until the loader fixture is fixed.
+        #
+        # A test that hangs rather than fails used to consume the whole 35 minute
+        # job budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating all 35.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
+        env:
+          PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          # Two passes: everything in parallel, then the two files that cannot share a
-          # process with the rest of the suite.
-          #
-          # Measured on a staging runner across all three matrix cells, whole suite:
-          #
-          #     cell                      serial   -n 4 --dist loadfile
-          #     HF=latest + TRL=latest      580s                  253s
-          #     HF=4.57.6 + TRL<1           517s                  229s
-          #     HF=default + TRL=default    568s                  246s
-          #
-          # Across two runs of all three cells, four agreed exactly -- failure sets and
-          # skip sets both -- and two produced 14 failures serial does not: 8 in
-          # test_mlx_generate.py and 6 in test_moe_bnb4bit_per_expert_conversions.py.
-          #
-          # The same 14 every time, and NOT the same cell: the second run moved them from
-          # HF=default to HF=latest. So this is not a dependency combination, it is worker
-          # scheduling, and roughly one cell per run draws the losing order.
-          #
-          # Both files pass on their own, and pass under xdist on their own, so they are
-          # self-contained. What breaks them is another file running first in the same
-          # worker -- an ordering serial never produces, because serial is alphabetical.
-          # So the parallel speedup is real and the divergence is real, and the two are
-          # separable: run those two files in their own process, where they are reliable.
-          #
-          # This is a mitigation, not a cure. The suite has cross-file pollution that
-          # alphabetical ordering happens to hide, and the right fix is in unsloth_zoo,
-          # on whichever file leaks. Pinning here keeps CI honest meanwhile: what these
-          # two files prove is unchanged, because a fresh process is what they get today.
-          #
-          # test_hf_xet_fallback.py is here for a different reason, found the same way.
-          # It drives a stall detector against the real clock -- 27 sub-second sleeps,
-          # one of them commented "within the unmeasurable window" -- and under four
-          # workers on four cores it reported "Download appears stalled (xet transport)
-          # -- no progress for 0s". Nothing was stalled; the test was descheduled. No
-          # ordering fix helps a wall-clock margin, so it gets the quiet process too.
-          #
-          # It is the only file in the suite with that shape: two use sub-second sleeps
-          # and the other one (test_mlx_save_export_edge_cases.py) sleeps 0.01s to widen
-          # a race window without asserting on elapsed time.
-          #
-          # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
-          # or importlib.reload, so tests within a file must stay on one worker, in order.
+          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
+          # so exclude that family from xdist and run it separately below. The other
+          # ignores either leak process state or use timing assertions that need a quiet
+          # process.
           python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
-            --ignore=tests/test_mlx_generate.py \
+            --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
             --ignore=tests/test_hf_xet_fallback.py \
+            --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
-            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
+            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
-          # The pair, serially, in a process of their own. Not optional: without this the
-          # ignores above delete 51 tests from CI and the job still goes green.
-          python -m pytest -q --tb=short \
-            tests/test_mlx_generate.py \
-            tests/test_moe_bnb4bit_per_expert_conversions.py \
-            tests/test_hf_xet_fallback.py
+          # Run contamination-sensitive files in separate processes. Keep collecting
+          # results after failures, and treat pytest exit 5 as a module-level skip.
+          rc=0
+          _keep() {
+            if [ "$1" = 5 ]; then
+              # Named: an expected module-level skip and a file that stopped collecting
+              # for a new reason both exit 5.
+              echo "note: ${2:-that run} collected nothing (module-level skip), not a failure"
+            else
+              rc=1
+            fi
+          }
+          python -m pytest -q --tb=short tests/test_mlx_generate.py || _keep "$?" tests/test_mlx_generate.py
+          python -m pytest -q --tb=short tests/test_moe_bnb4bit_per_expert_conversions.py || _keep "$?" tests/test_moe_bnb4bit_per_expert_conversions.py
+          python -m pytest -q --tb=short tests/test_hf_xet_fallback.py || _keep "$?" tests/test_hf_xet_fallback.py
+          python -m pytest -q --tb=short tests/test_mlx_neftune_quant_map.py || _keep "$?" tests/test_mlx_neftune_quant_map.py
+          python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?" tests/test_mlx_gated_delta_vjp.py
+          python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
+
+          # Run the remaining MLX files serially in alphabetical order. The three isolated
+          # above also contaminate this group, so exclude them from its file list.
+          mlx_group=$(ls tests/test_mlx_*.py |
+            grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
+          # Passed unquoted below to word-split into file arguments, so an empty list
+          # would pass none and pytest would collect the whole rootdir instead.
+          if [ -z "$mlx_group" ]; then
+            echo "::error::the mlx group glob matched no files"
+            exit 1
+          fi
+          python -m pytest -q --tb=short $mlx_group \
+            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
+            || _keep "$?" "the mlx group"
+          exit "$rc"
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
@@ -2318,7 +2331,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
@@ -2365,6 +2378,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: llama-cpp-smoke
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -2575,4 +2589,3 @@ jobs:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
-

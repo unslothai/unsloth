@@ -16,10 +16,12 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pytest
+
+from _ts_deps import resolve_dependencies
 
 WORKDIR = Path(__file__).resolve().parents[2]
 
@@ -36,8 +38,23 @@ def read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def require_code_anchor(marker: str, role: str) -> None:
+    """Refuse a comment as a slice anchor.
+
+    Comments are prose, so rewording one moves no behaviour but still breaks the slice:
+    #10114 trimmed studio/frontend comments and failed 93 tests here over nothing it
+    changed. Anchor on the declaration the comment sits above instead.
+    """
+    if marker.lstrip().startswith(("//", "/*", "{/*")):
+        raise AssertionError(
+            f"{role} anchor is a comment, so rewording it breaks this test: {marker!r}"
+        )
+
+
 def slice_between(text: str, start_marker: str, end_marker: str) -> str:
     """The source from ``start_marker`` up to (not including) ``end_marker``."""
+    require_code_anchor(start_marker, "start")
+    require_code_anchor(end_marker, "end")
     start = text.index(start_marker)
     end = text.index(end_marker, start + len(start_marker))
     return text[start:end]
@@ -60,8 +77,21 @@ def require_node(sources: Iterable[Path]) -> None:
         pytest.skip("node --experimental-strip-types not available")
 
 
-def run_harness(temp_root: Path, harness_source: str, script: str) -> dict:
-    """Run ``script`` against ``harness_source`` and parse its last stdout line."""
+def run_harness(
+    temp_root: Path,
+    harness_source: str,
+    script: str,
+    sources: Sequence[Path] = (),
+) -> dict:
+    """Run ``script`` against ``harness_source`` and parse its last stdout line.
+
+    ``sources`` are the files the harness sliced from. Given them, the helpers those slices
+    reference are followed out of the studio sources and sliced in too (``_ts_deps``), so a
+    sliced function that gains a dependency does not have to be met with another hand-written
+    name in the prelude. Fixtures the harness already defines always win.
+    """
+    if sources:
+        harness_source = resolve_dependencies(harness_source, tuple(sources))
     temp_root.mkdir(parents = True, exist_ok = True)
     workdir = Path(tempfile.mkdtemp(prefix = "run", dir = str(temp_root)))
     (workdir / "harness.ts").write_text(harness_source, encoding = "utf-8")

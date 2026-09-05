@@ -28,6 +28,20 @@ const PANEL_SOURCE = readFileSync(
   "utf8",
 );
 
+const ROOT_SOURCE = readFileSync(
+  fileURLToPath(new URL("../src/app/routes/__root.tsx", import.meta.url)),
+  "utf8",
+);
+const SETTINGS_MOUNT_SOURCE = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/settings/settings-dialog-mount.tsx",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+
 /** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
 function corner(height = 300): MonitorFrame {
   return { left: 1168, top: 884 - height, right: 1424, bottom: 884 };
@@ -160,7 +174,7 @@ test("two publishers are dodged together, not one at a time", () => {
   assert.deepEqual(
     published(),
     [corner(300), { left: 300, top: 780, right: 1100, bottom: 860 }],
-    "both are kept, apart, for stackGeometry to fold one at a time",
+    "both are kept, apart, for panel-placement to dodge one at a time",
   );
 });
 
@@ -189,5 +203,80 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
   );
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
   assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
-  assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
+  assert.match(
+    HOOK,
+    /clearFrame\(publisher\);\s*\n\s*\};/,
+    "and clear on unmount",
+  );
+});
+
+test("closed lazy settings surfaces cannot leave load failures on screen", () => {
+  const mount = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/settings/settings-dialog-mount.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // Keep rejected boundaries mounted for a later retry, but only show their errors while the user is
+  // still asking for that surface. A slow rejected chunk must not outlive a quick Open -> Close.
+  for (const [open, testId] of [
+    ["settingsOpen", "settings-dialog-load-failure"],
+    ["monitorOpen", "floating-monitor-load-failure"],
+  ]) {
+    assert.match(
+      mount,
+      new RegExp(
+        `fallback=\\{\\s*${open}\\s*\\?\\s*\\(\\s*<LazyImportFailure[\\s\\S]*?testId="${testId}"[\\s\\S]*?\\)\\s*:\\s*null\\s*\\}`,
+      ),
+    );
+  }
+});
+
+// Once either surface has loaded, an auth-route round trip must not forget its lazy-entry latch.
+// Both surfaces stay dormant there, then resume independently after authentication.
+test("the lazy Settings mount survives an auth-route round trip", () => {
+  assert.match(
+    ROOT_SOURCE,
+    /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/,
+  );
+  assert.match(
+    ROOT_SOURCE,
+    /<SettingsDialogMount active=\{active && ready\} \/>/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /if \(!active \|\| !\(settingsMounted \|\| monitorMounted\)\) return null;/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /const \[settingsMounted, setSettingsMounted\] = useState\(settingsOpen\)/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /const \[monitorMounted, setMonitorMounted\] = useState\(monitorOpen\)/,
+  );
+
+  assert.equal(
+    (
+      SETTINGS_MOUNT_SOURCE.match(/dismissLabel=\{t\("common\.close"\)\}/g) ??
+      []
+    ).length,
+    2,
+  );
+  assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /event\.target === event\.currentTarget/);
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*restoreSettingsOpener\(opener, openerFallback\);/,
+  );
+  assert.match(
+    SETTINGS_MOUNT_SOURCE,
+    /onDismiss=\{\(\) => setMonitorOpen\(false\)\}/,
+  );
 });

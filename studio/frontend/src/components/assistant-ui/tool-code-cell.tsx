@@ -4,13 +4,13 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CopyIcon, DownloadIcon } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 
@@ -86,15 +86,6 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   );
 }
 
-/** A fence longer than any backtick run in the code, so a script containing ``` cannot end it early. */
-function fenceFor(source: string): string {
-  const longest = (source.match(/`+/g) ?? []).reduce(
-    (max, run) => Math.max(max, run.length),
-    0,
-  );
-  return "`".repeat(Math.max(3, longest + 1));
-}
-
 /** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace, but
  * shiki only tokenizes once the block nears the viewport, so a long transcript does not
  * highlight every script up front. Immediate where IntersectionObserver is missing. */
@@ -108,7 +99,7 @@ function HighlightedCode({
   plain?: boolean;
 }) {
   const markdown = useMemo(() => {
-    const fence = fenceFor(source);
+    const fence = codeFence(source);
     return `${fence}${language}\n${source}\n${fence}`;
   }, [source, language]);
   const containerRef = useRef<HTMLDivElement>(null);

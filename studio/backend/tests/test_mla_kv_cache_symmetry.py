@@ -13,7 +13,7 @@ check, so it decides first:
         return nullptr;
     }
 
-is_mla() covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x, which Studio
+is_mla() covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x, which Unsloth
 already recognises through kv_lora_rank.
 
 The flash-attention-off retry resets a quantized V cache to f16 and
