@@ -154,7 +154,7 @@ jobs:
         shell: pwsh
         working-directory: studio/backend
         run: |
-          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.environment == 'windows', c; open(r'$env:GITHUB_STEP_SUMMARY', 'a', encoding='utf-8').write(f'Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\nreason: {c.reason}\n')"
+          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.environment == 'windows', c; open(r'$env:GITHUB_STEP_SUMMARY', 'a', encoding='utf-8').write(f'Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\nreason: {c.reason}\n'); assert c.available and c.qualified and c.protection_state == 'preview', c; assert c.profile_id in ('windows-lpac-preview-v1', 'windows-appcontainer-preview-v1'), c"
       - name: Run Windows enforcement and shared regression tests
         # Runs whatever the probe reported: the suites skip the live legs when
         # no backend qualifies, so a regression in the shared tool paths is

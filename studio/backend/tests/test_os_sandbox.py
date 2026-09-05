@@ -1358,8 +1358,14 @@ def test_system_root_scan_timeout_is_transient_and_never_cached(
     assert f"exceeded {os_sandbox._SYSTEM_SCAN_TIMEOUT_SECONDS} s" in str(excinfo.value)
 
     # Interpreter roots keep the short budget and the same transient marker.
+    # (An explicit user-writable root: a venv interpreter that resolves into
+    # /usr/bin is a system root and would not be scanned at all.)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
     with pytest.raises(os_sandbox.SandboxUnavailableError) as excinfo:
-        os_sandbox._validate_runtime_paths((sys.executable,), str(tmp_path), allow_nested_mounts = True)
+        os_sandbox._validate_runtime_paths((str(runtime),), str(workdir), allow_nested_mounts = True)
     assert excinfo.value.transient is True
     assert f"exceeded {os_sandbox._RUNTIME_SCAN_TIMEOUT_SECONDS} s" in str(excinfo.value)
 
@@ -1398,8 +1404,12 @@ def test_system_root_scan_is_memoized_but_interpreter_scan_is_not(monkeypatch, t
         assert len(calls) == 1, "a passed system-root scan is remembered"
         assert "-executable" in calls[0]
 
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        workdir = tmp_path / "work"
+        workdir.mkdir()
         for _ in range(2):
-            os_sandbox._validate_runtime_paths((sys.executable,), str(tmp_path), allow_nested_mounts = True)
+            os_sandbox._validate_runtime_paths((str(runtime),), str(workdir), allow_nested_mounts = True)
         assert len(calls) == 3, "user-writable interpreter roots are scanned every launch"
 
         # A mount change under the roots invalidates the memo.
@@ -1615,6 +1625,11 @@ def test_apparmor_userns_restriction_gets_profile_remediation(monkeypatch, isola
     )
     assert stamped.remediation == os_sandbox._APPARMOR_USERNS_REMEDIATION
     assert stamped.protection_state == "unavailable"
+
+    # The profile names the binary that was probed, not always /usr/bin/bwrap.
+    local = os_sandbox._explain_linux_probe_failure(raw, "/usr/local/bin/bwrap")
+    assert "profile bwrap /usr/local/bin/bwrap flags=(unconfined)" in local.remediation
+    assert "/usr/bin/bwrap" not in local.remediation
 
     # Same symptom without the sysctl: the explanation is not attached.
     monkeypatch.setattr(os_sandbox, "_read_text", lambda path: "0\n")

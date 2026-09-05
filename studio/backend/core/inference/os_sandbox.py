@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import errno
+import ctypes
 import hashlib
 import json
 import os
 import platform
 import shutil
+import signal
 import socket
 import stat
 import struct
@@ -50,20 +52,33 @@ _GENERIC_REMEDIATION = (
     "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
 )
 _APPARMOR_USERNS_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-_APPARMOR_USERNS_REMEDIATION = (
-    "This host restricts unprivileged user namespaces with AppArmor "
-    "(kernel.apparmor_restrict_unprivileged_userns=1, the default on Ubuntu 24.04 and later), "
-    "so Bubblewrap cannot create its sandbox. Allow Bubblewrap with a profile: as root, create "
-    "/etc/apparmor.d/bwrap containing\n"
-    "  abi <abi/4.0>,\n"
-    "  include <tunables/global>\n"
-    "  profile bwrap /usr/bin/bwrap flags=(unconfined) {\n"
-    "    userns,\n"
-    "    include if exists <local/bwrap>\n"
-    "  }\n"
-    "then run `apparmor_parser -r /etc/apparmor.d/bwrap` (or `systemctl reload apparmor`) and "
-    "choose Check again. Until then, use Limited mode only for a trusted task."
-)
+_DEFAULT_BWRAP_PATH = "/usr/bin/bwrap"
+
+
+def _apparmor_userns_remediation(bwrap_path: str = _DEFAULT_BWRAP_PATH) -> str:
+    """The profile text names the Bubblewrap binary that was actually probed.
+
+    AppArmor attaches profiles by executable path, so a profile for
+    /usr/bin/bwrap does nothing for a qualified /usr/local/bin/bwrap or a Nix
+    store path.
+    """
+    return (
+        "This host restricts unprivileged user namespaces with AppArmor "
+        "(kernel.apparmor_restrict_unprivileged_userns=1, the default on Ubuntu 24.04 and later), "
+        "so Bubblewrap cannot create its sandbox. Allow Bubblewrap with a profile: as root, create "
+        "/etc/apparmor.d/bwrap containing\n"
+        "  abi <abi/4.0>,\n"
+        "  include <tunables/global>\n"
+        f"  profile bwrap {bwrap_path} flags=(unconfined) {{\n"
+        "    userns,\n"
+        "    include if exists <local/bwrap>\n"
+        "  }\n"
+        "then run `apparmor_parser -r /etc/apparmor.d/bwrap` (or `systemctl reload apparmor`) and "
+        "choose Check again. Until then, use Limited mode only for a trusted task."
+    )
+
+
+_APPARMOR_USERNS_REMEDIATION = _apparmor_userns_remediation()
 _APPARMOR_USERNS_MARKERS = (
     "RTM_NEWADDR",
     "Operation not permitted",
@@ -805,6 +820,7 @@ def _validate_runtime_paths(
                 _system_scan_memo[memo_key] = time.monotonic()
         return
 
+    deadline = time.monotonic() + scan_timeout
     for root in scan_roots:
         entries = 0
         if os.path.isfile(root):
@@ -816,6 +832,12 @@ def _validate_runtime_paths(
             ) from exc
 
         for base, dirs, names in os.walk(root, followlinks = False, onerror = walk_error):
+            if time.monotonic() > deadline:
+                raise SandboxUnavailableError(
+                    "cannot scan interpreter/runtime paths safely: the scan of "
+                    f"{', '.join(scan_roots)} exceeded {scan_timeout} s; retry the request",
+                    transient = True,
+                )
             for name in [*dirs, *names]:
                 entries += 1
                 if entries > _SCAN_ENTRY_LIMIT:
@@ -1161,7 +1183,7 @@ class LinuxBubblewrapBackend:
                 limitations = limitations,
             )
         return replace(
-            _explain_linux_probe_failure(result), available = False, limitations = limitations
+            _explain_linux_probe_failure(result, candidate), available = False, limitations = limitations
         )
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -1297,7 +1319,9 @@ class LinuxBubblewrapBackend:
         )
 
 
-def _explain_linux_probe_failure(result: SandboxCapability) -> SandboxCapability:
+def _explain_linux_probe_failure(
+    result: SandboxCapability, bwrap_path: str = _DEFAULT_BWRAP_PATH
+) -> SandboxCapability:
     """Attach the known cause and its remediation when AppArmor blocked Bubblewrap.
 
     Ubuntu 24.04 and later ship ``kernel.apparmor_restrict_unprivileged_userns=1``
@@ -1317,7 +1341,7 @@ def _explain_linux_probe_failure(result: SandboxCapability) -> SandboxCapability
             "AppArmor restricts unprivileged user namespaces on this host "
             f"(kernel.apparmor_restrict_unprivileged_userns=1): {result.reason}"
         ),
-        remediation = _APPARMOR_USERNS_REMEDIATION,
+        remediation = _apparmor_userns_remediation(os.path.realpath(bwrap_path)),
     )
 
 
@@ -2251,8 +2275,10 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
         if cached is not None and not force:
             return cached
         if force:
+            # The scan memo is keyed by mount topology and expires on its own; a
+            # forced capability refresh (every pre-send check) must not turn
+            # every launch back into a full scan of /usr.
             _capability_cache.clear()
-            _forget_system_scan_memo()
         result = _capability_with_identity(
             backend.probe(),
             environment = _environment_class(),
@@ -2283,6 +2309,62 @@ _LIMITED_SAFEGUARDS = (
     "cleanup",
 )
 _FULL_SAFEGUARDS = ("timeout", "cancellation", "reaping", "cleanup")
+
+
+# pidfd_open(2) and pidfd_send_signal(2) share these numbers on every Linux
+# architecture (they postdate the unified syscall table). Used only when the
+# interpreter was built without os.pidfd_open, which is the case for the
+# python-build-standalone 3.10 to 3.12 builds that uv installs.
+_NR_PIDFD_SEND_SIGNAL = 424
+_NR_PIDFD_OPEN = 434
+_pidfd_support: "bool | None" = None
+
+
+def _pidfd_open(pid: int) -> int:
+    """A file descriptor pinned to exactly this process (raises OSError)."""
+    if hasattr(os, "pidfd_open"):
+        return os.pidfd_open(pid, 0)
+    libc = ctypes.CDLL(None, use_errno = True)
+    fd = libc.syscall(_NR_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(0))
+    if fd < 0:
+        errno_value = ctypes.get_errno()
+        raise OSError(errno_value, os.strerror(errno_value))
+    return int(fd)
+
+
+def _pidfd_send_signal(pidfd: int, signum: int) -> None:
+    if hasattr(signal, "pidfd_send_signal"):
+        signal.pidfd_send_signal(pidfd, signum)
+        return
+    libc = ctypes.CDLL(None, use_errno = True)
+    result = libc.syscall(
+        _NR_PIDFD_SEND_SIGNAL, ctypes.c_int(pidfd), ctypes.c_int(signum), None, ctypes.c_uint(0)
+    )
+    if result < 0:
+        errno_value = ctypes.get_errno()
+        raise OSError(errno_value, os.strerror(errno_value))
+
+
+def descendant_sweep_supported() -> bool:
+    """Whether Limited launches can reap detached descendants after the leader exits.
+
+    The sweep (tools._sweep_marked_descendants) matches processes by the per-call
+    marker in ``/proc/<pid>/environ`` and signals them through a pidfd taken
+    before the match, so a pid recycled between the match and the signal is
+    never hit. Without ``/proc`` or pidfds (macOS, Linux before 5.3) there is no
+    safe sweep and the Limited record discloses
+    ``detached_descendant_cleanup_unverified`` instead.
+    """
+    global _pidfd_support
+    if sys.platform != "linux" or not os.path.isdir("/proc"):
+        return False
+    if _pidfd_support is None:
+        try:
+            os.close(_pidfd_open(os.getpid()))
+            _pidfd_support = True
+        except (OSError, AttributeError, TypeError):
+            _pidfd_support = False
+    return _pidfd_support
 
 
 def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -2374,7 +2456,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             # exits (tools._sweep_marked_descendants); macOS has no /proc, so a
             # setsid grandchild there can outlive the call and the record says so.
             limitations = (
-                ("detached_descendant_cleanup_unverified",) if sys.platform == "darwin" else ()
+                () if descendant_sweep_supported() else ("detached_descendant_cleanup_unverified",)
             ),
         )
         return PreparedSandboxLaunch(
@@ -2394,7 +2476,14 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             f"OS_ISOLATION_UNAVAILABLE: {capability.reason}. {capability.remediation}"
         )
     try:
-        prepared = backend.prepare(canonical)
+        # A backend with more than one profile (Windows LPAC or its AppContainer
+        # fallback) prepares the profile the capability was recorded with, so a
+        # concurrent re-probe cannot swap profiles between the check and the launch.
+        prepare_for_profile = getattr(backend, "prepare_for_profile", None)
+        if callable(prepare_for_profile):
+            prepared = prepare_for_profile(canonical, capability.profile_id)
+        else:
+            prepared = backend.prepare(canonical)
     except SandboxUnavailableError:
         raise
     except Exception as exc:

@@ -38,6 +38,9 @@ from contextvars import ContextVar
 # than held back from the room in advance. See its definition for why that matters.
 from .context_window import _RESULT_NOTICE_RESERVE
 from .os_sandbox import (
+    _pidfd_open,
+    _pidfd_send_signal,
+    descendant_sweep_supported,
     SandboxUnavailableError,
     ToolLaunchPlan,
     prepare_tool_launch,
@@ -14863,7 +14866,7 @@ def _sweep_marked_descendants(marker: str) -> int:
     skipped. A child that scrubs its own environment escapes the sweep, which is
     why Limited mode is offered only where no OS sandbox qualifies.
     """
-    if not marker or sys.platform != "linux" or not os.path.isdir("/proc"):
+    if not marker or not descendant_sweep_supported():
         return 0
     needle = f"{_LIMITED_RUN_MARKER_ENV}={marker}".encode()
     own_pid = os.getpid()
@@ -14880,20 +14883,31 @@ def _sweep_marked_descendants(marker: str) -> int:
             pid = int(entry)
             if pid == own_pid:
                 continue
+            # The pidfd pins this exact process before anything about it is
+            # read: if the pid is recycled after the match, the signal still
+            # goes to the (already dead) process the fd refers to, never to the
+            # newcomer.
             try:
-                if os.stat(f"/proc/{pid}").st_uid != own_uid:
-                    continue
-                with open(f"/proc/{pid}/environ", "rb") as stream:
-                    environ = stream.read()
+                pidfd = _pidfd_open(pid)
             except OSError:
                 continue
-            if needle not in environ.split(b"\0"):
-                continue
             try:
-                os.kill(pid, signal.SIGKILL)
-                killed += 1
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+                try:
+                    if os.stat(f"/proc/{pid}").st_uid != own_uid:
+                        continue
+                    with open(f"/proc/{pid}/environ", "rb") as stream:
+                        environ = stream.read()
+                except OSError:
+                    continue
+                if needle not in environ.split(b"\0"):
+                    continue
+                try:
+                    _pidfd_send_signal(pidfd, signal.SIGKILL)
+                    killed += 1
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            finally:
+                os.close(pidfd)
         if _pass + 1 < _LIMITED_SWEEP_PASSES:
             time.sleep(_LIMITED_SWEEP_PAUSE_SECONDS)
     return killed

@@ -36,6 +36,7 @@ _PROFILE_ID = "windows-lpac-preview-v1"
 _APPCONTAINER_PROFILE_ID = "windows-appcontainer-preview-v1"
 _PROFILE_LPAC = "lpac"
 _PROFILE_APPCONTAINER = "appcontainer"
+_PROFILE_BY_ID = {_PROFILE_ID: _PROFILE_LPAC, _APPCONTAINER_PROFILE_ID: _PROFILE_APPCONTAINER}
 _PROBE_TOKEN = "UNSLOTH_WINDOWS_LPAC_PROBE_OK"
 _ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
 _ALL_RESTRICTED_APPLICATION_PACKAGES_SID = "S-1-15-2-2"
@@ -1821,6 +1822,16 @@ class WindowsLpacBackend:
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         return self._prepare(spec, self._profile)
 
+    def prepare_for_profile(self, spec: ToolLaunchPlan, profile_id: str) -> PreparedSandboxLaunch:
+        """Prepare the profile a capability was recorded with, not whatever a later probe chose."""
+        try:
+            profile = _PROFILE_BY_ID[profile_id]
+        except KeyError as exc:
+            raise SandboxUnavailableError(
+                f"the recorded Windows isolation profile is not available: {profile_id}"
+            ) from exc
+        return self._prepare(spec, profile)
+
     def _prepare(self, spec: ToolLaunchPlan, profile: str) -> PreparedSandboxLaunch:
         workdir = _validate_workdir(spec.workdir)
         argv = _canonical_inner_argv(spec.argv, spec.env)
@@ -1851,7 +1862,7 @@ class WindowsLpacBackend:
                     try:
                         _grant_traverse(root, identity.sid)
                     except OSError as exc:
-                        if exc.errno == _ERROR_ACCESS_DENIED:
+                        if exc.errno == _ERROR_ACCESS_DENIED and _machine_wide(root):
                             unverified.append(root)
                             continue
                         raise
