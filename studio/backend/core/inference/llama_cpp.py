@@ -5925,6 +5925,31 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _usage_with_earlier_attempts(usage, earlier_completion_tokens: int):
+    """Usage for a response that took more than one upstream request.
+
+    A preemption aborts the upstream stream and re-opens it with the partial moved into
+    the prompt (`continue_final_message`), so llama-server reports each attempt's own
+    completion count and the client was handed the LAST one alone: chats that streamed
+    8000 plus characters reported 259, 151, 1 and 401 completion tokens. Every attempt
+    decoded real tokens and the user was shown all of them, so the count reported for the
+    logical response is their sum.
+
+    ``prompt_tokens`` stays the last attempt's. Each resume re-sends the same conversation
+    with the partial appended, so the earlier prompts are prefixes of the final one and
+    adding them would report the same conversation two or three times over; the same goes
+    for ``prompt_tokens_details``, whose cache hits describe the prompt actually sent.
+    """
+    if earlier_completion_tokens <= 0:
+        return usage
+    out = dict(usage or {})
+    out["completion_tokens"] = int(out.get("completion_tokens") or 0) + int(
+        earlier_completion_tokens
+    )
+    out["total_tokens"] = int(out.get("prompt_tokens") or 0) + out["completion_tokens"]
+    return out
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):
@@ -28176,6 +28201,10 @@ class LlamaCppBackend:
         preempt_event = None,
         preempt_policy = None,
         _preempt_resumes: int = 0,
+        # What the attempts this one continues already decoded. Their tokens are part of
+        # the same logical response, and only this generator knows there was more than one
+        # upstream request, so the usage it reports adds them back.
+        _preempt_earlier_completion_tokens: int = 0,
         # Running token count for THIS attempt, so the watermark sweep can see n_i grow
         # and evict before the cache fills rather than after. Same contract as the tool
         # loop's: batched by _TOKEN_REPORT_EVERY, must be cheap, must not raise.
@@ -28531,6 +28560,11 @@ class LlamaCppBackend:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
+                    # Every earlier attempt of this response, added back: llama-server
+                    # counts only the request it served.
+                    _metadata_usage = _usage_with_earlier_attempts(
+                        _metadata_usage, _preempt_earlier_completion_tokens
+                    )
                     yield {
                         "type": "metadata",
                         # Never None: a finish-only metadata event (no usage,
@@ -28589,6 +28623,15 @@ class LlamaCppBackend:
             resumed = [dict(message) for message in messages]
             continues = self._assemble_preempt_resume(
                 resumed, checkpoint, content_text, reasoning_text
+            )
+            # What this attempt decoded before it was cut. It was streamed to the client,
+            # so it belongs in the usage the resumed attempt finally reports; an aborted
+            # attempt never receives a final usage chunk, so the count comes from the
+            # per-chunk `timings` (predicted_n) when they are on, and from the chunk tally
+            # otherwise, one chunk being about one token.
+            _paused_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
+            _paused_completion_tokens = (
+                int(_paused_usage.get("completion_tokens") or 0) or _tokens_this_stream
             )
             # What this attempt showed, and whether it was showing a thought when it was
             # cut. The resumed attempt's snapshots are stitched onto it below.
@@ -28655,6 +28698,9 @@ class LlamaCppBackend:
                 preempt_policy = preempt_policy,
                 on_tokens = on_tokens,
                 _preempt_resumes = _preempt_resumes + 1,
+                _preempt_earlier_completion_tokens = (
+                    _preempt_earlier_completion_tokens + _paused_completion_tokens
+                ),
             ):
                 if not isinstance(_resumed_item, str):
                     yield _resumed_item
