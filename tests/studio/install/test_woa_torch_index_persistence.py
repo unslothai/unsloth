@@ -3110,8 +3110,7 @@ class TestTheTorchMergeRebasesWhatItFolds:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         fake_py = tmp_path / "fakepython"
         fake_py.write_text(
-            "#!/usr/bin/env bash\n"
-            "printf 'torch==2.11.0+cu130\\ntorchvision==0.26.0+cu130\\n'\n",
+            "#!/usr/bin/env bash\nprintf 'torch==2.11.0+cu130\\ntorchvision==0.26.0+cu130\\n'\n",
             encoding = "ascii",
         )
         fake_py.chmod(0o755)
@@ -3128,7 +3127,9 @@ class TestTheTorchMergeRebasesWhatItFolds:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 180,
+            capture_output = True,
+            text = True,
+            timeout = 180,
         )
         assert done.returncode == 0, done.stderr
         out = done.stdout
@@ -3147,9 +3148,9 @@ class TestTheTorchMergeRebasesWhatItFolds:
         merged = self._merge(tmp_path, [first / "a.txt", second / "b.txt"])
         assert "idna==3.6" in merged, "the include one directory down was not followed"
         assert "-r " not in merged, "a relative include survived as a relative line"
-        assert str(second / "local.whl") in merged.replace("/", os.sep), (
-            f"the bare relative wheel path was not rebased onto its own directory: {merged!r}"
-        )
+        assert str(second / "local.whl") in merged.replace(
+            "/", os.sep
+        ), f"the bare relative wheel path was not rebased onto its own directory: {merged!r}"
         assert "rich>=13" in merged and "plainpkg==2.0" in merged
 
     @requires_pwsh
@@ -3213,6 +3214,6 @@ class TestThePipFallbackIsRefusedOnTheNativeStack:
 
     def test_the_message_names_the_remedy(self):
         source = STACK_PY.read_text(encoding = "utf-8")
-        assert "Install uv and re-run" in source, (
-            "a refusal with no way forward is worse than the silent fallback it replaces"
-        )
+        assert (
+            "Install uv and re-run" in source
+        ), "a refusal with no way forward is worse than the silent fallback it replaces"
