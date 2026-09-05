@@ -3,6 +3,7 @@
 
 """Export backend - exports models in various formats."""
 
+import glob
 import json
 import structlog
 import tempfile
@@ -410,6 +411,29 @@ language:
 This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth) and Huggingface's TRL library.
 
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
+"""
+
+
+# Both llama.cpp spellings: the Hub filters on the exact string, and upstream ends up
+# with each -- "llama.cpp" from its card, "llama-cpp" from its add_tags call.
+GGUF_MODEL_CARD = """---
+tags:
+- gguf
+- llama.cpp
+- llama-cpp
+- unsloth{vlm_tag}
+---
+
+# {name} : GGUF
+
+This model was converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+
+**Example usage**:
+- For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `llama-mtmd-cli -hf {repo_id} --jinja`
+
+## Available model files:
+{files}
 """
 
 
@@ -1116,7 +1140,7 @@ class ExportBackend:
         shard_hooks = []
         if save_directory:
             shard_hooks.append(self.current_model.save_pretrained_gguf)
-        if push_to_hub:
+        elif push_to_hub:
             shard_hooks.append(self.current_model.push_to_hub_gguf)
         if gguf_shard_size is not None and not all(
             _gguf_shard_export_supported(hook) for hook in shard_hooks
@@ -1139,6 +1163,12 @@ class ExportBackend:
         )
 
         output_path: Optional[str] = None
+        # What this run actually produced, for the Hub leg: the merged config.json is read
+        # here because the temp root holding it is deleted before the upload.
+        exported_ggufs: List[str] = []
+        exported_modelfile = False
+        exported_is_vlm = False
+        exported_config: Optional[bytes] = None
         try:
             # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
@@ -1223,6 +1253,16 @@ class ExportBackend:
                             "GGUF conversion produced no files: no .gguf outputs for "
                             f"{abs_save_dir}"
                         )
+                    exported_ggufs = [str(f) for f in drop_appledouble_metadata(relocated_ggufs)]
+                    # The Hub filters on this tag, and only the exporter knows.
+                    exported_is_vlm = bool(reported.get("is_vlm"))
+                    # Kept in memory, not relocated: a config.json in the export folder
+                    # would make _is_model_dir read it as a checkpoint directory.
+                    merged_config = (
+                        Path(reported.get("save_directory") or _model_tmp) / "config.json"
+                    )
+                    if merged_config.is_file():
+                        exported_config = merged_config.read_bytes()
 
                     if modelfiles:
                         modelfile = sorted(modelfiles)[0]
@@ -1237,6 +1277,7 @@ class ExportBackend:
                         # destination must not fail an export whose GGUFs all landed.
                         try:
                             shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            exported_modelfile = True
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         except OSError as exception:
                             logger.warning(f"Could not relocate the Modelfile: {exception}")
@@ -1294,15 +1335,53 @@ class ExportBackend:
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
-                self.current_model.push_to_hub_gguf(
-                    repo_id,
-                    self.current_tokenizer,
-                    quantization_method = quant_method,
-                    token = hf_token,
-                    private = private,
-                    **imatrix_kw,
-                    **shard_kw,
-                )
+                if output_path and Path(output_path).is_dir():
+                    # push_to_hub_gguf re-runs the whole merge + convert + quantize into the
+                    # system temp directory; these files are already built.
+                    hf_api = HfApi(token = hf_token)
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    # Allow-list over exported_ggufs, not the folder: the save directory is
+                    # user-picked, so it can hold unrelated files, a _tmp_model_* merge a
+                    # failed export kept, or GGUFs from an earlier export of another model.
+                    # glob.escape keeps a name like "model[v2].gguf" a literal, which
+                    # otherwise neither matches itself nor stays confined to itself.
+                    hf_api.upload_folder(
+                        folder_path = output_path,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                        allow_patterns = [
+                            *(glob.escape(os.path.basename(f)) for f in exported_ggufs),
+                            *(["Modelfile"] if exported_modelfile else []),
+                        ],
+                    )
+                    if exported_config is not None:
+                        hf_api.upload_file(
+                            path_or_fileobj = exported_config,
+                            path_in_repo = "config.json",
+                            repo_id = repo_id,
+                            repo_type = "model",
+                            commit_message = "Unsloth config.json",
+                        )
+                    # Last: the card advertises files, so it must not land before them.
+                    ModelCard(
+                        GGUF_MODEL_CARD.format(
+                            name = repo_id.split("/")[-1],
+                            repo_id = repo_id,
+                            vlm_tag = "\n- vision-language-model" if exported_is_vlm else "",
+                            files = "\n".join(f"- `{os.path.basename(f)}`" for f in exported_ggufs),
+                        )
+                    ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                else:
+                    self.current_model.push_to_hub_gguf(
+                        repo_id,
+                        self.current_tokenizer,
+                        quantization_method = quant_method,
+                        token = hf_token,
+                        private = private,
+                        **imatrix_kw,
+                        **shard_kw,
+                    )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
             return (
