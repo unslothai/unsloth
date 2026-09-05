@@ -199,13 +199,7 @@ class TestInstallPs1Mirror:
 
 
 class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
-    """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel.
-
-    tensorboard and librosa publish py3-none-any wheels, and the staging step copies
-    ``*-any.whl`` as well as win_arm64, so a wheelhouse can hold the package while still
-    lacking grpcio or numba. Unskipping it there sends the resolver to the blocker's
-    sdist, which is the unbuildable thing the skip existed to avoid.
-    """
+    """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel."""
 
     def _wheelhouse(self, tmp_path, *specs):
         for name, py, abi, plat in specs:
@@ -270,11 +264,7 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
 
 
 class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
-    """cp313-cp313t is built for the free-threaded build; uv rejects it on cp313.
-
-    Matching on the python tag alone counted it as available, which dropped the package's
-    requirement override and sent the resolve to the sdist the override existed to avoid.
-    """
+    """cp313-cp313t is built for the free-threaded build; uv rejects it on cp313."""
 
     def test_python_side_rejects_a_free_threaded_abi(self, ips):
         major, minor = sys.version_info[:2]
@@ -302,11 +292,7 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
 
 
 class TestAHostedWheelMustAlsoSatisfyThePin:
-    """Name-only was not enough. Every requirement these entries gate is ``==``-pinned, so
-    a wheelhouse holding tiktoken 0.12.0 against a ``tiktoken==0.13.0`` line clears the
-    skip and hands the resolver a version it cannot use -- it goes to PyPI, finds no
-    win_arm64 wheel at 0.13.0, and falls to the sdist this list exists to avoid.
-    """
+    """Name-only was not enough."""
 
     @staticmethod
     def _req(tmp_path, text):
@@ -433,13 +419,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
 
 class TestDuplicateRequirementRowsAreSplitByMarker:
-    """extras.txt states MeCab twice, once per marker.
-
-    Collapsing them to one specifier let the row for another platform decide: the
-    inactive macOS 3.14 `MeCab==0.996.5` overwrote the active `MeCab==0.996.13`, so a
-    wheelhouse holding the right wheel was read as insufficient and one holding only the
-    wrong wheel cleared the skip.
-    """
+    """extras.txt states MeCab twice, once per marker."""
 
     # One marker that holds on every host and one that holds on none. The real pair is
     # `sys_platform != "darwin" or python_version < "3.14"` against its complement, which

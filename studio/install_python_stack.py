@@ -3981,17 +3981,10 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """
     if NO_TORCH:
         return True
-    # Windows on ARM: a CUDA torch already here is the only CUDA torch this platform has.
-    # win_arm64 CUDA wheels come from NVIDIA's out-of-tree index and carry a family tag
-    # (cu134 today) that download.pytorch.org does not publish, so the expectation derived
-    # from the driver can only ever disagree -- and "repairing" it means resolving a cu130
-    # that has no win_arm64 wheel at all, which fails the install after everything else
-    # succeeded. A CPU build still falls through to the repair below, so a host that
-    # genuinely lost its GPU torch is still fixed. Mirrors the same guard in setup.ps1.
-    # An explicit CPU pin is exempt: it is a stated instruction rather than a driver
-    # inference, and download.pytorch.org DOES publish win_arm64 /cpu wheels, so that
-    # repair resolves. Same inferred-vs-stated distinction the CUDA_VISIBLE_DEVICES
-    # check below draws with _expected_torch_flavor_is_explicit.
+    # A CUDA torch already here is the only one win_arm64 has: its family tag is not on
+    # download.pytorch.org, so the driver-derived expectation can only disagree and
+    # "repairing" it resolves a cu130 with no wheel. An explicit CPU pin is exempt --
+    # stated, not inferred, and /cpu does publish win_arm64. Mirrors setup.ps1's guard.
     if _is_win_arm64_interpreter() and not _explicit_cpu_torch_index_pin():
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
@@ -4070,10 +4063,8 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _torch_pkg, _vision_pkg, _audio_pkg = (
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
-    # torchaudio exists for win_arm64 only on NVIDIA's GA out-of-tree channel; install.ps1
-    # reports which way the index it chose went ($WinArm64NoAudio in setup.ps1). Keyed on
-    # the interpreter, not the machine: an emulated x64 venv on an ARM64 box installs
-    # win_amd64 wheels, and download.pytorch.org publishes torchaudio for those.
+    # Keyed on the INTERPRETER, not the machine: an emulated x64 venv on an ARM64 box
+    # installs win_amd64 wheels, for which torchaudio does exist.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
     if _is_win_arm64_interpreter() and not _windows_arm64_has_torchaudio():
         _trio = [_torch_pkg, _vision_pkg]
@@ -5372,27 +5363,13 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
-# Packages to skip on Windows on ARM (win_arm64). Each one publishes no win_arm64
-# wheel and cannot build from its sdist on a stock machine, because that needs a
-# toolchain this installer deliberately does not require (MSVC, Rust, LLVM, FFmpeg):
-#   MeCab           C++ extension.
-#   sqlite-vec      C extension. Optional: the RAG store imports it lazily and the
-#                   router mounts without it.
-#   tiktoken        Rust extension. Only converts tokenizers published in tiktoken
-#                   format; Qwen and friends ship a tokenizer.json and load without it.
-#   tensorboard     pure Python itself, but requires grpcio, which has no win_arm64
-#                   wheel at any version. TRL/transformers report to the console instead.
-#   librosa /       both pull numba -> llvmlite, whose only win_arm64 wheels are cp314;
-#   openai-whisper  there is nothing for the 3.11-3.13 interpreters this installer uses.
-#   torch-c-dlpack-ext, pytorch_tokenizers   torch C++ extensions, x64/macOS wheels only.
-#   hf_transfer     Rust extension. Optional accelerator; hf_xet ships win_arm64 and
-#                   covers fast downloads. Also marked in pyproject.toml.
-#   xformers        no win_arm64 wheel; torch's own SDPA (flash backend included) is the
-#                   fallback Unsloth already uses when xFormers is absent.
-# Everything here is an optional feature. Training, inference, GGUF serving and the
-# Studio UI do not import any of them at startup.
-# Entries must be lowercase: _filter_requirements lowercases the requirement line but
-# compares against these verbatim (so "MeCab" would never match "mecab==0.996.13").
+# No win_arm64 wheel and no sdist that builds without a toolchain this installer does not
+# require (MSVC, Rust, LLVM, FFmpeg). All optional: nothing imports them at startup.
+#   tensorboard  pure Python, but needs grpcio, which has no win_arm64 wheel at any
+#                version; librosa and openai-whisper need numba -> llvmlite, whose only
+#                win_arm64 wheels are cp314.
+# Entries must be lowercase -- _filter_requirements lowercases the line and compares
+# against these verbatim, so "MeCab" would never match "mecab==0.996.13".
 WINDOWS_ARM64_SKIP_PACKAGES = {
     "mecab",
     "sqlite-vec",
@@ -5433,23 +5410,19 @@ def _wheel_matches_interpreter(filename: str) -> bool:
     this_abi = f"{this_cpython}t" if free_threaded else this_cpython
     for py_tag in py_tags:
         for abi_tag in abi_tags:
-            # "abi3" is excluded here when free-threaded rather than only in the branch
-            # below, which this one shadows for an exact-minor tag: cp313-abi3 would
-            # otherwise be accepted on 3.13t. Free-threaded builds do not implement the
-            # stable ABI (CPython #111506, PEP 703); PEP 803 adds a separate "abi3t" tag
-            # for them in 3.15, which is outside this project's requires-python.
+            # abi3 is excluded HERE too, not only below: this branch shadows that one
+            # for an exact-minor tag, so cp313-abi3 would be taken on 3.13t. Free-threaded
+            # builds do not implement the stable ABI (CPython #111506, PEP 703).
             if py_tag == this_cpython and (
                 abi_tag in ("none", this_abi) or (abi_tag == "abi3" and not free_threaded)
             ):
                 return True
             if abi_tag == "none":
-                # py3 / py313 / py2.py3: any minor at or below this one.
                 pure = re.fullmatch(r"py(\d)(\d*)", py_tag)
                 if pure and int(pure.group(1)) == major and int(pure.group(2) or 0) <= minor:
                     return True
             elif abi_tag == "abi3" and not free_threaded:
-                # The stable ABI is forward compatible from 3.2 up; free-threaded builds
-                # do not implement it at all.
+                # Forward compatible from 3.2 up, and not implemented free-threaded.
                 stable = re.fullmatch(r"cp(\d)(\d+)", py_tag)
                 if stable and int(stable.group(1)) == major and 2 <= int(stable.group(2)) <= minor:
                     return True
@@ -5473,11 +5446,8 @@ def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
     """
     versions: "dict[str, set[str]]" = {}
     for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
-        # The two variables do not agree on a separator -- uv reads UV_FIND_LINKS as a
-        # comma-separated list, pip splits its repeatable options on whitespace -- and
-        # os.pathsep is what a caller who set either by hand is likeliest to have used.
-        # Accept all three: install.ps1 appends this host's wheelhouse to whatever the
-        # caller already had, so more than one entry is now normal here.
+        # The two disagree on a separator (uv: comma, pip: whitespace) and os.pathsep is
+        # what a hand-written value likeliest uses, so accept all three.
         for entry in re.split(r"[,\s" + re.escape(os.pathsep) + r"]+", value or ""):
             entry = entry.strip().strip('"')
             if not entry or "://" in entry:
@@ -5501,8 +5471,7 @@ def _find_links_wheel_names() -> frozenset[str]:
     return frozenset(_find_links_wheel_versions())
 
 
-# The cache moved to the versions scan, but this is the name callers already reach for and
-# clear between wheelhouses; forwarding it keeps one cache with one way to drop it.
+# Forwarded so there is one cache with one way to drop it.
 _find_links_wheel_names.cache_clear = _find_links_wheel_versions.cache_clear  # type: ignore[attr-defined]
 
 
@@ -5629,14 +5598,10 @@ def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
     return pins
 
 
-# Some entries are skipped not for themselves but for dependencies with no win_arm64
-# wheel: tensorboard is pure Python and only unavailable because grpcio is, and librosa
-# and openai-whisper are blocked by the numba -> llvmlite pair, openai-whisper by tiktoken
-# as well -- an unconditional dependency in its metadata, so filtering the direct tiktoken
-# line out of extras.txt does not stop whisper pulling that same unbuildable sdist in
-# transitively. Every blocker has to be hosted before the feature is installable, so this
-# records the whole set. Keys are canonical (``[-_.]+`` -> ``_``), the form they are
-# looked up by; "openai-whisper" here would never match and the entry would be dead.
+# Entries skipped for their DEPENDENCIES rather than themselves. whisper needs tiktoken
+# unconditionally in its metadata, so filtering the direct line out of extras.txt does not
+# stop it pulling the same sdist transitively; every blocker has to be hosted before the
+# feature is installable. Keys are canonical, the form they are looked up by.
 WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
     "tensorboard": ("grpcio",),
     "librosa": ("llvmlite", "numba"),
@@ -5679,11 +5644,9 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
         canonical = _canonical_dist_name(package)
         blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
         if blockers:
-            # The blockers decide even when the package's own wheel is hosted: it is
-            # skipped for its DEPENDENCIES, and hosting it does not make those resolve.
-            # tensorboard and librosa publish py3-none-any wheels that the staging step
-            # copies, so a wheelhouse can hold the package while still lacking grpcio or
-            # numba, and unskipping it there sends the resolver to that sdist instead.
+            # The blockers decide even when the package's own wheel is hosted: tensorboard
+            # and librosa publish py3-none-any wheels the staging step copies, so a
+            # wheelhouse can hold one and still lack grpcio or numba.
             if all(hosted(b) for b in blockers):
                 continue
         elif hosted(package):
@@ -7112,9 +7075,7 @@ def pip_install(
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
     if actual_req is not None and _is_win_arm64_interpreter():
-        # The ORIGINAL file, not the Windows-filtered copy above: same lines minus some,
-        # so the pins are identical, and reading the source keeps this independent of
-        # which filters ran first.
+        # The ORIGINAL file: same pins, and independent of which filters ran first.
         _arm64_skip = _windows_arm64_skip_packages(req if req is not None else actual_req)
         if _arm64_skip:
             actual_req = _filter_requirements(actual_req, _arm64_skip)

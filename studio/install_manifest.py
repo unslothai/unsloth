@@ -309,23 +309,15 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
-    # Windows on ARM is the one platform whose CUDA wheels are not on download.pytorch.org
-    # at all, so a later `unsloth studio update` from a fresh shell cannot re-derive the
-    # index from the driver the way every other host can. Recorded so a repair has
-    # somewhere to resolve from.
-    #
-    # The rule above still holds -- never a URL that could carry a credential. Only
-    # NVIDIA's own out-of-tree channels are written, and only with no userinfo, query or
-    # fragment; a user's pinned mirror is deliberately NOT persisted, because they supply
-    # it through their own environment anyway and this file is read back by
-    # verify-install and desktop-capabilities.
+    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh-shell update
+    # cannot re-derive the index from the driver. Recorded so a repair can resolve.
+    # The rule above still holds: only NVIDIA's own channels, with no userinfo, query or
+    # fragment, so a pinned mirror is deliberately not persisted.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
-        # urlsplit raises ValueError on a malformed authority ("https://[", a bad port),
-        # and this value arrives from the environment: setup.ps1 forwards
-        # UNSLOTH_WOA_SELECTED_TORCH_INDEX as it received it. Raising here would happen
-        # BEFORE the write below and break this function's never-raises contract, losing
-        # the whole manifest -- so an unparseable URL simply is not one we persist.
+        # urlsplit raises on a malformed authority, and this value arrives from the
+        # environment. That would break the never-raises contract and lose the whole
+        # manifest, so an unparseable URL simply is not one we persist.
         try:
             parsed = urlsplit(candidate)
             _woa_ok = (
@@ -337,11 +329,9 @@ def write_manifest(
             )
         except ValueError:
             _woa_ok = False
-        # netloc, not hostname, for the port test: hostname strips ":443", so
-        # https://pypi.nvidia.com:443/... was written and then refused by setup.ps1's
-        # reader, whose pattern allows no port -- persisting a value that could never be
-        # read back is worse than not persisting it. Requiring the two to be equal keeps
-        # writer and reader accepting exactly the same set, and drops userinfo with it.
+        # netloc, not hostname: hostname strips ":443", so a value with a port was
+        # written and then refused by setup.ps1's reader. Equality keeps writer and
+        # reader on the same set, and drops userinfo with it.
         if _woa_ok:
             payload["woa_torch_index"] = candidate.rstrip("/")
     path = manifest_path(root)

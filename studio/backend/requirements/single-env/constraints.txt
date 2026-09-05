@@ -8,9 +8,8 @@ huggingface-hub==0.36.2; python_version < "3.10"
 
 # Unsloth stack
 datasets==4.3.0
-# Windows on ARM has no pyarrow wheel at 23.x (apache/arrow#48539 adds the win_arm64
-# build). install.ps1 stages a win_arm64 wheel into a find-links directory there and
-# only takes the native path when one is available, so the floor is all this needs.
+# No win_arm64 pyarrow at 23.x (apache/arrow#48539). install.ps1 stages one and takes
+# the native path only when it can, so a floor is all this needs.
 pyarrow==23.0.1; sys_platform != "win32" or platform_machine != "ARM64"
 pyarrow>=21.0.0; sys_platform == "win32" and platform_machine == "ARM64"
 
@@ -40,9 +39,8 @@ pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and pyth
 # .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
 # other package that would compile.
 av<16; sys_platform != "win32" or platform_machine != "ARM64"
-# Windows on ARM is the opposite case: av publishes win_arm64 wheels from 17.1 only
-# (cp311-abi3, so they cover 3.11-3.13), and nothing older has one. The macOS 13 reason
-# for the cap above does not apply here.
+# The opposite case: av publishes win_arm64 wheels from 17.1 only (cp311-abi3), and the
+# macOS 13 reason for the cap above does not apply.
 av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
@@ -51,8 +49,6 @@ av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"
 # cryptography ships an x86_64-capable macOS wheel again.
 cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"
 
-# 46.0.3 is the newest cryptography release that ships a win_arm64 wheel (46.0.4+ and 47+
-# publish none), and its sdist needs Rust plus the MSVC linker, neither of which this
-# installer requires. Cap Windows on ARM at that release; raise it when upstream resumes
-# publishing win_arm64 wheels.
+# 46.0.3 is the newest cryptography with a win_arm64 wheel, and its sdist needs Rust
+# plus MSVC. Raise the cap when upstream resumes publishing them.
 cryptography<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"

@@ -146,10 +146,8 @@ class TestReadSide:
     def test_a_hand_edited_manifest_cannot_redirect_the_install(
         self, tmp_path: pathlib.Path, url: str, allowed: bool, why: str
     ):
-        """
-        The write guard is not enough on its own: the file sits in the user's venv and
-        anything can put a line in it. Whatever is on disk, only NVIDIA's own channel
-        may come back out, because the return value becomes --extra-index-url.
+        """The write guard is not enough on its own: the file sits in the user's venv and
+        anything can put a line in it.
         """
         (tmp_path / "unsloth_install_manifest.json").write_text(
             json.dumps({"schema": 1, "woa_torch_index": url}),
@@ -275,11 +273,7 @@ class TestResolverEnvironmentRestore:
 
     @requires_pwsh
     def test_a_caller_that_already_set_them_keeps_their_file(self, tmp_path: pathlib.Path):
-        """
-        The caller's own override file is never dropped. It is no longer the WHOLE answer
-        though: the win_arm64 drop list is added beside it, because standing down entirely
-        sent the dependency pass at a Brotli sdist. Disjoint files, so both are passed.
-        """
+        """The caller's own override file is never dropped."""
         overrides = self._stage(tmp_path)
         got = self._invoke(
             tmp_path,
@@ -293,11 +287,7 @@ class TestResolverEnvironmentRestore:
     def test_an_unrelated_find_links_does_not_cost_the_exclusions(
         self, tmp_path: pathlib.Path, held: str
     ):
-        """
-        The three are restored independently. Grouping them meant a shell carrying a
-        corporate wheel mirror in PIP_FIND_LINKS silently lost the brotli exclusions and
-        got the sdist build back -- a setting with nothing to do with the drop list.
-        """
+        """The three are restored independently."""
         overrides = self._stage(tmp_path)
         got = self._invoke(tmp_path, preset = f"$env:{held} = 'https://mirror.example/whl'")
         assert got["ov"] == str(overrides), f"{held} is unrelated to the overrides"
@@ -317,10 +307,8 @@ class TestResolverEnvironmentRestore:
         assert "missing" in got["warned"] and "install.ps1" in got["warned"]
 
     def test_the_helper_is_a_faithful_copy_of_install_ps1s(self):
-        """
-        Get-UvSafePath exists in both scripts because neither can dot-source the other.
-        A copy that drifts is worse than no copy: setup.ps1 would hand uv a path
-        install.ps1 had already decided uv cannot read.
+        """Get-UvSafePath exists in both scripts because neither can dot-source the other.
+
         """
 
         def normalized(source: str) -> str:
@@ -340,10 +328,8 @@ class TestResolverEnvironmentRestore:
         assert normalized(install) == normalized(setup)
 
     def test_the_dependency_that_makes_this_necessary_is_still_there(self):
-        """
-        If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli.
-        It is still correct, but the reason recorded above would be stale, so fail loudly
-        rather than let the comment rot.
+        """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli.
+
         """
         studio_txt = PACKAGE_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
         assert "ddgs" in studio_txt.read_text(encoding = "utf-8")
@@ -357,13 +343,7 @@ class TestResolverEnvironmentRestore:
 
 
 class TestTheRecoveryReachesEveryModeThatNeedsIt:
-    """Placement, which is what decided whether the two recoveries above fire at all.
-
-    Both were originally written next to the torch index work, inside setup.ps1's
-    `if (-not $NoTorchMode)` guard. Neither is about torch: install_python_stack.py
-    installs studio.txt in every mode -- that is where ddgs resolves -- and it rewrites
-    the manifest in every mode too.
-    """
+    """Placement, which is what decided whether the two recoveries above fire at all."""
 
     @staticmethod
     def _setup() -> str:
@@ -398,12 +378,7 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         ), f"the manifest is rewritten in no-torch mode too. Enclosing blocks: {blocks}"
 
     def test_the_recovered_index_is_put_back_in_the_environment(self):
-        """
-        The bug this guards: recovering the index into a local variable only. The
-        dependency pass rewrites the manifest from UNSLOTH_WOA_SELECTED_TORCH_INDEX, so a
-        fresh-shell update would write one with no index at all -- erasing, on the first
-        update, the only record of the one thing that cannot be re-derived from the host.
-        """
+        """The bug this guards: recovering the index into a local variable only."""
         text = self._setup()
         assign = text.index("$WinArm64TorchIndexUrl = if (")
         export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
@@ -414,11 +389,7 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         ), "guarded: an empty recovery must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
-        """
-        The premise of the placement test above. If the studio.txt pass ever moves under
-        a NO_TORCH guard, the reasoning changes and this should be revisited rather than
-        quietly left stale.
-        """
+        """The premise of the placement test above."""
         source = STACK_PY.read_text(encoding = "utf-8")
         call = source.index('req = REQ_ROOT / "studio.txt"')
         line_start = source.rfind("\n", 0, source.rindex("pip_install(", 0, call)) + 1
@@ -431,14 +402,7 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
 
 
 class TestTheRecoveryHappensWhileThereIsStillSomethingToRead:
-    """Ordering against the manifest drop, which decides whether any of this works.
-
-    setup.ps1 removes unsloth_install_manifest.json before it replaces pip, torch and
-    triton, so a run killed in those leaves the venv marked half-built. The recovery reads
-    that same file. Placed after the drop it read a file that no longer existed and
-    returned empty every time -- on precisely the fresh-shell path the manifest exists to
-    serve, and silently, because empty is also the legitimate answer for an older install.
-    """
+    """Ordering against the manifest drop, which decides whether any of this works."""
 
     def test_the_index_is_read_before_the_manifest_is_deleted(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -459,13 +423,7 @@ class TestTheRecoveryHappensWhileThereIsStillSomethingToRead:
 
 
 class TestThePublishedIndexIsTheOneTorchCameFrom:
-    """What install_python_stack.py is told to repair from.
-
-    The native Windows-on-ARM install resolves torch from the channel install.ps1 probed,
-    while $TorchInstallIndexUrl still names the driver-derived family. Publishing the
-    latter pointed any repair at an index with no win_arm64 CUDA wheel, and named the
-    flavor cu130 when the installed wheel is +cu134.
-    """
+    """What install_python_stack.py is told to repair from."""
 
     def test_the_publish_block_reads_the_effective_index(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -482,11 +440,8 @@ class TestThePublishedIndexIsTheOneTorchCameFrom:
         assert text.count("$_effectiveTorchIndexUrl = ") == 2, "only the CUDA install may move it"
 
     def test_the_nvidia_channel_publishes_no_flavor_tag(self):
-        """
-        Get-TorchIndexLeaf on the NVIDIA channel yields `nvtorch_oot`, which is not a CUDA
-        family name, so the tag resolves to $null and nothing is published. That is the
-        honest answer -- the installed wheel is +cu134, which this vocabulary cannot name
-        -- and it is what stops a repair from "correcting" the venv to cu130.
+        """Get-TorchIndexLeaf on the NVIDIA channel yields `nvtorch_oot`, which is not a
+        CUDA family name, so the tag resolves to $null and nothing is published.
         """
         if PWSH is None:
             pytest.skip("pwsh not available")
@@ -516,12 +471,7 @@ class TestTheLlamaArm64CudaOptOut:
 
     @staticmethod
     def _arm64_nvidia_branches() -> list:
-        """Every `if ...has_usable_nvidia...` whose enclosing branches select ARM64.
-
-        Parsed rather than grepped: the same attribute guards the x64, Linux and macOS
-        paths, which must NOT be gated, so a textual sweep either misses branches or
-        demands gates where they would be wrong.
-        """
+        """Every `if ...has_usable_nvidia...` whose enclosing branches select ARM64."""
         import ast
 
         tree = ast.parse(STACK_LLAMA.read_text(encoding = "utf-8"))
@@ -564,11 +514,9 @@ class TestTheLlamaArm64CudaOptOut:
         return found
 
     def test_every_arm64_cuda_branch_is_gated(self):
-        """
-        Three entry points reach ARM64 CUDA independently: direct_upstream_release_plan,
+        """Three entry points reach ARM64 CUDA independently: direct_upstream_release_plan,
         resolve_upstream_asset_choice (via resolve_asset_choice's fallbacks), and
-        resolve_asset_choice's own published-artifact branch. An escape hatch honoured on
-        some of them is worse than none, because nothing tells the user which path ran.
+        resolve_asset_choice's own published-artifact branch.
         """
         branches = self._arm64_nvidia_branches()
         assert len(branches) >= 3, branches
@@ -588,11 +536,10 @@ class TestTheLlamaArm64CudaOptOut:
                     assert "_upstream_arm64_cuda_allowed" not in test, test
 
     def test_the_published_artifact_branch_is_gated_too(self):
-        """
-        A cliff rather than a bug visible today: the published windows-arm64-cuda branch
+        """A cliff rather than a bug visible today: the published windows-arm64-cuda branch
         returns before the unverified-upstream tail, so gating only the tail meant
-        UNSLOTH_LLAMA_ARM64_CUDA=0 would keep working right up until the fork published an
-        approved artifact, then silently stop.
+        UNSLOTH_LLAMA_ARM64_CUDA=0 would keep working right up until the fork published
+        an approved artifact, then silently stop.
         """
         source = STACK_LLAMA.read_text(encoding = "utf-8")
         start = source.index("def resolve_asset_choice(")
@@ -605,11 +552,7 @@ class TestTheLlamaArm64CudaOptOut:
         assert gate < published, "the gate must precede the published lookup"
 
     def test_the_now_unreachable_inner_check_is_gone(self):
-        """
-        With the branch gated, a second test inside it could only ever be true. Left in,
-        it reads as though a CPU fallback still lives there and invites someone to
-        "fix" the outer gate away.
-        """
+        """With the branch gated, a second test inside it could only ever be true."""
         source = STACK_LLAMA.read_text(encoding = "utf-8")
         start = source.index("def resolve_asset_choice(")
         assert "if _upstream_arm64_cuda_allowed():" not in source[start:]
@@ -634,15 +577,7 @@ class TestTheLlamaArm64CudaOptOut:
 
 
 class TestAMigratedX64VenvIsRebuiltAsArm64:
-    """install.ps1: an upgrade must not leave a WoA NVIDIA host on the emulated stack.
-
-    The migration branches keep a healthy legacy ~/.unsloth/studio/.venv exactly as it is,
-    and on this host those are x64 by design -- every Windows-on-ARM install predating the
-    native stack bootstrapped an emulated x64 interpreter. The venv-platform guard then
-    saw win-amd64 and stood down to that same x64 stack, which is the state this PR exists
-    to replace. Only a SECOND installer run recovered, because migrating makes the layout
-    "new" and the new-layout branch does preserve-and-recreate.
-    """
+    """install.ps1: an upgrade must not leave a WoA NVIDIA host on the emulated stack."""
 
     INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 
@@ -651,9 +586,8 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         return TestAMigratedX64VenvIsRebuiltAsArm64.INSTALL_PS1.read_text(encoding = "utf-8")
 
     def test_the_rebuild_runs_before_venv_creation(self):
-        """
-        It works by making $VenvPython absent, so the existing creation block builds an
-        ARM64 venv. After that block it would be too late and would need its own copy.
+        """It works by making $VenvPython absent, so the existing creation block builds an
+        ARM64 venv.
         """
         text = self._text()
         rebuild = text.index("$script:WoaNativeCudaTorch -and $_Migrated")
@@ -674,10 +608,8 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         assert "using the x64 stack instead" in block
 
     def test_the_rebuild_clears_the_migrated_flag(self):
-        """
-        The regression that would otherwise follow: $_Migrated drives an upgrade-in-place
-        far below, which installs unsloth with --no-deps and --reinstall-package. Against
-        a freshly created, empty venv that produces an unsloth with no dependencies.
+        """The regression that would otherwise follow: $_Migrated drives an upgrade-in-place
+        far below, which installs unsloth with --no-deps and --reinstall-package.
         """
         text = self._text()
         block = text[text.index("$script:WoaNativeCudaTorch -and $_Migrated") :][:1800]
@@ -688,10 +620,8 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         assert "if ($_Migrated) {" in text
 
     def test_it_only_touches_a_venv_this_run_migrated(self):
-        """
-        A new-layout venv was already moved aside above, and a venv created moments ago
-        came from the interpreter this run chose. Rebuilding either would be pointless
-        work at best and a second rollback at worst.
+        """A new-layout venv was already moved aside above, and a venv created moments ago
+        came from the interpreter this run chose.
         """
         text = self._text()
         line = text[text.index("if ($script:WoaNativeCudaTorch -and $_Migrated") :].split("\n")[0]
@@ -699,8 +629,7 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
         assert "Test-Path -LiteralPath $VenvPython" in line
 
     def test_the_platform_guard_below_still_has_the_final_say(self):
-        """
-        Belt and braces: if the rollback failed, the venv is still x64 and the existing
+        """Belt and braces: if the rollback failed, the venv is still x64 and the existing
         guard must still disable native mode rather than install win_arm64-only specs
         into it.
         """
@@ -714,13 +643,7 @@ class TestAMigratedX64VenvIsRebuiltAsArm64:
 
 
 class TestTheOptOutBundleSurvivesTheKindCheck:
-    """setup.ps1's mismatch check must expect the bundle the selector actually installs.
-
-    With UNSLOTH_LLAMA_ARM64_CUDA=0 the selector installs a `windows-arm64` CPU bundle on
-    an NVIDIA Windows-on-ARM host. Expecting only `windows-arm64-cuda` there called that
-    correct install mismatched and deleted it on every setup and update -- and an update
-    that then cannot download leaves the user with no llama.cpp at all.
-    """
+    """setup.ps1's mismatch check must expect the bundle the selector actually installs."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -790,10 +713,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
 
     @requires_pwsh
     def test_the_opt_out_arm_stays_exclusive(self):
-        """
-        A CUDA bundle installed before the flag was set must still be replaced by the one
+        """A CUDA bundle installed before the flag was set must still be replaced by the one
         the flag asks for, so the opt-out arm expects the CPU kind INSTEAD of the CUDA
-        kind. Only the not-opted-out arm accepts both.
+        kind.
         """
         assert self._kinds("0") == "windows-arm64", "opted out: CUDA is no longer valid"
         assert self._kinds("") == "windows-arm64-cuda windows-arm64"
@@ -822,8 +744,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         return done.stdout.strip().splitlines()[-1]
 
     def test_the_cpu_fallback_is_a_real_selector_outcome(self):
-        """
-        The premise of widening: resolve_asset_choice falls through to the published
+        """The premise of widening: resolve_asset_choice falls through to the published
         windows-arm64 bundle when no ARM64 CUDA asset is available on an NVIDIA host.
         """
         source = STACK_LLAMA.read_text(encoding = "utf-8")
@@ -836,11 +757,9 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
         )
 
     def test_widening_does_not_strand_anyone_on_cpu(self):
-        """
-        The installer's already-satisfied short-circuit is per candidate, and CUDA is
+        """The installer's already-satisfied short-circuit is per candidate, and CUDA is
         attempted first, so a CPU bundle accepted here is still replaced the day an ARM64
-        CUDA asset appears. If that ever became a whole-plan check, this would need
-        revisiting.
+        CUDA asset appears.
         """
         source = STACK_LLAMA.read_text(encoding = "utf-8")
         raise_at = source.index("raise ExistingInstallSatisfied(attempt, tried_fallback)")
@@ -915,10 +834,7 @@ class TestTheCudaWheelProbeIsNotFooled:
 
     @requires_pwsh
     def test_an_untagged_wheel_is_rejected(self):
-        """
-        PyPI's own win_arm64 torch wheels carry no local version at all. `not +cpu`
-        accepted them; CUDA has to be established positively.
-        """
+        """PyPI's own win_arm64 torch wheels carry no local version at all."""
         assert self._probe('<a href="torch-2.14.0-cp313-cp313-win_arm64.whl">t</a>') == ""
 
     @requires_pwsh
@@ -970,13 +886,7 @@ class TestTheCudaWheelProbeIsNotFooled:
 
 
 class TestTorchaudioIsOnlyTakenAsAMatchedPair:
-    """The GA channel publishes torch 2.14.0+cu134 beside torchaudio 2.11.0+cu134.
-
-    torchaudio 2.11 dropped the exact `torch==` pin that used to make such a pair
-    unresolvable (2.10.0 still had it), and the native specs are open-ended, so nothing
-    else stops the resolver from installing them together and leaving torchaudio's
-    extension to fail against a libtorch three minors newer.
-    """
+    """The GA channel publishes torch 2.14.0+cu134 beside torchaudio 2.11.0+cu134."""
 
     @staticmethod
     def _match(torch_v: str, audio_v: str) -> bool:
@@ -1025,12 +935,7 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
 
 
 class TestPrereleasesAreOnlyForTheNightlyChannel:
-    """setup.ps1 must gate --prerelease=allow the way install.ps1 already does.
-
-    `allow` means every prerelease, and it rides on a command that also carries
-    unsafe-best-match and public PyPI, so on the GA channel a prerelease of torch or of
-    any shared dependency could outrank the stable build this host exists to install.
-    """
+    """setup.ps1 must gate --prerelease=allow the way install.ps1 already does."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1099,12 +1004,7 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
 
 
 class TestManifestWriterAndReaderAcceptTheSameSet:
-    """A value the writer persists and the reader refuses is worse than none at all.
-
-    urlsplit().hostname strips the port, so `https://pypi.nvidia.com:443/nvtorch_oot`
-    passed the writer's host test while setup.ps1's pattern, which allows no port,
-    rejected it -- and the fresh-shell update silently lost the index it had recorded.
-    """
+    """A value the writer persists and the reader refuses is worse than none at all."""
 
     PORTED = "https://pypi.nvidia.com:443/nvtorch_oot"
 
@@ -1140,14 +1040,7 @@ class TestManifestWriterAndReaderAcceptTheSameSet:
 
 
 class TestTheSuppliedPyarrowWheelIsValidated:
-    """install.ps1: UNSLOTH_PYARROW_WHEEL decides whether the native path is taken.
-
-    Every other branch of Get-WoaPyarrowSource checks the interpreter and platform tags.
-    This one accepted any existing file, so an x64 wheel, a wheel for another minor, or a
-    truncated download selected the native stack -- and the staging step trusts the .whl
-    name without opening it, so the run failed at resolution having already given up the
-    working x64 path.
-    """
+    """install.ps1: UNSLOTH_PYARROW_WHEEL decides whether the native path is taken."""
 
     # A REAL archive. The check opens the file rather than reading its first two bytes,
     # because a PK header proves nothing about an interrupted download -- which is now
@@ -1224,12 +1117,7 @@ class TestTheSuppliedPyarrowWheelIsValidated:
 
 
 class TestCallerResolverConfigurationSurvives:
-    """install.ps1 must not discard what its own purge block just chose to keep.
-
-    The purge above removes only variables pointing into this StudioHome's woa directory,
-    precisely so a caller's corporate wheel source is left alone -- and then the three
-    assignments overwrote them anyway.
-    """
+    """install.ps1 must not discard what its own purge block just chose to keep."""
 
     def test_the_overrides_are_kept_or_folded_never_dropped(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1264,8 +1152,7 @@ class TestCallerResolverConfigurationSurvives:
         assert '"$_woaCallerUvLinks,$WoaWheelDir"' not in text
 
     def test_the_python_side_can_read_an_appended_value(self):
-        """
-        install_python_stack.py split find-links on os.pathsep alone, which would have
+        """install_python_stack.py split find-links on os.pathsep alone, which would have
         read "dirA,dirB" as one unusable path now that appending is possible.
         """
         source = STACK_PY.read_text(encoding = "utf-8")
@@ -1273,15 +1160,7 @@ class TestCallerResolverConfigurationSurvives:
 
 
 class TestTheProbeAsksForTheInterpretersAbi:
-    """install.ps1 keyed its wheel search on the minor alone.
-
-    A free-threaded build installs cp313-cp313t, not cp313-cp313, so probing for the GIL
-    tag found the ordinary wheels on the index, enabled the native stack, and left the
-    resolve to fail on wheels the venv cannot use -- after the x64 fallback had been given
-    up. Reachable because Find-CompatiblePython's PATH scan and its `py -0p` enumeration
-    both accept any interpreter whose --version matches, and the native path ranks ARM64
-    builds first.
-    """
+    """install.ps1 keyed its wheel search on the minor alone."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1351,8 +1230,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
         assert "-FreeThreaded $_woaNewFreeThreaded" in text
 
     def test_the_staging_scan_uses_the_venv_abi(self):
-        """
-        The other half: keyed on the python tag, staging kept the cp313-cp313 wheels a
+        """The other half: keyed on the python tag, staging kept the cp313-cp313 wheels a
         free-threaded venv cannot install and discarded the cp313-cp313t ones it can.
         """
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1407,13 +1285,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
 
 
 class TestTheAbiReprobeFiresOnAMatchingMinor:
-    """The hole left by keying the re-probe on the minor alone.
-
-    The first probe runs before an interpreter exists, so it has to assume a GIL build.
-    A free-threaded 3.13t selected for a 3.13 request then matched on minor, skipped the
-    only call that passes -FreeThreaded, and left the cp313 answer standing -- so native
-    mode was enabled on wheels the resulting cp313t venv cannot install.
-    """
+    """The hole left by keying the re-probe on the minor alone."""
 
     def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1470,12 +1342,7 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
 
 
 class TestAnExplicitPinOutranksThePersistedIndex:
-    """The recovery is a memory of what install.ps1 chose, not a decision.
-
-    Letting it win meant a user who set UNSLOTH_TORCH_INDEX_URL or
-    UNSLOTH_TORCH_INDEX_FAMILY to move to another CUDA mirror was silently still served
-    by the previously recorded NVIDIA channel.
-    """
+    """The recovery is a memory of what install.ps1 chose, not a decision."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1530,12 +1397,7 @@ class TestAnExplicitPinOutranksThePersistedIndex:
 
 
 class TestTheRestoreMergesRatherThanStandsDown:
-    """A caller override must not cost the win_arm64 drop list.
-
-    studio.txt installs ddgs, whose HTTP stack asks for httpx[brotli], and Brotli has no
-    win_arm64 wheel -- so skipping the generated file because UV_OVERRIDE happened to be
-    set sent the update at an sdist it cannot build.
-    """
+    """A caller override must not cost the win_arm64 drop list."""
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1595,13 +1457,7 @@ class TestTheRestoreMergesRatherThanStandsDown:
 
 
 class TestThePurgeKeepsWhatIsNotOurs:
-    """The purge drops a PREVIOUS run's resolver settings, not the caller's.
-
-    Since the assignments started PREPENDING this StudioHome's wheelhouse to whatever the
-    caller had, a value that merely starts with an owned path still carries the caller's
-    own entries behind it -- and removing the whole variable took an air-gapped mirror
-    with it on the second `irm | iex` of one shell.
-    """
+    """The purge drops a PREVIOUS run's resolver settings, not the caller's."""
 
     @staticmethod
     def _purge_block() -> str:
@@ -1679,12 +1535,7 @@ class TestThePurgeKeepsWhatIsNotOurs:
 
 
 class TestAMalformedHandoffUrlDoesNotCostTheManifest:
-    """write_manifest documents that it never raises.
-
-    UNSLOTH_WOA_SELECTED_TORCH_INDEX comes in from the environment -- setup.ps1 forwards
-    it as received -- and urlsplit raises ValueError on a malformed authority, before the
-    write-side try block, losing the whole manifest.
-    """
+    """write_manifest documents that it never raises."""
 
     @pytest.mark.parametrize(
         "bad",
@@ -1709,9 +1560,7 @@ class TestAMalformedHandoffUrlDoesNotCostTheManifest:
 
 class TestAStaleTorchaudioIsRemoved:
     """A fresh-shell update on Windows on ARM cannot see UNSLOTH_WOA_HAS_TORCHAUDIO, so it
-    installs torch/torchvision alone. uv leaves an already-installed torchaudio exactly
-    where it is, and a channel that has moved torch to a new minor leaves that wheel's
-    compiled extension linked against the previous libtorch.
+    installs torch/torchvision alone.
     """
 
     @staticmethod
@@ -1747,12 +1596,7 @@ class TestAStaleTorchaudioIsRemoved:
 
 
 class TestTheWheelTagsAreMatchedAsFields:
-    """`*cp313-cp313*` also matches cp313-cp313t.
-
-    On an ordinary GIL 3.13 that let a free-threaded wheel select the native path, and the
-    staging block then picked the same wheel -- uv rejected it only after the installer had
-    already committed to the ARM64 venv and given up the working x64 stack.
-    """
+    """`*cp313-cp313*` also matches cp313-cp313t."""
 
     def test_no_substring_match_is_left(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1868,12 +1712,7 @@ class TestThePurgeNeedsAPathBoundary:
 
 
 class TestAHostedDropCandidateMustMeetItsFloor:
-    """The override drop list recorded names only.
-
-    Without the override the RELEASED unsloth metadata applies, so a hosted
-    xformers-0.0.22 against `xformers>=0.0.22.post7` clears the drop and then fails the
-    resolve on a win_arm64 build that does not exist.
-    """
+    """The override drop list recorded names only."""
 
     def test_versions_are_recorded_and_the_floor_is_consulted(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1962,13 +1801,7 @@ class TestAHostedDropCandidateMustMeetItsFloor:
 
 
 class TestAFreeThreadedInterpreterIsPreflightedForAv:
-    """torch and pyarrow were not the whole story.
-
-    constraints.txt requires av>=17.1.0 on this platform, and PyAV's win_arm64 wheel is
-    cp311-abi3 -- which covers every GIL build from 3.11 up and no free-threaded one,
-    since those do not implement the stable ABI. PyAV does publish cp314-cp314t, so the
-    answer differs by minor and is asked rather than assumed.
-    """
+    """torch and pyarrow were not the whole story."""
 
     def test_the_probe_gates_native_mode(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -2054,8 +1887,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
 
 class TestACallerOverrideFileKeepsItsOwnDirectory:
     """uv resolves a nested -r, and a relative wheel path, against the file that contains
-    the line. Copying such a line into $StudioHome\\woa moved its base directory and every
-    later native resolve died on a missing file.
+    the line.
     """
 
     def test_a_non_conflicting_file_is_passed_through(self):
@@ -2199,13 +2031,7 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
 
 
 class TestTheRecoveryPrependsRatherThanStandsDown:
-    """A caller's own find-links must not cost the staged win_arm64 wheels.
-
-    find-links are additional search locations with no conflict semantics, so ours and a
-    corporate mirror coexist. Skipping ours because the caller had set something left
-    pyarrow -- which exists nowhere but that directory on this platform -- out of the
-    search, and the update reached for an sdist that cannot build here.
-    """
+    """A caller's own find-links must not cost the staged win_arm64 wheels."""
 
     @staticmethod
     def _block() -> str:
@@ -2312,9 +2138,8 @@ class TestTheMergedOverrideFileIsRebasedToo:
 
 
 class TestAWheelhouseThatIsTheStagingDirectory:
-    """UNSLOTH_WOA_WHEELHOUSE may BE $StudioHome\\woa\\wheels -- that is how an offline
-    run reuses the installer's own cache. Copy-Item refuses to overwrite an item with
-    itself, and under $ErrorActionPreference = "Stop" that aborted the whole install.
+    r"""UNSLOTH_WOA_WHEELHOUSE may BE $StudioHome\woa\wheels -- that is how an offline run
+    reuses the installer's own cache.
     """
 
     def test_every_staging_copy_is_guarded(self):
@@ -2333,7 +2158,8 @@ class TestAWheelhouseThatIsTheStagingDirectory:
     def test_no_staging_copy_is_left_unguarded(self):
         """Counted, so a fourth copy added later cannot quietly skip the guard."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        start = text.index("# Put the win_arm64 pyarrow wheel where uv and pip can both find it")
+        # Anchored on code, not on a comment: a comment pass must not be able to break this.
+        start = text.index('if ($script:WoaPyarrowSource -eq "local") {')
         staging = text[start : text.index("$WoaOverrides = Join-Path $WoaDir", start)]
         copies = staging.count("Copy-Item -LiteralPath")
         guards = staging.count("Test-WoaSamePath")
@@ -2401,11 +2227,7 @@ class TestAWheelhouseThatIsTheStagingDirectory:
 
 
 class TestTheSuppliedWheelIsOpenedNotSniffed:
-    """A truncated download still starts with "PK".
-
-    Accepting one selected the native path, staged the broken file, and failed the pyarrow
-    resolve with the working x64 stack already given up.
-    """
+    """A truncated download still starts with "PK"."""
 
     def test_the_zip_helper_is_used(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -2461,10 +2283,8 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
 
 
 class TestAConfiguredWoaMirrorSurvivesAFreshShell:
-    """write_manifest persists only NVIDIA's own channels, because any other URL could
-    carry a credential. So a corporate win_arm64 mirror is recoverable nowhere but the
-    variable the user set, and ignoring it sent a fresh-shell update to the
-    driver-derived download.pytorch.org family, which has no win_arm64 CUDA wheel at all.
+    """write_manifest persists only NVIDIA's own channels, because any other URL could carry
+    a credential.
     """
 
     @requires_pwsh
@@ -2559,14 +2379,14 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
         assert done.stdout.strip().splitlines()[-1] == "[]"
 
     def test_install_ps1_still_does_not_write_that_variable(self):
-        """It is the user's INPUT. Writing it would make a second run read its own answer
-        back as an instruction, which is what the handover variable is for."""
+        """It is the user's INPUT."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert not re.search(r"\$env:UNSLOTH_WOA_TORCH_INDEX_URL\s*=", text)
 
     def test_a_mirror_is_still_not_persisted(self):
         """The reason this branch has to exist; if the manifest ever took one, the
-        credential rule would have been weakened instead."""
+        credential rule would have been weakened instead.
+        """
         module = _load_manifest_module()
         import tempfile
 

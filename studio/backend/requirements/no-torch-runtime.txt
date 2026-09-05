@@ -48,9 +48,8 @@ accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
 huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
-# hf_transfer has no win_arm64 wheel, and this file is installed --no-deps, so on
-# Windows on ARM pip would fall to the sdist and need cargo plus MSVC. The download
-# accelerator is opt-in at runtime and huggingface_hub works without it.
+# No win_arm64 wheel, and this file installs --no-deps, so pip would need cargo plus
+# MSVC. Opt-in at runtime, and huggingface_hub works without it.
 hf_transfer==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # diffusers: see diffusers-pin.txt, installed by its own step (this file is
 # installed --no-deps, and the pin has to apply on the torch path too).

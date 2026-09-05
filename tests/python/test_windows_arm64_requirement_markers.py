@@ -127,16 +127,7 @@ def test_split_rows_never_overlap(label, reqs):
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
 def test_no_package_is_dropped_on_a_non_woa_platform(label, reqs):
-    """A split may remove a package on Windows ARM64 only.
-
-    hf_transfer and xformers are deliberately dropped there (no win_arm64 wheel, no
-    buildable sdist). Anywhere else, a package that has rows must have a live one.
-
-    Scoped to the groups this mechanism actually created -- a group holding a row with
-    the ARM64 marker. Plenty of pre-existing rows are legitimately inactive on exotic
-    platforms (bitsandbytes in the amd extra has nothing for linux/armv7l), and that is
-    not what this test is about.
-    """
+    """A split may remove a package on Windows ARM64 only."""
     for name, group in _by_name(reqs).items():
         if len(group) < 2 or "constraints" in label:
             continue  # a constraints file may legitimately have no cap in force
@@ -160,12 +151,7 @@ def test_no_package_is_dropped_on_a_non_woa_platform(label, reqs):
 
 
 def test_arm64_marker_is_case_sensitive_and_windows_only():
-    """``ARM64`` must not match macOS ``arm64`` or Linux ``aarch64``.
-
-    This is the whole isolation mechanism. If the compare were case-insensitive, or if a
-    row keyed on platform_machine without sys_platform, every Apple Silicon and Linux
-    ARM host would take the Windows-on-ARM pins.
-    """
+    """``ARM64`` must not match macOS ``arm64`` or Linux ``aarch64``."""
     woa = Requirement('x==1; sys_platform == "win32" and platform_machine == "ARM64"')
     for plat in PLATFORMS:
         env = _env(plat, "3.13")
@@ -184,18 +170,7 @@ def test_arm64_marker_is_case_sensitive_and_windows_only():
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
 def test_no_row_is_dead_on_arrival(label, reqs):
-    """Every row must be live in at least one real environment.
-
-    This is the one mistake the scope-limited tests above cannot catch by construction:
-    write ``arm64`` instead of ``ARM64`` next to ``sys_platform == "win32"`` and the
-    conjunction becomes unsatisfiable, the split stops existing, and every check that
-    looks for the split simply skips the group and passes. Windows on ARM then quietly
-    takes the x64 pins and source-builds.
-
-    Asked semantically rather than by matching marker text: a row like torchcodec's
-    pairs ``platform_machine == 'arm64'`` with ``sys_platform == 'darwin'`` in a separate
-    disjunct, which is correct, and only a genuinely unsatisfiable row is flagged.
-    """
+    """Every row must be live in at least one real environment."""
     for req in reqs:
         if req.marker is None:
             continue
@@ -277,15 +252,9 @@ def _minor(py: str) -> tuple:
 
 @pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
 def test_a_selected_row_is_installable_on_the_python_it_was_selected_for(label, reqs):
-    """
-    Splitting on platform is not enough on its own: a row can be live for an interpreter
+    """Splitting on platform is not enough on its own: a row can be live for an interpreter
     that no release in its range supports, which is not a resolution failure anyone reads
     as a marker bug -- pip just reports that no version matches.
-
-    This is how `pandas>=3.0,<4` for win32+ARM64 shipped unsatisfiable on 3.9 and 3.10.
-    The marker partition was exact, every environment had exactly one live row, and the
-    row it had could never install. requires-python is part of whether a split is
-    complete, so assert it here rather than trusting the platform axis alone.
     """
     for plat in PLATFORMS:
         for py in PYTHONS:
@@ -315,10 +284,8 @@ def _lowest_allowed(req) -> str:
 
 
 def test_the_woa_pandas_split_covers_every_supported_python():
-    """
-    The complement of the test above: having added a python_version bound, no ARM64
-    interpreter may be left with no pandas row at all. 3.9 and 3.10 fall back to the
-    2.3.3 row and source-build, which is what they did before win_arm64 wheels existed.
+    """The complement of the test above: having added a python_version bound, no ARM64
+    interpreter may be left with no pandas row at all.
     """
     arm64 = ("win32", "Windows", "ARM64", "nt")
     for label, reqs in ALL_SOURCES:

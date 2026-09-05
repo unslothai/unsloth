@@ -12,11 +12,8 @@ packaging==26.3
 matplotlib==3.10.9
 # Held at 2.3.3 rather than the 3.0.x line: single-env/constraints.txt pins
 # pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
-# 3.9. Bump both together. Windows on ARM is the exception: win_arm64 pandas
-# wheels start at 3.0, so 2.3.3 would source-build there (constraints.txt matches).
-# The 3.11 floor on the ARM64 row is pandas 3's own requires-python; without it the
-# row is unsatisfiable on a 3.9/3.10 ARM64 interpreter. Below 3.11 that host falls to
-# 2.3.3 and source-builds, as it would have before win_arm64 wheels existed.
+# 3.9. Bump both together. Windows on ARM is the exception: win_arm64 pandas wheels
+# start at 3.0, and the 3.11 floor there is pandas 3's own requires-python.
 pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
 pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 nest_asyncio==1.6.0
@@ -43,9 +40,8 @@ diceware==1.0.1
 ddgs==9.14.4; python_version >= "3.10"
 ddgs==9.8.0; python_version < "3.10"
 cryptography>=42.0.0; sys_platform != "win32" or platform_machine != "ARM64"
-# Windows on ARM: 46.0.7 publishes no win_arm64 wheel and the sdist needs a Rust
-# toolchain, so cap at the newest release that ships one. Matches the cap in
-# single-env/constraints.txt, which does not reach a plain pip install of the extra.
+# Windows on ARM: 46.0.7 has no win_arm64 wheel and its sdist needs Rust. Matches
+# constraints.txt, which a plain pip install of the extra does not reach.
 cryptography>=42.0.0,<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
 boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0

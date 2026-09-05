@@ -730,14 +730,10 @@ def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
     return ref
 
 
-# Windows CUDA prebuilts are published per CPU architecture. Upstream ggml-org
-# names them llama-<tag>-bin-win-cuda-<runtime>-<arch>.zip with arch in {x64, arm64};
-# arm64 exists because NVIDIA's Windows-on-ARM parts (N1X / RTX Spark class) run CUDA
-# natively. Everything below takes the arch as a parameter and defaults to x64, so the
-# x64 selection is byte-for-byte what it was before Windows ARM64 CUDA was added.
+# Upstream names these llama-<tag>-bin-win-cuda-<runtime>-<arch>.zip, arch in {x64, arm64}.
+# Everything below takes the arch as a parameter defaulting to x64, so x64 selection is unchanged.
 WINDOWS_CUDA_ARCHS = ("x64", "arm64")
-# Both Windows CUDA install kinds, for the checks that must treat them alike
-# (Blackwell capability filtering, GPU-layer validation, backend bookkeeping).
+# Both Windows CUDA kinds, for the checks that must treat them alike.
 _WINDOWS_CUDA_INSTALL_KINDS = ("windows-cuda", "windows-arm64-cuda")
 
 
@@ -1124,13 +1120,9 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_windows and host.is_arm64:
-        # NVIDIA's Windows-on-ARM parts (GB10 / N1X, "RTX Spark" class) run CUDA
-        # natively, and upstream ships llama-bNNNN-bin-win-cuda-13.4-arm64.zip plus its
-        # cudart bundle for them. Try those first, exactly as the x64 branch does, and
-        # keep the CPU bundle appended below as the fallback attempt.
-        # UNSLOTH_LLAMA_ARM64_CUDA=0 has to be honoured here as well as in the fork
-        # resolver: an escape hatch that works on one planning path and silently does
-        # nothing on the other is worse than not having one.
+        # Upstream ships -arm64 CUDA bundles for these parts; try them first as the x64 branch does, with
+        # the CPU bundle still appended as the fallback. The opt-out is honoured here as well as in the
+        # fork resolver.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             attempts.extend(
@@ -3007,14 +2999,10 @@ def windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
     arch: str | None = None,
 ) -> list[AssetChoice]:
-    # arch defaults to the host's own (x64 everywhere except Windows on ARM), so every
-    # existing x64 caller keeps its behaviour without passing anything.
     if arch is None:
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
     selection_log = list(selection_preamble)
-    # x64 is the historical, unspoken default; saying so would add a line to every
-    # existing Windows install log for no new information.
     if arch != "x64":
         selection_log.append(f"windows_cuda_selection: arch={arch}")
     driver_runtime = pick_windows_cuda_runtime(host)
@@ -3212,8 +3200,7 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
     arch: str | None = None,
 ) -> list[AssetChoice]:
-    # arch defaults to the host's own, so x64 callers are unchanged; Windows on ARM
-    # asks for the arm64 bundles and the windows-arm64-cuda kind.
+    # arch defaults to the host's own, so x64 callers are unchanged.
     if arch is None:
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
@@ -3234,9 +3221,8 @@ def published_windows_cuda_attempts(
     # actually provides on the host, preferring the torch line. Routing them
     # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
     legacy_minors: list[str] = []
-    # Scoped to the arch being resolved. Hardcoding x64 here happened to be harmless
-    # while no arm64 CUDA artifact was published (the scan simply found nothing), but
-    # it would silently mis-order the runtime lines the day one is.
+    # Scoped to the arch being resolved: hardcoding x64 was harmless only while no arm64
+    # CUDA artifact existed, and would mis-order the runtime lines the day one does.
     _legacy_pattern = rf"-bin-win-cuda-(\d+\.\d+)-{re.escape(arch)}\.zip$"
     for artifact in published_artifacts:
         m = re.search(_legacy_pattern, artifact.asset_name)
@@ -3737,16 +3723,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         )
 
     if host.is_windows and host.is_arm64:
-        # Windows on ARM: CUDA first on an NVIDIA host (GB10 / N1X run CUDA natively and
-        # upstream publishes -arm64 CUDA bundles), then the CPU bundle. Without this
-        # branch the function fell through to the "no prebuilt policy" raise, which sent
-        # every Windows ARM64 host that reached it to a source build.
-        #
-        # Gated on the opt-out like every other ARM64 CUDA branch: this resolver is
-        # reached through resolve_asset_choice on the fallback paths, so leaving it
-        # ungated made UNSLOTH_LLAMA_ARM64_CUDA=0 work in direct_upstream_release_plan
-        # and silently not work here -- an escape hatch that holds only on the path the
-        # user did not take is worse than none.
+        # CUDA first on an NVIDIA host, then the CPU bundle. Without this branch the function fell through
+        # to the "no prebuilt policy" raise and sent every Windows ARM64 host to a source build. Gated on
+        # the opt-out like every other ARM64 CUDA branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             attempts = _drop_blackwell_incapable_windows_cuda(
                 host,
@@ -3859,17 +3838,13 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
-        # NVIDIA Windows-on-ARM (GB10 / N1X): prefer a CUDA bundle, exactly as x64 does.
-        # The published windows-arm64-cuda artifact is tried first, then upstream's
-        # llama-<tag>-bin-win-cuda-<runtime>-arm64.zip; both are hash-gated against the
-        # release's approved checksums, so an unlisted archive is never installed. When
-        # neither is available this falls through to the CPU bundle below, which is what
-        # every Windows ARM64 host got before CUDA bundles existed.
+        # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
+        # upstream's -arm64 zip, both hash-gated against the release's approved checksums. Neither
+        # available falls through to the CPU bundle.
         #
-        # The opt-out gates the whole branch, not just the unverified upstream tail below:
-        # gated only there, UNSLOTH_LLAMA_ARM64_CUDA=0 would have stopped delivering a CPU
-        # bundle the moment the fork published an approved windows-arm64-cuda artifact,
-        # because the published branch returns before the tail is ever reached.
+        # The opt-out gates the WHOLE branch: gated only on the upstream tail, it would stop delivering a
+        # CPU bundle the day the fork publishes an approved artifact, because the published branch returns
+        # before the tail is reached.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -3903,17 +3878,10 @@ def resolve_release_asset_choice(
                 try:
                     return apply_approved_hashes(upstream_arm64_cuda, checksums)
                 except PrebuiltFallback as exc:
-                    # The fork publishes no windows-arm64-cuda bundle yet, so its checksum
-                    # manifest lists none and the gate above drops these. The alternative is
-                    # a CPU-only llama.cpp on a machine whose whole reason for existing is
-                    # its NVIDIA GPU, so take the upstream ggml-org bundle -- the same
-                    # release this fork repackages, fetched over HTTPS from GitHub, and the
-                    # same provenance `--published-repo ggml-org/llama.cpp` already installs
-                    # on every other host. Say so plainly rather than silently. The day the
-                    # fork publishes the artifact and its hash, the verified branch above
-                    # wins and this is never reached. No opt-out test here: the branch this
-                    # sits in is already gated on it, so a second check could only ever be
-                    # true and would read as though the CPU fallback still lived here.
+                    # The fork publishes no windows-arm64-cuda bundle yet, so its manifest lists none and the gate
+                    # above drops these. The alternative is a CPU-only llama.cpp on a machine bought for its GPU, so
+                    # take upstream ggml-org's -- the same release this fork repackages, over HTTPS, the same
+                    # provenance `--published-repo ggml-org/llama.cpp` installs on every other host.
                     log(
                         "no approved checksum covers a Windows ARM64 CUDA bundle "
                         f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
@@ -7091,9 +7059,7 @@ def runtime_payload_health_groups(
     if install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
     if install_kind in {"windows-cuda", "windows-arm64-cuda"}:
-        # Same payload names on both Windows CUDA arches: upstream's arm64 bundle ships
-        # ggml-cuda.dll and a cudart-...-arm64.zip carrying the same cudart64_/cublas64_
-        # DLL names, built for ARM64.
+        # Same payload names on both Windows CUDA arches; only the build differs.
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
