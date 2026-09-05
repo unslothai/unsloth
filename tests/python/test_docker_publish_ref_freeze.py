@@ -382,7 +382,9 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
-def test_the_digest_export_still_works_without_a_handle_tag(manifest_digest_step: str, tmp_path: Path):
+def test_the_digest_export_still_works_without_a_handle_tag(
+    manifest_digest_step: str, tmp_path: Path
+):
     bin_dir = tmp_path / "bin"
     _docker_stub(
         bin_dir,
