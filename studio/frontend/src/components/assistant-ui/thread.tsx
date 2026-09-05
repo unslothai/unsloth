@@ -143,6 +143,7 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resumesWithoutText,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -6857,6 +6858,12 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
+  // The same question with the "there must be text" half dropped, for the one reason that
+  // can arrive with no text at all. Selected unconditionally because the reason is not
+  // known until below and a hook cannot be.
+  const continuableIfEmpty = useAuiState(({ message }) =>
+    isContinuableContent(message.content, { allowEmpty: true }),
+  );
   // Gemini signs its text parts, and the resumed turn is replayed from this branch,
   // so the signature travels with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
@@ -6877,7 +6884,18 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
-  const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
+  // `paused` is stamped but has no assistant-ui status of its own, so `restoredAssistantStatus`
+  // maps it to `cancelled` and a reload would otherwise relabel a turn the backend paused as
+  // "Response stopped", which reads as something the user did. The stamp wins for that one.
+  const reason =
+    cancelled && stamped?.reason !== "paused"
+      ? ("cancelled" as const)
+      : stamped?.reason;
+  // A turn the backend gave up on can be empty: the chat was evicted while still prefilling
+  // and never produced a token. Both content gates below are written for a turn that has
+  // text, and together they hid the bar on exactly the turn that most needed it -- an empty
+  // bubble with no notice, no Continue and no error. Measured in the GUI on 2026-09-05.
+  const noTextIsExpected = resumesWithoutText(reason);
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same
   // ones, or it would resume a turn the bar would have refused to offer.
@@ -6887,12 +6905,12 @@ const ContinueMessageBarForLastMessage: FC = () => {
     !isRunning &&
     !researchRunId &&
     !researchActive &&
-    continuable &&
+    (noTextIsExpected ? continuableIfEmpty : continuable) &&
     modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim());
+    (noTextIsExpected || Boolean(partial.trim()));
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.

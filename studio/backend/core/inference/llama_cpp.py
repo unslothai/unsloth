@@ -5950,6 +5950,52 @@ def _usage_with_earlier_attempts(usage, earlier_completion_tokens: int):
     return out
 
 
+# The `reason` a give-up rides under. One string, shared by the three surfaces that emit
+# it and by the client that reads it, so a grep finds every end of the wire.
+PREEMPT_GAVE_UP_REASON = "preempt_gave_up"
+
+
+def _preempt_gave_up_event(context_length, max_tokens) -> dict:
+    """What a client is owed when a paused chat stops waiting for KV room.
+
+    Both places that end a turn this way used to `return` in silence. Measured 2026-09-05,
+    four chats on the 35B at -c 8192: one was evicted while still prefilling, waited, and
+    finished with `error: None, tokens: 0, chars: 0, wall_s: 163.8`. A caller cannot tell
+    that from a model that chose to say nothing, and the GUI renders it as a blank
+    assistant turn with no notice at all. Silence is the one outcome a shared-cache
+    scheduler must never produce: the whole point of pausing rather than failing is that
+    the user is told what happened to their answer.
+
+    Carried on `context_truncated` rather than an event type of its own, and this is a
+    deliberate reuse. That event already reaches the client on every surface that matters
+    -- both streaming consumers in `routes/inference.py` convert it, both non-streaming
+    drains accumulate it into the response body, and the durable `chat-runs` worker keeps
+    it because it is a `data:` line rather than an SSE comment. A new type would have to
+    be taught to each of those five places, and the one that was missed would log
+    "unexpected dict event" and drop the notice, which is the failure being fixed.
+
+    `fits` is TRUE and `dropped_messages` is zero, because both are the truth here and
+    both are load-bearing on the client. Nothing failed to fit -- the prompt was servable,
+    the cache was merely busy -- and nothing was evicted, so a non-zero count would raise
+    "This conversation was compacted" for a compaction that never happened and a false
+    `fits: false` would blame the Context Length setting for contention. `reason` is what
+    distinguishes this from an ordinary fit, and it is the only field a reader needs.
+    """
+    window = max(0, int(context_length or 0))
+    event = {
+        "type": "context_truncated",
+        "reason": PREEMPT_GAVE_UP_REASON,
+        "fits": True,
+        "dropped_messages": 0,
+    }
+    if window:
+        event["context_length"] = window
+        # Same formula the preflight's fit reports, so a client comparing the partial it
+        # holds against a budget stays on one scale.
+        event["prompt_target"] = prompt_budget(window, max_tokens)
+    return event
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):
@@ -28600,16 +28646,54 @@ class LlamaCppBackend:
             # signal cannot arrive before the lease it describes has gone back, and before
             # the wait below, which can last minutes.
             yield {"type": "preempt", "state": "paused"}
+
+            def _finish_after_giving_up():
+                """End the turn the way a client can read, not by falling silent.
+
+                Two events, in the order the client consumes them: the notice saying WHY
+                this turn stopped, then a terminal metadata carrying `length`, which is
+                the shape the continuation path already resumes from. Without the second
+                one this generator simply stopped, and the route emitted no finish reason
+                at all: the API caller saw a completed request with no error, no usage and
+                no text, and the GUI a blank assistant turn.
+
+                The usage is assembled exactly as the successful exit assembles it, so a
+                turn that gave up still reports the tokens its earlier attempts decoded
+                and were shown for. See `_usage_with_earlier_attempts`.
+                """
+                yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
+                _gave_up_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
+                _gave_up_usage = _usage_with_earlier_attempts(
+                    _gave_up_usage, _preempt_earlier_completion_tokens
+                )
+                yield {
+                    "type": "metadata",
+                    "usage": _gave_up_usage or {},
+                    "timings": _metadata_timings,
+                    # Not the reason the last attempt reported, which is whatever the
+                    # aborted stream happened to leave behind. The turn is incomplete and
+                    # continuable, and `length` is what says so.
+                    "finish_reason": "length",
+                }
+
             if _preempt_resumes + 1 > _preemption.DEFAULT_MAX_PREEMPT_RESUMES:
                 logger.warning(
                     "llama preemption giving up after %s resumes on a non-tool chat",
                     _preempt_resumes,
                 )
+                yield from _finish_after_giving_up()
                 return
             if not preempt_policy.await_resume():
                 # The room never came back. Ending here leaves the client with the partial
                 # it has already been streamed, which the length-continuation path can pick
-                # up, rather than an error.
+                # up, rather than an error -- but it must SAY so. It did not, and a chat
+                # that gave up before its first token finished as an empty turn with
+                # nothing to distinguish it from a model that answered with silence.
+                logger.info(
+                    "llama preemption gave up waiting for room; finishing the turn with "
+                    "what it has and telling the client"
+                )
+                yield from _finish_after_giving_up()
                 return
             # Tell the controller this one is decoding again. Without it the participant
             # stays PAUSED in the ledger while it is in fact generating, so its cells are
@@ -32347,6 +32431,16 @@ class LlamaCppBackend:
                     # The policy stopped waiting for room. Ending the turn leaves the
                     # partial in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
+                    # And says so. This loop breaks into the final answering pass, so
+                    # unlike the plain path it usually still produces text, but the pause
+                    # the client was shown ("Paused while another chat finishes") has to
+                    # be resolved either way: a chat that waited minutes and then answered
+                    # something shorter has told the user nothing about the minutes, and a
+                    # final pass that produces nothing leaves the same blank turn the plain
+                    # path did. Yielded here rather than appended to `_carried_truncations`
+                    # because those are drained at the TOP of this loop, which the break
+                    # below never reaches again; emitted once, because the break follows.
+                    yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
                     break
                 # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}

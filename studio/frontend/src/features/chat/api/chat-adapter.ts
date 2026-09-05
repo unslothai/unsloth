@@ -256,6 +256,7 @@ import {
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
   type IncompleteReason,
+  isPreemptGaveUp,
   readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
@@ -5147,6 +5148,10 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
+      // The backend stopped waiting for room in the shared KV cache and finished the turn.
+      // Latched here rather than read off the last chunk, because the notice arrives before
+      // the terminal chunk and that chunk's `length` would otherwise be the last word.
+      let preemptGaveUp = false;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
@@ -6368,6 +6373,9 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
+                if (isPreemptGaveUp(chunk.context_truncated)) {
+                  preemptGaveUp = true;
+                }
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -7633,6 +7641,20 @@ export function createOpenAIStreamAdapter(
           })
         ) {
           incompleteReason = "length";
+        }
+
+        // A turn the backend gave up on is `paused`, not `length`. It ends on
+        // `finish_reason: "length"` because that is the shape a continuation resumes from,
+        // but the cause was contention for one KV cache and not the Max Tokens setting, and
+        // naming the wrong one sends the user to a setting that was never the constraint.
+        // `paused` also refuses the AUTOMATIC continuation, which is the point: the backend
+        // has just said it could not get the model back, so racing it with a second request
+        // asks for another slot in the cache that ran out. The manual Continue stays.
+        //
+        // Last, so it wins over both assignments above. The notice arrives before the
+        // terminal chunk, and that chunk latches `length`.
+        if (preemptGaveUp) {
+          incompleteReason = "paused";
         }
 
         // Before the lookup below: its network time is not generation time.
