@@ -2564,7 +2564,10 @@ class TestAMixedListingIsNotProofOfCpu:
     def test_the_old_callers_still_work(self):
         """The listed sets are optional, so a caller that has none keeps the old verdict."""
         failure, _ = self._verdict(
-            apps_before = {}, apps_after = {222: 2600}, baseline = None, settled = None,
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = None,
+            settled = None,
         )
         assert failure is None
 

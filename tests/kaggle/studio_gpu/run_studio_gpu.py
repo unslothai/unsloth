@@ -251,9 +251,7 @@ def cli_run_gpu_failure(
     # unattributable, so this defers to the device-wide delta exactly as the all-[N/A]
     # case does.
     if listed_before is not None and listed_after is not None:
-        appeared_unattributed = sorted(
-            (listed_after - set(listed_before)) - set(apps_after)
-        )
+        appeared_unattributed = sorted((listed_after - set(listed_before)) - set(apps_after))
         if appeared_unattributed:
             detail["compute_apps_unattributed"] = appeared_unattributed
             if baseline is None or settled is None:

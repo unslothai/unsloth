@@ -3256,7 +3256,9 @@ class TestAnAnnotatedIncludeStillOpens:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         lines = [line for line in done.stdout.strip().splitlines() if line]
@@ -3302,7 +3304,9 @@ class TestAnUnrecordableIndexInheritsNothing:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expect_left, why
@@ -3325,7 +3329,9 @@ class TestAnUnrecordableIndexInheritsNothing:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert not (tmp_path / "woa" / "torch-index.txt").exists()
@@ -3349,9 +3355,9 @@ class TestALocalWheelIsOpenedBeforeItCounts:
             f"open what they count: {block.count('Test-ZipArchiveReadable')}"
         )
         local = block[: block.index("} else {")]
-        assert "Test-ZipArchiveReadable" in local, (
-            "the local branch counted a wheel on its filename alone"
-        )
+        assert (
+            "Test-ZipArchiveReadable" in local
+        ), "the local branch counted a wheel on its filename alone"
 
     def test_the_check_precedes_the_copy(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
