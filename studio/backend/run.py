@@ -8,6 +8,7 @@ Self-contained; can be moved to any directory.
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import NoReturn, Optional, Sequence, Tuple

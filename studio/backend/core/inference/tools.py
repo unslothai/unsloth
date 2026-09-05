@@ -77,6 +77,16 @@ from core.inference.mcp_client import (
     record_probe_failure,
     stdio_mcp_enabled,
 )
+from core.inference.sandbox import (
+    SandboxProfilePathError,
+    build_sandbox_argv,
+    close_sandbox_argv_fds,
+    configured_rocm_environment,
+    opted_in_user_site_path,
+    plain_pth_pythonpath_roots,
+    sandbox_argv_pass_fds,
+    sandbox_available,
+)
 from storage import mcp_servers_db
 
 from loggers import get_logger
@@ -6825,11 +6835,13 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
-    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
-    SystemRoot and a minimal PATHEXT) reach the child; all credential vars
+    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH, non-secret accelerator
+    visibility selectors (+VIRTUAL_ENV or Windows SystemRoot and a minimal PATHEXT)
+    reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
-    it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
+    it. PYTHONPATH carries the sandbox sitecustomize shim directory plus the
+    parent user site only under its explicit sandbox opt-in.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
@@ -6839,7 +6851,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Unsloth server runs in.
-    exe_dir = os.path.dirname(sys.executable)
+    exe_dir = os.path.dirname(_normalized_sys_executable())
     path_entries = [exe_dir] if exe_dir else []
 
     # If a virtualenv is active, include its bin/Scripts directory.
@@ -6877,9 +6889,16 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
     temp_dir = _sandbox_temp_dir(workdir)
+    python_path_entries = [_SANDBOX_SITE_DIR]
+    user_site = opted_in_user_site_path()
+    if user_site:
+        python_path_entries.append(user_site)
+    python_path_entries.extend(plain_pth_pythonpath_roots())
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
+        "USER": "sandbox",
+        "LOGNAME": "sandbox",
         "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
@@ -6888,10 +6907,27 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "MPLBACKEND": "Agg",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
-        "PYTHONPATH": _SANDBOX_SITE_DIR,
+        "PYTHONPATH": os.pathsep.join(python_path_entries),
     }
+    env.update(configured_rocm_environment())
     if venv:
         env["VIRTUAL_ENV"] = venv
+    # Device nodes are restored inside the Linux sandbox; retain the standard
+    # non-secret selectors so a job pinned to particular GPUs stays pinned.
+    for selector in (
+        "CUDA_DEVICE_ORDER",
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+        "NVIDIA_VISIBLE_DEVICES",
+        "ONEAPI_DEVICE_SELECTOR",
+        "ZE_AFFINITY_MASK",
+        "HSA_ENABLE_DXG_DETECTION",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ):
+        if selector in os.environ:
+            env[selector] = os.environ[selector]
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
@@ -7099,9 +7135,18 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec():
+def _sandbox_preexec_impl(apply_no_new_privs: bool, apply_nproc: bool = True):
     """Best-effort sandbox setup for sandboxed subprocesses (modules are
-    resolved at import time so the forked child runs no imports)."""
+    resolved at import time so the forked child runs no imports).
+
+    ``apply_no_new_privs`` and ``apply_nproc`` are False on the Linux bwrap
+    path. PR_SET_NO_NEW_PRIVS set before execve breaks a setuid ``bwrap``
+    helper (it cannot raise privileges to set up the namespace); bwrap
+    reapplies no-new-privs to the inner payload itself. RLIMIT_NPROC is
+    per-real-UID, so capping it on the parent can EAGAIN bwrap's own helper
+    fork on a busy multi-tenant host; the cap is reapplied inside the user
+    namespace (per mapped UID) by the inner rlimit wrapper in sandbox.py.
+    """
     try:
         os.setsid()
     except OSError:
@@ -7113,27 +7158,30 @@ def _sandbox_preexec():
         pass
 
     if _libc is not None:
-        try:
-            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
-        except (OSError, AttributeError):
-            pass
+        if apply_no_new_privs:
+            try:
+                _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            except (OSError, AttributeError):
+                pass
 
         try:
             _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
         except (OSError, AttributeError):
             pass
 
-        # CLONE_NEWNET not applied: with userns enabled it blocks all egress,
-        # including allowlisted hosts. Network policy is enforced by the AST
-        # host check and the bash blocklist.
+        # CLONE_NEWNET not applied here: when the OS sandbox is available it is
+        # the network boundary (bwrap --unshare-all / Seatbelt deny network).
+        # On the unsandboxed fallback path the AST host check and the bash
+        # blocklist enforce network policy instead.
 
     if _resource is not None:
-        # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
@@ -7158,6 +7206,27 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _sandbox_preexec():
+    """Pre-exec for the direct (unsandboxed) launch path: full hardening.
+
+    Used when the OS sandbox is unavailable (bwrap/sandbox-exec missing or the
+    kernel refuses userns) and on macOS under Seatbelt, where sandbox-exec is
+    not setuid so PR_SET_NO_NEW_PRIVS and the per-UID NPROC cap apply cleanly.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = True)
+
+
+def _sandbox_preexec_for_bwrap():
+    """Pre-exec for the Linux bwrap path.
+
+    Skips PR_SET_NO_NEW_PRIVS (set before execve it breaks the setuid bwrap
+    helper; bwrap applies no-new-privs inside the namespace) and RLIMIT_NPROC
+    (per-real-UID, it can EAGAIN bwrap's own fork on busy hosts; sandbox.py's
+    inner wrapper reapplies the cap per mapped UID inside the namespace).
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
 
 
 def _bypass_preexec():
@@ -7303,6 +7372,64 @@ def _get_shell_cmd(command: str) -> list[str]:
             return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+def _normalized_sys_executable() -> str:
+    """Return ``sys.executable`` with redundant ``..`` segments collapsed.
+
+    Studio is sometimes launched as ``../.venv/bin/python``, which puts a
+    literal ``..`` in ``sys.executable``. The Linux bwrap argv bind-mounts only
+    the realpath chain of the interpreter plus the venv tree, so the bwrap child
+    cannot resolve the unresolved parent segment and fails with ``execvp ... No
+    such file or directory``. ``abspath(normpath(...))`` collapses ``..`` while
+    preserving the venv launcher path. ``realpath`` would resolve ``bin/python``
+    to the base interpreter outside the venv root, which the bind set does not
+    cover, so the venv site-packages would not be visible inside the sandbox.
+    """
+    return os.path.abspath(os.path.normpath(sys.executable))
+
+
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+# Sentinel returned by the tool entry points when the operator asked for strict
+# sandboxing and the OS primitive cannot be applied. Surfaces as the tool output
+# so the LLM (and the user) see why the call refused.
+_SANDBOX_REQUIRED_UNAVAILABLE_MSG = (
+    "Execution blocked: UNSLOTH_STUDIO_SANDBOX_STRICT=1 is set but the OS "
+    "sandbox is unavailable. Install / enable bubblewrap on Linux "
+    "(apt install bubblewrap, ensure unprivileged user namespaces are "
+    "permitted) or sandbox-exec on macOS, or unset "
+    "UNSLOTH_STUDIO_SANDBOX_STRICT to allow unsandboxed execution."
+)
+
+
+def _strict_sandbox_required() -> bool:
+    """True iff the operator wants tool execution to fail closed.
+
+    Opt-in: the default is the original fail-open behavior so installs without
+    bubblewrap (locked-down kernels, nested containers, hosts without bwrap)
+    keep working. Operators who require the OS boundary set
+    UNSLOTH_STUDIO_SANDBOX_STRICT=1. Accepts the usual case-insensitive truthy
+    values (1 / true / yes / on).
+    """
+    value = os.environ.get("UNSLOTH_STUDIO_SANDBOX_STRICT", "").strip().lower()
+    return value in _TRUTHY_ENV_VALUES
+
+
+def _sandbox_argv_or_fallback(
+    inner_argv: list[str], workdir: str, sandboxed: bool
+) -> tuple[list[str] | None, bool]:
+    """Build the platform wrapper, honoring strict mode for unsafe paths."""
+    if not sandboxed:
+        return inner_argv, False
+    try:
+        return build_sandbox_argv(inner_argv, workdir), True
+    except SandboxProfilePathError as exc:
+        logger.warning("OS sandbox cannot represent a runtime path safely: %s", exc)
+        if _strict_sandbox_required():
+            return None, False
+        return inner_argv, False
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -8534,6 +8661,11 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = _ensure_session_dir(sandbox_root_path, session_id)
         else:
             workdir = _sandbox_fallback(sandbox_root_path, "_default", create = True)
+        # Canonicalize: the Linux sandbox bind-mounts os.path.realpath(workdir)
+        # while the child is launched with cwd=workdir. If $HOME is a symlink
+        # the two diverge and the sandboxed child's chdir fails on a path that
+        # was never bound. Realpath here so cwd and the bind always match.
+        workdir = os.path.realpath(workdir)
         created = not os.path.isdir(workdir)
         os.makedirs(workdir, exist_ok = True)
         if not project_workdir and not session_id:
@@ -16074,6 +16206,23 @@ def _python_exec(
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
+        # Decide whether to OS-confine this run. Bypass Permissions
+        # (disable_sandbox) is an explicit operator opt-out and is never
+        # OS-sandboxed. Otherwise wrap the interpreter in the platform sandbox
+        # when available; if the operator required it (strict mode) but it is
+        # not available, refuse rather than run unconfined.
+        # -u forces unbuffered child stdout so a bare print() streams live
+        # instead of sitting in the pipe's block buffer until exit. Applied
+        # unconditionally to stay byte-identical with and without streaming;
+        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
+        inner_argv = [_normalized_sys_executable(), "-u", tmp_path]
+        sandboxed = (not disable_sandbox) and sandbox_available()
+        if not disable_sandbox and not sandboxed and _strict_sandbox_required():
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+        argv, sandboxed = _sandbox_argv_or_fallback(inner_argv, workdir, sandboxed)
+        if argv is None:
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16086,15 +16235,25 @@ def _python_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if disable_sandbox:
+                popen_kwargs["preexec_fn"] = _bypass_preexec
+            elif sandboxed and sys.platform == "linux":
+                # bwrap applies no-new-privs and the NPROC cap inside its own
+                # namespace; applying them on the parent breaks the setuid
+                # helper / EAGAINs its fork (see sandbox.py).
+                popen_kwargs["preexec_fn"] = _sandbox_preexec_for_bwrap
+            else:
+                popen_kwargs["preexec_fn"] = _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # -u forces unbuffered child stdout so a bare print() streams live
-        # instead of sitting in the pipe's block buffer until exit. Applied
-        # unconditionally to stay byte-identical with and without streaming;
-        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        pass_fds = sandbox_argv_pass_fds(argv)
+        if pass_fds:
+            popen_kwargs["pass_fds"] = pass_fds
+        try:
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        finally:
+            close_sandbox_argv_fds(argv)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16231,6 +16390,18 @@ def _bash_exec(
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+
+        # Same sandbox decision as _python_exec: bypass runs unconfined, else
+        # wrap the shell in the platform sandbox when available, and honor
+        # strict mode when the primitive is missing.
+        inner_argv = _get_shell_cmd(command)
+        sandboxed = (not disable_sandbox) and sandbox_available()
+        if not disable_sandbox and not sandboxed and _strict_sandbox_required():
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+        argv, sandboxed = _sandbox_argv_or_fallback(inner_argv, workdir, sandboxed)
+        if argv is None:
+            return _SANDBOX_REQUIRED_UNAVAILABLE_MSG
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16244,11 +16415,22 @@ def _bash_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if disable_sandbox:
+                popen_kwargs["preexec_fn"] = _bypass_preexec
+            elif sandboxed and sys.platform == "linux":
+                popen_kwargs["preexec_fn"] = _sandbox_preexec_for_bwrap
+            else:
+                popen_kwargs["preexec_fn"] = _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        pass_fds = sandbox_argv_pass_fds(argv)
+        if pass_fds:
+            popen_kwargs["pass_fds"] = pass_fds
+        try:
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        finally:
+            close_sandbox_argv_fds(argv)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.

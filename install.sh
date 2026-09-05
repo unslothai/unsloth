@@ -2323,6 +2323,135 @@ case "$OS" in
         ;;
     linux|wsl)
         _check_linux_deps || exit 1
+
+        # OS-level sandbox (bubblewrap): best effort, never fatal. The studio
+        # backend wraps python/terminal tool execution in bwrap when it is
+        # present; when it is absent tool execution falls back to the in-process
+        # guard and logs a warning (set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse
+        # instead of falling back). Missing bwrap must not block install, so this
+        # is intentionally outside the required-dependency handling above.
+        bubblewrap_path_trusted() {
+            _bw_path="$(readlink -f "$1" 2>/dev/null)" || return 1
+            [ -f "$_bw_path" ] && [ -x "$_bw_path" ] || return 1
+            _bw_component="$_bw_path"
+            while :; do
+                _bw_meta="$(stat -Lc '%u %a' "$_bw_component" 2>/dev/null)" || return 1
+                set -- $_bw_meta
+                [ "$#" -eq 2 ] && [ "$1" = "0" ] || return 1
+                _bw_mode="$2"
+                _bw_perms="${_bw_mode#${_bw_mode%???}}"
+                case "$_bw_perms" in
+                    [0-7][0-7][0-7]) ;;
+                    *) return 1 ;;
+                esac
+                _bw_remainder="${_bw_perms#?}"
+                _bw_group_digit="${_bw_remainder%?}"
+                _bw_other_digit="${_bw_perms#??}"
+                [ $((_bw_group_digit & 2)) -eq 0 ] || return 1
+                [ $((_bw_other_digit & 2)) -eq 0 ] || return 1
+                [ "$_bw_component" != "/" ] || break
+                _bw_component="$(dirname "$_bw_component")" || return 1
+            done
+            BWRAP_BIN="$_bw_path"
+        }
+
+        bubblewrap_requires_keep_groups() {
+            _bw_uid="$(id -u 2>/dev/null)" || return 1
+            _bw_primary_gid="$(id -g 2>/dev/null)" || return 1
+            _bw_groups=" $(id -G 2>/dev/null) " || return 1
+            for _bw_device in \
+                /dev/dxg /dev/kfd /dev/accel/* /dev/nvidia-caps/* \
+                /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools \
+                /dev/nvidia[0-9]* /dev/dri/renderD[0-9]*; do
+                if [ ! -c "$_bw_device" ] && [ ! -b "$_bw_device" ]; then
+                    continue
+                fi
+                _bw_meta="$(stat -Lc '%u %g %a' "$_bw_device" 2>/dev/null)" || continue
+                set -- $_bw_meta
+                [ "$#" -eq 3 ] || continue
+                _bw_owner_uid="$1"
+                _bw_group_gid="$2"
+                _bw_mode="$3"
+                _bw_perms="${_bw_mode#${_bw_mode%???}}"
+                case "$_bw_perms" in
+                    [0-7][0-7][0-7]) ;;
+                    *) continue ;;
+                esac
+                _bw_owner_digit="${_bw_perms%??}"
+                _bw_remainder="${_bw_perms#?}"
+                _bw_group_digit="${_bw_remainder%?}"
+                _bw_other_digit="${_bw_perms#??}"
+                case "$_bw_groups" in
+                    *" $_bw_group_gid "*) ;;
+                    *) continue ;;
+                esac
+                [ "$_bw_group_gid" != "$_bw_primary_gid" ] || continue
+                [ $((_bw_group_digit & 6)) -eq 6 ] || continue
+                if [ "$_bw_owner_uid" = "$_bw_uid" ] && \
+                    [ $((_bw_owner_digit & 6)) -eq 6 ]; then
+                    continue
+                fi
+                [ $((_bw_other_digit & 6)) -ne 6 ] || continue
+                return 0
+            done
+            return 1
+        }
+
+        bubblewrap_usable() {
+            BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
+            bubblewrap_path_trusted "$BWRAP_BIN" || return 1
+            PYTHON_BIN="$(command -v python3 2>/dev/null)" || return 1
+            bubblewrap_path_trusted "$PYTHON_BIN" || return 1
+            "$PYTHON_BIN" -I -S -c '
+import ctypes
+import ctypes.util
+import os
+
+library_name = ctypes.util.find_library("seccomp") or "libseccomp.so.2"
+library = ctypes.CDLL(library_name)
+for symbol in ("seccomp_init", "seccomp_rule_add", "seccomp_export_bpf"):
+    getattr(library, symbol)
+if not hasattr(os, "memfd_create"):
+    raise RuntimeError("memfd_create is unavailable")
+fd = os.memfd_create("unsloth-studio-sandbox-install-probe")
+os.close(fd)
+' </dev/null >/dev/null 2>&1 || return 1
+            TRUE_BIN="$(command -v true 2>/dev/null)" || TRUE_BIN="/usr/bin/true"
+            set -- "$BWRAP_BIN"
+            if bubblewrap_requires_keep_groups; then
+                case "$("$BWRAP_BIN" --help 2>&1)" in
+                    *--keep-groups*) set -- "$@" --keep-groups ;;
+                    *) return 1 ;;
+                esac
+            fi
+            "$@" --ro-bind / / --unshare-all --die-with-parent \
+                --proc /proc --dev /dev --tmpfs /tmp "$TRUE_BIN" \
+                </dev/null >/dev/null 2>&1
+        }
+
+        if bubblewrap_usable; then
+            step "sandbox" "bubblewrap found (OS-level tool sandbox enabled)"
+        elif command -v bwrap >/dev/null 2>&1; then
+            step "sandbox" "bubblewrap found but unavailable; tool execution uses the in-process guard only" "$C_WARN"
+            substep "The current kernel or security policy does not allow bubblewrap namespaces"
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
+            if ! command -v bwrap >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+                sudo -n apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
+            fi
+            if bubblewrap_usable; then
+                step "sandbox" "installed bubblewrap (OS-level tool sandbox enabled)"
+            elif command -v bwrap >/dev/null 2>&1; then
+                step "sandbox" "installed bubblewrap but it is unavailable; tool execution uses the in-process guard only" "$C_WARN"
+                substep "The current kernel or security policy does not allow bubblewrap namespaces"
+            else
+                step "sandbox" "bubblewrap not installed; tool execution uses the in-process guard only" "$C_WARN"
+                substep "Optional: sudo apt-get install -y bubblewrap  (enables the OS-level sandbox)"
+            fi
+        else
+            step "sandbox" "bubblewrap not found; tool execution uses the in-process guard only" "$C_WARN"
+            substep "Optional: install 'bubblewrap' with your package manager to enable the OS-level sandbox"
+        fi
         ;;
 esac
 

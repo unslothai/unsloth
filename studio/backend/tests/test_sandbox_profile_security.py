@@ -1,0 +1,909 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import os
+import socket
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+def _load_sandbox_module():
+    path = Path(__file__).resolve().parents[1] / "core" / "inference" / "sandbox.py"
+    spec = importlib.util.spec_from_file_location("_studio_sandbox_profile_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_backend_ci_calls_the_production_sandbox_probe():
+    workflow = (
+        Path(__file__).resolve().parents[3] / ".github" / "workflows" / "studio-backend-ci.yml"
+    )
+    text = workflow.read_text(encoding = "utf-8")
+    assert "from core.inference.sandbox import sandbox_available" in text
+    assert "bwrap --ro-bind / / --unshare-all" not in text
+
+
+def test_installer_bwrap_probe_uses_production_mount_primitives():
+    install = Path(__file__).resolve().parents[3] / "install.sh"
+    text = install.read_text(encoding = "utf-8")
+    probe = text.split("bubblewrap_usable() {", 1)[1].split("}", 1)[0]
+    for required in ("--proc /proc", "--dev /dev", "--tmpfs /tmp"):
+        assert required in probe
+    assert "bubblewrap_path_trusted" in probe
+    assert "bubblewrap_requires_keep_groups" in probe
+    assert "--keep-groups" in probe
+    assert 'find_library("seccomp") or "libseccomp.so.2"' in probe
+    assert 'hasattr(os, "memfd_create")' in probe
+    assert 'bubblewrap_path_trusted "$PYTHON_BIN"' in probe
+    assert '"$PYTHON_BIN" -I -S -c' in probe
+
+
+def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
+    sandbox = _load_sandbox_module()
+    root = os.path.abspath(os.sep)
+
+    monkeypatch.setattr(sandbox.sys, "prefix", root)
+    monkeypatch.setattr(sandbox.sys, "base_prefix", root)
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [root])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [root])
+
+    assert root not in sandbox._python_read_paths()
+
+
+def test_python_read_paths_rejects_home_and_ancestors_but_keeps_nested_runtime(
+    tmp_path, monkeypatch
+):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home" / "user"
+    nested_runtime = home / "project" / ".venv"
+    nested_runtime.mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(home))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(tmp_path))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(nested_runtime)])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.realpath(home) not in paths
+    assert os.path.realpath(tmp_path) not in paths
+    assert os.path.realpath(nested_runtime) in paths
+
+
+def test_python_read_paths_narrows_shared_home_local_runtime(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home"
+    shared_local = home / ".local"
+    runtime_dirs = [shared_local / name for name in ("bin", "lib", "lib64")]
+    for path in runtime_dirs:
+        path.mkdir(parents = True, exist_ok = True)
+    (shared_local / "share" / "private-app").mkdir(parents = True)
+    (shared_local / "state" / "private-app").mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(shared_local))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(shared_local))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.realpath(shared_local) not in paths
+    assert all(os.path.realpath(path) in paths for path in runtime_dirs)
+    assert os.path.realpath(shared_local / "share") not in paths
+    assert os.path.realpath(shared_local / "state") not in paths
+
+
+def test_python_read_paths_includes_source_tree_sandbox_site(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    prefix = tmp_path / "python"
+    prefix.mkdir()
+
+    monkeypatch.setattr(sandbox.sys, "prefix", str(prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    assert os.path.realpath(sandbox._SANDBOX_SITE_DIR) in sandbox._python_read_paths()
+
+
+def test_python_read_paths_preserves_editable_symlink_alias_and_target(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    target = tmp_path / "source-target"
+    alias = tmp_path / "source-alias"
+    target.mkdir()
+    try:
+        os.symlink(target, alias, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    missing_prefix = tmp_path / "missing-prefix"
+    monkeypatch.setattr(sandbox.sys, "prefix", str(missing_prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(missing_prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [str(alias)])
+
+    paths = sandbox._python_read_paths()
+    assert os.path.abspath(alias) in paths
+    assert os.path.realpath(target) in paths
+
+
+def test_python_read_paths_includes_nix_store_for_nix_runtime(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    nix_store = tmp_path / "nix" / "store"
+    prefix = nix_store / "hash-python"
+    prefix.mkdir(parents = True)
+
+    monkeypatch.setattr(sandbox, "_NIX_STORE", str(nix_store))
+    monkeypatch.setattr(sandbox.sys, "prefix", str(prefix))
+    monkeypatch.setattr(sandbox.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
+
+    assert os.path.realpath(nix_store) in sandbox._python_read_paths()
+
+
+def test_plain_pth_root_exposes_import_entries_not_checkout_secrets(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    package = source / "safe_package"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    module = source / "safe_module.py"
+    module.write_text("VALUE = 2\n")
+    (source / ".env").write_text("SECRET=not-mounted\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(package) in paths
+    assert os.path.realpath(module) in paths
+
+
+def test_plain_pth_root_exposes_native_extension_modules(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    site_dir.mkdir()
+    source.mkdir()
+    extension = source / f"native_module{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+    extension.write_bytes(b"native-extension-placeholder")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(extension) in paths
+
+
+def test_plain_pth_preserves_nested_namespace_packages(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    namespace_root = source / "google"
+    package = namespace_root / "cloud" / "example"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(namespace_root) in paths
+
+
+def test_plain_pth_preserves_namespace_with_only_a_native_extension(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    namespace_root = source / "native_namespace"
+    native_leaf = namespace_root / "nested" / "leaf"
+    site_dir.mkdir()
+    native_leaf.mkdir(parents = True)
+    extension = native_leaf / f"_native{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+    extension.write_bytes(b"native-extension-placeholder")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(namespace_root) in paths
+
+
+def test_plain_pth_pythonpath_root_does_not_become_a_read_mount(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    package = source / "safe_package"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (source / ".env").write_text("SECRET=not-mounted\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    assert sandbox.plain_pth_pythonpath_roots() == [os.path.realpath(source)]
+    assert os.path.realpath(source) not in sandbox._python_read_paths()
+
+
+def test_user_site_pep660_finder_requires_explicit_opt_in(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    home = tmp_path / "home" / "user"
+    user_site = home / ".local" / "lib" / "python" / "site-packages"
+    source = home / "editable-source"
+    user_site.mkdir(parents = True)
+    source.mkdir(parents = True)
+    finder_path = user_site / "__editable___demo_finder.py"
+    finder_path.write_text("MAPPING = {}\n")
+    finder = SimpleNamespace(
+        __file__ = str(finder_path),
+        MAPPING = {"demo": str(source)},
+        NAMESPACES = {},
+    )
+
+    monkeypatch.setattr(sandbox.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(sandbox.site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setitem(sandbox.sys.modules, "__editable___demo_finder", finder)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", raising = False)
+
+    assert str(source) not in sandbox._editable_source_paths()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", "1")
+    assert str(source) in sandbox._editable_source_paths()
+
+
+def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    targets = {
+        argv[index + 2]
+        for index, token in enumerate(argv)
+        if token in {"--ro-bind", "--ro-bind-try", "--bind", "--bind-try"} and index + 2 < len(argv)
+    }
+
+    assert "/etc/ssl" not in targets
+    assert "/etc/pki" not in targets
+    assert "/etc/ssl/private" not in targets
+    assert "/etc/pki/tls/private" not in targets
+    assert "/etc/ssl/certs" in targets
+    assert "/etc/pki/tls/certs" in targets
+
+
+def test_linux_restores_accelerator_devices_after_synthetic_dev(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_drm_render_device_paths", lambda: ["/dev/dri/renderD128"])
+    monkeypatch.setattr(sandbox, "_linux_rocm_runtime_bindings", lambda: [])
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    device_targets = {
+        argv[index + 2]
+        for index, token in enumerate(argv)
+        if token == "--dev-bind-try" and index + 2 < len(argv)
+    }
+
+    assert "/dev/dxg" in device_targets
+    assert "/dev/dri/renderD128" in device_targets
+    assert "/dev/dri" not in device_targets
+    assert "/dev/dri/card0" not in device_targets
+    assert "/dev/kfd" in device_targets
+    assert "/dev/nvidiactl" in device_targets
+    assert "/dev/nvidia-uvm" in device_targets
+
+
+def test_linux_binds_detected_rocm_runtime_libraries(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_drm_render_device_paths", lambda: [])
+    monkeypatch.setattr(
+        sandbox,
+        "_linux_rocm_runtime_bindings",
+        lambda: [("/real/rocm/lib", "/opt/rocm/lib")],
+    )
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert ["--ro-bind-try", "/real/rocm/lib", "/opt/rocm/lib"] == argv[
+        argv.index("/opt/rocm/lib") - 2 : argv.index("/opt/rocm/lib") + 1
+    ]
+
+
+def test_linux_binds_detected_oneapi_runtime_tree(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    runtime = tmp_path / "opt" / "intel" / "oneapi"
+    workdir = tmp_path / "workdir"
+    runtime.mkdir(parents = True)
+    workdir.mkdir()
+    monkeypatch.setattr(sandbox, "_LINUX_ONEAPI_ROOTS", (str(runtime),))
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(
+        sandbox, "_assert_external_read_paths_have_no_special_nodes", lambda *_: None
+    )
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+    assert any(
+        argv[index : index + 3]
+        == ["--ro-bind-try", os.path.realpath(runtime), os.path.normpath(runtime)]
+        for index in range(len(argv) - 2)
+    )
+
+
+def test_linux_detects_versioned_rocm_library_roots(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    opt = tmp_path / "opt"
+    versioned = opt / "rocm-7.2"
+    lib = versioned / "lib"
+    lib.mkdir(parents = True)
+    (lib / "librocdxg.so").write_text("runtime")
+    logical = opt / "rocm"
+    try:
+        os.symlink(versioned, logical, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_OPT_ROOT", str(opt))
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_ROOTS", (str(logical),))
+    bindings = sandbox._linux_rocm_runtime_bindings()
+
+    assert (os.path.realpath(logical / "lib"), os.path.normpath(logical / "lib")) in bindings
+    assert (os.path.realpath(lib), os.path.normpath(lib)) in bindings
+
+
+def test_linux_honors_configured_rocm_runtime_root(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    configured = tmp_path / "srv" / "amd" / "rocm"
+    lib = configured / "lib"
+    lib.mkdir(parents = True)
+    (lib / "libamdhip64.so.7").write_text("runtime")
+    empty_opt = tmp_path / "opt"
+    empty_opt.mkdir()
+
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_OPT_ROOT", str(empty_opt))
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_ROOTS", ())
+    monkeypatch.setenv("ROCM_PATH", str(configured))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+
+    assert sandbox.configured_rocm_environment() == {"ROCM_PATH": str(configured)}
+    assert sandbox._linux_rocm_runtime_bindings() == [
+        (os.path.realpath(lib), os.path.normpath(lib))
+    ]
+
+
+def test_linux_restores_accelerator_sysfs_class_and_backing_tree(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    sysfs_root = tmp_path / "sys"
+    class_root = sysfs_root / "class" / "drm"
+    device = sysfs_root / "devices" / "pci0000" / "card0"
+    backing = device / "drm" / "card0"
+    class_root.mkdir(parents = True)
+    backing.mkdir(parents = True)
+    try:
+        os.symlink(backing, class_root / "card0", target_is_directory = True)
+        os.symlink(device, backing / "device", target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    monkeypatch.setattr(sandbox, "_LINUX_ACCELERATOR_SYSFS_CLASS_PATHS", (str(class_root),))
+    assert sandbox._linux_accelerator_sysfs_paths() == [
+        str(class_root),
+        os.path.realpath(backing),
+        os.path.realpath(device),
+    ]
+
+
+def test_linux_argv_mounts_private_shm_and_synthetic_identity(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    passwd_path = tmp_path / "passwd"
+    group_path = tmp_path / "group"
+    passwd_path.write_text("sandbox:x:1:1:Sandbox User:/tmp:/bin/sh\n")
+    group_path.write_text("sandbox:x:1:\n")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox, "_linux_nested_mount_points", lambda _path: set())
+    monkeypatch.setattr(
+        sandbox,
+        "_linux_sandbox_identity_files",
+        lambda _workdir: (str(passwd_path), str(group_path)),
+    )
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert ["--tmpfs", "/dev/shm"] == argv[argv.index("/dev/shm") - 1 : argv.index("/dev/shm") + 1]
+    assert any(
+        argv[index : index + 3] == ["--ro-bind-try", "/sys/fs/cgroup", "/sys/fs/cgroup"]
+        for index in range(len(argv) - 2)
+    )
+    assert ["--seccomp", "123456"] == argv[argv.index("--seccomp") : argv.index("--seccomp") + 2]
+    assert sandbox.sandbox_argv_pass_fds(argv) == (123456,)
+    sandbox.close_sandbox_argv_fds(argv)
+    assert sandbox.sandbox_argv_pass_fds(argv) == ()
+    assert ["--ro-bind", str(passwd_path), "/etc/passwd"] == argv[
+        argv.index("/etc/passwd") - 2 : argv.index("/etc/passwd") + 1
+    ]
+    assert ["--ro-bind", str(group_path), "/etc/group"] == argv[
+        argv.index("/etc/group") - 2 : argv.index("/etc/group") + 1
+    ]
+
+
+def test_external_workdir_hardlink_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    outside = tmp_path / "outside.txt"
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    outside.write_text("host data")
+    try:
+        os.link(outside, workdir / "linked.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_internal_only_workdir_hardlinks_remain_allowed(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    original = workdir / "original.txt"
+    original.write_text("session data")
+    try:
+        os.link(original, workdir / "alias.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_external_hardlinks_below_nested_writable_runtime_are_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    cache_file = tmp_path / "cache" / "package.py"
+    cache_file.parent.mkdir()
+    cache_file.write_text("VALUE = 1\n")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    runtime_package = runtime / "lib" / "package.py"
+    runtime_package.parent.mkdir(parents = True)
+    try:
+        os.link(cache_file, runtime_package)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+
+
+def test_socket_below_nested_writable_runtime_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    socket_path = runtime / "run" / "service.sock"
+    socket_path.parent.mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    try:
+        with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+            sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+    finally:
+        sock.close()
+
+
+def test_socket_in_external_runtime_is_rejected_before_bind(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    runtime = tmp_path / "external-runtime"
+    socket_path = runtime / "run" / "service.sock"
+    workdir.mkdir()
+    socket_path.parent.mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [str(runtime)])
+    try:
+        with pytest.raises(
+            sandbox.UnsafeSandboxWorkdirError,
+            match = "external Python read path contains a special filesystem node",
+        ):
+            sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+    finally:
+        sock.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs unavailable")
+def test_fifo_below_nested_read_only_runtime_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    fifo_path = runtime / "run" / "host.fifo"
+    fifo_path.parent.mkdir(parents = True)
+    os.mkfifo(fifo_path)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+
+
+def test_read_only_runtime_exception_does_not_cover_writable_siblings(tmp_path):
+    sandbox = _load_sandbox_module()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host data")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    try:
+        os.link(outside, workdir / "writable-link.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+
+
+def test_workdir_scan_fails_closed_above_entry_budget(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    for index in range(3):
+        (workdir / f"{index}.txt").write_text("x")
+    monkeypatch.setattr(sandbox, "_WORKDIR_SCAN_MAX_ENTRIES", 2)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "entry limit"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_workdir_scan_fails_closed_above_depth_budget(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    (workdir / "a" / "b").mkdir(parents = True)
+    monkeypatch.setattr(sandbox, "_WORKDIR_SCAN_MAX_DEPTH", 1)
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "depth limit"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_linux_mountinfo_detects_same_filesystem_bind_mount(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "work dir"
+    mounted = workdir / "mounted"
+    mounted.mkdir(parents = True)
+    mountinfo = tmp_path / "mountinfo"
+    escaped_workdir = str(workdir).replace(" ", "\\040")
+    escaped_mounted = str(mounted).replace(" ", "\\040")
+    mountinfo.write_text(
+        f"1 0 8:1 / {escaped_workdir} rw - ext4 /dev/sda1 rw\n"
+        f"2 1 8:1 /host/data {escaped_mounted} rw - ext4 /dev/sda1 rw,bind\n"
+    )
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "_LINUX_MOUNTINFO", str(mountinfo))
+
+    assert sandbox._linux_nested_mount_points(str(workdir)) == {os.path.normpath(mounted)}
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "nested mount point"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_workdir_socket_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(workdir / "service.sock"))
+    except OSError as exc:
+        sock.close()
+        pytest.skip(f"pathname Unix sockets unavailable: {exc}")
+    try:
+        with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+            sandbox._assert_no_external_hardlinks(str(workdir))
+    finally:
+        sock.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs unavailable")
+def test_workdir_fifo_is_rejected(tmp_path):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    os.mkfifo(workdir / "host.fifo")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "special filesystem node"):
+        sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX executable symlink layout")
+def test_linux_recreates_unbound_executable_symlink(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    target = runtime / "python-real"
+    target.write_text("binary")
+    launcher = runtime / "python"
+    try:
+        os.symlink("python-real", launcher)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox.sys, "executable", str(launcher))
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+
+    link_index = argv.index("--symlink")
+    assert argv[link_index + 1 : link_index + 3] == ["python-real", str(launcher)]
+    assert not any(
+        argv[index : index + 3] == ["--ro-bind-try", str(launcher), str(launcher)]
+        for index in range(len(argv) - 2)
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX executable symlink layout")
+def test_exec_chain_resolves_multi_hop_ancestor_symlinks(tmp_path):
+    sandbox = _load_sandbox_module()
+    data_users = tmp_path / "data" / "users"
+    executable = data_users / "venv" / "bin" / "python"
+    executable.parent.mkdir(parents = True)
+    executable.write_text("binary")
+    home = tmp_path / "home"
+    mount = tmp_path / "mnt"
+    home.mkdir()
+    mount.mkdir()
+    first = home / "user"
+    second = mount / "users"
+    try:
+        os.symlink(second, first, target_is_directory = True)
+        os.symlink(data_users, second, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    through_links = first / "venv" / "bin" / "python"
+    assert sandbox._exec_chain_symlinks(str(through_links)) == [str(first), str(second)]
+
+
+def test_linux_keeps_nested_editable_runtime_writable_with_workdir(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "project"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    wd = os.path.realpath(workdir)
+    rp = os.path.realpath(runtime)
+
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [rp])
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(workdir))
+
+    assert any(
+        token == "--bind" and argv[index + 1 : index + 3] == [wd, wd]
+        for index, token in enumerate(argv)
+    )
+    assert not any(
+        token == "--ro-bind-try" and argv[index + 1 : index + 3] == [rp, rp]
+        for index, token in enumerate(argv)
+    )
+
+
+def test_linux_argv_keeps_supplementary_groups_when_supported(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_keep_groups", True)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert "--keep-groups" in argv
+    assert argv.index("--keep-groups") < argv.index("--unshare-all")
+
+
+def test_linux_argv_rejects_group_device_when_bwrap_cannot_keep_groups(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_keep_groups", False)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "supplementary group"):
+        sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+
+
+def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
+    sandbox = _load_sandbox_module()
+    captured = []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+
+    def _probe(argv, _label):
+        captured.extend(argv)
+        return sandbox._ProbeResult(ok = True)
+
+    monkeypatch.setattr(sandbox, "_probe", _probe)
+    assert sandbox._linux_probe().ok is True
+    assert "--keep-groups" in captured
+    assert sandbox._linux_bwrap_keep_groups is True
+
+
+def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: False)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda *_args: pytest.fail("incompatible Bubblewrap must not be launched"),
+    )
+
+    assert sandbox._linux_probe().ok is False
+
+
+def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_executable_path_is_trusted", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_probe_path", lambda: "/usr/bin/true")
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda *_args: pytest.fail("transient capability result must be retried first"),
+    )
+
+    result = sandbox._linux_probe()
+    assert result.ok is False
+    assert result.transient is True
+
+
+def test_linux_probe_payload_does_not_resolve_from_parent_path(monkeypatch):
+    sandbox = _load_sandbox_module()
+    captured = []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: f"/attacker/{name}")
+    monkeypatch.setattr(
+        sandbox,
+        "_linux_executable_path_is_trusted",
+        lambda path: path.endswith("bwrap") or path == "/usr/bin/true",
+    )
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_socket_seccomp_fd", lambda: 123456)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+
+    def _probe(argv, _label):
+        captured.extend(argv)
+        return sandbox._ProbeResult(ok = True)
+
+    monkeypatch.setattr(sandbox, "_probe", _probe)
+    assert sandbox._linux_probe().ok is True
+    assert captured[-1] == "/usr/bin/true"
+    assert "/attacker/true" not in captured
+
+
+def test_macos_profile_allows_child_signals_without_host_posix_ipc(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+    profile = sandbox._macos_seatbelt_profile("/tmp/work")
+
+    assert "(allow signal (target same-sandbox))" in profile
+    assert "(allow signal (target self))" not in profile
+    assert "(allow ipc-posix-shm)" not in profile
+    assert "(allow ipc-posix-sem)" not in profile
+    assert "(allow file-write-data" in profile
+    assert '(path "/dev/null")' in profile
+    assert "(vnode-type CHARACTER-DEVICE)" in profile
+    assert '(subpath "/dev/fd")' in profile
+
+
+def test_macos_profile_allows_installed_developer_toolchain(monkeypatch):
+    sandbox = _load_sandbox_module()
+    developer = "/Library/Developer/CommandLineTools"
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+    original_isdir = sandbox.os.path.isdir
+    monkeypatch.setattr(
+        sandbox.os.path,
+        "isdir",
+        lambda path: path == developer or original_isdir(path),
+    )
+    profile = sandbox._macos_seatbelt_profile("/tmp/work")
+
+    assert f'(subpath "{developer}")' in profile
+
+
+def test_macos_profile_keeps_nested_editable_runtime_writable(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "project"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    wd = os.path.realpath(workdir)
+    rp = os.path.realpath(runtime)
+
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [rp])
+    monkeypatch.setattr(sandbox, "_safe_subpath", lambda path: path.replace("\\", "/"))
+    profile = sandbox._macos_seatbelt_profile(str(workdir))
+
+    assert f'(allow file-write* (subpath "{wd.replace(chr(92), "/")}"))' in profile
+    assert (
+        f'(deny file-write* file-ioctl\n    (subpath "{rp.replace(chr(92), "/")}")\n)'
+        not in profile
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX identity file permissions")
+def test_linux_identity_files_ignore_workdir_tmpdir_and_recover_from_replacement(
+    tmp_path, monkeypatch
+):
+    sandbox = _load_sandbox_module()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(workdir))
+    monkeypatch.setattr(sandbox, "_sandbox_identity_paths", None)
+
+    passwd_path, group_path = sandbox._linux_sandbox_identity_files(str(workdir))
+    assert not sandbox._path_is_within(passwd_path, str(workdir))
+    assert not sandbox._path_is_within(group_path, str(workdir))
+
+    outside = tmp_path / "outside"
+    outside.write_text("host-data")
+    os.unlink(passwd_path)
+    os.symlink(outside, passwd_path)
+
+    replacement_passwd, replacement_group = sandbox._linux_sandbox_identity_files(str(workdir))
+    assert replacement_passwd != passwd_path
+    assert replacement_group != group_path
+    assert not os.path.islink(replacement_passwd)
+    assert outside.read_text() == "host-data"
+
+
+def test_macos_ca_reads_exclude_private_key_directories(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
+    monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
+    profile = sandbox._macos_seatbelt_profile("/tmp/work")
+
+    assert '(subpath "/private/etc/ssl")' not in profile
+    assert "/private/etc/ssl/private" not in profile
+    assert '(literal "/private/etc/ssl/cert.pem")' in profile
+    assert '(subpath "/private/etc/ssl/certs")' in profile

@@ -747,6 +747,12 @@ async def lifespan(app: FastAPI):
 
     app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
+    # Keep the probe on the shared application lifecycle so direct
+    # ``uvicorn main:app`` launches get the same warm-up as the CLI launcher.
+    from core.inference.sandbox import start_sandbox_probe
+
+    start_sandbox_probe()
+
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
 

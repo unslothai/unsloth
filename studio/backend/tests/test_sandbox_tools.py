@@ -281,11 +281,13 @@ class TestSandboxEnvIsolation:
             assert key not in env, f"parent env var {key!r} leaked into sandbox env"
 
     def test_sandbox_env_is_minimal_whitelist(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
 
         # Pollute parent env with arbitrary keys
         for key in ("EVIL", "RANDOM", "ATTACK_VEC", "MY_TOKEN", "X_API_KEY"):
             monkeypatch.setenv(key, "leak-me")
+        monkeypatch.setattr(tools_mod, "plain_pth_pythonpath_roots", lambda: [])
         env = _build_safe_env(str(tmp_path))
         allowed = {
             "PATH",
@@ -297,6 +299,18 @@ class TestSandboxEnvIsolation:
             "MPLBACKEND",
             "PYTHONPATH",
             "VIRTUAL_ENV",
+            "USER",
+            "LOGNAME",
+            "CUDA_DEVICE_ORDER",
+            "CUDA_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "GPU_DEVICE_ORDINAL",
+            "NVIDIA_VISIBLE_DEVICES",
+            "ONEAPI_DEVICE_SELECTOR",
+            "ZE_AFFINITY_MASK",
+            "HSA_ENABLE_DXG_DETECTION",
+            "HSA_OVERRIDE_GFX_VERSION",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
@@ -310,6 +324,36 @@ class TestSandboxEnvIsolation:
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def test_plain_pth_roots_are_added_to_child_pythonpath(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        source = tmp_path / "editable-source"
+        source.mkdir()
+        monkeypatch.setattr(
+            tools_mod,
+            "plain_pth_pythonpath_roots",
+            lambda: [os.path.realpath(source)],
+        )
+
+        child_paths = _build_safe_env(str(tmp_path))["PYTHONPATH"].split(os.pathsep)
+        assert child_paths[0] == tools_mod._SANDBOX_SITE_DIR
+        assert os.path.realpath(source) in child_paths
+
+    def test_validated_rocm_root_is_preserved_for_child(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        rocm = tmp_path / "rocm"
+        rocm.mkdir()
+        monkeypatch.setattr(
+            tools_mod,
+            "configured_rocm_environment",
+            lambda: {"ROCM_PATH": str(rocm)},
+        )
+
+        assert _build_safe_env(str(tmp_path))["ROCM_PATH"] == str(rocm)
 
     def _trusted_git_bash(
         self,
