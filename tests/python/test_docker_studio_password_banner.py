@@ -318,6 +318,17 @@ def test_initialized_means_the_admin_row_is_committed(tmp_path: Path, db: str, i
 
 
 @behavioural
+def test_a_home_with_uri_characters_still_finds_the_database(tmp_path: Path):
+    """The read-only open goes through SQLite's URI syntax, where an unquoted ? or #
+    in the path ends the filename early and both checks then see no database."""
+    home = tmp_path / "studio?x#y"
+    home.mkdir()
+    _auth_db(home, must_change = 0)
+    assert _run_wrapper(home, args = ["--stored"]).returncode == 0
+    assert _run_wrapper(home, args = ["--initialized"]).returncode == 0
+
+
+@behavioural
 def test_the_first_spawn_applies_the_initial_password(tmp_path: Path):
     (tmp_path / "initial").write_text("hunter22hunter", encoding = "utf-8")
     res = _run_wrapper(tmp_path)

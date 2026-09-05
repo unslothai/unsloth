@@ -18,8 +18,12 @@ admin_initialized() {
     # first launch can leave a file whose password the next launch replaces.
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
+from urllib.parse import quote
 try:
-    conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri = True)
+    # quoted: a ? or # in the path would otherwise end the URI early and point
+    # both checks at a database that does not exist; read-only so a missing
+    # auth.db is never created here
+    conn = sqlite3.connect(f"file:{quote(sys.argv[1])}?mode=ro", uri = True)
     row = conn.execute("SELECT 1 FROM auth_user WHERE username = 'unsloth'").fetchone()
 except sqlite3.Error:
     row = None
@@ -34,8 +38,12 @@ password_stored() {
     # with default 0 and then rejects an initial password.
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
+from urllib.parse import quote
 try:
-    conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri = True)
+    # quoted: a ? or # in the path would otherwise end the URI early and point
+    # both checks at a database that does not exist; read-only so a missing
+    # auth.db is never created here
+    conn = sqlite3.connect(f"file:{quote(sys.argv[1])}?mode=ro", uri = True)
     row = conn.execute("SELECT 1 FROM auth_user WHERE username = 'unsloth'").fetchone()
     if row is not None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_user)")}
