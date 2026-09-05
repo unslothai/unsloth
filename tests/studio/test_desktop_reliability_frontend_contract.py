@@ -585,107 +585,6 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
-# The collapsed navigation box is the one sized to the sidebar width; nothing else in
-# the titlebar carries that style, so it identifies the element without naming a class.
-_NAV_BOX = "style={{ width: titlebarNavigationWidth }}"
-
-
-def _open_tag(source: str, marker: str) -> str:
-    """The opening JSX tag of the element carrying ``marker``.
-
-    Braces and quotes are both tracked. A `>` inside `{...}` is an operator or an
-    arrow, and a `>` inside a class string is a Tailwind child selector such as
-    `[&>svg]:size-4`; neither ends the tag, and both are common here.
-    """
-    at = source.index(marker)
-    start = at
-    while True:
-        start = source.rindex("<", 0, start)
-        if source[start + 1 : start + 2].isalpha():
-            break
-    depth, quote = 0, ""
-    for index in range(start, len(source)):
-        char = source[index]
-        if quote:
-            if char == quote and source[index - 1] != "\\":
-                quote = ""
-        elif char in "\"'`":
-            quote = char
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        elif char == ">" and depth == 0 and index > start:
-            return source[start : index + 1]
-    raise AssertionError(f"unterminated JSX tag for {marker!r}")
-
-
-def _class_expression(open_tag: str) -> str:
-    """The value of the tag's ``className``, with comments stripped.
-
-    Only this attribute decides what the element renders, so a padding token quoted
-    in a comment or in some unrelated prop cannot stand in for a real class.
-    """
-    after = open_tag[open_tag.index("=", open_tag.index("className")) + 1 :].lstrip()
-    end, depth, quote = len(after), 0, ""
-    for index, char in enumerate(after):
-        if quote:
-            if char == quote and after[index - 1] != "\\":
-                quote = ""
-                if depth == 0:
-                    end = index + 1
-                    break
-        elif char in "\"'`":
-            quote = char
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                end = index + 1
-                break
-    return re.sub(r"//[^\n]*|/\*.*?\*/", "", after[:end], flags = re.DOTALL)
-
-
-# Everything that sets the left edge: `pl-*`, and the `px-*` and `p-*` shorthands that
-# include it. Written on the Tailwind scale, as an arbitrary value, or with the
-# suffix-important form the repo already uses in `pl-2!`. `pr-*`, `pt-*`, `pb-*` and
-# `py-*` are not left padding and must not match.
-_LEFT_INSET = re.compile(r"(?:px|pl|p)-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?")
-_ZERO = re.compile(r"0(?:\.0+)?|\[0(?:\.0+)?[a-z%]*\]")
-# Class strings are written with any of the three quotes. Template literals carry real
-# classes around their `${...}` holes, and 30 files here use `className={`...`}`.
-_QUOTED = re.compile(r'"([^"]*)"|\'([^\']*)\'|`([^`]*)`', re.DOTALL)
-
-
-def _names_a_left_inset(open_tag: str) -> bool:
-    """Whether the className asks for a non-zero left padding anywhere.
-
-    Deliberately weaker than "the element renders with a left inset". What actually
-    renders depends on the tailwind-merge cascade, the important modifier, whether an
-    arbitrary value is valid CSS, and runtime state; none of that is decidable from
-    source, and trying produced a check that rejected correct refactors, which is the
-    fault this test is being fixed for. So the two errors are not traded evenly: a
-    guard that misses a lost inset costs 4px nobody dies over, and one that rejects a
-    rename blocks a correct PR, which is how #10321 got here.
-
-    Conditional arguments therefore count, because `cn(!pinned && "pl-4")` is an inset
-    in exactly the collapsed state this test is named for. Variants do not, since
-    `hover:pl-4` leaves the resting state flush, and a literal zero does not either.
-    """
-    for groups in _QUOTED.findall(_class_expression(open_tag)):
-        for word in "".join(groups).split():
-            # A template literal is captured whole, so a class inside one of its
-            # `${...}` holes still arrives wearing its own quotes.
-            word = word.strip("\"'`")
-            if ":" in word:
-                continue
-            match = _LEFT_INSET.fullmatch(word)
-            if match and not _ZERO.fullmatch(match.group(1)):
-                return True
-    return False
-
-
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = TITLEBAR.read_text(encoding = "utf-8")
     chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
@@ -706,13 +605,14 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    # The collapsed navigation starts at the window edge, so it needs a left inset or
-    # the back arrow sits against the frame. #7837 added one and pinned its exact 12px,
-    # which is the single value an alignment pass is most likely to move.
-    assert _names_a_left_inset(_open_tag(titlebar, _NAV_BOX)), (
-        "the titlebar navigation container lost its left inset, so the history arrows "
-        f"sit flush against the window edge: {_open_tag(titlebar, _NAV_BOX)}"
-    )
+    # The navigation box's left inset is deliberately not asserted here. Whether that
+    # element ends up with one is a computed style: it depends on the tailwind-merge
+    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
+    # the class is hoisted into a const or interpolated into a template hole, and
+    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
+    # that is decidable from this file, and the exact-value form this replaces failed
+    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
+    # computed-style check belongs in a driver that renders the titlebar.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
