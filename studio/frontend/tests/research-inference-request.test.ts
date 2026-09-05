@@ -17,6 +17,7 @@ test("Codex research keeps provider routing and clamps generation settings", () 
         providerId: "provider",
         providerType: "openai_codex",
         modelId: "gpt-5.6-sol",
+        maxOutputTokens: 128000,
       },
       temperature: 0.2,
       topP: 0.9,
@@ -32,6 +33,7 @@ test("Codex research keeps provider routing and clamps generation settings", () 
       providerId: "provider",
       providerType: "openai_codex",
       externalModel: "gpt-5.6-sol",
+      maxOutputTokens: 128000,
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 8192,
@@ -55,4 +57,70 @@ test("invalid optional settings do not leak into a local research request", () =
     }),
     { model: "local/model.gguf", enableThinking: false },
   );
+});
+
+test("the report ceiling the connection resolved reaches the run config", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "external::provider::gemini-3.6-flash",
+    external: {
+      providerId: "provider",
+      providerType: "gemini",
+      modelId: "gemini-3.6-flash",
+      maxOutputTokens: 65536,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+
+  assert.equal(request.maxOutputTokens, 65536);
+  assert.equal(request.maxTokens, 4096);
+});
+
+test("an undocumented model with no connection override sends no ceiling", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "local-model",
+    external: {
+      providerId: "provider",
+      providerType: "custom",
+      modelId: "some-self-hosted-model",
+      // What getGroundedExternalMaxOutputTokens returns when nothing documents the model.
+      maxOutputTokens: null,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+  assert.equal("maxOutputTokens" in request, false);
+});
+
+test("an explicit connection override is still sent", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "local-model",
+    external: {
+      providerId: "provider",
+      providerType: "custom",
+      modelId: "some-self-hosted-model",
+      maxOutputTokens: 20000,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+  assert.equal(request.maxOutputTokens, 20000);
 });

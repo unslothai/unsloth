@@ -26,6 +26,7 @@ const {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  getGroundedExternalMaxOutputTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
@@ -258,5 +259,28 @@ test("every clamp site waits for a resolved provider", () => {
   assert.match(
     store,
     /if \(provider\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,
+  );
+});
+
+
+test("a grounded ceiling is only sent when something documents or overrides it", () => {
+  // Nothing documents a self-hosted model, and the generic 32768 fallback is a guess: a
+  // 32k-context server has to fit the prompt in the same window, so asking for it fails.
+  assert.equal(getExternalMaxOutputTokens("custom", "some-self-hosted-model", null), 32768);
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("custom", "some-self-hosted-model", null),
+    null,
+  );
+
+  // The user's own connection override grounds it.
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("custom", "some-self-hosted-model", 20000),
+    20000,
+  );
+
+  // So does a published per-model cap.
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("gemini", "gemini-3.6-flash", null),
+    getExternalMaxOutputTokens("gemini", "gemini-3.6-flash", null),
   );
 });

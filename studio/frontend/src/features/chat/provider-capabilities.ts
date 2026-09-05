@@ -165,8 +165,31 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-/** The published per-model cap, or null when nothing documents this id. Generic Custom
- *  connections always read undocumented. OpenRouter `provider/model` prefixes are stripped. */
+/**
+ * The ceiling only when something actually grounds it: a published per-model cap, or the
+ * user's own connection override. Null otherwise.
+ *
+ * `getExternalMaxOutputTokens` falls back to `EXTERNAL_MAX_OUTPUT_TOKENS` for a model nothing
+ * documents, which is fine for a slider the user can see and lower, but it is a guess to send
+ * as a request budget: a self-hosted 32k-context server has to fit the prompt in that same
+ * window, so asking it for 32768 output tokens fails the call outright.
+ */
+export function getGroundedExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): number | null {
+  const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
+  const documented = _documentedMaxOutputTokens(providerType, modelId);
+  if (override == null && documented == null) return null;
+  return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
+}
+
+/**
+ * The published per-model cap, or null when nothing documents this id. No table entry
+ * targets a generic Custom connection, so those always read as undocumented. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
+ */
 function _documentedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,

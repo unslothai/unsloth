@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from core import research_runs
 from core.research.citations import (
@@ -35,6 +37,7 @@ from core.research_runs import (
     _estimate_prompt_tokens,
     _resolve_max_tokens,
     _synthesis_length_limit_error,
+    _synthesis_max_tokens,
 )
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
@@ -326,6 +329,235 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
     assert "output limit" in message
 
 
+def test_resolve_max_tokens_honours_a_budget_above_the_old_ceiling(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    assert _resolve_max_tokens(32_768, {}, [{"role": "user", "content": "x"}]) == 32_768
+
+
+def test_resolve_max_tokens_still_caps_a_thread_setting_at_8192(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    messages = [{"role": "user", "content": "x"}]
+    assert _resolve_max_tokens(None, {"maxTokens": 100_000}, messages) == 8_192
+    assert _resolve_max_tokens(None, {}, messages) == 4_096
+
+
+def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch):
+    """A connection generates on the provider's hardware; the local window bounds nothing.
+
+    The synthesis prompt is already fitted to the local window, so clamping against it spends
+    the report's budget down to the leftover reserve and undoes the ceiling just resolved.
+    """
+    # main reads the window off the local backend only for a local run; a run carrying a
+    # providerType reports None. Model that contract rather than a flat value, or the stub
+    # itself would clamp what the real call never reaches.
+    monkeypatch.setattr(
+        research_runs,
+        "_loaded_context_length",
+        lambda _inf = None: None if (_inf or {}).get("providerType") else 8_192,
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(32_768, inference, messages) == 32_768
+
+
+def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(16_384, {}, messages) < 16_384
+
+
+def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
+    """The run is durable, so the cap can have been lowered after the client resolved it."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 65_536,
+    }
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_client_ceiling_stands_when_the_connection_has_no_cap(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+
+
+def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypatch):
+    """Kimi truncates a thinking answer below 16k, so the chat path never asks for less."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
+    assert _synthesis_max_tokens(inference) == 16_000
+
+
+def test_a_provider_without_a_floor_keeps_the_saved_cap(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
+    assert _synthesis_max_tokens(inference) == 8_000
+
+
+def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
+    """A locked row is not an uncapped connection; the cap may have been lowered since."""
+
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
+    """Neither signal is confirmable, so the smaller of the two is what gets spent."""
+
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 4_096}
+    assert _synthesis_max_tokens(inference) == 4_096
+
+
+def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
+    """A read that lost the writer lock is transient; one retry beats guessing."""
+    calls = {"n": 0}
+
+    def flaky(_id):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"max_output_tokens": 65_536}
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", flaky)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+    assert calls["n"] == 2
+
+
+def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
+    """The loaded local window explains nothing about a report a connection generated."""
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(
+        usage,
+        requested_max_tokens = 32_768,
+        inference = {"providerType": "gemini", "providerId": "p1"},
+    )
+    assert "Context Length" not in notice
+    assert "Local model" not in notice
+
+
+def test_a_local_truncation_still_names_the_context_window(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    assert "Context Length" in notice
+
+
+def test_a_local_run_keeps_the_default_report_budget():
+    assert _synthesis_max_tokens({"model": "local-model"}) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_resolved_ceiling_is_used_verbatim(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 65_536,
+    }
+    assert _synthesis_max_tokens(inference) == 65_536
+
+
+def test_a_ceiling_below_the_default_is_respected(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_local_run_ignores_a_stray_ceiling():
+    assert _synthesis_max_tokens({"maxOutputTokens": 65_536}) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_saved_connection_cap_below_the_default_is_honoured(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 8_192},
+    )
+    inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_saved_cap_above_the_default_does_not_raise_a_legacy_run(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 32_768},
+    )
+    inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch):
+    """The mainstream path: the client resolved this against the run's own model."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "ollama",
+        "providerId": "p1",
+        "externalModel": "glm-5.3-flash",
+        "maxOutputTokens": 32_768,
+    }
+    assert _synthesis_max_tokens(inference) == 32_768
+
+
+def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch):
+    """The saved cap is connection-wide, so for this run's model it is a guess.
+
+    Only the client holds the table that bounds a connection by the selected model's
+    documented ceiling, so without a ceiling from the client this side cannot raise the
+    budget at all: claude-opus-4-1 stops at 32_000 while its connection may be saved at
+    32_768, and a provider that rejects an over-limit request fails the finished run.
+    """
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 256_000},
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "externalModel": "gemini-3.6-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [None, {}, {"max_output_tokens": None}, {"max_output_tokens": 0}],
+    ids = ["missing", "unset", "null", "zero"],
+)
+def test_a_connection_without_a_saved_cap_keeps_the_default(monkeypatch, provider):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: provider)
+    inference = {"providerType": "ollama", "providerId": "p1"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_unreadable_provider_row_does_not_fail_the_run(monkeypatch):
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "ollama", "providerId": "p1"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
 def test_completion_hit_context_wall_matches_live_probe():
     usage = {
         "prompt_tokens": 11_032,
@@ -486,6 +718,23 @@ def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
     assert _make_payload(budgets = {"modelTimeoutSeconds": 0}).budgets == {
         "modelTimeoutSeconds": 0,
     }
+
+
+def test_sanitize_config_rejects_a_non_integer_report_ceiling():
+    for bad in (True, 64.9, float("inf"), float("nan"), "32768"):
+        with pytest.raises(HTTPException):
+            _sanitize_config(
+                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": bad}),
+                {"modelId": "m"},
+            )
+
+
+def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
+    config = _sanitize_config(
+        _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": 32_768}),
+        {"modelId": "m"},
+    )
+    assert config["inferenceRequest"]["maxOutputTokens"] == 32_768
 
 
 def test_sanitize_config_rejects_nested_inference_credential():
