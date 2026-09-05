@@ -268,7 +268,7 @@ function ToolIsolationMenuSection({
           </dl>
         ) : null}
         {capability?.reason ? (
-          <p className="text-xs leading-snug text-muted-foreground">
+          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
             {capability.reason}
           </p>
         ) : null}
@@ -281,7 +281,7 @@ function ToolIsolationMenuSection({
           </p>
         ))}
         {capability?.remediation ? (
-          <p className="text-xs leading-snug text-muted-foreground">
+          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
             {capability.remediation}
           </p>
         ) : null}
@@ -314,7 +314,7 @@ function ToolIsolationMenuSection({
           Require OS isolation
         </DropdownMenuItem>
       ) : null}
-      {!loading && (!capability || capability.retryable) ? (
+      {!loading && (!capability || capability.retryable || !capability.available) ? (
         <DropdownMenuItem
           onSelect={(event) => {
             event.preventDefault();
@@ -356,6 +356,7 @@ export function LimitedModeConfirmDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
           <AlertDialogAction
+            className="!h-auto !whitespace-normal !py-2 text-center"
             disabled={loading}
             onClick={(event) => {
               event.preventDefault();
