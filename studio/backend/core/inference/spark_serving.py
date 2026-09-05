@@ -976,9 +976,7 @@ class SparkServing:
                     int(groups["requested_slots"]),
                 )
             else:
-                logger.info(
-                    "spark serving: no pipeline groups: %s", self.pipeline_groups_reason
-                )
+                logger.info("spark serving: no pipeline groups: %s", self.pipeline_groups_reason)
             try:
                 return req.model_copy(update = {"llama_extra_args": extra})
             except AttributeError:

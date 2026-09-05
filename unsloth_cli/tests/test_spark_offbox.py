@@ -906,9 +906,7 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     assert kv["pipeline_groups_speedup"] == sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
     # `spark plan` prints serving["reason"], so the plan text carries it too.
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
-    plan = sc.plan_deployment(
-        budget * 1.5, n_nodes = 2, intent = "throughput", concurrency = 32
-    )
+    plan = sc.plan_deployment(budget * 1.5, n_nodes = 2, intent = "throughput", concurrency = 32)
     assert plan["serving"]["topology"] == "layer_split"
     assert "pipeline groups" in plan["serving"]["reason"]
     # The ratios are the measured tok/s, nothing rounded in the planner's favour.

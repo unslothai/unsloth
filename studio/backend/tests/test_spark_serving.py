@@ -127,12 +127,16 @@ _FAKE_HELP_WITHOUT_FLAG = """usage: llama-server [options]
 """
 
 
-def write_fake_llama_server(directory: Path, help_text: str, *, body: str = "") -> Path:
+def write_fake_llama_server(
+    directory: Path,
+    help_text: str,
+    *,
+    body: str = "",
+) -> Path:
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
     script.write_text(
-        "#!/bin/sh\n"
-        'echo run >> "$0.calls"\n' + body + "cat <<'EOF'\n" + help_text + "EOF\n",
+        "#!/bin/sh\n" 'echo run >> "$0.calls"\n' + body + "cat <<'EOF'\n" + help_text + "EOF\n",
         encoding = "utf-8",
     )
     script.chmod(0o755)
@@ -775,9 +779,7 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
     assert ss.llama_server_supports("--pipeline-groups") is False
     assert ss.llama_server_supports("", str(script)) is False
     # A binary that dies before printing anything is a binary without the flag.
-    crashing = write_fake_llama_server(
-        tmp_path / "crash", _FAKE_HELP_WITH_FLAG, body = "exit 3\n"
-    )
+    crashing = write_fake_llama_server(tmp_path / "crash", _FAKE_HELP_WITH_FLAG, body = "exit 3\n")
     assert ss.llama_server_supports("--pipeline-groups", str(crashing)) is False
     # So is one that is not executable at all; nothing raises.
     dud = tmp_path / "dud" / "llama-server"
@@ -787,9 +789,7 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
 
 
 def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tmp_path):
-    script = write_fake_llama_server(
-        tmp_path / "slow", _FAKE_HELP_WITH_FLAG, body = "sleep 5\n"
-    )
+    script = write_fake_llama_server(tmp_path / "slow", _FAKE_HELP_WITH_FLAG, body = "sleep 5\n")
     monkeypatch.setattr(ss, "HELP_PROBE_TIMEOUT_S", 0.3)
     started = time.monotonic()
     assert ss.llama_server_supports("--pipeline-groups", str(script)) is False
