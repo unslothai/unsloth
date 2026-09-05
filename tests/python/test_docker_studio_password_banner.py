@@ -95,6 +95,8 @@ def _run(
     must never reach a real Studio on the test host."""
     bin_dir = home / "stub-bin"
     _stub(bin_dir, "curl", "exit 0\n" if services_up else "exit 7\n")
+    # the admin row is "committed" unless the test parks a not-initialized marker
+    _stub(bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n')
     e = _clean_env(bin_dir)
     e.update(
         UNSLOTH_STUDIO_HOME = str(home),
@@ -125,6 +127,27 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
         "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
         in res.stdout
     )
+
+
+@behavioural
+def test_a_stale_file_from_an_interrupted_launch_is_not_printed(tmp_path: Path):
+    """The CLI writes the bootstrap file before committing the admin row. A launch
+    interrupted between the two leaves a file whose password the next launch
+    replaces, so the file is read only once the row exists."""
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / ".bootstrap_password").write_bytes(b"stale one\n")
+    (tmp_path / "not-initialized").touch()
+
+    def _next_launch_replaces_it():
+        time.sleep(1.2)
+        (auth / ".bootstrap_password").write_bytes(b"fresh one\n")
+        (tmp_path / "not-initialized").unlink()
+
+    threading.Thread(target = _next_launch_replaces_it).start()
+    res = _run(tmp_path, env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}, wait = "10")
+    assert "password: fresh one" in res.stdout, res.stdout
+    assert "stale one" not in res.stdout
 
 
 @behavioural
@@ -272,6 +295,24 @@ def test_stored_means_an_admin_row_whose_password_was_changed(
         _auth_db(tmp_path, must_change = None, legacy = True)
     res = _run_wrapper(tmp_path, args = ["--stored"])
     assert (res.returncode == 0) is stored, res.stderr
+
+
+@behavioural
+@pytest.mark.parametrize(
+    ("db", "initialized"),
+    [("none", False), ("empty", False), ("seeded", True), ("changed", True), ("legacy", True)],
+)
+def test_initialized_means_the_admin_row_is_committed(tmp_path: Path, db: str, initialized: bool):
+    if db == "empty":
+        _auth_db(tmp_path, must_change = None)
+    elif db == "seeded":
+        _auth_db(tmp_path, must_change = 1)
+    elif db == "changed":
+        _auth_db(tmp_path, must_change = 0)
+    elif db == "legacy":
+        _auth_db(tmp_path, must_change = None, legacy = True)
+    res = _run_wrapper(tmp_path, args = ["--initialized"])
+    assert (res.returncode == 0) is initialized, res.stderr
 
 
 @behavioural

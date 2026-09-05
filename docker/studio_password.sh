@@ -54,7 +54,10 @@ case "$STATE" in
     *)
         deadline=$(( $(date +%s) + WAIT ))
         STUDIO_LINE=""
-        while [[ ! -s "$FILE" ]]; do
+        # The file alone is not enough: the CLI writes it before committing the admin
+        # row, so a launch interrupted between the two leaves a file the next launch
+        # replaces. Wait for the row, and read the file after it.
+        while [[ ! -s "$FILE" ]] || ! unsloth-studio-run --initialized; do
             if (( $(date +%s) >= deadline )); then
                 STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the studio log above"
                 break

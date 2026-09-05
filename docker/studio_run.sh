@@ -5,12 +5,27 @@
 # The launcher leaves the value in a root-only file, never in supervisord's
 # environment, and this decides at every spawn.
 #
-#   unsloth-studio-run             start Studio
-#   unsloth-studio-run --stored    exit 0 when an admin password is stored
+#   unsloth-studio-run                start Studio
+#   unsloth-studio-run --stored       exit 0 when an admin password is stored
+#   unsloth-studio-run --initialized  exit 0 when the admin row is committed
 set -euo pipefail
 
 STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 INITIAL="${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/run/unsloth/studio-initial-password}"
+
+admin_initialized() {
+    # The bootstrap file is written before the admin row commits, so an interrupted
+    # first launch can leave a file whose password the next launch replaces.
+    python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri = True)
+    row = conn.execute("SELECT 1 FROM auth_user WHERE username = 'unsloth'").fetchone()
+except sqlite3.Error:
+    row = None
+sys.exit(0 if row is not None else 1)
+PY
+}
 
 password_stored() {
     # The admin row with must_change_password=0. A bare auth.db from an interrupted
@@ -35,9 +50,10 @@ sys.exit(0 if row is not None else 1)
 PY
 }
 
-if [[ "${1:-}" == "--stored" ]]; then
-    if password_stored; then exit 0; else exit 1; fi
-fi
+case "${1:-}" in
+    --stored)      if password_stored;   then exit 0; else exit 1; fi ;;
+    --initialized) if admin_initialized; then exit 0; else exit 1; fi ;;
+esac
 
 unset UNSLOTH_STUDIO_PASSWORD
 if [[ -s "$INITIAL" ]] && ! password_stored; then
