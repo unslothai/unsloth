@@ -1384,9 +1384,9 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
     def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "$WoaProbedFreeThreaded = $false" in text
-        assert "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in text, (
-            "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
-        )
+        assert (
+            "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in text
+        ), "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
 
     def test_the_second_reprobe_compares_it_too(self):
         """After Install-PythonFromPythonOrg the ABI can change without the minor doing so."""
@@ -1396,7 +1396,7 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
     def test_the_detection_is_scoped_to_this_host(self):
         """A subprocess per run on every Windows x64 host would buy nothing."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        block = text[text.index("$WoaDetectedFreeThreaded = $false"):][:600]
+        block = text[text.index("$WoaDetectedFreeThreaded = $false") :][:600]
         assert '(Get-HostMachineArch) -eq "arm64"' in block
 
     @requires_pwsh
@@ -1412,19 +1412,23 @@ class TestTheAbiReprobeFiresOnAMatchingMinor:
     def test_the_guard_decides_correctly(
         self, probed_minor, probed_ft, minor, ft, should_reprobe, why
     ):
-        script = "\n".join([
-            f"$WoaProbedMinor = '{probed_minor}'",
-            f"$WoaProbedFreeThreaded = ${str(probed_ft).lower()}",
-            f"$DetectedPython = @{{ Version = '{minor}' }}",
-            f"$WoaDetectedFreeThreaded = ${str(ft).lower()}",
-            "if ($DetectedPython -and (",
-            "        ($DetectedPython.Version -ne $WoaProbedMinor) -or",
-            "        ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {",
-            "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
-        ])
+        script = "\n".join(
+            [
+                f"$WoaProbedMinor = '{probed_minor}'",
+                f"$WoaProbedFreeThreaded = ${str(probed_ft).lower()}",
+                f"$DetectedPython = @{{ Version = '{minor}' }}",
+                f"$WoaDetectedFreeThreaded = ${str(ft).lower()}",
+                "if ($DetectedPython -and (",
+                "        ($DetectedPython.Version -ne $WoaProbedMinor) -or",
+                "        ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {",
+                "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1]
@@ -1443,28 +1447,49 @@ class TestAnExplicitPinOutranksThePersistedIndex:
     @pytest.mark.parametrize(
         "pinned, woa, install_url, expected, why",
         [
-            ("", "https://pypi.nvidia.com/nvtorch_oot", "https://d.pytorch.org/whl/cu130",
-             "https://pypi.nvidia.com/nvtorch_oot", "unpinned fresh shell: the recovery"),
-            ("https://mirror.test/cu129", "https://pypi.nvidia.com/nvtorch_oot",
-             "https://mirror.test/cu129", "https://mirror.test/cu129", "an explicit pin wins"),
-            ("", "", "https://d.pytorch.org/whl/cu130", "https://d.pytorch.org/whl/cu130",
-             "no recovery, no pin: unchanged"),
+            (
+                "",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://d.pytorch.org/whl/cu130",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "unpinned fresh shell: the recovery",
+            ),
+            (
+                "https://mirror.test/cu129",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://mirror.test/cu129",
+                "https://mirror.test/cu129",
+                "an explicit pin wins",
+            ),
+            (
+                "",
+                "",
+                "https://d.pytorch.org/whl/cu130",
+                "https://d.pytorch.org/whl/cu130",
+                "no recovery, no pin: unchanged",
+            ),
         ],
     )
     def test_the_pin_wins(self, pinned, woa, install_url, expected, why):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_cudaIndexUrl = if ($PinnedTorchIndexUrl)")
-        end = text.index("else { $TorchInstallIndexUrl }", start) + len("else { $TorchInstallIndexUrl }")
-        script = "\n".join([
-            f"$PinnedTorchIndexUrl = '{pinned}'",
-            f"$WinArm64TorchIndexUrl = '{woa}'",
-            f"$TorchInstallIndexUrl = '{install_url}'",
-            text[start:end].strip(),
-            "Write-Output $_cudaIndexUrl",
-        ])
+        end = text.index("else { $TorchInstallIndexUrl }", start) + len(
+            "else { $TorchInstallIndexUrl }"
+        )
+        script = "\n".join(
+            [
+                f"$PinnedTorchIndexUrl = '{pinned}'",
+                f"$WinArm64TorchIndexUrl = '{woa}'",
+                f"$TorchInstallIndexUrl = '{install_url}'",
+                text[start:end].strip(),
+                "Write-Output $_cudaIndexUrl",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
@@ -1493,20 +1518,24 @@ class TestTheRestoreMergesRatherThanStandsDown:
     )
     def test_requirement_names_are_canonical(self, line: str, expected_name: str):
         """PEP 503 normalisation, so Brotli and brotli_cffi compare as one name."""
-        script = "\n".join([
-            _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Get-RequirementName"),
-            f"Write-Output \"[$(Get-RequirementName -Line '{line}')]\"",
-        ])
+        script = "\n".join(
+            [
+                _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Get-RequirementName"),
+                f"Write-Output \"[$(Get-RequirementName -Line '{line}')]\"",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == f"[{expected_name}]"
 
     def test_disjoint_files_are_both_passed_and_conflicts_are_merged(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        block = text[text.index("$_woaOursNames = Get-RequirementNames"):][:2600]
+        block = text[text.index("$_woaOursNames = Get-RequirementNames") :][:2600]
         assert '$env:UV_OVERRIDE = "$safeOverrides $($env:UV_OVERRIDE)"' in block, (
             "disjoint files need no rewriting, which keeps each file's relative "
             "references resolving against its own directory"
@@ -1526,6 +1555,6 @@ class TestTheRestoreMergesRatherThanStandsDown:
             "reaching the drop list must not depend on the caller having set nothing; "
             f"head still tests it: {head[-300:]}"
         )
-        assert "elseif (-not $env:UV_OVERRIDE) {" in body, (
-            "the no-caller case still assigns ours alone"
-        )
+        assert (
+            "elseif (-not $env:UV_OVERRIDE) {" in body
+        ), "the no-caller case still assigns ours alone"
