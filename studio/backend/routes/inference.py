@@ -22507,6 +22507,22 @@ async def produce_openai_chat_completions(
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
+                        if event["type"] == "preempt":
+                            # The pause, made visible on the surface the GUI actually uses.
+                            # The plain (no-tools) consumer below has forwarded this since
+                            # the signal was written; this one fell through to the content
+                            # diff, which reads `text` off a dict that has none. Measured
+                            # with four browser sessions at -c 8192: nine pauses in the
+                            # server log, "Paused while another chat finishes" shown zero
+                            # times, because every GUI chat carries tools and takes this
+                            # path.
+                            yield (
+                                _OPENAI_PREEMPT_SSE_PAUSED
+                                if event.get("state") == "paused"
+                                else _OPENAI_PREEMPT_SSE_RESUMED
+                            )
+                            continue
+
                         if event["type"] == "context_truncated":
                             yield _context_truncated_sse_chunk(
                                 completion_id,
