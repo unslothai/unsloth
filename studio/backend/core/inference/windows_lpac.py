@@ -1574,7 +1574,18 @@ def token_dword(kind):
     assert a.GetTokenInformation(token, kind, ctypes.byref(value), size, ctypes.byref(size)), (kind, ctypes.get_last_error())
     return value.value
 assert token_dword(29) == 1
-assert token_dword(46) == {1 if less_privileged else 0}
+def token_dword_or_zero(kind):
+    # TokenIsLessPrivilegedAppContainer is only answerable for LPAC tokens; a plain
+    # AppContainer token reports ERROR_INVALID_PARAMETER (87), which means "not LPAC".
+    value = wintypes.DWORD(); size = wintypes.DWORD(ctypes.sizeof(value))
+    if a.GetTokenInformation(token, kind, ctypes.byref(value), size, ctypes.byref(size)):
+        return value.value
+    assert ctypes.get_last_error() == 87, (kind, ctypes.get_last_error())
+    return 0
+if {less_privileged!r}:
+    assert token_dword(46) == 1
+else:
+    assert token_dword_or_zero(46) == 0
 needed = wintypes.DWORD()
 a.GetTokenInformation(token, 25, None, 0, ctypes.byref(needed))
 integrity = ctypes.create_string_buffer(needed.value)

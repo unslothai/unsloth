@@ -994,7 +994,7 @@ def test_probe_payload_asserts_the_token_kind_for_each_profile():
     lpac = windows_lpac._probe_payload("wd", "ext", "S-1-15-2-1", [], less_privileged = True)
     plain = windows_lpac._probe_payload("wd", "ext", "S-1-15-2-1", [], less_privileged = False)
     assert "assert token_dword(46) == 1" in lpac
-    assert "assert token_dword(46) == 0" in plain
+    assert "assert token_dword_or_zero(46) == 0" in plain
     # Zero capabilities and the file policy are asserted under both kinds.
     for payload in (lpac, plain):
         assert "assert token_dword(29) == 1" in payload
