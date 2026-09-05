@@ -525,13 +525,13 @@ RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
 # by nvidia-container-toolkit at `docker run --gpus`, never present in the image.
 # ldd needs no GPU, so this keeps the build host-independent.
 #
-# The wheel name is not `nvidia-cublas-cu${major}` at every major. NVIDIA dropped
-# the suffix at CUDA 13: `nvidia-cublas-cu13` exists only as a 0.0.1 sdist whose
-# build backend exits 1 with "use nvidia-cublas instead", so the old spelling
-# fails the BUILD rather than the install. cu12 and earlier keep the suffix and
-# have no unsuffixed release, and the unsuffixed project publishes 13.x only, so
-# neither name covers both. Pin the major either way; the unresolved-library
-# check below is what proves the right wheel actually landed.
+# The name is not `nvidia-cublas-cu${major}` at every major: NVIDIA dropped the
+# suffix at CUDA 13, where `nvidia-cublas-cu13` is only a 0.0.1 sdist whose build
+# backend exits 1 with "use nvidia-cublas instead", failing the BUILD, not the
+# install. Neither project spans both majors: the unsuffixed one publishes 13.x
+# only, and nvidia-cublas-cu12 has no unsuffixed twin. Pin the major so a future
+# CUDA 14 cannot install over a 13 bundle; the unresolved-library check below is
+# what proves the right wheel landed.
 RUN set -eux \
  && CUDA_SO=/opt/unsloth/llama.cpp/libggml-cuda.so \
  && if [ -f "$CUDA_SO" ]; then \

@@ -40,9 +40,8 @@ def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
         "wheel copy; without this entry the CUDA backend fails to dlopen and GGUF "
         "silently runs on the CPU"
     )
-    # Both layouts, because the wheel moved as well as the name: nvidia-cublas-cu12
-    # unpacks to nvidia/cublas/lib, nvidia-cublas (13+) to nvidia/cu13/lib. Guarding
-    # only the first would leave a 13 bundle installed but still unresolvable.
+    # Both layouts, because the wheel moved with the name: nvidia-cublas-cu12
+    # unpacks to nvidia/cublas/lib, nvidia-cublas (13+) to nvidia/cu13/lib
     assert "$SP/nvidia/cu13/lib" in block, (
         "the CUDA 13 cublas wheel unpacks to nvidia/cu13/lib, so dropping this entry "
         "puts libcublas.so.13 off the loader path even after the guard installs it"
@@ -96,24 +95,24 @@ def _cublas_pkg_for(dockerfile: str, soname: str) -> str:
     ],
 )
 def test_guard_installs_the_matching_cublas_major(dockerfile: str, soname: str, expected: str):
-    # NVIDIA dropped the -cuXX suffix at CUDA 13, and neither project spans both:
-    # nvidia-cublas publishes 13.x only, nvidia-cublas-cu12 has no unsuffixed twin.
+    # NVIDIA dropped the -cuXX suffix at CUDA 13; neither project spans both majors:
+    # nvidia-cublas publishes 13.x only, nvidia-cublas-cu12 has no unsuffixed twin
     assert _cublas_pkg_for(dockerfile, soname) == expected
 
 
 def test_the_cublas_major_comes_from_the_bundle(dockerfile: str):
-    # The two arch bundles differ in CUDA major, so the name has to follow ldd.
-    # A hardcoded major satisfies any single expectation above on its own.
+    # The two arch bundles differ in CUDA major, so the name must follow ldd; a
+    # hardcoded major would satisfy any single case above on its own
     assert _cublas_pkg_for(dockerfile, "libcublas.so.12") != _cublas_pkg_for(
         dockerfile, "libcublas.so.13"
     )
 
 
 def test_the_guard_never_asks_for_a_retired_suffixed_wheel(dockerfile: str):
-    # This is the regression: the arm64 bundle links libcublas.so.13, the guard
-    # derived nvidia-cublas-cu13, and that project is a 0.0.1 sdist whose build
-    # backend exits 1 saying to use nvidia-cublas. It failed the build, not the
-    # install, so the fail-soft paths elsewhere in this file could not catch it.
+    # The regression: the arm64 bundle links libcublas.so.13, the guard derived
+    # nvidia-cublas-cu13, a 0.0.1 sdist whose build backend exits 1 saying to use
+    # nvidia-cublas. That fails the build, not the install, so the fail-soft paths
+    # elsewhere in this file could not catch it.
     for major in range(13, 20):
         assert f"-cu{major}" not in _cublas_pkg_for(dockerfile, f"libcublas.so.{major}")
 
