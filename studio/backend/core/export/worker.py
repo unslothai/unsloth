@@ -251,6 +251,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # expert weights into unvalidated paths (same flip as the chat worker).
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
+
         # Same tier chain as the activation above, so the same plain token: the sentinel
         # would read no cache offline, miss the sidecar and leave 4-bit on.
         if latest_tier_active_for(checkpoint_path, hf_token or None):
