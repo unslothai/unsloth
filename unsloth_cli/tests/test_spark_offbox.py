@@ -889,14 +889,16 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 512, 113 * _GIB)
     assert out["topology"] == "layer_split"
     assert out["pipeline_groups_speedup"] == sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
-    assert sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE == (1.27, 1.50)
+    assert sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE == (1.12, 1.13)
+    assert sc.PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE == (1.31, 1.37)
     reason = out["reason"]
     for text in (
         "pipeline groups",
         "--pipeline-groups 2",
-        "1.27x to 1.50x",
+        "1.31x to 1.37x",
+        "1.12x to 1.13x",
         "32 to 128",
-        "80 percent",
+        "78 percent",
     ):
         assert text in reason, (text, reason)
     assert "without them expect 0.85x to 1.01x on decode and 1.7x to 1.85x on prefill" in reason
@@ -920,7 +922,7 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
 
 
 def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -> None:
-    """At 32 rows two replicas measured 1.91x and the grouped split 1.27x, so a model
+    """At 32 rows two replicas measured 1.91x and the grouped split 1.12x, so a model
     that fits still gets replicas, and its reason never mentions pipeline groups."""
     sc = _load("studio/spark_cluster.py")
     assert sc.REPLICAS_DECODE_SPEEDUP[512][32] > sc.PIPELINE_GROUPS_SPLIT_SPEEDUP[32]

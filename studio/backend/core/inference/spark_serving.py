@@ -23,14 +23,12 @@ this module decides between three layouts and runs whichever one the workload al
                ``--pipeline-groups`` (the unslothai/llama.cpp fork: N contexts from one
                model, the slots partitioned across them, N interleaved decode loops so
                one group's batch runs on the peer's layers while another's runs here)
-               and ``UNSLOTH_SPARK_PIPELINE_GROUPS=2`` is set, the launch adds
-               ``--pipeline-groups 2`` and an even slot count. A two-context prototype
-               measured 1.27x to 1.50x of one Spark at 32 to 128 concurrent rows with
-               both GPUs near 80 percent, against 0.85x to 1.01x for the one-context
-               split; the server implementation does not reach that yet (it measured
-               0.82x of one context), so the flag is opt-in. It is probed for with
-               ``llama-server --help`` once per binary; a bundle without it, or an
-               unset env, launches exactly as before.
+               the launch adds ``--pipeline-groups 2`` and an even slot count. Measured
+               on Qwen3.8-27B: two groups 1.31x to 1.37x of one context on the same split
+               at 32 to 128 concurrent rows (130 to 170 tok/s, 1.12x to 1.13x of a single
+               Spark) with both GPUs at 76 to 79 percent. The flag is probed for with
+               ``llama-server --help`` once per binary; a bundle without it launches
+               exactly as before, and ``UNSLOTH_SPARK_PIPELINE_GROUPS=0`` turns it off.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
@@ -81,12 +79,14 @@ ENV_PIPELINE_GROUPS = "UNSLOTH_SPARK_PIPELINE_GROUPS"
 TOPOLOGIES = ("single", "replicas", "layer_split")
 RPC_PORT_DEFAULT = 50052
 PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt length
-# 0 = opt-in until unslothai/llama.cpp PR #187 is merged and in a bundle. With the device order
-# above (output layer local) the server mode now wins: two groups 130.4 and 131.3 tok/s in two
-# repeats against 99.7 and 98.1 for one context at 32 concurrent on the 27B split, both GPUs at
-# 76 to 79 percent. With the old CUDA0,RPC0 order it lost (75.5 against 94.9), so the order is
-# a precondition. Flip this to 2 when the flag ships in a bundle; set the env to 2 to use it now.
-PIPELINE_GROUPS_DEFAULT = 0
+# Two groups by default on a layer split. Only added when the bundle's llama-server has the flag
+# (unslothai/llama.cpp PR #187, ready for review; in no prebuilt yet), so a bundle without it
+# launches exactly as before. Measured on Qwen3.8-27B split across two Sparks with the device
+# order below, 32 / 64 / 128 concurrent, two repeats: one context 99.7 / 117.2 / 124.2 tok/s,
+# two groups 130.4 / 157.2 / 170.1 (1.31x to 1.37x), both GPUs 76 to 79 percent against 42 to
+# 47. With the old CUDA0,RPC0 order two groups LOST (75.5 against 94.9), so the order is a
+# precondition. UNSLOTH_SPARK_PIPELINE_GROUPS=0 turns it off, =N sets the count.
+PIPELINE_GROUPS_DEFAULT = 2
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
@@ -637,9 +637,8 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
 
     ``pipeline_groups`` is 0 with a ``reason`` when the env says so, the value is not
     a number, or the bundle's llama-server has no ``--pipeline-groups`` (the fork's
-    flag is not in every prebuilt yet; a build without it launches as today), or the
-    env is unset and ``PIPELINE_GROUPS_DEFAULT`` is 0 (the current opt-in state; the
-    binary is not even probed then). Otherwise it is the env value, and ``slots`` is the
+    flag is not in every prebuilt yet; a build without it launches as today).
+    Otherwise it is the env value or ``PIPELINE_GROUPS_DEFAULT`` (2), and ``slots`` is the
     launch's slot count rounded up to a multiple of it, at least one per group, so no
     group is left without a slot. ``requested_slots`` is the count before rounding.
     """
@@ -665,8 +664,7 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
         out["reason"] = (
             f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
             if raw
-            else f"{PIPELINE_GROUPS_FLAG} not added (opt in with {ENV_PIPELINE_GROUPS}=2 once "
-            f"the server mode beats one context; it does not yet)"
+            else f"{PIPELINE_GROUPS_FLAG} not added"
         )
         return out
     if not llama_server_supports(PIPELINE_GROUPS_FLAG):
@@ -698,7 +696,13 @@ def layer_split_extra_args(
     # against 94.9 with CUDA0,RPC0; with two pipeline groups 130.4 against 75.5, because with
     # the output on the peer the logits return and the CPU sampling under the other group's GPU
     # load serialise the groups. Memory per node is about the same either way.
-    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer"]
+    # --cache-ram 0 on a split: the host-RAM prompt cache saves and loads a whole slot state
+    # (323 MiB for the 27B at this context) on every slot handover, most of it living on the
+    # peer, on the single task thread. Measured at 32 concurrent: one context 75.9 tok/s and a
+    # 33 s median TTFT with the cache on against 99.7 and 7.5 s with it off; with two groups the
+    # other group starves (6.9 tok/s). This disables only that save/restore cache; the KV prefix
+    # reuse inside a slot is untouched, and the sticky router keeps a conversation on its slot.
+    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer", "--cache-ram", "0"]
     if pipeline_groups and int(pipeline_groups) > 1:
         out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
         if slots is not None:

@@ -2977,45 +2977,42 @@ LAYER_SPLIT_DECODE_SPEEDUP = {
 LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
 LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
 
-# ── Layer split WITH pipeline groups, prototype measurement ──────────────────
-# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187, draft, in no
-# prebuilt): N contexts from one model, the slots partitioned across them, N
-# interleaved decode loops, so while one group's batch is on the peer's layers the
-# other's is on this node's and neither GPU waits for the wire. The numbers below are
-# from a two-context PROTOTYPE (tools/pipeline-bench), Qwen3.8-27B-UD-Q4_K_XL, two DGX
-# Sparks, 2026-09-05, UNCAPPED clocks, closed-loop concurrent rows; aggregate decode
-# tok/s. The first llama-server implementation does NOT reach them: on the same split
-# it measured 79.0 against 96.7 tok/s (one context) at 32 concurrent and 82.1 against
-# 107.6 at 64, the two groups' decodes slowing each other on the shared RPC link. So
-# the serving side adds the flag only when UNSLOTH_SPARK_PIPELINE_GROUPS asks for it,
-# and this table states what the design is worth once the server matches it.
+# ── Layer split WITH pipeline groups, measured in llama-server ───────────────
+# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187, ready for review, in no
+# prebuilt yet): N contexts from one model, the slots partitioned across them, N interleaved
+# decode loops, so while one group's batch is on the peer's layers the other's is on this
+# node's and neither GPU waits for the wire. Precondition: the split lists the RPC device
+# first and the local CUDA device last, so the output layer and the logits stay on the local
+# GPU (with the output on the peer two groups LOSE, 75.5 against 94.9 tok/s, because the 1 MB
+# per row logits return and the CPU sampling under the other group's GPU load serialise them).
+# Qwen3.8-27B-UD-Q4_K_XL, two DGX Sparks, 2026-09-05, UNCAPPED clocks, closed-loop concurrent
+# rows, npp 128 / ntg 256, --cache-ram 0, two repeats; whole-cell decode tok/s:
 #
-#   rows |  1 Spark | split, 1 context | split, 2 groups || 1 context | 2 groups
-#     32 |   116    |       110        |       147       ||   0.95x   |  1.27x
-#     64 |   139    |       126        |       200       ||   0.91x   |  1.44x
-#    128 |   150    |       138        |       225       ||   0.92x   |  1.50x
-#    256 |    94    |       138        |       250       ||   1.47x   |  2.66x
+#   rows |  1 Spark | split, 1 context | split, 2 groups || vs 1 context | vs 1 Spark
+#     32 |   116    |       100        |       130       ||    1.31x     |   1.12x
+#     64 |   139    |       117        |       157       ||    1.34x     |   1.13x
+#    128 |   150    |       124        |       170       ||    1.37x     |   1.13x
 #
-# Per-node GPU utilisation went from about 46 percent to about 80 percent. The
-# 256-row single-Spark control is KV-thrashing, so the advertised range stops at 128
-# rows. This does NOT move the replicas rule for a model that fits: at 32 rows two
-# replicas measured 1.91x against 1.27x here, so replicas still win there; the groups
-# make the split that a model too large for one node needs anyway use both GPUs.
+# Per-node GPU utilisation went from 42 to 47 percent to 76 to 79 percent. 256 rows is not
+# reported (HTTP truncation at 256 streams, node over 80 C). This does NOT move the replicas
+# rule for a model that fits: at 32 rows two replicas measured 1.91x against 1.12x here, so
+# replicas still win there; the groups make the split that a model too large for one node
+# needs anyway use both GPUs, and take it past what one node would do.
 PIPELINE_GROUPS_MEASUREMENT = (
-    "Qwen3.8-27B-UD-Q4_K_XL on a two-context llama.cpp prototype, two DGX Sparks, "
-    "2026-09-05, uncapped clocks; the llama-server --pipeline-groups mode (PR #187) "
-    "measured 0.82x of one context at 32 concurrent and is opt-in until it matches"
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 with --device RPC0,CUDA0, two DGX "
+    "Sparks, 2026-09-05, uncapped clocks, two repeats"
 )
 # rows: (one Spark, split with one context, split with two groups), decode tok/s
 PIPELINE_GROUPS_DECODE_TOKS = {
-    32: (116, 110, 147),
-    64: (139, 126, 200),
-    128: (150, 138, 225),
-    256: (94, 138, 250),
+    32: (116, 100, 130),
+    64: (139, 117, 157),
+    128: (150, 124, 170),
 }
-PIPELINE_GROUPS_SPLIT_SPEEDUP = {32: 1.27, 64: 1.44, 128: 1.50}  # two groups over one Spark
-PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.27, 1.50)  # 32 to 128 rows
-PIPELINE_GROUPS_GPU_UTIL = (0.46, 0.80)  # per node, without and with the groups
+PIPELINE_GROUPS_SPLIT_SPEEDUP = {32: 1.12, 64: 1.13, 128: 1.13}  # two groups over one Spark
+PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.12, 1.13)  # 32 to 128 rows
+PIPELINE_GROUPS_OVER_ONE_CONTEXT = {32: 1.31, 64: 1.34, 128: 1.37}  # two groups over one context
+PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE = (1.31, 1.37)
+PIPELINE_GROUPS_GPU_UTIL = (0.45, 0.78)  # per node, without and with the groups
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
@@ -3046,18 +3043,17 @@ def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> floa
 def pipeline_groups_note() -> str:
     """What a layer split delivers with and without pipeline groups, for reasons and
     the ``spark plan`` text. The serving side adds the flag only when the bundle's
-    llama-server has it and the env asks for it, so both halves are stated, and the
-    prototype number is named as such because the server mode has not matched it."""
+    llama-server has it, so both halves are stated."""
     low, high = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
+    clow, chigh = PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE
     rows = sorted(PIPELINE_GROUPS_SPLIT_SPEEDUP)
     decode = LAYER_SPLIT_DECODE_SPEEDUP[512]
     return (
-        f"With pipeline groups (llama-server --pipeline-groups 2, opt in with "
-        f"UNSLOTH_SPARK_PIPELINE_GROUPS=2 on a bundle that has it) a two-context prototype "
-        f"measured {low:.2f}x to {high:.2f}x of one Spark at {rows[0]} to "
-        f"{rows[-1]} concurrent rows with both GPUs near "
-        f"{PIPELINE_GROUPS_GPU_UTIL[1] * 100:.0f} percent; the server mode is not there "
-        f"yet (0.82x of one context), which is why it is off by default; without them expect "
+        f"With pipeline groups (llama-server --pipeline-groups 2, added when the bundle "
+        f"has it, RPC device first so the output layer stays local) the pair measured "
+        f"{clow:.2f}x to {chigh:.2f}x of the one-context split and {low:.2f}x to {high:.2f}x "
+        f"of one Spark at {rows[0]} to {rows[-1]} concurrent rows with both GPUs near "
+        f"{PIPELINE_GROUPS_GPU_UTIL[1] * 100:.0f} percent; without them expect "
         f"{min(decode.values()):.2f}x to {max(decode.values()):.2f}x on decode and "
         f"{LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to {LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x "
         f"on prefill."
@@ -3077,10 +3073,10 @@ def recommend_topology(
     The rules, from the measurements above:
 
     * a model that does not fit on one node is a ``layer_split``: the only option,
-      and the one place the second GPU could pay on decode: a two-context prototype
-      of the fork's pipeline groups measured 1.27x to 1.50x of one Spark at 32 to
-      128 rows (PIPELINE_GROUPS_SPLIT_SPEEDUP), the server mode does not reach that
-      yet and is opt-in; the one-context split stays at 0.85x to 1.01x;
+      and the one place the second GPU pays on decode: with the fork's pipeline groups
+      the pair measured 1.31x to 1.37x of the one-context split and 1.12x to 1.13x of
+      one Spark at 32 to 128 rows (PIPELINE_GROUPS_SPLIT_SPEEDUP); the one-context
+      split stays at 0.85x to 1.01x;
     * a model that fits, with 8 or more concurrent users, is ``replicas``;
     * a model that fits, with fewer users, is ``single``: leave the second node idle,
       because a second copy buys 1.00x to 1.13x and nothing helps one user except

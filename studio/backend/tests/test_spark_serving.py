@@ -312,7 +312,10 @@ def test_rpc_server_and_layer_split_arguments():
         "50053",
     ]
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
-    assert extra == ["--rpc", "192.168.200.13:50052", "--device", "RPC0,CUDA0", "-sm", "layer"]
+    assert extra == [
+        "--rpc", "192.168.200.13:50052", "--device", "RPC0,CUDA0", "-sm", "layer",
+        "--cache-ram", "0",
+    ]
     assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
     # Pipeline groups ride on the same launch, with a slot count that gives every
     # group a slot; the --parallel here overrides the emitted one (last wins).
@@ -324,6 +327,8 @@ def test_rpc_server_and_layer_split_arguments():
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--cache-ram",
+        "0",
         "--pipeline-groups",
         "2",
         "--parallel",
@@ -336,6 +341,8 @@ def test_rpc_server_and_layer_split_arguments():
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--cache-ram",
+        "0",
     ]
 
 
@@ -449,6 +456,8 @@ def test_before_load_turns_a_too_large_model_into_a_layer_split(cluster, monkeyp
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--cache-ram",
+        "0",
     ]
     state = ss.state()
     assert state.topology == "layer_split" and state.peer == "192.168.200.13"
@@ -798,16 +807,14 @@ def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tm
     assert probe_runs(script) == 1, "the timeout is cached; one stall per build"
 
 
-def test_pipeline_groups_default_is_off_and_never_probes(cluster, monkeypatch):
-    """Opt-in until the server mode beats one context (PIPELINE_GROUPS_DEFAULT)."""
+def test_pipeline_groups_default_is_two_when_the_bundle_has_the_flag(cluster, monkeypatch):
+    """Two groups by default on a split (PIPELINE_GROUPS_DEFAULT); the probe decides."""
     script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
-    assert ss.PIPELINE_GROUPS_DEFAULT == 0
+    assert ss.PIPELINE_GROUPS_DEFAULT == 2
     plan = ss.pipeline_groups_plan(3)
-    assert plan["pipeline_groups"] == 0 and plan["slots"] == 3
-    assert plan["reason"].startswith("--pipeline-groups not added")
-    assert f"{ss.ENV_PIPELINE_GROUPS}=2" in plan["reason"]
-    assert probe_runs(script) == 0, "off by default: the binary is never run"
+    assert plan["pipeline_groups"] == 2 and plan["slots"] == 4 and plan["reason"] is None
+    assert probe_runs(script) == 1
 
 
 def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
@@ -866,6 +873,8 @@ def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--cache-ram",
+        "0",
         "--pipeline-groups",
         "2",
         "--parallel",
@@ -900,6 +909,8 @@ def test_before_load_launches_as_before_without_the_flag(cluster, monkeypatch, t
         "RPC0,CUDA0",
         "-sm",
         "layer",
+        "--cache-ram",
+        "0",
     ], "no --pipeline-groups and no --parallel override on a bundle without the flag"
     status = ss.status()
     assert status["topology"] == "layer_split" and status["pipeline_groups"] == 0
