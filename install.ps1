@@ -486,8 +486,17 @@ function Install-UnslothStudio {
             try { return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($BaseDir, $p)) } catch { return $p }
         }
         if ($Line -match '^(\s*)(-r|--requirement|-c|--constraint|-f|--find-links)([=\s]+)(.+?)(\s*)$') {
-            $quoted = $Matches[4].Trim('"')
-            return "$($Matches[1])$($Matches[2])$($Matches[3])$(& $abs $quoted)$($Matches[5])"
+            # Copied out FIRST: the -match below replaces $Matches, and reading the groups
+            # after it dropped the option itself, leaving a bare path where "-c <file>" was.
+            $lead = $Matches[1]; $opt = $Matches[2]; $sep = $Matches[3]
+            $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
+            $rebased = & $abs $bare
+            # Re-quoted when it needs to be. These options take ONE file argument, so an
+            # unquoted space truncates the path at it. Two ways in: a caller who quoted the
+            # value, whose quotes were stripped and not put back, and a caller who did not
+            # need to, whose relative path rebases onto a directory that does have a space.
+            if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
+            return "$lead$opt$sep$rebased$tail"
         }
         # Groups are copied out before the next -match, which replaces $Matches.
         if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {

@@ -3437,3 +3437,103 @@ class TestTheMandatoryPyarrowWheelIsOpened:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
+
+
+class TestARebasedOptionPathKeepsItsQuoting:
+    """-r/-c/-f take ONE file argument, so an unquoted space truncates the path.
+
+    Two ways in, and only one of them is about quoting: a caller who quoted the value had
+    the quotes stripped and not put back, and a caller who had no reason to quote a plain
+    relative name gets a space anyway when it rebases onto a directory that has one. Both
+    end as a dependency pass failing to open a path cut at its first space.
+    """
+
+    @staticmethod
+    def _rebase(source, line, base):
+        # Here-strings, because the values under test contain both quote characters and
+        # spaces -- interpolating them into a single-quoted argument is how a harness ends
+        # up testing its own escaping instead of the function.
+        script = "\n".join(
+            [
+                _ps_function(source, "Resolve-WoaOverrideLine"),
+                f"$l = @'\n{line}\n'@",
+                f"$b = @'\n{base}\n'@",
+                "Write-Output ('[' + (Resolve-WoaOverrideLine -Line $l -BaseDir $b) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1][1:-1]
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    @pytest.mark.parametrize(
+        "line, base, quoted, why",
+        [
+            ('-c "corp pins/constraints.txt"', "/opt/corp", True,
+             "the value was quoted because it needed to be"),
+            ("-r nested.txt", "/opt/my corp", True,
+             "and here the base is what brings the space in"),
+            ("-f wheels", "/opt/my corp", True, "find-links too"),
+            ("--constraint 'corp pins/c.txt'", "/opt/corp", True,
+             "a single-quoted value is unwrapped and re-quoted the same way"),
+            ("-r nested.txt", "/opt/corp", False,
+             "nothing with a space stays unquoted, as it always was"),
+            ("-c /already/absolute.txt", "/opt/corp", False,
+             "an absolute path is returned untouched"),
+        ],
+    )
+    def test_the_result_is_quoted_exactly_when_it_has_to_be(
+        self, install, line, base, quoted, why
+    ):
+        source = INSTALL_PS1 if install else SETUP_PS1
+        got = self._rebase(source, line, base)
+        assert got.split(None, 1)[0] == line.split(None, 1)[0], (
+            f"the option itself was dropped, leaving a bare path: {got!r}"
+        )
+        has_quotes = '"' in got
+        assert has_quotes is quoted, f"{why}: {got!r}"
+        if quoted:
+            # The quotes wrap the WHOLE path, or they solve nothing.
+            inner = got[got.index('"') + 1 : got.rindex('"')]
+            assert " " in inner, f"quoted but the space is outside them: {got!r}"
+            assert got.rindex('"') == len(got.rstrip()) - 1, (
+                f"the closing quote has to end the value: {got!r}"
+            )
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    def test_a_rebased_line_still_names_one_file(self, install, tmp_path):
+        """Read back the way a resolver reads it: split the option's argument on spaces
+        and the path must still exist.
+        """
+        source = INSTALL_PS1 if install else SETUP_PS1
+        base = tmp_path / "my corp"
+        base.mkdir()
+        (base / "constraints.txt").write_text("idna==3.10\n", encoding = "utf-8")
+        got = self._rebase(source, "-c constraints.txt", base.as_posix())
+        argument = got.split(None, 1)[1].strip()
+        assert argument.startswith('"') and argument.endswith('"'), got
+        assert pathlib.Path(argument[1:-1]).exists(), (
+            f"the rebased path does not resolve to the file it names: {got!r}"
+        )
+
+    def test_the_two_copies_stay_identical(self):
+        """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
+        def normalized(source: str) -> str:
+            lines = [
+                line.rstrip()
+                for line in source.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            indent = min(len(line) - len(line.lstrip()) for line in lines)
+            return "\n".join(line[indent:] for line in lines)
+
+        assert normalized(
+            _function_source(INSTALL_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine")
+        ) == normalized(
+            _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine")
+        )
