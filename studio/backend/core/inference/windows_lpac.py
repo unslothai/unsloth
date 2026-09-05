@@ -1538,7 +1538,10 @@ for family, kind, address in {endpoints!r}:
             sock.sendto(b'UNSLOTH_LPAC_NETWORK_PROBE', address)
     except OSError as exc:
         # Refusal, timeout, and an absent address family are not enforcement.
-        assert exc.winerror == 10013, ('unexpected network error', repr(exc))
+        # WSAEACCES (10013): the operation was denied on a socket that exists.
+        # WSAEPROVIDERFAILEDINIT (10106): the AppContainer could not even
+        # initialize the Winsock provider, so no socket can be created at all.
+        assert exc.winerror in (10013, 10106), ('unexpected network error', repr(exc))
     else:
         raise AssertionError('LPAC network operation was not denied')
     finally:
