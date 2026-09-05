@@ -1044,11 +1044,7 @@ def test_a_decoded_object_growing_under_one_id_stays_one_call(executed):
             [
                 _sse({"tool_calls": [_call_delta(0, "call_obj", "web_search", {})]}),
                 _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(0, "call_obj", "web_search", {"query": "value"})
-                        ]
-                    }
+                    {"tool_calls": [_call_delta(0, "call_obj", "web_search", {"query": "value"})]}
                 ),
                 _sse(finish = "tool_calls"),
                 _DONE,
