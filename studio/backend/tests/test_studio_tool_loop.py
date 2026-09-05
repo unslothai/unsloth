@@ -1011,6 +1011,58 @@ def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
     assert _events(lines, "tool_start")[0]["arguments"] == {"query": "value"}
 
 
+def test_an_empty_decoded_object_opening_runs_the_tool_once(executed):
+    """A server that decodes cannot spell the opening ``""``, so it sends ``{}``. Serialized,
+    that is a finished document: it closed the slot and the rest of the call forked into a
+    second one, running the tool twice, once on nothing.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_obj", "web_search", {})]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":'}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"value"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "value"}]
+    assert len(_events(lines, "tool_start")) == 1
+
+
+def test_a_decoded_object_growing_under_one_id_stays_one_call(executed):
+    """Each delta re-sends the whole decoded object. Gluing them gave ``{}{"query":"value"}``,
+    which parses as nothing and reached the tool as a ``_raw`` blob.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_obj", "web_search", {})]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(0, "call_obj", "web_search", {"query": "value"})
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "value"}]
+    assert len(_events(lines, "tool_start")) == 1
+
+
 def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     """A tool result is only legal next to the call it answers.
 

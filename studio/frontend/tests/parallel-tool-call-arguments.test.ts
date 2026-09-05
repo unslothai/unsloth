@@ -1595,6 +1595,12 @@ test("string fragments pass through byte-exact and junk contributes nothing", ()
   assert.equal(streamedToolCallArguments(7), "");
 });
 
+test("an empty decoded object is an opening, not a finished document", () => {
+  // "{}" would close the slot, so the rest of the call forks into a second one.
+  assert.equal(streamedToolCallArguments({}), "");
+  assert.equal(streamedToolCallArguments([]), "");
+});
+
 test("the adapter's delta site reads arguments through the helper", () => {
   // Pinned so a tidy-up cannot bring the payload-dropping typeof-ternary back.
   assert.ok(
@@ -1622,5 +1628,51 @@ test("a delta whose arguments arrive as a decoded object keeps its payload", () 
   assert.deepEqual(
     parts.map((part) => part.argsText),
     ['{"query":"value"}'],
+  );
+});
+
+test("an empty decoded object opening does not fork the call that follows it", () => {
+  // A server that decodes cannot spell the opening "", and "{}" read as a finished
+  // document put a second card beside the real call, with the tool run twice.
+  const parts = run([
+    [
+      {
+        id: "call-obj",
+        index: 0,
+        function: { name: "web_search", arguments: {} as unknown as string },
+      },
+    ],
+    [{ index: 0, function: { arguments: '{"query":' } }],
+    [{ index: 0, function: { arguments: '"value"}' } }],
+  ]);
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_search", '{"query":"value"}']],
+  );
+});
+
+test("a decoded object growing under one id stays one call", () => {
+  const parts = run([
+    [
+      {
+        id: "call-obj",
+        index: 0,
+        function: { name: "web_search", arguments: {} as unknown as string },
+      },
+    ],
+    [
+      {
+        id: "call-obj",
+        index: 0,
+        function: {
+          name: "web_search",
+          arguments: { query: "value" } as unknown as string,
+        },
+      },
+    ],
+  ]);
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_search", '{"query":"value"}']],
   );
 });

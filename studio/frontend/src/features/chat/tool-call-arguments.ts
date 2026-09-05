@@ -433,6 +433,12 @@ export function streamedToolCallArguments(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return "";
   }
+  // An empty one is the "arguments started, nothing in them yet" opening that conforming
+  // servers spell "". As "{}" it would be a finished document, closing the slot so the rest
+  // of the call forks into a second one.
+  if ((Array.isArray(value) ? value.length : Object.keys(value).length) === 0) {
+    return "";
+  }
   try {
     return JSON.stringify(value) ?? "";
   } catch {
