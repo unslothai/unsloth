@@ -341,6 +341,9 @@ jobs:
           # manifest we are about to hand to build-studio really is the one this run
           # pushed, because baking another run's base image is silent otherwise.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          # Without pipefail a failed inspect feeds jq nothing, jq exits 0, and the
+          # variable is silently empty, which turns every check below into a no-op.
+          set -o pipefail
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
           # What a build job reports is the digest of an INDEX, not of a manifest:
           # build-push-action attaches a provenance attestation, so one push covers the
@@ -510,6 +513,9 @@ jobs:
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+          # Without pipefail a failed inspect feeds jq nothing, jq exits 0, and the
+          # variable is silently empty, which turns every check below into a no-op.
+          set -o pipefail
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
           # What a build job reports is the digest of an INDEX, not of a manifest:
           # build-push-action attaches a provenance attestation, so one push covers the

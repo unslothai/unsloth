@@ -392,11 +392,18 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
     tag resolves to a manifest that does not contain the per-arch digests this run
     pushed, the step has to fail rather than hand build-studio another run's base."""
     bin_dir = tmp_path / "bin"
-    # the tag now resolves to a manifest built from somebody else's arches
+    # the tag now resolves to a manifest built from somebody else's arches. The pushed
+    # digests answer for themselves: what a build job pushes is an index over its own
+    # arch manifest, so the step reads those to learn what the merge should contain.
     _docker_stub(
         bin_dir,
         'case "$4" in\n'
-        f'  --raw) printf "{_raw_index(("d" * 64, "e" * 64))}" ;;\n'
+        '  --raw)\n'
+        '    case "$5" in\n'
+        f'      *@sha256:{ARCH_DIGESTS[0]}) printf "{_raw_index(("1" * 64,))}" ;;\n'
+        f'      *@sha256:{ARCH_DIGESTS[1]}) printf "{_raw_index(("2" * 64,))}" ;;\n'
+        f'      *) printf "{_raw_index(("d" * 64, "e" * 64))}" ;;\n'
+        '    esac ;;\n'
         f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
@@ -427,3 +434,96 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
     assert "digest=" not in out.read_text(
         encoding = "utf-8"
     ), "a digest was exported despite the mismatch"
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_digest_export_accepts_an_attested_merge(manifest_digest_step: str, tmp_path: Path):
+    """build-push-action attaches a provenance attestation, so what a build job pushes
+    is an INDEX over the arch manifest and the attestation, not a bare manifest.
+    `imagetools create` copies those children into the merged index and never the
+    source index digests, so a guard that looks for the pushed digests themselves
+    matches nothing and fails every run. That is what took `merge` down at 7197da219,
+    where it had never once passed."""
+    bin_dir = tmp_path / "bin"
+    attested = {
+        ARCH_DIGESTS[0]: ("1" * 64, "2" * 64),
+        ARCH_DIGESTS[1]: ("3" * 64, "4" * 64),
+    }
+    merged = _raw_index(tuple(c for pair in attested.values() for c in pair))
+    _docker_stub(
+        bin_dir,
+        'case "$4" in\n'
+        '  --raw)\n'
+        '    case "$5" in\n'
+        + "".join(
+            f'      *@sha256:{pushed}) printf "{_raw_index(children)}" ;;\n'
+            for pushed, children in attested.items()
+        )
+        + f'      *) printf "{merged}" ;;\n'
+        '    esac ;;\n'
+        f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+    )
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
+    )
+    assert res.returncode == 0, (
+        "the step rejected a correctly merged index because it looked for the pushed "
+        "index digests rather than what they contain:\n" + res.stdout + res.stderr
+    )
+    assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}"
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_digest_export_fails_when_an_inspection_fails(
+    manifest_digest_step: str, tmp_path: Path
+):
+    """A failed inspect feeds jq nothing, and jq exits 0 on empty input. Without
+    pipefail the variable is silently empty and every check below becomes a no-op,
+    so a retagged manifest would be exported as this run's own."""
+    bin_dir = tmp_path / "bin"
+    _docker_stub(
+        bin_dir,
+        'case "$4" in\n'
+        f'  --raw) case "$5" in *@sha256:{ARCH_DIGESTS[0]}) exit 1 ;; esac\n'
+        f'         printf "{_raw_index()}" ;;\n'
+        f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+    )
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
+    )
+    assert res.returncode != 0, (
+        "a failed inspection was swallowed, so the guard silently checked nothing:\n"
+        + res.stdout + res.stderr
+    )
