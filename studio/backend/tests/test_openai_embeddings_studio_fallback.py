@@ -588,7 +588,7 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
     # Larger than the header, so the GGUF is still what binds; confirmed, so it caches.
     monkeypatch.setattr(backend, "_server_context", lambda: 4096)
-    monkeypatch.setattr(backend, "_server_batch", lambda: None)
+    monkeypatch.setattr(backend, "_server_batch", lambda: 4096)
     posts = []
 
     def post(
@@ -755,15 +755,21 @@ def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
     assert inference_route._names_studio_embedder(f"sentence-transformers:{model_dir}")
 
 
-def test_alias_matching_never_probes_the_backend(studio_embedder):
+def test_untagged_aliases_never_probe_the_backend(studio_embedder):
     def boom(*_args, **_kwargs):
-        raise AssertionError("embedding_identity must not run on the request path")
+        raise AssertionError("embedding_identity must not run for untagged names")
 
     _identity_names(studio_embedder)
     studio_embedder.setattr(rag_embeddings, "embedding_identity", boom)
-    assert inference_route._names_studio_embedder(IDENTITY)
     assert inference_route._names_studio_embedder(MODEL.upper())
     assert not inference_route._names_studio_embedder("text-embedding-3-small")
+
+
+def test_tagged_identity_must_match_the_current_space(studio_embedder):
+    _identity_names(studio_embedder)
+    assert inference_route._names_studio_embedder(IDENTITY) == MODEL
+    stale = f"llama-server:{MODEL}:{MODEL}-GGUF"
+    assert inference_route._names_studio_embedder(stale) is None
 
 
 def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder):
@@ -859,6 +865,13 @@ def test_advertised_local_identity_is_accepted_as_an_alias(studio_embedder, tmp_
     studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: model_dir)
     studio_embedder.setattr(
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    from core.rag.config import _escape_identity_segment
+
+    studio_embedder.setattr(
+        rag_embeddings,
+        "embedding_identity",
+        lambda model_name = None: f"sentence-transformers:{_escape_identity_segment(model_dir)}",
     )
     public = inference_route._public_embedding_name(model_dir)
     assert inference_route._names_studio_embedder(f"sentence-transformers:{public}") == model_dir
@@ -960,8 +973,9 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "_server_context", lambda: None)
     assert backend.max_tokens() == 8190
     assert backend._max_tokens is None
-    # Once /props answers, the smaller real context is what sticks.
+    # Once /props answers with both bounds, the smaller real context is what sticks.
     monkeypatch.setattr(backend, "_server_context", lambda: 512)
+    monkeypatch.setattr(backend, "_server_batch", lambda: 512)
     assert backend.max_tokens() == 510
     assert backend._max_tokens == 510
 
@@ -1050,3 +1064,42 @@ def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
     # Once the index is built, absence really is evidence.
     monkeypatch.setattr(_resolver, "index_is_built", lambda: True)
     assert inference_route._reference_is_decisive("org/not-here") is False
+
+
+@pytest.mark.parametrize("stash_embeds", [False, True])
+def test_default_request_restores_the_chat_slot_only_for_an_embedding_stash(
+    studio_embedder, stash_embeds
+):
+    seen = []
+
+    async def record(request, current_subject, **_kwargs):
+        seen.append(current_subject)
+        return await request.json()
+
+    studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
+    studio_embedder.setattr(inference_route, "_stashed_gguf_embeds", lambda: stash_embeds)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _call({"input": "alpha"})
+    assert payload["model"] == IDENTITY
+    assert seen == (["tester"] if stash_embeds else [])
+
+
+def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_path):
+    import core.inference.llama_keepwarm as keepwarm
+    import core.inference.local_model_resolver as resolver
+
+    monkeypatch.setattr(keepwarm, "get_last_unloaded_model", lambda: None)
+    assert inference_route._stashed_gguf_embeds() is False
+    monkeypatch.setattr(keepwarm, "get_last_unloaded_model", lambda: ("org/E-GGUF", "Q8_0", "org/E-GGUF"))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda ref, **_: ("/tmp/e.gguf", "Q8_0", "org/E-GGUF"))
+
+    class _Probe:
+        is_embedding_gguf = True
+
+        def _read_gguf_metadata(self, path):
+            self.path = path
+
+    monkeypatch.setattr(inference_route, "_probe_backend", _Probe)
+    assert inference_route._stashed_gguf_embeds() is True

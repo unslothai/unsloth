@@ -1149,7 +1149,7 @@ class LlamaServerBackend:
                         model_name = model_name,
                     )
                     answer = max(1, limit - len(data.get("tokens", [])))
-                    if running is None:
+                    if running is None or batch is None:
                         # /props did not answer, so the header context is a guess: this
                         # server may run a smaller one. Answer with it, but do not freeze
                         # it, or a limit that lets an over-long input reach a 502 would

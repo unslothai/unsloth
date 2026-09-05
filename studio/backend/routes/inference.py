@@ -25840,12 +25840,19 @@ def _embedding_payload(vector, encoding_format: str):
 
 def _names_studio_embedder(requested: str) -> Optional[str]:
     from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
     from utils.paths import is_local_path
 
     model = rag_config.effective_embedding_model()
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
-    wanted = (rag_config.embedding_identity_model(requested) or requested).strip()
-    for name in (model, repo, _public_embedding_name(model), _public_embedding_name(repo)):
+    label = _public_embedding_name(model)
+    wanted = requested.strip()
+    if rag_config.embedding_identity_model(wanted) is not None:
+        current = rag_embeddings.embedding_identity(model)
+        if wanted in (current, _public_embedding_identity(current, model, label)):
+            return model
+        return None
+    for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
             continue
         if is_local_path(name) or is_local_path(wanted):
@@ -25854,6 +25861,43 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         elif wanted.casefold() == name.casefold():
             return model
     return None
+
+
+def _resident_absent(llama_backend) -> bool:
+    return not getattr(llama_backend, "is_loaded", False)
+
+
+def _stashed_gguf_embeds() -> bool:
+    from core.inference.llama_keepwarm import get_last_unloaded_model
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    last = get_last_unloaded_model()
+    if not last:
+        return False
+    target_id, variant = last[0], last[1]
+    try:
+        resolved = resolve_local_gguf(
+            f"{target_id}:{variant}" if variant else target_id, allow_scan = False
+        )
+        path = resolved[0] if resolved else None
+        if not path:
+            return False
+        probe = _probe_backend()
+        probe._read_gguf_metadata(path)
+        return bool(probe.is_embedding_gguf)
+    except Exception:  # noqa: BLE001 - an unreadable stash is not an embedding model
+        return False
+
+
+async def _default_embeddings_request_body(request: Request) -> Optional[dict]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    return body if requested is None or requested == "" else None
 
 
 async def _embeddings_client_gone(request: Request) -> bool:
@@ -26117,6 +26161,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         return await _studio_embeddings(
             request, studio_request[0], current_subject, model_name = studio_request[1]
         )
+    if studio_request is None and _resident_absent(llama_backend):
+        default_body = await _default_embeddings_request_body(request)
+        if default_body is not None and not await asyncio.to_thread(_stashed_gguf_embeds):
+            return await _studio_embeddings(request, default_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
         # With the slot empty, `_reject_unservable_model` returns without deciding
