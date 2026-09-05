@@ -754,9 +754,7 @@ class TestAHostedOptionalIsActuallyInstalled:
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: name == "hf-transfer")
         calls = []
-        monkeypatch.setattr(
-            ips, "pip_install_try", lambda label, *a, **kw: calls.append(a) or True
-        )
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *a, **kw: calls.append(a) or True)
         monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
         ips._install_wheelhouse_optionals()
         assert len(calls) == 1, calls
@@ -809,7 +807,9 @@ class TestAHostedOptionalIsActuallyInstalled:
         # The listing is memoized for the process, so each state needs its own read.
         ips._find_links_wheel_versions.cache_clear()
         assert not ips._wheelhouse_hosts("torchcodec")
-        (tmp_path / _wheel("torchcodec", f"cp{major}{minor + 1}", f"cp{major}{minor + 1}")).write_text("")
+        (
+            tmp_path / _wheel("torchcodec", f"cp{major}{minor + 1}", f"cp{major}{minor + 1}")
+        ).write_text("")
         ips._find_links_wheel_versions.cache_clear()
         assert not ips._wheelhouse_hosts("torchcodec"), "a foreign-tagged wheel is not hosted"
         (tmp_path / _wheel("torchcodec", tag, tag)).write_text("")

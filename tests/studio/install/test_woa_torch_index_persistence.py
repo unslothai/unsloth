@@ -3929,9 +3929,9 @@ class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
         assert "$_woaMarkerIndex = $_woaPinnedIndex" in text
         opens = text.index("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {")
         closes = text.index("Restore-WoaResolverEnvironment", opens)
-        assert "Get-PinnedTorchIndexUrl" not in text[opens:closes], (
-            "the block calls the getter again instead of using the value the guard tested"
-        )
+        assert (
+            "Get-PinnedTorchIndexUrl" not in text[opens:closes]
+        ), "the block calls the getter again instead of using the value the guard tested"
 
     @requires_pwsh
     @pytest.mark.parametrize(
