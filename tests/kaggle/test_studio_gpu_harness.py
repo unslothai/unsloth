@@ -50,6 +50,7 @@ def _load(name: str, path: Path):
     return module
 
 
+run_studio_gpu = _load("studio_gpu_payload_main", PAYLOAD_DIR / "run_studio_gpu.py")
 build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
@@ -2480,3 +2481,108 @@ def test_every_assertion_carries_its_own_wall_clock():
     # And an absolute position, so a reader can line the report up against the
     # driver's own interval for the payload.
     assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]
+
+
+class TestAMixedListingIsNotProofOfCpu:
+    """A readable row on one GPU keeps the mapping nonempty, hiding an [N/A] server.
+
+    The all-[N/A] guard fires only when NOTHING parsed. On a box with a TCC card whose
+    process reports a figure and a WDDM or unified-memory card where the newly launched
+    server reports [N/A], the mapping is nonempty, the guard stays quiet, and the server's
+    pid is simply missing -- so nothing "appeared" and the harness failed a run whose model
+    was on the card the whole time.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None, (
+            "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
+            f"the offloaded server, not an absence: {detail}"
+        )
+        assert detail["compute_apps_unattributed"] == [222]
+
+    def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "served from the CPU" in failure
+        assert "222" in failure, "the message names the process it could not attribute"
+
+    def test_an_unattributed_pid_with_no_device_reading_is_unmeasured(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {111: 500},
+            baseline = None,
+            settled = None,
+            listed_before = set(),
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured" in failure
+
+    def test_an_attributed_new_process_is_unaffected(self):
+        """The ordinary path must not start deferring to the shared device counter."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None, "a co-tenant freeing memory must not sink an attributed pid"
+        assert detail["process_vram_mib"] == 2600
+
+    def test_a_pid_already_present_but_unattributed_is_not_new(self):
+        """Only a pid that APPEARED counts; a co-tenant showing [N/A] throughout is theirs."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = {111, 999},
+            listed_after = {111, 999},
+        )
+        assert "compute_apps_unattributed" not in detail
+        assert failure is not None and "no process appeared" in failure
+
+    def test_the_old_callers_still_work(self):
+        """The listed sets are optional, so a caller that has none keeps the old verdict."""
+        failure, _ = self._verdict(
+            apps_before = {}, apps_after = {222: 2600}, baseline = None, settled = None,
+        )
+        assert failure is None
+
+
+class TestTheListingNamesItsPids:
+    def test_listed_pids_includes_unattributed_rows(self):
+        csv_text = "111, 500\n222, [N/A]\n"
+        assert gpu_assert.parse_compute_apps(csv_text) == {111: 500}
+        assert gpu_assert.listed_pids(csv_text) == {111, 222}
+
+    def test_listed_pids_ignores_headers_and_junk(self):
+        assert gpu_assert.listed_pids("pid, used_gpu_memory\n\nnotapid, 5\n333, 10\n") == {333}
+
+    def test_the_sample_is_taken_once(self):
+        """Two nvidia-smi calls would describe two different moments, so the attributed
+        mapping and the listed pids could disagree about which processes exist.
+        """
+        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+        assert body.count("nvidia_compute_apps_listing()") >= 3
+        assert "apps_before = attributed_apps(_listing_before)" in body
+        assert "apps_after = attributed_apps(_listing_after)" in body

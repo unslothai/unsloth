@@ -3217,3 +3217,147 @@ class TestThePipFallbackIsRefusedOnTheNativeStack:
         assert (
             "Install uv and re-run" in source
         ), "a refusal with no way forward is worse than the silent fallback it replaces"
+
+
+class TestAnAnnotatedIncludeStillOpens:
+    """`-r nested.txt # corporate pins` is a valid line, and the comment is not the path.
+
+    Capturing it meant the include never opened, so a torch conflict inside it went unseen
+    and the two override files were handed to uv as disjoint -- which uv then rejected,
+    having followed the include itself.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "include_line, hashed_name, why",
+        [
+            ("-r nested.txt # corporate pins", False, "an inline comment is not the path"),
+            ("-r nested.txt\t# tab before the hash", False, "any whitespace opens one"),
+            ("--requirement nested.txt  # long form", False, "and the long spelling too"),
+            ("-r nested.txt", False, "the plain case is unchanged"),
+            ("-r a#b.txt", True, "a hash with no space before it belongs to the filename"),
+        ],
+    )
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    def test_the_target_is_read_without_its_comment(
+        self, tmp_path, install, include_line, hashed_name, why
+    ):
+        source = INSTALL_PS1 if install else SETUP_PS1
+        name = "Get-WoaRequirementEntries" if install else "Get-RequirementEntries"
+        target = "a#b.txt" if hashed_name else "nested.txt"
+        (tmp_path / target).write_text("idna==3.10\n", encoding = "utf-8")
+        (tmp_path / "top.txt").write_text(f"{include_line}\nrich>=13\n", encoding = "utf-8")
+        script = "\n".join(
+            [
+                _ps_function(source, name),
+                f"$e = @({name} -Path '{(tmp_path / 'top.txt').as_posix()}')",
+                "foreach ($x in $e) { Write-Output $x.Line.Trim() }",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        lines = [line for line in done.stdout.strip().splitlines() if line]
+        assert "idna==3.10" in lines, f"{why}: the include did not open ({lines})"
+
+
+class TestAnUnrecordableIndexInheritsNothing:
+    """A marker we may not overwrite must not be left saying something else.
+
+    An install that first used NVIDIA's channel and later moved to a credentialed corporate
+    mirror kept the old marker, because the new URL is deliberately not persistable. The
+    manifest does not record the mirror either, so the next fresh-shell update read the
+    stale marker and put torch back on the channel the user had moved off.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "second, expect_left, why",
+        [
+            ("https://mirror.corp.test/simple", "", "a private mirror clears it"),
+            ("https://user:tok@pypi.nvidia.com/x", "", "so does a credentialed one"),
+            ("https://pypi.nvidia.com/x?token=a", "", "and one carrying a query"),
+            (
+                "https://pypi.nvidia.com/nvtorch_oot_nightly",
+                "https://pypi.nvidia.com/nvtorch_oot_nightly",
+                "a recordable index simply replaces it",
+            ),
+        ],
+    )
+    def test_the_marker_does_not_outlive_its_index(self, tmp_path, second, expect_left, why):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                _function_source(text, "Get-WoaTorchIndexMarker"),
+                "Save-WoaTorchIndexMarker -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'",
+                f"Save-WoaTorchIndexMarker -IndexUrl '{second}'",
+                "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expect_left, why
+
+    @requires_pwsh
+    def test_clearing_removes_the_file_rather_than_blanking_it(self, tmp_path):
+        """A zero-byte marker would read as empty anyway, but leaving one behind invites
+        the next reader to treat "present" as meaningful.
+        """
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                "Save-WoaTorchIndexMarker -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'",
+                "Save-WoaTorchIndexMarker -IndexUrl 'https://mirror.corp.test/simple'",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert not (tmp_path / "woa" / "torch-index.txt").exists()
+
+
+class TestALocalWheelIsOpenedBeforeItCounts:
+    """The wheelhouse mirror trusted a filename; the resolver then trusted the mirror.
+
+    _find_links_wheel_versions reads names, so a truncated wheel copied into the managed
+    directory took its package off the ARM64 skip list, and uv failed the whole dependency
+    pass on the corrupt archive instead of leaving one optional feature disabled.
+    """
+
+    def test_both_staging_branches_validate(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WoaExtraStaged = 0")
+        end = text.index("$WoaOverrides = Join-Path $WoaDir", start)
+        block = text[start:end]
+        assert block.count("Test-ZipArchiveReadable") >= 3, (
+            "the local mirror, the reused download and the fresh download all have to "
+            f"open what they count: {block.count('Test-ZipArchiveReadable')}"
+        )
+        local = block[: block.index("} else {")]
+        assert "Test-ZipArchiveReadable" in local, (
+            "the local branch counted a wheel on its filename alone"
+        )
+
+    def test_the_check_precedes_the_copy(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WoaExtraStaged = 0")
+        local = text[start : text.index("} else {", start)]
+        assert local.index("Test-ZipArchiveReadable") < local.index("Copy-Item -LiteralPath"), (
+            "validating after the copy would still put a corrupt wheel in the cache, "
+            "where the resolver reads it"
+        )

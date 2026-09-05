@@ -562,7 +562,11 @@ function Install-UnslothStudio {
             # file into another should carry it faithfully, and every name-computing caller
             # already reads a comment as nameless.
             if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
-                $nested = $Matches[1].Trim('"', "'")
+                # An inline comment is not part of the path. pip only treats "#" as one when
+                # whitespace precedes it, so "-r a#b.txt" keeps its hash while
+                # "-r nested.txt # corporate pins" does not: getting this wrong meant the
+                # include never opened, and a torch conflict inside it read as disjoint.
+                $nested = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"', "'")
                 if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
                 $entries += @(Get-WoaRequirementEntries -Path $nested -Seen $Seen -Depth ($Depth + 1))
                 continue
@@ -5086,6 +5090,15 @@ exit 0
             foreach ($wheel in @(Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "*.whl" -ErrorAction SilentlyContinue)) {
                 if ($wheel.Name -like "pyarrow-*") { continue }
                 if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
+                # Opened, not just named -- the same check the remote branch below applies. A
+                # truncated wheel here was copied and counted on its filename, which is all
+                # _find_links_wheel_versions reads, so the package left the skip list and uv
+                # then failed the whole dependency pass on the corrupt archive. An optional
+                # feature staying disabled is the outcome that was wanted.
+                if (-not (Test-ZipArchiveReadable -Path $wheel.FullName)) {
+                    substep "windows on arm: $($wheel.Name) in the wheelhouse is not a readable wheel -- skipping it." "Yellow"
+                    continue
+                }
                 try {
                     $_woaExtraDest = Join-Path $WoaWheelDir $wheel.Name
                     if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {

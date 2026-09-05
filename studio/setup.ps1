@@ -3818,7 +3818,15 @@ function Test-WoaPersistableIndex {
 function Save-WoaTorchIndexMarker {
     param([string]$IndexUrl)
     $value = "$IndexUrl".Trim().TrimEnd('/')
-    if (-not (Test-WoaPersistableIndex $value)) { return }
+    if (-not (Test-WoaPersistableIndex $value)) {
+        # CLEARED, not just skipped. An index we may not record still replaces whatever the
+        # last run recorded: leaving the old marker meant a host that moved to a credentialed
+        # corporate mirror kept a marker naming the public NVIDIA channel, and the next
+        # fresh-shell update read it and switched torch back to a source the user had left.
+        # An unrecordable index must inherit nothing, not somebody else's answer.
+        Remove-Item -LiteralPath (Get-WoaTorchIndexMarkerPath) -Force -ErrorAction SilentlyContinue
+        return
+    }
     try {
         $dir = Split-Path -Parent (Get-WoaTorchIndexMarkerPath)
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
@@ -3910,7 +3918,11 @@ function Get-RequirementEntries {
         # file into another should carry it faithfully, and every name-computing caller
         # already reads a comment as nameless.
         if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
-            $nested = $Matches[1].Trim('"', "'")
+            # An inline comment is not part of the path. pip only treats "#" as one when
+            # whitespace precedes it, so "-r a#b.txt" keeps its hash while
+            # "-r nested.txt # corporate pins" does not: getting this wrong meant the
+            # include never opened, and a torch conflict inside it read as disjoint.
+            $nested = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"', "'")
             if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
             $entries += @(Get-RequirementEntries -Path $nested -Seen $Seen -Depth ($Depth + 1))
             continue

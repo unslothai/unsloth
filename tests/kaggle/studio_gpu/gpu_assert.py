@@ -140,6 +140,31 @@ def count_listed_pids(csv_text: str) -> int:
     return n
 
 
+def listed_pids(csv_text: str) -> set[int]:
+    """Every pid ``--query-compute-apps`` LISTED, whether or not it carried a figure.
+
+    count_listed_pids answers "how many", which is enough to tell an empty listing from
+    an all-``[N/A]`` one. It is not enough for a MIXED listing: a readable row on one GPU
+    and the newly launched server as ``[N/A]`` on another leaves the parsed mapping
+    nonempty, so the caller saw a normal result and the server's pid simply was not in
+    it. Naming the pids lets the caller notice that the process it cares about is the
+    unattributed one, rather than concluding it never reached the card.
+    """
+    pids: set[int] = set()
+    for line in csv_text.splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("pid"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if not parts:
+            continue
+        try:
+            pids.add(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
 def offloaded_layers(log_text: str) -> tuple[int, int] | None:
     """The last ``offloaded N/M layers to GPU`` in a llama.cpp log.
 
