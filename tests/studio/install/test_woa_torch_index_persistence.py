@@ -3463,7 +3463,9 @@ class TestARebasedOptionPathKeepsItsQuoting:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1][1:-1]
@@ -3473,36 +3475,54 @@ class TestARebasedOptionPathKeepsItsQuoting:
     @pytest.mark.parametrize(
         "line, base, quoted, why",
         [
-            ('-c "corp pins/constraints.txt"', "/opt/corp", True,
-             "the value was quoted because it needed to be"),
-            ("-r nested.txt", "/opt/my corp", True,
-             "and here the base is what brings the space in"),
+            (
+                '-c "corp pins/constraints.txt"',
+                "/opt/corp",
+                True,
+                "the value was quoted because it needed to be",
+            ),
+            (
+                "-r nested.txt",
+                "/opt/my corp",
+                True,
+                "and here the base is what brings the space in",
+            ),
             ("-f wheels", "/opt/my corp", True, "find-links too"),
-            ("--constraint 'corp pins/c.txt'", "/opt/corp", True,
-             "a single-quoted value is unwrapped and re-quoted the same way"),
-            ("-r nested.txt", "/opt/corp", False,
-             "nothing with a space stays unquoted, as it always was"),
-            ("-c /already/absolute.txt", "/opt/corp", False,
-             "an absolute path is returned untouched"),
+            (
+                "--constraint 'corp pins/c.txt'",
+                "/opt/corp",
+                True,
+                "a single-quoted value is unwrapped and re-quoted the same way",
+            ),
+            (
+                "-r nested.txt",
+                "/opt/corp",
+                False,
+                "nothing with a space stays unquoted, as it always was",
+            ),
+            (
+                "-c /already/absolute.txt",
+                "/opt/corp",
+                False,
+                "an absolute path is returned untouched",
+            ),
         ],
     )
-    def test_the_result_is_quoted_exactly_when_it_has_to_be(
-        self, install, line, base, quoted, why
-    ):
+    def test_the_result_is_quoted_exactly_when_it_has_to_be(self, install, line, base, quoted, why):
         source = INSTALL_PS1 if install else SETUP_PS1
         got = self._rebase(source, line, base)
-        assert got.split(None, 1)[0] == line.split(None, 1)[0], (
-            f"the option itself was dropped, leaving a bare path: {got!r}"
-        )
+        assert (
+            got.split(None, 1)[0] == line.split(None, 1)[0]
+        ), f"the option itself was dropped, leaving a bare path: {got!r}"
         has_quotes = '"' in got
         assert has_quotes is quoted, f"{why}: {got!r}"
         if quoted:
             # The quotes wrap the WHOLE path, or they solve nothing.
             inner = got[got.index('"') + 1 : got.rindex('"')]
             assert " " in inner, f"quoted but the space is outside them: {got!r}"
-            assert got.rindex('"') == len(got.rstrip()) - 1, (
-                f"the closing quote has to end the value: {got!r}"
-            )
+            assert (
+                got.rindex('"') == len(got.rstrip()) - 1
+            ), f"the closing quote has to end the value: {got!r}"
 
     @requires_pwsh
     @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
@@ -3517,12 +3537,13 @@ class TestARebasedOptionPathKeepsItsQuoting:
         got = self._rebase(source, "-c constraints.txt", base.as_posix())
         argument = got.split(None, 1)[1].strip()
         assert argument.startswith('"') and argument.endswith('"'), got
-        assert pathlib.Path(argument[1:-1]).exists(), (
-            f"the rebased path does not resolve to the file it names: {got!r}"
-        )
+        assert pathlib.Path(
+            argument[1:-1]
+        ).exists(), f"the rebased path does not resolve to the file it names: {got!r}"
 
     def test_the_two_copies_stay_identical(self):
         """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
+
         def normalized(source: str) -> str:
             lines = [
                 line.rstrip()
