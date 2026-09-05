@@ -29,6 +29,7 @@ import pytest
 from core.inference import os_sandbox
 from core.inference import tools as inference_tools
 from core.inference import windows_lpac
+from core.inference import windows_restricted_token
 
 
 def _spec(
@@ -75,8 +76,9 @@ def test_source_only_public_api_and_profile_are_narrow_and_unique():
         os_sandbox.MacOSSeatbeltBackend.profile_id,
         windows_lpac.WindowsLpacBackend.profile_id,
         windows_lpac._APPCONTAINER_PROFILE_ID,
+        windows_restricted_token.WindowsRestrictedTokenBackend.profile_id,
     }
-    assert len(profiles) == 4
+    assert len(profiles) == 5
     backend = windows_lpac.WindowsLpacBackend()
     assert backend.active_profile == "lpac"
     assert backend.active_profile_id() == windows_lpac.WindowsLpacBackend.profile_id

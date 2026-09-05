@@ -144,6 +144,14 @@ class SandboxCapability:
     environment_fingerprint: str = ""
     remediation: str = "Use Limited mode only for a trusted task, or install a qualified backend."
     retryable: bool = False
+    # What a Limited launch on this host runs under. Everywhere but Windows this
+    # is the process guard alone; on Windows the write-restricted token launcher
+    # takes over once its own live probe passed. Not part of probe_generation:
+    # a grant issued before the launcher qualified stays valid.
+    limited_backend: str = "process-guard"
+    limited_profile_id: str = "limited-software-safeguards-v1"
+    limited_limitations: tuple[str, ...] = ()
+    limited_reason: str = ""
 
 
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
@@ -2190,6 +2198,9 @@ def _live_probe(backend: SandboxBackend) -> SandboxCapability:
 _LINUX_BACKEND = LinuxBubblewrapBackend()
 _MACOS_BACKEND = MacOSSeatbeltBackend()
 _WINDOWS_BACKEND: SandboxBackend | None = None
+_WINDOWS_LIMITED_BACKEND: Any = None
+_LIMITED_BACKEND = "process-guard"
+_LIMITED_PROFILE_ID = "limited-software-safeguards-v1"
 _capability_cache: dict[str, SandboxCapability] = {}
 _probe_lock = threading.Lock()
 
@@ -2206,6 +2217,47 @@ def _platform_backend() -> SandboxBackend | None:
             _WINDOWS_BACKEND = WindowsLpacBackend()
         return _WINDOWS_BACKEND
     return None
+
+
+def _limited_isolation_backend() -> Any:
+    """The launcher that hardens Limited mode beyond the process guard, if this host has one.
+
+    Only Windows has one: a write-restricted token (windows_restricted_token).
+    Linux and macOS Limited launches keep the process guard alone, and the
+    Windows launcher is used only after its own live probe passed.
+    """
+    global _WINDOWS_LIMITED_BACKEND
+    if sys.platform != "win32":
+        return None
+    if _WINDOWS_LIMITED_BACKEND is None:
+        try:
+            from .windows_restricted_token import WindowsRestrictedTokenBackend
+        except Exception:  # noqa: BLE001 - Limited mode keeps working without it
+            logger.warning("Windows restricted-token launcher unavailable", exc_info = True)
+            return None
+        _WINDOWS_LIMITED_BACKEND = WindowsRestrictedTokenBackend()
+    return _WINDOWS_LIMITED_BACKEND
+
+
+def _with_limited_capability(capability: SandboxCapability, *, force: bool) -> SandboxCapability:
+    """Attach what Limited mode runs under on this host to an OS capability snapshot."""
+    limited = _limited_isolation_backend()
+    if limited is None:
+        return capability
+    try:
+        probe = limited.probe(force = force)
+    except Exception as exc:  # noqa: BLE001 - never blocks the OS capability
+        logger.warning("Limited launcher probe failed", exc_info = True)
+        return replace(capability, limited_reason = f"{type(exc).__name__}: {exc}")
+    if not probe.available:
+        return replace(capability, limited_reason = probe.reason)
+    return replace(
+        capability,
+        limited_backend = limited.identity,
+        limited_profile_id = probe.profile_id,
+        limited_limitations = tuple(probe.limitations),
+        limited_reason = probe.reason,
+    )
 
 
 def _capability_with_identity(
@@ -2257,14 +2309,17 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
     environment = _environment_class()
     fingerprint = _environment_fingerprint(backend)
     if backend is None:
-        return _capability_with_identity(
-            SandboxCapability(
-                f"unsupported-{sys.platform}",
-                False,
-                f"OS sandboxing is unsupported on {sys.platform}",
+        return _with_limited_capability(
+            _capability_with_identity(
+                SandboxCapability(
+                    f"unsupported-{sys.platform}",
+                    False,
+                    f"OS sandboxing is unsupported on {sys.platform}",
+                ),
+                environment = environment,
+                fingerprint = fingerprint,
             ),
-            environment = environment,
-            fingerprint = fingerprint,
+            force = force,
         )
     cached = _capability_cache.get(fingerprint)
     if cached is not None and not force:
@@ -2284,6 +2339,7 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
             environment = _environment_class(),
             fingerprint = current_fingerprint,
         )
+        result = _with_limited_capability(result, force = force)
         if not result.transient:
             _capability_cache.clear()
             _capability_cache[current_fingerprint] = result
@@ -2443,21 +2499,50 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             )
         except LimitedGrantError as exc:
             raise SandboxUnavailableError(f"Limited mode authorization failed: {exc}") from exc
+        limitations: tuple[str, ...] = ()
+        limited = _limited_isolation_backend()
+        if limited is not None and limited.probe().available:
+            # Windows: the write-restricted token launcher. It fails closed per
+            # launch (workdir too large to scan, ACL grant refused, token API
+            # error); that one call then runs under the process guard alone and
+            # its record says so, instead of Limited mode disappearing.
+            try:
+                prepared = limited.prepare(canonical)
+            except (SandboxUnavailableError, OSError) as exc:
+                logger.warning("Limited launcher declined this launch: %s", exc)
+                limitations = ("restricted_token_unavailable",)
+            else:
+                prepared.execution_record = ToolExecutionRecord(
+                    requested_mode = "limited",
+                    effective_mode = "limited",
+                    environment = capability.environment,
+                    backend = limited.identity,
+                    profile_id = limited.profile_id,
+                    probe_generation = capability.probe_generation,
+                    os_isolation = False,
+                    retained_safeguards = (
+                        *_LIMITED_SAFEGUARDS,
+                        "write_restricted_token",
+                        "job_object",
+                    ),
+                    limitations = tuple(limited.limitations),
+                )
+                return prepared
+        if not descendant_sweep_supported():
+            # Linux sweeps /proc for the per-call run marker after the leader
+            # exits (tools._sweep_marked_descendants); macOS has no /proc, so a
+            # setsid grandchild there can outlive the call and the record says so.
+            limitations = (*limitations, "detached_descendant_cleanup_unverified")
         record = ToolExecutionRecord(
             requested_mode = "limited",
             effective_mode = "limited",
             environment = capability.environment,
-            backend = "process-guard",
-            profile_id = "limited-software-safeguards-v1",
+            backend = _LIMITED_BACKEND,
+            profile_id = _LIMITED_PROFILE_ID,
             probe_generation = capability.probe_generation,
             os_isolation = False,
             retained_safeguards = _LIMITED_SAFEGUARDS,
-            # Linux sweeps /proc for the per-call run marker after the leader
-            # exits (tools._sweep_marked_descendants); macOS has no /proc, so a
-            # setsid grandchild there can outlive the call and the record says so.
-            limitations = (
-                () if descendant_sweep_supported() else ("detached_descendant_cleanup_unverified",)
-            ),
+            limitations = limitations,
         )
         return PreparedSandboxLaunch(
             argv = canonical.argv,

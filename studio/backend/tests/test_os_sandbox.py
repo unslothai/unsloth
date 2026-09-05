@@ -1281,7 +1281,12 @@ def test_windows_limited_resource_setup_fails_before_payload_runs(
         limited_grant = grant.token,
     )
 
-    assert "could not establish Windows process resource limits" in result
+    # The process guard reports the failed job; the write-restricted token
+    # launcher creates its job before the process and reports the invalid limit.
+    assert (
+        "could not establish Windows process resource limits" in result
+        or "Windows sandbox resource limits are invalid" in result
+    )
     assert not sentinel.exists()
 
 

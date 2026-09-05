@@ -75,6 +75,7 @@ _ACCESS_DENIED_ACE_TYPE = 1
 _INHERIT_ONLY_ACE = 0x08
 
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
+_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
 _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY = 0x0002000F
 _PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT = 0x1
@@ -333,6 +334,56 @@ def _api() -> _WinApi:
     advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
     advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
     advapi32.SetFileSecurityW.restype = wintypes.BOOL
+    # Token APIs used by the write-restricted Limited launcher (windows_restricted_token).
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.CreateRestrictedToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.CreateRestrictedToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.SetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    advapi32.SetTokenInformation.restype = wintypes.BOOL
+    advapi32.IsTokenRestricted.argtypes = [wintypes.HANDLE]
+    advapi32.IsTokenRestricted.restype = wintypes.BOOL
+    advapi32.CreateProcessAsUserW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_STARTUPINFOW),
+        ctypes.POINTER(_PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessAsUserW.restype = wintypes.BOOL
 
     kernel32.InitializeProcThreadAttributeList.argtypes = [
         ctypes.c_void_p,
@@ -376,6 +427,12 @@ def _api() -> _WinApi:
     kernel32.SetInformationJobObject.restype = wintypes.BOOL
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.IsProcessInJob.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -1206,7 +1263,8 @@ def _initial_appcontainer_environment(
     return initial
 
 
-def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
+def _job_object_with_limits() -> _WindowsJob:
+    """A kill-on-close Job Object carrying Studio's resource limits, with no process yet."""
     api = _api()
     handle = api.kernel32.CreateJobObjectW(None, None)
     if not handle:
@@ -1244,12 +1302,19 @@ def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
             ctypes.sizeof(info),
         ):
             raise _winerror("SetInformationJobObject")
-        if not api.kernel32.AssignProcessToJobObject(handle, process_handle):
-            raise _winerror("AssignProcessToJobObject")
         return _WindowsJob(handle)
     except Exception:
         api.kernel32.CloseHandle(handle)
         raise
+
+
+def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
+    job = _job_object_with_limits()
+    if not _api().kernel32.AssignProcessToJobObject(job._handle, process_handle):
+        error = _winerror("AssignProcessToJobObject")
+        job.close()
+        raise error
+    return job
 
 
 def _spawn_lpac(

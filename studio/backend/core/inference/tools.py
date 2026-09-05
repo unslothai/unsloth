@@ -14537,6 +14537,12 @@ def _forget_tool_pid(proc) -> None:
         pass
 
 
+# Backends whose spawn callback returns a process already bound to its own
+# kill-on-close Job Object (``proc._unsloth_job``): the AppContainer launcher
+# for Required mode and the write-restricted token launcher for Limited mode.
+_WINDOWS_JOB_OWNING_BACKENDS = frozenset({"windows-lpac", "windows-restricted-token"})
+
+
 def _capture_process_group(proc, *, require_windows_resource_limits: bool = False):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
@@ -16598,7 +16604,8 @@ def _python_exec(
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
         if sys.platform == "win32" and (
-            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
+            effective_execution_mode == "limited"
+            or prepared_launch.backend in _WINDOWS_JOB_OWNING_BACKENDS
         ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:
@@ -16841,7 +16848,8 @@ def _bash_exec(
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
         if sys.platform == "win32" and (
-            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
+            effective_execution_mode == "limited"
+            or prepared_launch.backend in _WINDOWS_JOB_OWNING_BACKENDS
         ):
             pgid = _capture_process_group(proc, require_windows_resource_limits = True)
             if pgid is None:
