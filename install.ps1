@@ -510,6 +510,21 @@ function Install-UnslothStudio {
         return ($a.Post -ge $b.Post)
     }
 
+    # Are two paths the same file? A supported UNSLOTH_WOA_WHEELHOUSE may BE the managed
+    # wheel directory -- pointing it at $StudioHome\woa\wheels is how an offline run
+    # reuses the installer's own cache -- and Copy-Item refuses to overwrite an item with
+    # itself, which under $ErrorActionPreference = "Stop" aborts an otherwise good native
+    # install. Normalised, and case-insensitively, because this only ever runs on Windows.
+    function Test-WoaSamePath {
+        param([string]$A, [string]$B)
+        if (-not $A -or -not $B) { return $false }
+        try {
+            $a = [System.IO.Path]::GetFullPath($A).TrimEnd('\', '/')
+            $b = [System.IO.Path]::GetFullPath($B).TrimEnd('\', '/')
+        } catch { return $false }
+        return $a.Equals($b, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
     # Rewrite the relative file references in one requirements line so it still means the
     # same thing from another directory. uv and pip both resolve a nested -r/-c/-f and a
     # bare path against the file that CONTAINS the line, so a line moved into the managed
@@ -5158,7 +5173,10 @@ exit 0
                 $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
                     Where-Object { Test-WoaWheelTags -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
                 if ($found) {
-                    Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $WoaWheelDir $found.Name) -Force
+                    $_woaDest = Join-Path $WoaWheelDir $found.Name
+                    if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {
+                        Copy-Item -LiteralPath $found.FullName -Destination $_woaDest -Force
+                    }
                     $script:WoaPyarrowWheelName = $found.Name
                     substep "windows on arm: using pyarrow wheel $($found.Name) from the wheelhouse"
                 } else {
@@ -5203,7 +5221,10 @@ exit 0
                 if ($wheel.Name -like "pyarrow-*") { continue }
                 if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
                 try {
-                    Copy-Item -LiteralPath $wheel.FullName -Destination (Join-Path $WoaWheelDir $wheel.Name) -Force -ErrorAction Stop
+                    $_woaExtraDest = Join-Path $WoaWheelDir $wheel.Name
+                    if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {
+                        Copy-Item -LiteralPath $wheel.FullName -Destination $_woaExtraDest -Force -ErrorAction Stop
+                    }
                     $WoaExtraStaged++
                 } catch {}
             }

@@ -3824,6 +3824,43 @@ function Get-UvSafePath {
 # The canonical distribution name a requirements line declares, or "" for a comment, a
 # blank line or an option line. PEP 503 normalisation, so brotli / Brotli / brotli_cffi
 # compare as one name.
+# Parity copy of install.ps1's helper of the same name; the two files configure the
+# same resolver and a line moved here has the same problem there.
+# Rewrite the relative file references in one requirements line so it still means the
+# same thing from another directory. uv and pip both resolve a nested -r/-c/-f and a
+# bare path against the file that CONTAINS the line, so a line moved into the managed
+# overrides file otherwise points at $StudioHome\woa\nested.txt and the resolve dies.
+# Only paths are touched: an ordinary requirement, a URL and a marker come back
+# unchanged.
+function Resolve-WoaOverrideLine {
+    param([string]$Line, [string]$BaseDir)
+    if (-not $BaseDir -or $Line -match '^\s*(#|$)') { return $Line }
+    $abs = {
+        param([string]$p)
+        if (-not $p -or $p -match '^[A-Za-z][A-Za-z0-9+.-]*://' -or [System.IO.Path]::IsPathRooted($p)) { return $p }
+        try { return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($BaseDir, $p)) } catch { return $p }
+    }
+    # -r / --requirement / -c / --constraint / -f / --find-links, with the value in the
+    # next token or after "=".
+    if ($Line -match '^(\s*)(-r|--requirement|-c|--constraint|-f|--find-links)([=\s]+)(.+?)(\s*)$') {
+        $quoted = $Matches[4].Trim('"')
+        return "$($Matches[1])$($Matches[2])$($Matches[3])$(& $abs $quoted)$($Matches[5])"
+    }
+    # "pkg @ file:relative" and a bare local wheel / sdist path. Groups are copied out
+    # before the next -match, which replaces $Matches.
+    if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
+        $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
+        if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
+        return $Line
+    }
+    if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
+        $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
+        if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest" }
+    }
+    return $Line
+}
+
+
 function Get-RequirementName {
     param([string]$Line)
     if (-not $Line -or $Line -match '^\s*(#|-|$)') { return "" }
@@ -3915,7 +3952,11 @@ function Restore-WoaResolverEnvironment {
                     foreach ($_woaLine in [System.IO.File]::ReadAllLines((Convert-Path -LiteralPath $_woaFile))) {
                         if ($_woaLine -match '^\s*(#|$)') { continue }
                         if ((Get-RequirementName -Line $_woaLine) -in $_woaOursNames) { continue }
-                        $_woaLines += $_woaLine
+                        # Rebased: uv resolves a nested -r, a -c / -f and a relative wheel
+                        # path against the file that CONTAINS the line, so copying one into
+                        # overrides.merged.txt under $StudioHome\woa moves its base and the
+                        # update dies on a missing file. Same reason install.ps1 rebases.
+                        $_woaLines += (Resolve-WoaOverrideLine -Line $_woaLine -BaseDir ([System.IO.Path]::GetDirectoryName((Convert-Path -LiteralPath $_woaFile))))
                     }
                 }
                 try {
@@ -3933,10 +3974,22 @@ function Restore-WoaResolverEnvironment {
         }
     }
     if (Test-Path -LiteralPath $wheels -PathType Container) {
-        # UV_FIND_LINKS is comma-separated, so it is passed through untouched;
+        # PREPENDED to whatever the caller set, never skipped because they set something.
+        # find-links are additional search locations with no conflict semantics, so a
+        # corporate mirror and this directory coexist; standing down left the staged
+        # win_arm64 wheels -- pyarrow among them -- out of the search entirely, and the
+        # update then reached for an sdist that cannot build here. Ours first so a wheel
+        # staged for this host wins a tie. UV_FIND_LINKS is comma-separated;
         # PIP_FIND_LINKS is split on whitespace like UV_OVERRIDE. As in install.ps1.
+        $_woaSafeWheels = Get-UvSafePath $wheels
         if (-not $env:UV_FIND_LINKS) { $env:UV_FIND_LINKS = $wheels }
-        if (-not $env:PIP_FIND_LINKS) { $env:PIP_FIND_LINKS = Get-UvSafePath $wheels }
+        elseif (($env:UV_FIND_LINKS -split '[,\s]+') -notcontains $wheels) {
+            $env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"
+        }
+        if (-not $env:PIP_FIND_LINKS) { $env:PIP_FIND_LINKS = $_woaSafeWheels }
+        elseif (($env:PIP_FIND_LINKS -split '[,\s]+') -notcontains $_woaSafeWheels) {
+            $env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"
+        }
     }
 }
 

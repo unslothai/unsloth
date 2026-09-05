@@ -301,9 +301,12 @@ class TestResolverEnvironmentRestore:
         overrides = self._stage(tmp_path)
         got = self._invoke(tmp_path, preset = f"$env:{held} = 'https://mirror.example/whl'")
         assert got["ov"] == str(overrides), f"{held} is unrelated to the overrides"
-        assert got[{"UV_FIND_LINKS": "uvfl", "PIP_FIND_LINKS": "pipfl"}[held]] == (
-            "https://mirror.example/whl"
-        ), "and the caller's own value is still not overwritten"
+        # Round 16: ours is PREPENDED rather than skipped, because standing down left the
+        # staged win_arm64 wheels out of the search entirely. The caller's entry still
+        # has to survive, which is what this test was written to protect.
+        value = got[{"UV_FIND_LINKS": "uvfl", "PIP_FIND_LINKS": "pipfl"}[held]]
+        assert "https://mirror.example/whl" in value, "the caller's own value survives"
+        assert value.endswith("https://mirror.example/whl"), "and ours goes in front of it"
 
     @requires_pwsh
     def test_a_deleted_overrides_file_says_so_rather_than_guessing(self, tmp_path: pathlib.Path):
@@ -2152,3 +2155,152 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         else:
             assert value == [str(managed), str(caller)], why
             assert "-r nested.txt" not in written, "nothing was copied, so nothing moved"
+
+
+class TestTheRecoveryPrependsRatherThanStandsDown:
+    """A caller's own find-links must not cost the staged win_arm64 wheels.
+
+    find-links are additional search locations with no conflict semantics, so ours and a
+    corporate mirror coexist. Skipping ours because the caller had set something left
+    pyarrow -- which exists nowhere but that directory on this platform -- out of the
+    search, and the update reached for an sdist that cannot build here.
+    """
+
+    @staticmethod
+    def _block() -> str:
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index('    if (Test-Path -LiteralPath $wheels -PathType Container) {')
+        return text[start:text.index("\n}", start)]
+
+    def test_it_prepends(self):
+        block = self._block()
+        assert '$env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"' in block, (
+            "UV_FIND_LINKS is comma-separated, and ours goes first"
+        )
+        assert '$env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"' in block, (
+            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
+        )
+        assert "-notcontains" in block, "a second run must not keep prepending"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "var, before, expected, why",
+        [
+            ("UV_FIND_LINKS", "", "/home/u/woa/wheels", "nothing set: ours alone"),
+            ("UV_FIND_LINKS", "/mnt/mirror", "/home/u/woa/wheels,/mnt/mirror",
+             "the regression: a caller mirror no longer suppresses ours"),
+            ("UV_FIND_LINKS", "/home/u/woa/wheels,/mnt/mirror",
+             "/home/u/woa/wheels,/mnt/mirror", "already first: unchanged, not doubled"),
+            ("PIP_FIND_LINKS", "/mnt/mirror", "/home/u/woa/wheels /mnt/mirror",
+             "whitespace for pip"),
+            ("PIP_FIND_LINKS", "/home/u/woa/wheels", "/home/u/woa/wheels",
+             "already present: unchanged"),
+        ],
+    )
+    def test_the_block(self, var, before, expected, why):
+        script = "\n".join([
+            "function Get-UvSafePath { param([string]$p) return $p }",
+            "$wheels = '/home/u/woa/wheels'",
+            "Remove-Item Env:UV_FIND_LINKS,Env:PIP_FIND_LINKS -ErrorAction SilentlyContinue",
+            (f"$env:{var} = '{before}'" if before else ""),
+            self._block().replace(
+                "if (Test-Path -LiteralPath $wheels -PathType Container) {", "if ($true) {", 1,
+            ),
+            f"Write-Output ('[' + $env:{var} + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
+
+
+class TestTheMergedOverrideFileIsRebasedToo:
+    """install.ps1 rebases a folded line; setup.ps1's merge had the same problem."""
+
+    def test_the_merge_rebases(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        block = text[text.index("$_woaMerged = Join-Path $woaDir") :][:1600]
+        assert "Resolve-WoaOverrideLine -Line $_woaLine -BaseDir" in block
+        assert "$_woaLines += $_woaLine" not in block, "no line is copied verbatim"
+
+    def test_the_helper_is_a_faithful_copy_of_install_ps1s(self):
+        """Neither script can dot-source the other, so the copy is pinned instead."""
+
+        def normalized(source: str) -> str:
+            lines = [
+                line.rstrip()
+                for line in source.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            indent = min(len(line) - len(line.lstrip()) for line in lines)
+            return "\n".join(line[indent:] for line in lines)
+
+        install = _function_source(
+            (PACKAGE_ROOT / "install.ps1").read_text(encoding = "utf-8"),
+            "Resolve-WoaOverrideLine",
+        )
+        setup = _function_source(
+            SETUP_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine",
+        )
+        assert normalized(install) == normalized(setup)
+
+
+class TestAWheelhouseThatIsTheStagingDirectory:
+    """UNSLOTH_WOA_WHEELHOUSE may BE $StudioHome\\woa\\wheels -- that is how an offline
+    run reuses the installer's own cache. Copy-Item refuses to overwrite an item with
+    itself, and under $ErrorActionPreference = "Stop" that aborted the whole install.
+    """
+
+    def test_both_staging_copies_are_guarded(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in text, (
+            "the pyarrow copy, which is not inside a try and so was fatal"
+        )
+        assert "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in text, (
+            "and the extra-wheel loop, which swallowed the error but miscounted"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "a, b, expected, why",
+        [
+            ("/x/woa/wheels/a.whl", "/x/woa/wheels/a.whl", "True", "the same file"),
+            ("/x/woa/wheels/a.whl", "/x/woa/wheels/../wheels/a.whl", "True",
+             "the same file spelled differently"),
+            ("/x/woa/wheels/a.whl", "/X/WOA/WHEELS/A.WHL", "True",
+             "Windows paths are case-insensitive, and this only runs there"),
+            ("/x/mirror/a.whl", "/x/woa/wheels/a.whl", "False", "different files"),
+            ("", "/x/woa/wheels/a.whl", "False", "nothing is not a path"),
+        ],
+    )
+    def test_the_comparison(self, a, b, expected, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            _function_source(text, "Test-WoaSamePath"),
+            f"Write-Output (Test-WoaSamePath '{a}' '{b}')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
+
+    @requires_pwsh
+    def test_a_self_copy_would_otherwise_be_fatal(self, tmp_path):
+        """The behaviour this guards, executed, so the reason cannot go stale."""
+        wheel = tmp_path / "a.whl"
+        wheel.write_text("x", encoding = "utf-8")
+        done = subprocess.run(
+            [
+                PWSH, "-NoProfile", "-NonInteractive", "-Command",
+                '$ErrorActionPreference = "Stop"; '
+                f"try {{ Copy-Item -LiteralPath '{wheel}' -Destination '{wheel}' -Force; "
+                "Write-Output 'OK' } catch { Write-Output 'THREW' }",
+            ],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "THREW"
