@@ -2859,10 +2859,22 @@ def _openai_llama_admission_recost(
             preemption_active = _openai_llama_preemption_will_apply(llama_backend, budget),
         )
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
+        # The preemptor's progress signature moves with every token anybody decodes; the
+        # admission ledger only moves at round boundaries. A round waiting behind a busy
+        # leader is queued, not stuck, and must not be told otherwise.
+        _progress = None
+        try:
+            _progress = get_preemption_controller(
+                str(getattr(llama_backend, "base_url", "llama-server"))
+            ).progress_signature
+        except Exception:
+            _progress = None
         lease.recost_waiting(
             want,
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
+            progress = _progress,
+            gen_id = getattr(reservation, "completion_id", None) or getattr(reservation, "gen_id", None),
         )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)

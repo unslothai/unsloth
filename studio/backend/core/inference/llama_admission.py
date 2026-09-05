@@ -12,13 +12,14 @@ FIFO queue for excess requests.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Callable, Deque, Optional
 
 
 # dataclass(slots = True) halves per-instance overhead. Measured as perf-neutral here, not a speed win: it costs a
@@ -65,6 +66,8 @@ DEFAULT_ADMISSION_KV_BUDGET = True
 # Ceiling on one round's wait for cache room; generous, since a legitimate wait is bounded by the longest round in
 # flight. Bounded at all because a reparker holds the wait line shut for every other caller, so an unbounded wait
 # freezes the queue. See recost_waiting.
+_log = logging.getLogger(__name__)
+
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
 # How much longer than its patience a reparking lease may wait while the pool is visibly
@@ -657,8 +660,20 @@ class LlamaAdmissionLease:
         poll_s: float = 0.05,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
         allow_yield: bool = True,
+        progress: Optional[Callable[[], object]] = None,
+        gen_id: Optional[str] = None,
     ) -> bool:
         """Re-state this lease's cost, waiting for room rather than running over it.
+
+        ``progress`` is a second opinion on whether the pool is moving. This ledger only
+        changes at round boundaries, so a lease waiting behind a leader that is decoding
+        at full rate sees ``committed`` sit still and, after ``timeout_s``, decides the
+        pool is stuck. Measured 2026-09-05 on the 35B model: five minutes of silence per
+        round for the waiting chat while the leader generated 220 tokens a second, then a
+        give-up and an uncharged round on top of a full cache. Any change in what
+        ``progress`` returns resets the stall clock, the way the preemptor's own resume
+        wait already works; ``hard_deadline`` still bounds a pool that moves forever
+        without ever fitting this lease.
 
         ``recost`` declines when the cache is full and the caller carries on at its old
         figure, so the next round sends a bigger prompt than the pool was told about, and
@@ -711,9 +726,18 @@ class LlamaAdmissionLease:
         deadline = None if patience is None else started + patience
         hard_deadline = None if patience is None else started + patience * _MAX_REPARK_WAIT_MULTIPLE
         last_committed = queue.committed_now()
+        last_progress = self._read_progress(progress)
+        _log.info(
+            "llama admission recost-wait: gen_id=%s want=%s held=%s committed=%s",
+            gen_id, want, held, last_committed,
+        )
         try:
             while True:
                 if queue.try_reclaim_commitment(want):
+                    _log.info(
+                        "llama admission recost-granted: gen_id=%s want=%s after=%.1fs",
+                        gen_id, want, time.monotonic() - started,
+                    )
                     with self._release_lock:
                         if self._released:
                             # Released while waiting; release() already gave back 0 and will not run again, so hand the
@@ -735,12 +759,31 @@ class LlamaAdmissionLease:
                     if current < last_committed:
                         deadline = now + patience
                     last_committed = current
+                    current_progress = self._read_progress(progress)
+                    if current_progress != last_progress:
+                        deadline = now + patience
+                        last_progress = current_progress
                     if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
+                        _log.warning(
+                            "llama admission recost-gave-up: gen_id=%s want=%s held=%s after=%.1fs "
+                            "(%s); continuing at the old figure",
+                            gen_id, want, held, now - started,
+                            "no progress" if now >= deadline else "still unserved after a moving pool",
+                        )
                         return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)
         except BaseException:
             self._give_up_repark(queue, held, cancelled = True)
             raise
+
+    @staticmethod
+    def _read_progress(progress: Optional[Callable[[], object]]) -> object:
+        if progress is None:
+            return None
+        try:
+            return progress()
+        except Exception:  # pragma: no cover - a failed read is "no change"
+            return None
 
     def _give_up_repark(self, queue, held: int, *, cancelled: bool) -> bool:
         """Stop waiting and go back to holding ``held``.
