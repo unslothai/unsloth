@@ -2045,6 +2045,8 @@ def _preempt_ram_disabled_in(args) -> bool:
         elif tok.startswith("--preempt-ram="):
             disabled = tok.split("=", 1)[1].strip() == "0"
     return disabled
+
+
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -6741,7 +6743,6 @@ class LlamaCppBackend:
         """
         try:
             from core.inference.llama_stats import scrape_llama_metrics
-
             metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0)
         except Exception:
             return False
@@ -6763,9 +6764,7 @@ class LlamaCppBackend:
         parked = line == _SERVER_PARKED_COMMENT
         if not parked and line != _SERVER_RESUMED_COMMENT:
             return None
-        hook = getattr(
-            preempt_policy, "on_server_parked" if parked else "on_server_resumed", None
-        )
+        hook = getattr(preempt_policy, "on_server_parked" if parked else "on_server_resumed", None)
         if hook is not None:
             try:
                 hook()
