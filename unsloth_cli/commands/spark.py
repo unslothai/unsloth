@@ -1066,20 +1066,36 @@ def provision(
     dry_run: bool = typer.Option(
         False, "--dry-run", help = "Show what would be copied, without copying."
     ),
+    no_fast: bool = typer.Option(
+        False,
+        "--no-fast",
+        help = "Copy over ssh only. By default bulk bytes go through an ephemeral rsync "
+        "daemon on the peer, unencrypted over the direct rail cable (a point-to-point "
+        "link with no other host), locked to this node's rail address and a one-shot "
+        "secret, and stopped when the command ends. Same as UNSLOTH_SPARK_PROVISION_FAST=0.",
+    ),
 ) -> None:
     """Copy this Spark's environment and warm caches to the peer over the fast link.
 
     Run after pairing, and again whenever this node's environment changes. It copies
     rather than installs because HuggingFace measures ~20 KB/s from these machines
-    while the ConnectX link does ~444 MB/s -- and because copying cannot produce the
+    while the ConnectX link does ~1 GB/s -- and because copying cannot produce the
     dependency drift that two separate installs can.
 
     It also prevents two silent failures. A peer missing the venv makes the head block
     for 601 seconds and die with `DistStoreError: 1/2 clients joined`, never showing
     the worker's real error. A peer missing a warm cache rebuilds it from scratch,
     which looks like a 17-minute hang during CUDA graph capture.
+
+    Bulk bytes travel unencrypted over the direct cable between the two Sparks unless
+    --no-fast is given; ssh over the same link is 4x slower than the disk.
     """
-    raise typer.Exit(_cluster().main(["provision"] + (["--dry-run"] if dry_run else [])))
+    argv = ["provision"]
+    if dry_run:
+        argv.append("--dry-run")
+    if no_fast:
+        argv.append("--no-fast")
+    raise typer.Exit(_cluster().main(argv))
 
 
 # ── The planner ──────────────────────────────────────────────────────────────

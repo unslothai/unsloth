@@ -32,15 +32,22 @@ one subnet cannot drive both functions.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import os.path as osp
 import platform
 import re
+import secrets
 import shutil
+import signal
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2080,11 +2087,468 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     return out
 
 
+# ── Fast provisioning: an ephemeral rsync daemon on the direct rail ──────────
+# rsync over ssh is bound by ssh's CPU, not by the disk or the wire. Measured here
+# with the same 1 GiB file in /dev/shm on both ends, over one rail:
+#
+#   rsync -a over ssh, default cipher           0.22 GB/s
+#   rsync -a over ssh -c aes128-gcm@openssh.com 0.28 GB/s
+#   one raw TCP stream (nc)                     0.63 GB/s
+#   NVMe read on these nodes                   ~1    GB/s
+#
+# So a 170 GiB GGUF takes ~13 minutes over ssh where the disk allows ~3. The fast path
+# takes ssh off the data path: `provision` starts an ephemeral `rsync --daemon` on the
+# peer (over ssh, with a temporary config, killed by pid file when the command ends)
+# and runs up to FAST_MAX_WORKERS rsync clients against it over disjoint file subsets,
+# because one TCP stream measured 0.63 GB/s and the disk floor needs two to four.
+#
+# SECURITY. The bytes travel UNENCRYPTED. That is acceptable only because the rail is
+# a point-to-point QSFP cable between the two Sparks with no other host on it, and the
+# daemon is locked to that cable: it binds the peer's rail address only, `hosts allow`
+# is the single local rail address, the module needs a random one-shot username and
+# secret that never appear on a command line, and the daemon dies with the command
+# (and, as a backstop, with `timeout` on the peer). The path is refused when the peer
+# is not a private address or is not in the local rail's /24, and `--no-fast` or
+# UNSLOTH_SPARK_PROVISION_FAST=0 forces the ssh path. Everything else is Linux plus
+# is_dgx_spark() gated, so no other platform can reach it.
+#
+# SYMLINKS. Without root the daemon cannot chroot, and a non-chrooted module rewrites
+# absolute symlink targets (a venv's bin/python -> /usr/bin/python3 arrives as
+# usr/bin/python3; `munge symlinks` is worse). The workers therefore carry regular
+# files only, and the unchanged ssh rsync runs last as the finaliser: on a tree the
+# workers already filled it moves symlinks, directory metadata and --delete, and no
+# file bytes, because every regular file already matches by size and mtime. The end
+# state is exactly what the ssh path alone produces, and the ssh path stays the
+# fallback whenever the daemon cannot be started.
+FAST_ENV = "UNSLOTH_SPARK_PROVISION_FAST"
+FAST_MAX_WORKERS = 4
+FAST_PORT_RANGE = (40000, 59999)
+# A worker that sees no I/O for this long gives up and is retried on a fresh
+# connection. Measured need, not caution: with four streams on a rail whose NICs
+# count millions of rx_err_lane_*_phy errors (a QSFP seating problem, see the
+# carrier notes above), one flow in ten or so gets blackholed in both directions
+# with TCP in RTO backoff at 51 s. Waiting it out took 600 s and fell back to ssh;
+# a retry is a new 5-tuple, goes through, and rsync only re-sends what does not
+# already match by size and mtime. 30 s is long against any legitimate pause here
+# (a cold-cache list of 14k files builds in seconds) and short against a stall.
+FAST_IO_TIMEOUT = 30
+FAST_WORKER_ATTEMPTS = 3
+# Backstop only: the daemon is stopped from a `finally`, but if this process is
+# SIGKILLed the peer would otherwise keep listening. `timeout` on the peer ends it.
+FAST_DAEMON_MAX_SECONDS = 4 * 3600
+_FAST_UP_MARKER = "UNSLOTH_DAEMON_UP"
+_FAST_LEFT_MARKER = "UNSLOTH_RSYNC_LEFT"
+_FAST_ALIVE_MARKER = "UNSLOTH_DAEMON_ALIVE"
+
+
+def _ssh_argv(user: str, peer_ip: str) -> List[str]:
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=8",
+        f"{user}@{peer_ip}",
+    ]
+
+
+def _peer_path(path: str) -> str:
+    """`~/x` as the peer's shell must see it: `$HOME/x`, expanding on the PEER.
+
+    A quoted `~` does not expand, and it must expand there, not here: the peer's home
+    may differ from ours.
+    """
+    if path == "~":
+        return "$HOME"
+    if path.startswith("~/"):
+        return "$HOME/" + path[2:]
+    return path
+
+
+def _unquoted_heredoc(text: str) -> str:
+    """Escape for an unquoted heredoc so that only the deliberate `$HOME` expands."""
+    out = text.replace("\\", "\\\\").replace("$", "\\$").replace("`", "\\`")
+    return out.replace("\\$HOME/", "$HOME/").replace("\\$HOME\n", "$HOME\n")
+
+
+def fast_port() -> int:
+    """A random high port for the ephemeral daemon, from FAST_PORT_RANGE."""
+    lo, hi = FAST_PORT_RANGE
+    return lo + secrets.randbelow(hi - lo + 1)
+
+
+def rail_local_address(peer_ip: str, rails: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+    """Our address on the rail that carries `peer_ip`: the one in the same /24."""
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return None
+    rails = rails if rails is not None else cabled_rails()
+    for rail in rails:
+        for addr in rail.get("ipv4", []):
+            try:
+                net = ipaddress.ip_network(f"{addr}/24", strict = False)
+            except ValueError:
+                continue
+            if peer in net and addr != peer_ip:
+                return addr
+    return None
+
+
+def fast_path_decision(
+    peer_ip: str,
+    no_fast: bool = False,
+    env: Optional[Dict[str, str]] = None,
+    local_ip: Optional[str] = None,
+) -> Dict[str, Any]:
+    """May bulk bytes go through the unencrypted rail daemon? {"ok", "reason", "local_ip"}.
+
+    Every refusal names its reason so `provision` can print why it is on ssh. The
+    order is cheapest-first: the flag, the platform and the Spark gates come before
+    the rail lookup (which forks `ip`) and the address arithmetic, so a laptop, or
+    `--no-fast`, answers without touching anything. `local_ip` is looked up on the
+    cabled rails unless given.
+    """
+    env = os.environ if env is None else env
+
+    def no(reason: str) -> Dict[str, Any]:
+        return {"ok": False, "reason": reason, "local_ip": local_ip}
+
+    if no_fast:
+        return no("--no-fast")
+    flag = env.get(FAST_ENV, "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return no(f"{FAST_ENV}={env.get(FAST_ENV)}")
+    if platform.system() != "Linux":
+        return no("not Linux")
+    if not is_dgx_spark():
+        return no("not a DGX Spark")
+    if local_ip is None:
+        local_ip = rail_local_address(peer_ip)
+    if not local_ip:
+        return no("no local address on the peer's rail")
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+        local = ipaddress.ip_address(local_ip)
+    except ValueError:
+        return no("peer or local address is not an IP address")
+    if peer.version != 4 or local.version != 4:
+        return no("rail addresses are not IPv4")
+    if not peer.is_private or not local.is_private:
+        return no(f"{peer_ip} is not a private address")
+    if peer == local:
+        return no("peer address is our own")
+    if local not in ipaddress.ip_network(f"{peer_ip}/24", strict = False):
+        return no(f"{local_ip} and {peer_ip} are not in the same /24")
+    return {"ok": True, "reason": "direct rail", "local_ip": local_ip}
+
+
+def rsync_daemon_config(
+    modules: Dict[str, str],
+    bind_ip: str,
+    port: int,
+    hosts_allow: str,
+    auth_user: str,
+    work_dir: str,
+) -> str:
+    """rsyncd.conf for the ephemeral daemon. `modules` maps name -> path ON THE PEER.
+
+    One module per destination root, each writable only by `auth_user` from the single
+    address in `hosts_allow`. `munge symlinks = no` is explained above; it does not
+    matter for the workers (regular files only) and the finaliser never uses the daemon.
+    """
+    lines = [
+        f"address = {bind_ip}",
+        f"port = {port}",
+        f"pid file = {work_dir}/rsyncd.pid",
+        f"lock file = {work_dir}/rsyncd.lock",
+        f"log file = {work_dir}/rsyncd.log",
+        "use chroot = no",
+        "munge symlinks = no",
+        "reverse lookup = no",
+        f"max connections = {FAST_MAX_WORKERS}",
+        # Twice the client's, so a stuck flow is the client's call to drop and retry.
+        f"timeout = {2 * FAST_IO_TIMEOUT}",
+    ]
+    for name, path in modules.items():
+        lines += [
+            "",
+            f"[{name}]",
+            f"    path = {path}",
+            "    read only = no",
+            f"    hosts allow = {hosts_allow}",
+            f"    auth users = {auth_user}",
+            f"    secrets file = {work_dir}/rsyncd.secrets",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def daemon_files_script(
+    config: str, auth_user: str, secret: str, dest_paths: List[str], work_dir: str
+) -> str:
+    """The file-writing half of the peer script: a 700 work dir, the 600 secrets file,
+    the config, and the destination roots the modules point at.
+
+    The secret travels inside the ssh session (the script is stdin) and lands only in
+    that 600 file; it is never an argument to anything.
+    """
+    q = _unquoted_heredoc
+    mkdirs = " ".join(f'"{q(p)}"' for p in dest_paths)
+    return (
+        "set -eu\n"
+        "umask 077\n"
+        f"d='{work_dir}'\n"
+        'mkdir -m 700 "$d"\n'
+        "cat > \"$d/rsyncd.secrets\" <<'UNSLOTH_EOF'\n"
+        f"{auth_user}:{secret}\n"
+        "UNSLOTH_EOF\n"
+        'chmod 600 "$d/rsyncd.secrets"\n'
+        'cat > "$d/rsyncd.conf" <<UNSLOTH_EOF\n'
+        f"{q(config)}"
+        "UNSLOTH_EOF\n"
+        f"mkdir -p {mkdirs}\n"
+    )
+
+
+def daemon_setup_script(
+    config: str, auth_user: str, secret: str, dest_paths: List[str], work_dir: str, port: int
+) -> str:
+    """The bash that runs on the peer (over `ssh bash -s`, script on stdin).
+
+    Writes the files, then starts the daemon detached from the ssh session under
+    `timeout`, and reports it up only once its pid file exists and the port is
+    listening, so a bind failure is an error here rather than a hang later.
+    """
+    return daemon_files_script(config, auth_user, secret, dest_paths, work_dir) + (
+        f"setsid timeout {FAST_DAEMON_MAX_SECONDS} rsync --daemon --no-detach "
+        '--config="$d/rsyncd.conf" </dev/null >/dev/null 2>&1 &\n'
+        'echo $! > "$d/rsyncd.pgid"\n'
+        "_listening() { command -v ss >/dev/null 2>&1 || return 0; "
+        f'ss -Hltn "sport = :{port}" 2>/dev/null | grep -q .; }}\n'
+        "for i in $(seq 1 50); do\n"
+        '  if [ -s "$d/rsyncd.pid" ] && kill -0 "$(cat "$d/rsyncd.pid")" 2>/dev/null && _listening; then\n'
+        f'    echo "{_FAST_UP_MARKER} $(cat "$d/rsyncd.pid")"; exit 0\n'
+        "  fi\n"
+        "  sleep 0.1\n"
+        "done\n"
+        'echo "rsync daemon did not come up" >&2\n'
+        'cat "$d/rsyncd.log" >&2 2>/dev/null || true\n'
+        'kill -TERM -- -"$(cat "$d/rsyncd.pgid")" 2>/dev/null || true\n'
+        'rm -rf "$d"\n'
+        "exit 1\n"
+    )
+
+
+def daemon_stop_script(work_dir: str) -> str:
+    """Kill the daemon (its whole process group, so in-flight receivers go too), remove
+    the temp dir, and report what `pgrep -x rsync` still sees on the peer."""
+    return (
+        f"d='{work_dir}'\n"
+        'pid=$(cat "$d/rsyncd.pid" 2>/dev/null || true)\n'
+        'pgid=$(cat "$d/rsyncd.pgid" 2>/dev/null || true)\n'
+        '[ -n "$pgid" ] && kill -TERM -- -"$pgid" 2>/dev/null || true\n'
+        '[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true\n'
+        'for i in $(seq 1 25); do [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done\n'
+        'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then\n'
+        '  kill -KILL "$pid" 2>/dev/null || true\n'
+        '  [ -n "$pgid" ] && kill -KILL -- -"$pgid" 2>/dev/null || true\n'
+        "  sleep 0.2\n"
+        "fi\n"
+        'rm -rf "$d"\n'
+        f'[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "{_FAST_ALIVE_MARKER} $pid"\n'
+        f"echo \"{_FAST_LEFT_MARKER} $(pgrep -x rsync | tr '\\n' ' ')\"\n"
+        "exit 0\n"
+    )
+
+
+def start_peer_rsync_daemon(
+    peer_ip: str,
+    local_ip: str,
+    user: str,
+    modules: Dict[str, str],
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Start the ephemeral daemon on the peer. Raises RuntimeError when it did not.
+
+    `modules` maps module name -> destination path in peer form (`$HOME/...` or
+    absolute). The returned dict is what `stop_peer_rsync_daemon` and the workers need;
+    the secret lives only in it and in the peer's 600 file.
+    """
+    port = fast_port()
+    auth_user = "unsloth-" + secrets.token_hex(4)
+    secret = secrets.token_urlsafe(24)
+    work_dir = "/tmp/unsloth-provision-" + secrets.token_hex(6)
+    config = rsync_daemon_config(modules, peer_ip, port, local_ip, auth_user, work_dir)
+    script = daemon_setup_script(config, auth_user, secret, list(modules.values()), work_dir, port)
+    proc = subprocess.run(
+        _ssh_argv(user, peer_ip) + ["bash", "-s"],
+        input = script,
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+    )
+    out = proc.stdout or ""
+    up = next((l for l in out.splitlines() if l.startswith(_FAST_UP_MARKER)), None)
+    if proc.returncode != 0 or up is None:
+        err = (proc.stderr or "").strip()[:200] or f"rc={proc.returncode}"
+        raise RuntimeError(f"rsync daemon did not start on {peer_ip}: {err}")
+    pid = _int_or_none(up.split(None, 1)[1].strip()) if " " in up else None
+    return {
+        "peer_ip": peer_ip,
+        "local_ip": local_ip,
+        "ssh_user": user,
+        "port": port,
+        "auth_user": auth_user,
+        "secret": secret,
+        "work_dir": work_dir,
+        "pid": pid,
+        "modules": dict(modules),
+    }
+
+
+def stop_peer_rsync_daemon(daemon: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
+    """Stop the daemon and remove its temp dir; never raises.
+
+    Returns {"stopped": bool, "left": [pids of any rsync still on the peer], "error"}.
+    `left` is a FACT for the caller to print: another rsync may legitimately be running
+    there, but our daemon must not be, and "stopped" is False if it still is.
+    """
+    out: Dict[str, Any] = {"stopped": False, "left": [], "error": ""}
+    try:
+        proc = subprocess.run(
+            _ssh_argv(daemon["ssh_user"], daemon["peer_ip"]) + ["bash", "-s"],
+            input = daemon_stop_script(daemon["work_dir"]),
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+        )
+    except Exception as exc:
+        out["error"] = str(exc)[:200]
+        return out
+    text = proc.stdout or ""
+    alive = any(l.startswith(_FAST_ALIVE_MARKER) for l in text.splitlines())
+    for line in text.splitlines():
+        if line.startswith(_FAST_LEFT_MARKER):
+            out["left"] = [int(p) for p in line.split()[1:] if p.isdigit()]
+    out["stopped"] = proc.returncode == 0 and not alive
+    if proc.returncode != 0:
+        out["error"] = (proc.stderr or "").strip()[:200] or f"rc={proc.returncode}"
+    elif alive:
+        out["error"] = f"daemon pid {daemon.get('pid')} survived SIGKILL"
+    return out
+
+
+def _regular_files(root: str) -> List[Tuple[int, str]]:
+    """(size, relative path) of every regular file under `root`; symlinks and special
+    files are left to the ssh finaliser (see the daemon notes above)."""
+    files: List[Tuple[int, str]] = []
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            full = osp.join(dirpath, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                files.append((st.st_size, osp.relpath(full, root)))
+    return files
+
+
+def provision_work_split(
+    root: str,
+    max_workers: int = FAST_MAX_WORKERS,
+    files: Optional[List[Tuple[int, str]]] = None,
+) -> List[List[str]]:
+    """Disjoint, byte-balanced subsets of the regular files under `root`.
+
+    Largest file first onto the lightest worker, so a sharded GGUF spreads its shards
+    and a venv's 55k small files fill in around them. A single file is a single
+    worker: rsync cannot split one file across streams. Never more than
+    `max_workers` subsets, and every regular file lands in exactly one of them.
+    """
+    files = _regular_files(root) if files is None else list(files)
+    if not files:
+        return []
+    n = max(1, min(max_workers, len(files)))
+    files.sort(reverse = True)
+    buckets: List[List[str]] = [[] for _ in range(n)]
+    loads = [0] * n
+    for size, rel in files:
+        i = loads.index(min(loads))
+        buckets[i].append(rel)
+        loads[i] += size
+    return [b for b in buckets if b]
+
+
+def _fast_bulk_copy(
+    local_root: str,
+    daemon: Dict[str, Any],
+    module: str,
+    timeout: int = 3600,
+) -> Tuple[bool, str, int, int]:
+    """Push the regular files under `local_root` through the daemon with parallel
+    workers. Returns (ok, error, bytes, workers, retries)."""
+    files = _regular_files(local_root)
+    buckets = provision_work_split(local_root, files = files)
+    total = sum(size for size, _ in files)
+    if not buckets:
+        return True, "", 0, 0, 0
+    url = f"rsync://{daemon['auth_user']}@{daemon['peer_ip']}:{daemon['port']}/{module}/"
+    # The secret goes through the environment: never on a command line, never in `ps`.
+    env = dict(os.environ)
+    env["RSYNC_PASSWORD"] = daemon["secret"]
+    with tempfile.TemporaryDirectory(prefix = "unsloth-provision-") as tmp:
+        cmds = []
+        for i, bucket in enumerate(buckets):
+            listing = osp.join(tmp, f"files{i}")
+            with open(listing, "wb") as fh:
+                fh.write(b"\0".join(p.encode("utf-8", "surrogateescape") for p in bucket) + b"\0")
+            # -W: whole files. On a re-provision of a changed shard the delta algorithm
+            # would read the old file on the peer and checksum on both ends, which is
+            # slower than the wire here.
+            cmds.append(
+                [
+                    "rsync",
+                    "-aW",
+                    "--from0",
+                    f"--files-from={listing}",
+                    "--contimeout=15",
+                    f"--timeout={FAST_IO_TIMEOUT}",
+                    local_root + "/",
+                    url,
+                ]
+            )
+
+        def run(cmd: List[str]) -> Tuple[Any, int]:
+            attempts = 0
+            while True:
+                attempts += 1
+                proc = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout, env = env)
+                if proc.returncode == 0 or attempts >= FAST_WORKER_ATTEMPTS:
+                    return proc, attempts - 1
+
+        with ThreadPoolExecutor(max_workers = len(cmds)) as pool:
+            outcomes = list(pool.map(run, cmds))
+    retries = sum(r for _, r in outcomes)
+    bad = [p for p, _ in outcomes if p.returncode != 0]
+    if bad:
+        err = (bad[0].stderr or "").strip()[:200] or f"rc={bad[0].returncode}"
+        return False, err, total, len(cmds), retries
+    return True, "", total, len(cmds), retries
+
+
+def _raise_interrupt(signum: int, frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
 def provision_peer(
     peer_ip: str,
     dry_run: bool = False,
     delete: bool = False,
     force: bool = False,
+    no_fast: bool = False,
 ) -> Dict[str, Any]:
     """Copy the environment and warm caches to the peer over the fast link.
 
@@ -2100,6 +2564,10 @@ def provision_peer(
 
     rsync rather than reinstall: identical bytes, no dependency-resolution drift between the
     two nodes, and it runs at link speed rather than internet speed.
+
+    Bulk bytes go through the rail daemon when `fast_path_decision` allows it (see the
+    notes above FAST_ENV); the ssh rsync below then runs unchanged as the finaliser, and
+    alone whenever the daemon is refused or fails. `no_fast` forces ssh only.
     """
     results: Dict[str, Any] = {
         "copied": [],
@@ -2109,6 +2577,19 @@ def provision_peer(
         "refused": "",
         "peer_gpu": None,
         "delete": delete,
+        # How the bytes moved: "used" once any path went through the daemon, "reason"
+        # when it did not, "errors" per path that fell back to ssh mid-way, "stop" is
+        # what stop_peer_rsync_daemon reported, "retries" counts worker reconnects
+        # after a stalled flow, "timings" is (label, mode, bytes, seconds, workers).
+        "fast": {
+            "used": False,
+            "reason": "",
+            "errors": [],
+            "stop": None,
+            "port": None,
+            "retries": 0,
+        },
+        "timings": [],
     }
     if not shutil.which("rsync") or not shutil.which("ssh"):
         results["failed"].append(("rsync/ssh", "not installed"))
@@ -2129,54 +2610,115 @@ def provision_peer(
             )
             return results
     user = os.environ.get("USER", "nvidianew")
+    targets = []
     for path, label in provision_paths():
         local = osp.expanduser(path)
         if not osp.isdir(local):
             results["skipped"].append((label, "not present locally"))
             continue
-        # rsync creates only the LAST component of the destination, so a peer that does
-        # not yet have the parent fails with `mkdir "<dest>" failed: No such file or
-        # directory`. That is the normal case for the thing this command is for: pairing
-        # a brand-new second Spark, which has no ~/.unsloth/studio yet. Create the parent
-        # remotely first. `~` is rewritten to "$HOME" because a quoted ~ does not expand,
-        # and it must expand on the PEER, whose home may differ from ours.
-        remote_parent = osp.dirname(path)
-        if remote_parent == "~":
-            remote_parent = "$HOME"
-        elif remote_parent.startswith("~/"):
-            remote_parent = "$HOME/" + remote_parent[2:]
-        # Trailing slashes matter: copy the CONTENTS into the same path on the peer.
-        # --delete is OFF by default: a stale extra file on the peer costs disk, while a
-        # deleted live one takes a running interpreter out from under a job mid-flight.
-        cmd = [
-            "rsync",
-            "-a",
-            "--rsync-path",
-            f'mkdir -p "{remote_parent}" && rsync',
-            "-e",
-            "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
-            local + "/",
-            f"{user}@{peer_ip}:{path}/",
-        ]
-        if delete:
-            cmd.insert(2, "--delete")
-        if dry_run:
-            cmd.insert(1, "--dry-run")
+        targets.append((path, label, local))
+
+    # One daemon for the whole command, one module per destination root. A dry run
+    # starts nothing on the peer: it reads nothing there and writes nothing.
+    daemon: Optional[Dict[str, Any]] = None
+    fast = results["fast"]
+    if targets and not dry_run:
+        decision = fast_path_decision(peer_ip, no_fast = no_fast)
+        if decision["ok"]:
+            modules = {f"m{i}": _peer_path(path) for i, (path, _, _) in enumerate(targets)}
+            try:
+                daemon = start_peer_rsync_daemon(peer_ip, decision["local_ip"], user, modules)
+                fast["port"] = daemon["port"]
+            except Exception as exc:
+                fast["reason"] = f"daemon did not start ({str(exc)[:160]}); using ssh"
+        else:
+            fast["reason"] = decision["reason"]
+
+    # The daemon must not outlive this call: not on an error, not on Ctrl-C, and not on
+    # SIGTERM, whose default disposition would skip the `finally`. Turned into
+    # KeyboardInterrupt for the duration and restored after. Only the main thread may
+    # set handlers; elsewhere the `finally` alone has to do.
+    prev_term = None
+    if daemon is not None:
         try:
-            r = subprocess.run(cmd, capture_output = True, text = True, timeout = 3600)
-            if r.returncode == 0:
-                results["copied"].append((label, path))
-            else:
-                results["failed"].append((label, (r.stderr or "").strip()[:200]))
-        except Exception as exc:
-            results["failed"].append((label, str(exc)[:200]))
+            prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
+        except (ValueError, OSError):
+            prev_term = None
+    try:
+        for i, (path, label, local) in enumerate(targets):
+            started = time.monotonic()
+            mode, moved, workers = "ssh", 0, 0
+            if daemon is not None:
+                ok, err, moved, workers, retries = _fast_bulk_copy(local, daemon, f"m{i}")
+                fast["retries"] += retries
+                if ok:
+                    mode = "fast"
+                    fast["used"] = True
+                else:
+                    # The ssh pass below resumes whatever the workers left; no bytes
+                    # are lost, only time.
+                    fast["errors"].append((label, err))
+            # rsync creates only the LAST component of the destination, so a peer that
+            # does not yet have the parent fails with `mkdir "<dest>" failed: No such
+            # file or directory`. That is the normal case for the thing this command is
+            # for: pairing a brand-new second Spark, which has no ~/.unsloth/studio yet.
+            # Create the parent remotely first. `~` is rewritten to "$HOME" because a
+            # quoted ~ does not expand, and it must expand on the PEER, whose home may
+            # differ from ours.
+            remote_parent = _peer_path(osp.dirname(path))
+            # Trailing slashes matter: copy the CONTENTS into the same path on the peer.
+            # --delete is OFF by default: a stale extra file on the peer costs disk,
+            # while a deleted live one takes a running interpreter out from under a job
+            # mid-flight.
+            cmd = [
+                "rsync",
+                "-a",
+                "--rsync-path",
+                f'mkdir -p "{remote_parent}" && rsync',
+                "-e",
+                "ssh -o BatchMode=yes -o StrictHostKeyChecking=no",
+                local + "/",
+                f"{user}@{peer_ip}:{path}/",
+            ]
+            if delete:
+                cmd.insert(2, "--delete")
+            if dry_run:
+                cmd.insert(1, "--dry-run")
+            try:
+                r = subprocess.run(cmd, capture_output = True, text = True, timeout = 3600)
+                if r.returncode == 0:
+                    results["copied"].append((label, path))
+                else:
+                    results["failed"].append((label, (r.stderr or "").strip()[:200]))
+            except Exception as exc:
+                results["failed"].append((label, str(exc)[:200]))
+            results["timings"].append(
+                (label, mode, moved, time.monotonic() - started, workers),
+            )
+    finally:
+        if daemon is not None:
+            fast["stop"] = stop_peer_rsync_daemon(daemon)
+            if not fast["stop"]["stopped"]:
+                results["failed"].append(
+                    ("rsync daemon on the peer", fast["stop"]["error"] or "did not stop"),
+                )
+            if prev_term is not None:
+                try:
+                    signal.signal(signal.SIGTERM, prev_term)
+                except (ValueError, OSError):
+                    pass
     return results
+
+
+def _gb_per_s(nbytes: int, seconds: float) -> str:
+    return f"{nbytes / 1e9 / seconds:.2f} GB/s" if seconds > 0 and nbytes else "n/a"
 
 
 def _cmd_provision(
     dry_run: bool = False,
     delete: bool = False,
     force: bool = False,
+    no_fast: bool = False,
 ) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to provision.")
@@ -2189,18 +2731,51 @@ def _cmd_provision(
         f"Provisioning peer {peer} over the ConnectX link" f"{' (dry run)' if dry_run else ''}..."
     )
     print("  Copying rather than installing: HuggingFace measures ~20 KB/s from these")
-    print("  boxes while this link does ~444 MB/s, and copying cannot drift.")
-    res = provision_peer(peer, dry_run = dry_run, delete = delete, force = force)
+    print("  boxes while this link does ~1 GB/s, and copying cannot drift.")
+    try:
+        res = provision_peer(peer, dry_run = dry_run, delete = delete, force = force, no_fast = no_fast)
+    except KeyboardInterrupt:
+        print("\n  Interrupted. The rsync daemon on the peer, if any, has been stopped.")
+        return 130
     if res["refused"]:
         print(f"  REFUSED: {res['refused']}")
         print("  (nothing was copied, nothing was deleted)")
         return 1
+    fast = res["fast"]
+    if fast["used"]:
+        print(
+            f"  fast path: rsync daemon on {peer}:{fast['port']}, unencrypted over the direct "
+            f"rail cable, up to {FAST_MAX_WORKERS} workers; ssh finalises each path"
+        )
+    elif not dry_run and fast["reason"]:
+        print(f"  ssh path: {fast['reason']}")
+    if fast.get("retries"):
+        print(f"  note    {fast['retries']} worker reconnect(s) after a stalled flow on the rail")
+    for label, why in fast["errors"]:
+        print(f"  note    {label}: fast path failed ({why}); finished over ssh")
+    timings = {t[0]: t for t in res["timings"]}
     for label, path in res["copied"]:
-        print(f"  ok      {label} ({path})")
+        detail = ""
+        if label in timings:
+            _, mode, moved, seconds, workers = timings[label]
+            if moved:
+                detail = (
+                    f"  {moved / 2**30:.1f} GiB in {seconds:.1f} s, {_gb_per_s(moved, seconds)}"
+                    f" ({mode}, {workers} workers)"
+                )
+            elif not dry_run:
+                detail = f"  {seconds:.1f} s ({mode})"
+        print(f"  ok      {label} ({path}){detail}")
     for label, why in res["skipped"]:
         print(f"  skip    {label}: {why}")
     for label, why in res["failed"]:
         print(f"  FAILED  {label}: {why}")
+    stop = fast["stop"]
+    if stop is not None:
+        if stop["left"]:
+            print(f"  note    rsync still running on the peer (not ours): pids {stop['left']}")
+        elif stop["stopped"]:
+            print("  daemon  stopped on the peer; `pgrep -x rsync` there finds nothing")
     if res["failed"]:
         return 1
     print("\n  Peer now matches this node. Verify with: unsloth doctor")
@@ -3835,6 +4410,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         "be checked). You are asserting no job is running there.",
     )
     parser.add_argument(
+        "--no-fast",
+        action = "store_true",
+        help = "copy over ssh only. By default `provision` moves bulk bytes through an "
+        "ephemeral rsync daemon on the peer, UNENCRYPTED over the direct rail cable, "
+        "which is a point-to-point link between the two Sparks with no other host on "
+        "it. The daemon is bound to the peer's rail address, accepts only this node's "
+        "rail address with a one-shot random secret, and is stopped when the command "
+        "ends. ssh then finalises every path. Measured: ssh ~0.25 GB/s, fast path at "
+        f"the disk floor. Same as {FAST_ENV}=0.",
+    )
+    parser.add_argument(
         "--engines",
         type = int,
         default = 2,
@@ -3927,7 +4513,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "peers":
         return _cmd_peers(check = not args.no_probe)
     if args.command == "provision":
-        return _cmd_provision(dry_run = args.dry_run, delete = args.rsync_delete, force = args.force)
+        return _cmd_provision(
+            dry_run = args.dry_run,
+            delete = args.rsync_delete,
+            force = args.force,
+            no_fast = args.no_fast,
+        )
     if args.command == "env":
         return _cmd_env()
     if args.command == "serve":

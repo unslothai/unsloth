@@ -397,6 +397,8 @@ def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
 def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
+    # This pins the ssh path; the rail daemon has its own tests below.
+    monkeypatch.setenv(sc.FAST_ENV, "0")
     monkeypatch.setattr(
         sc,
         "peer_gpu_busy",
@@ -1302,3 +1304,415 @@ def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> No
     # Pointing UNSLOTH_STUDIO_HOME at the default location must not move the bundle.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(Path.home() / ".unsloth" / "studio"))
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
+
+
+# ── Fast provisioning: the ephemeral rsync daemon on the direct rail ─────────
+# ssh is the fallback and stays the finaliser; the daemon only carries bulk bytes,
+# unencrypted, over the point-to-point cable. These pin what makes that safe: what
+# the daemon's config says, who it admits, when the path is refused outright, that
+# the work split is disjoint and complete, and that the daemon dies with the command.
+
+
+def _fast_module(monkeypatch, tmp_path):
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(sc.platform, "system", lambda: "Linux")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setattr(sc, "rail_local_address", lambda peer, rails = None: "192.168.200.12")
+    monkeypatch.setattr(
+        sc,
+        "peer_gpu_busy",
+        lambda *a, **k: {"busy": False, "known": True, "reason": "idle", "processes": []},
+    )
+    monkeypatch.delenv(sc.FAST_ENV, raising = False)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.bin").write_bytes(b"a" * 300)
+    (src / "b.bin").write_bytes(b"b" * 200)
+    monkeypatch.setattr(sc, "provision_paths", lambda: ((str(src), "scratch"),))
+    return sc, src
+
+
+def test_fast_daemon_config_is_locked_to_the_rail() -> None:
+    sc = _load("studio/spark_cluster.py")
+    text = sc.rsync_daemon_config(
+        {"m0": "$HOME/.unsloth/studio/unsloth_studio", "m1": "/opt/x"},
+        bind_ip = "192.168.200.13",
+        port = 41234,
+        hosts_allow = "192.168.200.12",
+        auth_user = "unsloth-ab12",
+        work_dir = "/tmp/unsloth-provision-1",
+    )
+    lines = [l.strip() for l in text.splitlines()]
+    assert "address = 192.168.200.13" in lines  # the peer's rail address only
+    assert "port = 41234" in lines
+    assert "use chroot = no" in lines and "read only = no" in lines
+    assert f"max connections = {sc.FAST_MAX_WORKERS}" in lines and sc.FAST_MAX_WORKERS == 4
+    # The daemon's idle timeout is the client's twice over: the client drops and retries.
+    assert f"timeout = {2 * sc.FAST_IO_TIMEOUT}" in lines
+    assert "pid file = /tmp/unsloth-provision-1/rsyncd.pid" in lines
+    assert "log file = /tmp/unsloth-provision-1/rsyncd.log" in lines
+    assert "secrets file = /tmp/unsloth-provision-1/rsyncd.secrets" in lines
+    assert "munge symlinks = no" in lines
+    # Every module admits the single local rail address and the one-shot user.
+    assert lines.count("hosts allow = 192.168.200.12") == 2
+    assert lines.count("auth users = unsloth-ab12") == 2
+    assert "[m0]" in lines and "path = $HOME/.unsloth/studio/unsloth_studio" in lines
+    assert "[m1]" in lines and "path = /opt/x" in lines
+
+
+def test_fast_port_stays_in_the_high_range() -> None:
+    sc = _load("studio/spark_cluster.py")
+    lo, hi = sc.FAST_PORT_RANGE
+    assert 1024 < lo < hi < 65536
+    draws = {sc.fast_port() for _ in range(500)}
+    assert all(lo <= p <= hi for p in draws) and len(draws) > 50
+
+
+def test_fast_setup_script_keeps_the_secret_in_a_600_file() -> None:
+    sc = _load("studio/spark_cluster.py")
+    cfg = sc.rsync_daemon_config({"m0": "$HOME/x"}, "10.0.0.2", 45000, "10.0.0.1", "u", "/tmp/w")
+    script = sc.daemon_setup_script(cfg, "u", "S3cr3t-value", ["$HOME/x"], "/tmp/w", 45000)
+    assert "umask 077" in script and 'mkdir -m 700 "$d"' in script
+    assert 'chmod 600 "$d/rsyncd.secrets"' in script
+    # The secret is inside a quoted heredoc on stdin, never an argument.
+    assert "<<'UNSLOTH_EOF'\nu:S3cr3t-value\nUNSLOTH_EOF" in script
+    assert "rsync --daemon" in script and "--no-detach" in script
+    assert f"timeout {sc.FAST_DAEMON_MAX_SECONDS}" in script
+    assert 'mkdir -p "$HOME/x"' in script
+    stop = sc.daemon_stop_script("/tmp/w")
+    assert "rsyncd.pid" in stop and 'rm -rf "$d"' in stop and "pgrep -x rsync" in stop
+
+
+def test_fast_files_script_really_writes_600(tmp_path) -> None:
+    """Run the file-writing half under bash where bash exists: modes, not just text."""
+    import shutil as _shutil
+    import stat as _stat
+    import subprocess as _sp
+
+    bash = _shutil.which("bash")
+    if not bash or sys.platform.startswith("win"):
+        pytest.skip("needs bash")
+    sc = _load("studio/spark_cluster.py")
+    work = tmp_path / "work"
+    dest = tmp_path / "dest" / "deeper"
+    cfg = sc.rsync_daemon_config({"m0": str(dest)}, "10.0.0.2", 45000, "10.0.0.1", "u", str(work))
+    script = sc.daemon_files_script(cfg, "u", "pw$`\\x", [str(dest)], str(work))
+    r = _sp.run([bash, "-s"], input = script, capture_output = True, text = True)
+    assert r.returncode == 0, r.stderr
+    assert _stat.S_IMODE(work.stat().st_mode) == 0o700
+    secrets_file = work / "rsyncd.secrets"
+    assert _stat.S_IMODE(secrets_file.stat().st_mode) == 0o600
+    assert secrets_file.read_text() == "u:pw$`\\x\n"  # quoted heredoc: nothing expanded
+    assert (work / "rsyncd.conf").read_text() == cfg
+    assert dest.is_dir()
+
+
+@pytest.mark.parametrize(
+    "system, spark, no_fast, env, peer, local, expect",
+    [
+        ("Linux", True, False, None, "192.168.200.13", "192.168.200.12", True),
+        ("Windows", True, False, None, "192.168.200.13", "192.168.200.12", False),
+        ("Darwin", True, False, None, "192.168.200.13", "192.168.200.12", False),
+        ("Linux", False, False, None, "192.168.200.13", "192.168.200.12", False),
+        ("Linux", True, True, None, "192.168.200.13", "192.168.200.12", False),
+        ("Linux", True, False, "0", "192.168.200.13", "192.168.200.12", False),
+        ("Linux", True, False, "false", "192.168.200.13", "192.168.200.12", False),
+        ("Linux", True, False, "1", "192.168.200.13", "192.168.200.12", True),
+        ("Linux", True, False, None, "8.8.8.9", "8.8.8.8", False),  # not private
+        ("Linux", True, False, None, "192.168.200.13", "192.168.201.12", False),  # other rail
+        ("Linux", True, False, None, "192.168.200.13", None, False),  # no local address
+        ("Linux", True, False, None, "192.168.200.13", "192.168.200.13", False),  # ourselves
+        ("Linux", True, False, None, "not-an-ip", "192.168.200.12", False),
+    ],
+)
+def test_fast_path_gating(monkeypatch, system, spark, no_fast, env, peer, local, expect) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setattr(sc.platform, "system", lambda: system)
+    sc._IS_SPARK_CACHE = spark
+    monkeypatch.setattr(sc, "rail_local_address", lambda p, rails = None: local)
+    environ = {} if env is None else {sc.FAST_ENV: env}
+    out = sc.fast_path_decision(peer, no_fast = no_fast, env = environ)
+    assert out["ok"] is expect, out
+    assert out["reason"]
+    # The rail lookup forks `ip`; a refused platform or flag must never reach it.
+    monkeypatch.setattr(
+        sc, "rail_local_address", lambda p, rails = None: pytest.fail("looked up rails")
+    )
+    assert sc.fast_path_decision(peer, no_fast = True, env = environ)["ok"] is False
+    assert sc.fast_path_decision(peer, env = {sc.FAST_ENV: "0"})["ok"] is False
+    monkeypatch.setattr(sc.platform, "system", lambda: "Windows")
+    assert sc.fast_path_decision(peer, env = environ)["ok"] is False
+
+
+def test_fast_path_env_var_is_read_from_the_process_environment(monkeypatch) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setattr(sc.platform, "system", lambda: "Linux")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setenv(sc.FAST_ENV, "0")
+    assert sc.fast_path_decision("192.168.200.13", local_ip = "192.168.200.12")["ok"] is False
+    monkeypatch.delenv(sc.FAST_ENV)
+    assert sc.fast_path_decision("192.168.200.13", local_ip = "192.168.200.12")["ok"] is True
+
+
+def test_rail_local_address_picks_the_same_slash_24() -> None:
+    sc = _load("studio/spark_cluster.py")
+    rails = [{"ipv4": ["192.168.201.12"]}, {"ipv4": ["192.168.200.12"]}]
+    assert sc.rail_local_address("192.168.200.13", rails) == "192.168.200.12"
+    assert sc.rail_local_address("192.168.202.13", rails) is None
+    assert sc.rail_local_address("junk", rails) is None
+
+
+def test_provision_work_split_is_disjoint_complete_and_capped(tmp_path) -> None:
+    root = tmp_path / "tree"
+    (root / "sub" / "deep").mkdir(parents = True)
+    (root / "empty").mkdir()
+    sizes = [5000, 4000, 3000, 3000, 1000, 900, 800, 10, 10, 10, 1, 0]
+    expected = set()
+    for i, size in enumerate(sizes):
+        rel = os.path.join("sub", "deep", f"f{i}") if i % 3 == 0 else f"f{i}"
+        (root / rel).write_bytes(b"x" * size)
+        expected.add(rel)
+    if not sys.platform.startswith("win"):
+        os.symlink("/usr/bin/python3", root / "link")  # left to the ssh finaliser
+    sc = _load("studio/spark_cluster.py")
+    buckets = sc.provision_work_split(str(root))
+    assert 1 < len(buckets) <= sc.FAST_MAX_WORKERS == 4
+    flat = [p for b in buckets for p in b]
+    assert len(flat) == len(set(flat)) == len(expected)  # disjoint, nothing twice
+    assert set(flat) == expected  # every regular file, no symlink
+    # Byte-balanced: the two biggest files never share a worker.
+    big = {p for b in buckets for p in b if p in ("f1", "f2")}
+    assert big and not any({"f1", "f2"} <= set(b) for b in buckets)
+    assert len(sc.provision_work_split(str(root), max_workers = 2)) == 2
+    # One file is one worker; no files is no work.
+    single = tmp_path / "single"
+    single.mkdir()
+    (single / "model.gguf").write_bytes(b"g" * 100)
+    assert sc.provision_work_split(str(single)) == [["model.gguf"]]
+    assert sc.provision_work_split(str(tmp_path / "empty")) == []
+
+
+class _Fake:
+    """A subprocess.run stand-in that plays the peer: ssh starts or stops the daemon,
+    rsync workers succeed or fail as scripted, and the ssh rsync finaliser succeeds."""
+
+    def __init__(
+        self,
+        daemon_rc = 0,
+        worker_rc = 0,
+        ssh_rsync = None,
+    ):
+        self.calls = []
+        self.daemon_rc = daemon_rc
+        self.worker_rc = worker_rc
+        self.ssh_rsync = ssh_rsync
+
+    def __call__(self, cmd, **kw):
+        self.calls.append((cmd, kw))
+        argv0 = cmd[0]
+        script = kw.get("input") or ""
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        r = R()
+        if argv0 == "ssh" and "rsync --daemon" in script:
+            r.returncode = self.daemon_rc
+            r.stdout = "UNSLOTH_DAEMON_UP 4242\n" if self.daemon_rc == 0 else ""
+            r.stderr = "" if self.daemon_rc == 0 else "bind failed"
+        elif argv0 == "ssh" and "pgrep -x rsync" in script:
+            r.stdout = "UNSLOTH_RSYNC_LEFT \n"
+        elif argv0 == "rsync" and any(a.startswith("rsync://") for a in cmd):
+            if isinstance(self.worker_rc, BaseException):
+                raise self.worker_rc
+            rc = self.worker_rc
+            if isinstance(rc, list):  # scripted per call: a stalled flow, then a retry
+                rc = rc.pop(0) if rc else 0
+            r.returncode = rc
+            r.stderr = "worker boom" if rc else ""
+        elif argv0 == "rsync":
+            if isinstance(self.ssh_rsync, BaseException):
+                raise self.ssh_rsync
+        return r
+
+    def stops(self):
+        return [
+            c for c, k in self.calls if c[0] == "ssh" and "pgrep -x rsync" in (k.get("input") or "")
+        ]
+
+    def workers(self):
+        return [
+            (c, k)
+            for c, k in self.calls
+            if c[0] == "rsync" and any(a.startswith("rsync://") for a in c)
+        ]
+
+    def ssh_copies(self):
+        return [c for c, k in self.calls if c[0] == "rsync" and "-e" in c]
+
+
+def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
+    monkeypatch, tmp_path
+) -> None:
+    sc, src = _fast_module(monkeypatch, tmp_path)
+    fake = _Fake()
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["copied"] == [("scratch", str(src))] and not res["failed"]
+    assert res["fast"]["used"] is True and res["fast"]["errors"] == []
+    # Two files, two workers, each against the daemon URL with the secret in the
+    # environment and nowhere on the command line.
+    workers = fake.workers()
+    assert len(workers) == 2
+    start_script = next(
+        k["input"] for c, k in fake.calls if c[0] == "ssh" and "rsync --daemon" in k["input"]
+    )
+    secret = start_script.split("<<'UNSLOTH_EOF'\n")[1].split("\n")[0].split(":", 1)[1]
+    for cmd, kw in workers:
+        assert kw["env"]["RSYNC_PASSWORD"] == secret
+        assert secret not in " ".join(cmd) and "ssh" not in " ".join(cmd)
+        assert f"--timeout={sc.FAST_IO_TIMEOUT}" in cmd and "--contimeout=15" in cmd
+        assert cmd[-1].startswith(f"rsync://unsloth-") and cmd[-1].endswith(
+            ":%d/m0/" % res["fast"]["port"]
+        )
+    assert sc.FAST_PORT_RANGE[0] <= res["fast"]["port"] <= sc.FAST_PORT_RANGE[1]
+    # The unchanged ssh rsync ran afterwards as the finaliser, then the daemon stopped.
+    assert len(fake.ssh_copies()) == 1 and len(fake.stops()) == 1
+    order = [
+        ("stop" if c[0] == "ssh" and "pgrep" in (k.get("input") or "") else c[0])
+        for c, k in fake.calls
+    ]
+    assert order.index("stop") == len(order) - 1
+    assert res["fast"]["stop"] == {"stopped": True, "left": [], "error": ""}
+    assert res["timings"][0][1] == "fast" and res["timings"][0][2] == 500
+    assert res["fast"]["retries"] == 0
+
+
+def test_fast_path_retries_a_stalled_worker_on_a_fresh_connection(monkeypatch, tmp_path) -> None:
+    sc, src = _fast_module(monkeypatch, tmp_path)
+    # First worker call times out (rsync exit 30), the retry succeeds; the other is fine.
+    fake = _Fake(worker_rc = [30, 0, 0])
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["copied"] == [("scratch", str(src))] and not res["failed"]
+    assert res["fast"]["used"] is True and res["fast"]["errors"] == []
+    assert res["fast"]["retries"] == 1 and len(fake.workers()) == 3
+    assert len(fake.stops()) == 1
+    # A worker that fails every attempt gives up after FAST_WORKER_ATTEMPTS, not forever.
+    fake = _Fake(worker_rc = 30)
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["fast"]["used"] is False and res["fast"]["errors"] == [("scratch", "worker boom")]
+    assert len(fake.workers()) == 2 * sc.FAST_WORKER_ATTEMPTS and res["copied"]
+
+
+def test_fast_path_worker_failure_falls_back_to_ssh_and_still_stops_the_daemon(
+    monkeypatch, tmp_path
+) -> None:
+    sc, src = _fast_module(monkeypatch, tmp_path)
+    fake = _Fake(worker_rc = 23)
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["copied"] == [("scratch", str(src))] and not res["failed"]
+    assert res["fast"]["used"] is False
+    assert res["fast"]["errors"] == [("scratch", "worker boom")]
+    assert len(fake.ssh_copies()) == 1 and len(fake.stops()) == 1
+    assert res["timings"][0][1] == "ssh"
+
+
+def test_fast_daemon_is_stopped_when_the_copy_raises(monkeypatch, tmp_path) -> None:
+    sc, _ = _fast_module(monkeypatch, tmp_path)
+    fake = _Fake(worker_rc = KeyboardInterrupt())
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    with pytest.raises(KeyboardInterrupt):
+        sc.provision_peer("192.168.200.13")
+    assert len(fake.stops()) == 1 and fake.stops()[0][-1] == "-s"
+    # An ssh finaliser that blows up is recorded, and the daemon still goes.
+    fake = _Fake(ssh_rsync = OSError("ssh died"))
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["failed"] == [("scratch", "ssh died")] and len(fake.stops()) == 1
+
+
+def test_fast_daemon_start_failure_means_plain_ssh_and_no_stop(monkeypatch, tmp_path) -> None:
+    sc, src = _fast_module(monkeypatch, tmp_path)
+    fake = _Fake(daemon_rc = 1)
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    res = sc.provision_peer("192.168.200.13")
+    assert res["copied"] == [("scratch", str(src))] and not res["failed"]
+    assert res["fast"]["used"] is False and "did not start" in res["fast"]["reason"]
+    assert "bind failed" in res["fast"]["reason"]
+    assert fake.workers() == [] and fake.stops() == [] and len(fake.ssh_copies()) == 1
+
+
+def test_fast_daemon_that_survives_is_reported_as_a_failure(monkeypatch, tmp_path) -> None:
+    sc, _ = _fast_module(monkeypatch, tmp_path)
+    fake = _Fake()
+    monkeypatch.setattr(sc.subprocess, "run", fake)
+    monkeypatch.setattr(
+        sc,
+        "stop_peer_rsync_daemon",
+        lambda d, timeout = 60: {
+            "stopped": False,
+            "left": [4242],
+            "error": "daemon pid 4242 survived SIGKILL",
+        },
+    )
+    res = sc.provision_peer("192.168.200.13")
+    assert ("rsync daemon on the peer", "daemon pid 4242 survived SIGKILL") in res["failed"]
+
+
+def test_no_fast_and_env_and_dry_run_never_touch_the_daemon(monkeypatch, tmp_path) -> None:
+    sc, src = _fast_module(monkeypatch, tmp_path)
+    for kwargs, env in (({"no_fast": True}, None), ({}, "0"), ({"dry_run": True}, None)):
+        fake = _Fake()
+        monkeypatch.setattr(sc.subprocess, "run", fake)
+        if env is None:
+            monkeypatch.delenv(sc.FAST_ENV, raising = False)
+        else:
+            monkeypatch.setenv(sc.FAST_ENV, env)
+        res = sc.provision_peer("192.168.200.13", **kwargs)
+        assert res["copied"] == [("scratch", str(src))]
+        assert fake.workers() == [] and fake.stops() == []
+        assert not any("rsync --daemon" in (k.get("input") or "") for c, k in fake.calls)
+        assert res["fast"]["used"] is False
+
+
+def test_no_fast_flag_reaches_provision(monkeypatch, capsys) -> None:
+    sc = _load("studio/spark_cluster.py")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setattr(sc, "peer_ip_for", lambda *a, **k: "192.168.200.13")
+    seen = {}
+
+    def fake_provision(peer, **kw):
+        seen.update(kw)
+        return {
+            "copied": [],
+            "skipped": [],
+            "failed": [],
+            "refused": "",
+            "fast": {
+                "used": False,
+                "reason": "--no-fast",
+                "errors": [],
+                "stop": None,
+                "port": None,
+                "retries": 0,
+            },
+            "timings": [],
+        }
+
+    monkeypatch.setattr(sc, "provision_peer", fake_provision)
+    assert sc.main(["provision", "--no-fast"]) == 0
+    assert seen["no_fast"] is True
+    assert sc.main(["provision"]) == 0
+    assert seen["no_fast"] is False
+    # The help text says the bytes are unencrypted, where they go, and how to opt out.
+    with pytest.raises(SystemExit):
+        sc.main(["--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "--no-fast" in text and "UNENCRYPTED" in text and "point-to-point" in text
+    assert f"{sc.FAST_ENV}=0" in text
