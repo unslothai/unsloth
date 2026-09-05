@@ -2306,9 +2306,7 @@ class TestAWheelhouseThatIsTheStagingDirectory:
         assert (
             "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in text
         ), "the extra-wheel loop, which swallowed the error but miscounted"
-        assert (
-            "if (-not (Test-WoaSamePath $srcWheel $_woaLocalDest)) {" in text
-        ), (
+        assert "if (-not (Test-WoaSamePath $srcWheel $_woaLocalDest)) {" in text, (
             "and the supplied-wheel copy, where the failure was caught but disabled "
             "native mode after the ARM64 venv had already been chosen"
         )
