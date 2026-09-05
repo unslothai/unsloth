@@ -963,6 +963,7 @@ class InferenceBackend:
         current_subject: Optional[str] = None,
         tool_ui_session_id: Optional[str] = None,
         limited_grant: Optional[str] = None,
+        network_policy: str = "deny",
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1062,6 +1063,7 @@ class InferenceBackend:
             current_subject = current_subject,
             tool_ui_session_id = tool_ui_session_id,
             limited_grant = limited_grant,
+            network_policy = network_policy,
         )
 
     def generate_chat_response(

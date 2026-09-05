@@ -32,8 +32,14 @@ class ToolIsolationCapability:
     qualified: bool
     available: bool = False
     limitations: tuple[str, ...] = ()
+    # Optional, additive: which network policies the Required-mode backend can
+    # enforce and the hosts its allowlist admits; and how Limited mode is
+    # implemented on this host (None when it is the plain software safeguards).
     network_policies: tuple[str, ...] = ("deny",)
     network_allowlist: tuple[str, ...] = ()
+    limited_backend: str | None = None
+    limited_profile_id: str | None = None
+    limited_limitations: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -215,13 +221,19 @@ def _snapshot_value(snapshot: object, name: str) -> Any:
     return getattr(snapshot, name)
 
 
-def _snapshot_optional(snapshot: object, name: str, default: Any) -> Any:
-    """Like _snapshot_value for fields older snapshots (or test doubles) may lack."""
+def _optional_snapshot_value(snapshot: object, name: str, default: Any) -> Any:
+    """Like _snapshot_value for fields a backend may not publish yet."""
     if isinstance(snapshot, Mapping):
-        value = snapshot.get(name)
-    else:
-        value = getattr(snapshot, name, None)
-    return default if value is None else value
+        return snapshot.get(name, default)
+    return getattr(snapshot, name, default)
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
 
 
 def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
@@ -229,7 +241,15 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
 
     from core.inference.os_sandbox import capability_snapshot as os_capability_snapshot
 
-    snapshot = os_capability_snapshot(force = force)
+    return _shape_capability(os_capability_snapshot(force = force))
+
+
+def _shape_capability(snapshot: object) -> ToolIsolationCapability:
+    """Map a backend snapshot (dataclass or mapping) onto the API-facing shape.
+
+    Fields added after the first release (network policies, the Limited backend) are
+    optional on the backend side so a snapshot from an older os_sandbox still shapes.
+    """
     return ToolIsolationCapability(
         environment = str(_snapshot_value(snapshot, "environment")),
         backend = str(_snapshot_value(snapshot, "backend")),
@@ -243,12 +263,20 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
         available = bool(_snapshot_value(snapshot, "available")),
         qualified = bool(_snapshot_value(snapshot, "qualified")),
         limitations = tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
-        network_policies = tuple(
-            str(item) for item in _snapshot_optional(snapshot, "network_policies", ("deny",))
+        network_policies = _string_tuple(_optional_snapshot_value(snapshot, "network_policies", ("deny",)))
+        or ("deny",),
+        network_allowlist = _string_tuple(_optional_snapshot_value(snapshot, "network_allowlist", ())),
+        limited_backend = (
+            str(_optional_snapshot_value(snapshot, "limited_backend", None))
+            if _optional_snapshot_value(snapshot, "limited_backend", None) is not None
+            else None
         ),
-        network_allowlist = tuple(
-            str(item) for item in _snapshot_optional(snapshot, "network_allowlist", ())
+        limited_profile_id = (
+            str(_optional_snapshot_value(snapshot, "limited_profile_id", None))
+            if _optional_snapshot_value(snapshot, "limited_profile_id", None) is not None
+            else None
         ),
+        limited_limitations = _string_tuple(_optional_snapshot_value(snapshot, "limited_limitations", ())),
     )
 
 

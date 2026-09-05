@@ -52,6 +52,7 @@ class CodexToolPolicy:
     rag_scope: dict[str, Any] | None
     nudge_tool_calls: bool | None = None
     tool_execution_mode: str = "os_isolation_required"
+    network_policy: str = "deny"
 
 
 class CodexTransport:
@@ -126,6 +127,7 @@ def stream_codex_with_studio_tools(
             auto_heal = False,
             nudge_tool_calls = policy.nudge_tool_calls,
             tool_execution_mode = policy.tool_execution_mode,
+            network_policy = policy.network_policy,
         ),
         cancel_event = cancel_event,
     )

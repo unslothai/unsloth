@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PermissionMode } from "../stores/chat-runtime-store";
-import type { ToolExecutionMode } from "../tool-isolation";
+import type { ToolExecutionMode, ToolNetworkPolicy } from "../tool-isolation";
 
 /** The store fields a "return to protected defaults" transition rewrites. */
 export type ProtectedIsolationDefaults = {
   toolExecutionMode: ToolExecutionMode;
+  /** The network allowlist is a session decision like Full and Limited; it ends with them. */
+  toolNetworkPolicy: ToolNetworkPolicy;
   limitedToolGrant: null;
   bypassPermissions: false;
   permissionMode: PermissionMode;
@@ -28,6 +30,7 @@ export function protectedIsolationDefaults(
     permissionMode === "full" ? "auto" : permissionMode;
   return {
     toolExecutionMode: "os_isolation_required",
+    toolNetworkPolicy: "deny",
     limitedToolGrant: null,
     bypassPermissions: false,
     permissionMode: level,

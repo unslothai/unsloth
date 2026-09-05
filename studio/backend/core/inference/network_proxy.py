@@ -48,20 +48,23 @@ logger = get_logger(__name__)
 
 # Hosts a model-driven Python or Terminal tool most often needs during an ML
 # task. Everything is a hostname; the proxy refuses IP literals outright.
+# Deliberately narrow: package indexes, model hubs and source hosting only. No
+# general cloud storage or CDN wildcards (any bucket there is a ready-made drop
+# box for exfiltration); operators extend the list through ALLOWLIST_ENV.
 DEFAULT_ALLOWLIST: tuple[str, ...] = (
     "pypi.org",
     "files.pythonhosted.org",
     "huggingface.co",
     "*.huggingface.co",
-    "cdn-lfs.huggingface.co",
+    "hf.co",
     "*.hf.co",
     "github.com",
-    "*.github.com",
-    "*.githubusercontent.com",
+    "api.github.com",
+    "codeload.github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
     "download.pytorch.org",
-    "*.kaggle.com",
-    "*.tensorflow.org",
-    "storage.googleapis.com",
 )
 
 ALLOWLIST_ENV = "UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST"

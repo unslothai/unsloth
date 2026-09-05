@@ -154,6 +154,7 @@ import {
 import { selectCodeToolNames } from "./code-tool-placement";
 import { ragScopeContextLength } from "./rag-context-length";
 import { isLimitedGrantCurrent } from "../tool-isolation";
+import { effectiveToolNetworkPolicy } from "../utils/tool-network-policy";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -1871,11 +1872,20 @@ export async function buildLocalTokenCountExtras(
     deepResearchEnabled,
     permissionMode,
     toolExecutionMode,
+    toolNetworkPolicy,
+    toolIsolationCapability,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
     residentCheckpoint,
   } = useChatRuntimeStore.getState();
+  // The allowlist appends the host list to the python/terminal descriptions, so the count
+  // carries the same policy the completion will (collapsed to "deny" wherever it would be).
+  const countNetworkPolicy = effectiveToolNetworkPolicy(
+    toolNetworkPolicy,
+    toolExecutionMode,
+    toolIsolationCapability,
+  );
   // Explicit false, as the completion sends: an omitted field lets the launcher's
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
@@ -1885,6 +1895,7 @@ export async function buildLocalTokenCountExtras(
       enable_tools: false,
       bypass_permissions: bypassPermissions,
       tool_execution_mode: toolExecutionMode,
+      tool_network_policy: countNetworkPolicy,
     };
   }
 
@@ -1912,6 +1923,7 @@ export async function buildLocalTokenCountExtras(
       enable_tools: false,
       bypass_permissions: bypassPermissions,
       tool_execution_mode: toolExecutionMode,
+      tool_network_policy: countNetworkPolicy,
     };
   }
 
@@ -1923,6 +1935,7 @@ export async function buildLocalTokenCountExtras(
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
     tool_execution_mode: toolExecutionMode,
+    tool_network_policy: countNetworkPolicy,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -4735,7 +4748,10 @@ export function createOpenAIStreamAdapter(
         );
       let toolIsolationRequestFields: Pick<
         OpenAIChatCompletionsRequest,
-        "tool_execution_mode" | "tool_ui_session_id" | "limited_grant"
+        | "tool_execution_mode"
+        | "tool_ui_session_id"
+        | "limited_grant"
+        | "tool_network_policy"
       > = {};
       if (supportsStudioToolsForThisTurn) {
         // The isolation decision is read from the run snapshot, never from the live store:
@@ -4745,6 +4761,9 @@ export function createOpenAIStreamAdapter(
         const requestedMode = runtime.toolExecutionMode;
         const requestedUiSessionId = runtime.toolIsolationUiSessionId;
         const requestedGrant = runtime.limitedToolGrant;
+        // The network decision travels with the send too; "allowlist" goes out only when the
+        // capability seen at dispatch lists it (see effectiveToolNetworkPolicy).
+        const requestedNetworkPolicy = runtime.toolNetworkPolicy;
         if (requestedMode === "full") {
           // Full access predates capability discovery and keeps its existing
           // explicit semantics. The backend still records the launch-time host
@@ -4779,6 +4798,11 @@ export function createOpenAIStreamAdapter(
           toolIsolationRequestFields = {
             tool_execution_mode: "os_isolation_required",
             tool_ui_session_id: requestedUiSessionId,
+            tool_network_policy: effectiveToolNetworkPolicy(
+              requestedNetworkPolicy,
+              "os_isolation_required",
+              useChatRuntimeStore.getState().toolIsolationCapability,
+            ),
           };
         } else {
           await useChatRuntimeStore
@@ -4826,6 +4850,11 @@ export function createOpenAIStreamAdapter(
           toolIsolationRequestFields = {
             tool_execution_mode: mode,
             tool_ui_session_id: requestedUiSessionId,
+            tool_network_policy: effectiveToolNetworkPolicy(
+              requestedNetworkPolicy,
+              mode,
+              capability,
+            ),
             ...(mode === "limited" && currentLimitedGrant
               ? { limited_grant: currentLimitedGrant.grant }
               : {}),

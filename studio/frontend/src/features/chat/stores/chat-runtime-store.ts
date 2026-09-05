@@ -115,8 +115,10 @@ import {
   type LimitedToolGrant,
   type ToolExecutionMode,
   type ToolIsolationCapability,
+  type ToolNetworkPolicy,
 } from "../tool-isolation";
 import { protectedIsolationDefaults } from "../utils/tool-isolation-defaults";
+import { capabilityOffersNetworkAllowlist } from "../utils/tool-network-policy";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
@@ -128,6 +130,7 @@ export type {
   LimitedToolGrant,
   ToolExecutionMode,
   ToolIsolationCapability,
+  ToolNetworkPolicy,
 } from "../tool-isolation";
 
 export {
@@ -2317,6 +2320,9 @@ type ChatRuntimeStore = {
   permissionMode: PermissionMode;
   /** Requested protection for Python and Terminal. Session-only. */
   toolExecutionMode: ToolExecutionMode;
+  /** Outbound network for OS-isolated launches: "deny" (default) or the backend's fixed host
+   *  allowlist through its local proxy. Session-only; meaningful only under Required. */
+  toolNetworkPolicy: ToolNetworkPolicy;
   /** Random id scoped to this page lifetime; never copied to browser storage. */
   toolIsolationUiSessionId: string;
   /** Latest advisory capability; launch-time backend checks remain authoritative. */
@@ -2598,6 +2604,7 @@ type ChatRuntimeStore = {
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setToolExecutionMode: (mode: ToolExecutionMode) => void;
+  setToolNetworkPolicy: (policy: ToolNetworkPolicy) => void;
   refreshToolIsolationCapability: () => Promise<void>;
   requestLimitedToolGrant: () => Promise<LimitedToolGrant>;
   clearLimitedToolGrant: () => void;
@@ -4024,6 +4031,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   toolExecutionMode: "os_isolation_required",
+  // Never restored from storage: network reach is decided per session, like Full and Limited.
+  toolNetworkPolicy: "deny",
   toolIsolationUiSessionId: createToolIsolationUiSessionId(),
   toolIsolationCapability: null,
   limitedToolGrant: null,
@@ -5326,6 +5335,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolIsolationError: null,
       };
     }),
+  setToolNetworkPolicy: (toolNetworkPolicy) =>
+    set((state) => {
+      if (
+        toolNetworkPolicy === "allowlist" &&
+        !capabilityOffersNetworkAllowlist(state.toolIsolationCapability)
+      ) {
+        return {
+          toolIsolationError:
+            "This host's OS isolation backend does not offer a network allowlist.",
+        };
+      }
+      if (toolNetworkPolicy === state.toolNetworkPolicy) {
+        return {};
+      }
+      return {
+        toolNetworkPolicy,
+        toolIsolationError: null,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   refreshToolIsolationCapability: async () => {
     set(() => ({
       toolIsolationCapabilityLoading: true,
@@ -5346,6 +5375,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             state.toolExecutionMode === "limited" && !grantRemainsValid
               ? ("os_isolation_required" as ToolExecutionMode)
               : state.toolExecutionMode,
+          // A backend that stopped offering the allowlist (or never did) gets "deny".
+          toolNetworkPolicy: capabilityOffersNetworkAllowlist(capability)
+            ? state.toolNetworkPolicy
+            : ("deny" as ToolNetworkPolicy),
           toolIsolationCapabilityLoading: false,
           toolIsolationError: null,
         };
@@ -5358,6 +5391,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           state.toolExecutionMode === "limited"
             ? ("os_isolation_required" as ToolExecutionMode)
             : state.toolExecutionMode,
+        toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         toolIsolationCapabilityLoading: false,
         toolIsolationError:
           error instanceof Error

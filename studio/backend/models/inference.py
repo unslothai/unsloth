@@ -1928,6 +1928,10 @@ class ReasoningControlsRequest(BaseModel):
 # it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
+# Network reach of an OS-isolated Python or Terminal launch. "deny" is the
+# fail-closed default; "allowlist" routes traffic through the backend's loopback
+# proxy to the advertised hosts and is accepted only where a backend supports it.
+ToolNetworkPolicy = Literal["deny", "allowlist"]
 
 
 def _normalize_permission_mode(value: Any) -> Any:
@@ -1943,6 +1947,12 @@ _TOOL_EXECUTION_MODE_OMISSION_LOGGED = False
 
 def _normalize_tool_execution_mode(value: Any) -> Any:
     return "os_isolation_required" if value is None else value
+
+
+def _normalize_tool_network_policy(value: Any) -> Any:
+    # Omitted or null means no network, the behaviour every client had before
+    # the allowlist existed. Unknown values are left for Literal validation (422).
+    return "deny" if value is None else value
 
 
 def _note_omitted_tool_execution_mode(request: Any) -> None:
@@ -2222,6 +2232,14 @@ class ChatCompletionRequest(BaseModel):
     tool_ui_session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Ephemeral page-memory identifier binding a Limited grant.",
+    )
+    tool_network_policy: ToolNetworkPolicy = Field(
+        "deny",
+        description = (
+            "[x-unsloth] Network reach of OS-isolated Python and Terminal launches: 'deny' "
+            "(default) or 'allowlist' (loopback proxy to the hosts the capability advertises; "
+            "rejected where the backend cannot enforce it). Ignored in Full mode."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -2570,6 +2588,11 @@ class ChatCompletionRequest(BaseModel):
     def _coerce_tool_execution_mode(cls, value: Any) -> Any:
         return _normalize_tool_execution_mode(value)
 
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
+
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
         """permission_mode='full' is the documented equivalent of
@@ -2712,6 +2735,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "completion request will render."
         ),
     )
+    tool_network_policy: ToolNetworkPolicy = Field(
+        "deny",
+        description = "[x-unsloth] Network policy the matching completion request will use.",
+    )
 
     confirm_tool_calls: Optional[bool] = Field(
         None,
@@ -2734,6 +2761,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     @classmethod
     def _coerce_tool_execution_mode(cls, value: Any) -> Any:
         return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
 
     # The very function the completion request runs, not a copy: a count renders replayed
     # tool history through the same templates, which read the id off the result message.
@@ -2782,10 +2814,13 @@ class ToolIsolationCapabilityResponse(BaseModel):
     available: bool
     qualified: bool
     limitations: list[str] = Field(default_factory = list)
-    # Network policies the OS backend can enforce ("deny" always; "allowlist"
-    # where a loopback proxy bridge exists) and the hosts that policy admits.
+    # Optional additions; absent on older servers, so clients treat them as
+    # "deny only" and "no Limited-tier detail".
     network_policies: list[str] = Field(default_factory = lambda: ["deny"])
     network_allowlist: list[str] = Field(default_factory = list)
+    limited_backend: Optional[str] = None
+    limited_profile_id: Optional[str] = None
+    limited_limitations: list[str] = Field(default_factory = list)
 
 
 class ToolIsolationLimitedGrantRequest(BaseModel):
@@ -3204,6 +3239,7 @@ class ResponsesRequest(BaseModel):
     )
     limited_grant: Optional[str] = None
     tool_ui_session_id: Optional[str] = None
+    tool_network_policy: ToolNetworkPolicy = "deny"
     permission_mode: Optional[str] = None
     bypass_permissions: Optional[bool] = False
 
@@ -3218,6 +3254,11 @@ class ResponsesRequest(BaseModel):
     @classmethod
     def _coerce_tool_execution_mode(cls, value: Any) -> Any:
         return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
 
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ResponsesRequest":
@@ -3603,6 +3644,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     limited_grant: Optional[str] = None
     tool_ui_session_id: Optional[str] = None
+    tool_network_policy: ToolNetworkPolicy = "deny"
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
@@ -3679,6 +3721,11 @@ class AnthropicMessagesRequest(BaseModel):
     @classmethod
     def _coerce_tool_execution_mode(cls, value: Any) -> Any:
         return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
 
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":

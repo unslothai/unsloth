@@ -26,6 +26,7 @@ const QUEUED_SETTING_KEYS = [
   // The isolation half of the permission decision travels with the queued send too, or a
   // message queued under Required would be sent with whatever the pill says at dispatch.
   "toolExecutionMode",
+  "toolNetworkPolicy",
   "limitedToolGrant",
   "toolIsolationUiSessionId",
   "webFetchToolsEnabled",
