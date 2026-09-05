@@ -18,6 +18,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from types import SimpleNamespace
@@ -1170,6 +1171,7 @@ def test_live_profiles_sids_acl_and_owned_artifacts_are_per_invocation(live_lpac
         acl = _acl_text(workdir)
         assert one.sid_string in acl and two.sid_string in acl
         first.cleanup()
+        assert first.cleanup_diagnostics == [], first.cleanup_diagnostics
         assert not Path(one.manifest_path).exists()
         assert not Path(one.private_temp).exists()
         deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(one.moniker)
@@ -1270,22 +1272,26 @@ def test_live_ipv4_ipv6_udp_dns_loopback_and_host_pipe_are_denied(live_lpac_back
     code = f"""
 import socket, threading
 from multiprocessing.connection import Client
-def denied(family, address):
-    client = socket.socket(family); client.settimeout(1)
+def denied(family, address, kind=socket.SOCK_STREAM):
+    # A zero-capability AppContainer cannot even initialize Winsock
+    # (WSAEPROVIDERFAILEDINIT), so socket() itself may be the denial.
+    client = None
     try:
-        client.connect(address)
+        client = socket.socket(family, kind); client.settimeout(1)
+        if kind == socket.SOCK_STREAM:
+            client.connect(address)
+        else:
+            client.sendto(b'LPAC_ESCAPE', address)
     except OSError:
         return
     finally:
-        client.close()
-    raise AssertionError('host endpoint reachable: ' + repr(address))
+        if client is not None:
+            client.close()
+    if kind == socket.SOCK_STREAM:
+        raise AssertionError('host endpoint reachable: ' + repr(address))
 denied(socket.AF_INET, {address4!r})
 denied(socket.AF_INET6, {address6!r})
-packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-try:
-    try: packet.sendto(b'LPAC_ESCAPE', {udp_address!r})
-    except OSError: pass
-finally: packet.close()
+denied(socket.AF_INET, {udp_address!r}, socket.SOCK_DGRAM)
 try:
     socket.getaddrinfo('example.com', 443)
 except OSError:
@@ -1358,7 +1364,14 @@ k.GetHandleInformation.restype = wintypes.BOOL
 for raw in os.environ['UNSLOTH_TEST_HANDLES'].split(','):
     flags = wintypes.DWORD()
     ctypes.set_last_error(0)
-    assert not k.GetHandleInformation(wintypes.HANDLE(int(raw)), ctypes.byref(flags))
+    try:
+        ok = k.GetHandleInformation(wintypes.HANDLE(int(raw)), ctypes.byref(flags))
+    except OSError as exc:
+        # STATUS_INVALID_HANDLE: strict handle checks turn the bad handle into an
+        # exception, which proves the same thing as ERROR_INVALID_HANDLE below.
+        assert exc.winerror == -1073741816, exc
+        continue
+    assert not ok
     assert ctypes.get_last_error() == 6
 print('LPAC_HANDLES_OK')
 """
@@ -1382,10 +1395,13 @@ def child(queue):
     queue.put(('child-ok', os.environ['TEMP']))
 
 if __name__ == '__main__':
-    raw = socket.socket(socket.AF_UNIX)
-    duplicate = DupSocket(raw).detach()
-    assert duplicate.family == socket.AF_UNIX
-    duplicate.close(); raw.close(); stop()
+    # Windows CPython has no AF_UNIX and the container cannot create sockets at
+    # all; the resource sharer is exercised only where a socket can exist.
+    if hasattr(socket, 'AF_UNIX'):
+        raw = socket.socket(socket.AF_UNIX)
+        duplicate = DupSocket(raw).detach()
+        assert duplicate.family == socket.AF_UNIX
+        duplicate.close(); raw.close(); stop()
     context = mp.get_context('spawn')
     queue = context.Queue()
     process = context.Process(target=child, args=(queue,))
@@ -1409,7 +1425,12 @@ def test_live_pytorch_tensor_transfer_when_installed(live_lpac_backend, tmp_path
         pytest.skip("PyTorch is not installed")
     workdir = tmp_path / "work"
     workdir.mkdir()
-    code = """
+    # _run_native starts the interpreter with -I -S, so the host site-packages
+    # (bound read-only by the backend) is added back before importing torch.
+    site_dirs = [
+        path for path in (sysconfig.get_paths().get("purelib"), sysconfig.get_paths().get("platlib")) if path
+    ]
+    code = f"import sys; sys.path[:0] = {site_dirs!r}\n" + """
 import torch
 import torch.multiprocessing as mp
 

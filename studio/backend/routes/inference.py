@@ -4858,6 +4858,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         apply_limited_tool_descriptions,
+        apply_os_isolated_tool_descriptions,
         get_enabled_mcp_tools,
     )
 
@@ -4900,6 +4901,8 @@ async def _select_request_tools(
         tools = apply_full_access_tool_descriptions(tools)
     elif getattr(payload, "tool_execution_mode", "os_isolation_required") == "limited":
         tools = apply_limited_tool_descriptions(tools)
+    else:
+        tools = apply_os_isolated_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -29535,7 +29538,11 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import (
+            ALL_TOOLS,
+            apply_full_access_tool_descriptions,
+            apply_os_isolated_tool_descriptions,
+        )
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
@@ -29553,6 +29560,8 @@ async def anthropic_messages(
         _full_access = bool(getattr(payload, "bypass_permissions", False))
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif getattr(payload, "tool_execution_mode", "os_isolation_required") != "limited":
+            openai_tools = apply_os_isolated_tool_descriptions(openai_tools)
 
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):

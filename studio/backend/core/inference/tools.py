@@ -7375,14 +7375,22 @@ def _shell_is_posix() -> bool:
     return sys.platform != "win32" or _windows_bash() is not None
 
 
-def _get_shell_cmd(command: str) -> list[str]:
-    """Return the platform-appropriate shell invocation for a command string."""
+def _get_shell_cmd(command: str, *, os_isolated: bool = False) -> list[str]:
+    """Return the platform-appropriate shell invocation for a command string.
+
+    ``os_isolated`` says the launch runs inside the Windows AppContainer. Git for
+    Windows bash is an MSYS2 program and MSYS2 opens a shared object under
+    ``\\BaseNamedObjects`` at startup, which an AppContainer is denied
+    (``NtCreateDirectoryObject: 0xC0000022``), so it can never start there. The
+    isolated launch uses cmd and the model is told so by
+    apply_os_isolated_tool_descriptions.
+    """
     if sys.platform == "win32":
         # why: the model is told this tool is bash and writes bash. cmd /c runs
         # only the first line of a multi-line command, keeps single quotes
         # literal, and does not understand bash quoting, so a correct script
         # silently half-executes. Use a real bash when the host has one.
-        bash = _windows_bash()
+        bash = None if os_isolated else _windows_bash()
         if bash:
             return [bash, "-c", command]
         return ["cmd", "/c", command]
@@ -9953,15 +9961,19 @@ def _build_terminal_shell_note() -> str:
     if sys.platform != "win32":
         return ""
     if _windows_bash():
-        return (
-            " The shell is bash (Git for Windows), and native Windows programs are "
-            "available; a program you start detached opens a window on the user's "
-            "desktop."
-        )
-    return (
-        " The shell is cmd, not bash: send one command per call, chain with &&, and "
-        "do not use bash syntax such as multi-line loops or single-quoted arguments."
-    )
+        return _TERMINAL_BASH_NOTE
+    return _TERMINAL_CMD_NOTE
+
+
+_TERMINAL_BASH_NOTE = (
+    " The shell is bash (Git for Windows), and native Windows programs are "
+    "available; a program you start detached opens a window on the user's "
+    "desktop."
+)
+_TERMINAL_CMD_NOTE = (
+    " The shell is cmd, not bash: send one command per call, chain with &&, and "
+    "do not use bash syntax such as multi-line loops or single-quoted arguments."
+)
 
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
@@ -10037,6 +10049,35 @@ _LIMITED_TOOL_DESCRIPTION_PREFIX = (
     "This tool runs with Unsloth software safeguards but without OS isolation; "
     "it may access anything available to the Studio process. "
 )
+
+
+def apply_os_isolated_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Name the shell that actually runs inside the Windows sandbox.
+
+    The module-level terminal description promises Git bash whenever the host
+    has one, but an OS-isolated launch on Windows runs cmd (see _get_shell_cmd),
+    so a Required-mode turn on such a host gets the cmd note instead. Every
+    other platform, mode and tool is returned untouched, and a list without the
+    terminal tool is returned as-is.
+    """
+    if sys.platform != "win32" or not _windows_bash():
+        return tools
+    out: list[dict] = []
+    swapped = False
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if name != "terminal":
+            out.append(tool)
+            continue
+        description = str(function.get("description", ""))
+        if _TERMINAL_BASH_NOTE in description:
+            description = description.replace(_TERMINAL_BASH_NOTE, _TERMINAL_CMD_NOTE)
+        else:
+            description = description + _TERMINAL_CMD_NOTE
+        out.append({**tool, "function": {**function, "description": description}})
+        swapped = True
+    return out if swapped else tools
 
 
 def apply_limited_tool_descriptions(tools: list[dict]) -> list[dict]:
@@ -16719,7 +16760,12 @@ def _bash_exec(
             run_marker = secrets.token_hex(16)
             safe_env = dict(safe_env)
             safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
-        launch_argv = tuple(_get_shell_cmd(command))
+        launch_argv = tuple(
+            _get_shell_cmd(
+                command,
+                os_isolated = not full_access and effective_execution_mode == "os_isolation_required",
+            )
+        )
         launch_preexec = (
             _bypass_preexec
             if full_access

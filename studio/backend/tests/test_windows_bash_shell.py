@@ -429,3 +429,43 @@ def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blockl
     # token as a flag, and never reach the shell name behind it.
     assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
     assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}
+
+
+def test_os_isolated_windows_launch_uses_cmd_even_with_bash(monkeypatch):
+    # MSYS2 bash cannot start inside an AppContainer, so the isolated launch
+    # runs cmd while every other mode keeps the bash the host has.
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\\Program Files\\Git\\bin\\bash.exe")
+    assert tools._get_shell_cmd("echo hi")[0].endswith("bash.exe")
+    assert tools._get_shell_cmd("echo hi", os_isolated = False)[0].endswith("bash.exe")
+    assert tools._get_shell_cmd("echo hi", os_isolated = True) == ["cmd", "/c", "echo hi"]
+
+
+def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch):
+    specs = [dict(tools.TERMINAL_TOOL), dict(tools.PYTHON_TOOL)]
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    assert tools.apply_os_isolated_tool_descriptions(specs) is specs
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools.apply_os_isolated_tool_descriptions(specs) is specs
+
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\\Git\\bin\\bash.exe")
+    bash_tools = [
+        {
+            **tools.TERMINAL_TOOL,
+            "function": {
+                **tools.TERMINAL_TOOL["function"],
+                "description": "Run a command." + tools._TERMINAL_BASH_NOTE,
+            },
+        },
+        tools.PYTHON_TOOL,
+    ]
+    swapped = tools.apply_os_isolated_tool_descriptions(bash_tools)
+    assert swapped is not bash_tools
+    terminal = swapped[0]["function"]["description"]
+    assert "bash (Git for Windows)" not in terminal
+    assert "The shell is cmd, not bash" in terminal
+    assert swapped[1] is tools.PYTHON_TOOL
+    # The module constants are never mutated.
+    assert "The shell is cmd" not in bash_tools[0]["function"]["description"]

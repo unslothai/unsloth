@@ -1636,7 +1636,7 @@ def test_runtime_read_paths_include_every_symlink_hop(monkeypatch, tmp_path):
         hop.mkdir(parents = True)
     (hop_c / "python3.12").symlink_to(real)
     (hop_b / "python3").symlink_to(hop_c / "python3.12")
-    (hop_a / "python").symlink_to("../../b/bin/python3")  # relative link
+    (hop_a / "python").symlink_to(os.path.join("..", "..", "b", "bin", "python3"))  # relative link
     chain = os_sandbox._symlink_chain(str(hop_a / "python"))
     assert chain == [str(hop_a / "python"), str(hop_b / "python3"), str(hop_c / "python3.12"), str(real)]
 
