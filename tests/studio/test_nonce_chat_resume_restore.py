@@ -40,7 +40,7 @@ def _restore_effect() -> str:
     component = slice_between(
         read(PROVIDER),
         "function NonceThreadResumeRestore(",
-        "\n// A thread read that fails leaves the chat unpaired",
+        "\nconst THREAD_READ_RETRY_MS =",
     )
     match = re.search(r"useEffect\(\(\) => \{\n(.*?)\n  \}, \[([^\]]*)\]\);", component, re.S)
     assert match, "NonceThreadResumeRestore effect not found"

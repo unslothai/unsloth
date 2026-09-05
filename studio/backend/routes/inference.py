@@ -21103,7 +21103,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None) — both of which are valid in
+    # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -25510,7 +25510,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close — see _anthropic_passthrough_stream for the full rationale.
+            # close - see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.
@@ -26245,9 +26245,13 @@ def _responses_should_parse_think_markers(
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
 
 
-def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+def _responses_reasoning_output_item(
+    reasoning_text: str,
+    item_id: Optional[str] = None,
+    status: Literal["completed", "incomplete"] = "completed",
+) -> dict:
     kwargs: dict[str, Any] = {
-        "status": "completed",
+        "status": status,
         "summary": [],
         "content": [ResponsesOutputReasoningContent(text = reasoning_text)],
     }
@@ -26532,7 +26536,9 @@ def _responses_custom_tool_input(arguments: Any) -> str:
 
 
 def _chat_tool_calls_to_responses_output(
-    tool_calls: list[dict], custom_tool_names: Optional[set[str]] = None
+    tool_calls: list[dict],
+    custom_tool_names: Optional[set[str]] = None,
+    status: Literal["completed", "incomplete"] = "completed",
 ) -> list[dict]:
     """Map local function calls back into their Responses output item types.
 
@@ -26554,7 +26560,7 @@ def _chat_tool_calls_to_responses_output(
                     call_id = tc.get("id", ""),
                     name = name,
                     input = _responses_custom_tool_input(arguments),
-                    status = "completed",
+                    status = status,
                 ).model_dump()
             )
             continue
@@ -26563,10 +26569,20 @@ def _chat_tool_calls_to_responses_output(
                 call_id = tc.get("id", ""),
                 name = name,
                 arguments = arguments,
-                status = "completed",
+                status = status,
             ).model_dump()
         )
     return items
+
+
+def _responses_incomplete_reason(
+    finish_reason: Any,
+) -> Optional[Literal["max_output_tokens", "content_filter"]]:
+    if finish_reason == "length":
+        return "max_output_tokens"
+    if finish_reason == "content_filter":
+        return "content_filter"
+    return None
 
 
 async def _responses_non_streaming(
@@ -26625,6 +26641,10 @@ async def _responses_non_streaming(
         text = ""
         reasoning_text = ""
         tool_calls: list[dict] = []
+        incomplete_reason = (
+            _responses_incomplete_reason(choices[0].get("finish_reason")) if choices else None
+        )
+        truncated = incomplete_reason is not None
         if choices:
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
@@ -26648,28 +26668,34 @@ async def _responses_non_streaming(
         # the model produced content, so clients expecting a pure tool-call turn
         # (finish_reason="tool_calls") don't see a spurious empty message item.
         output_items: list[dict] = []
+        item_status = "incomplete" if truncated else "completed"
         if reasoning_text:
-            output_items.append(_responses_reasoning_output_item(reasoning_text))
+            output_items.append(
+                _responses_reasoning_output_item(reasoning_text, status = item_status)
+            )
         if text:
             msg_id = f"msg_{uuid.uuid4().hex[:12]}"
             output_items.append(
                 ResponsesOutputMessage(
                     id = msg_id,
-                    status = "completed",
+                    status = item_status,
                     role = "assistant",
                     content = [ResponsesOutputTextContent(text = text)],
                 ).model_dump()
             )
         output_items.extend(
             _chat_tool_calls_to_responses_output(
-                tool_calls, _responses_custom_tool_names(payload.tools)
+                tool_calls,
+                _responses_custom_tool_names(payload.tools),
+                status = item_status,
             )
         )
 
         response = ResponsesResponse(
             id = resp_id,
             created_at = int(time.time()),
-            status = "completed",
+            status = "incomplete" if truncated else "completed",
+            incomplete_details = ({"reason": incomplete_reason} if truncated else None),
             model = body.get("model", payload.model),
             output = output_items,
             usage = ResponsesUsage(
@@ -27136,8 +27162,8 @@ async def _responses_stream(
                     out.extend(_tool_call_delta_events(tc))
             return out
 
-        def _snapshot_output() -> list[dict]:
-            """Snapshot of all completed output items for response.completed."""
+        def _snapshot_output(active_item_status: str = "completed") -> list[dict]:
+            """Snapshot output items using the response's terminal state."""
             indexed_items: list[tuple[int, dict]] = []
             if reasoning_state["opened"]:
                 indexed_items.append(
@@ -27146,7 +27172,7 @@ async def _responses_stream(
                         {
                             "type": "reasoning",
                             "id": reasoning_state["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "summary": [],
                             "content": [{"type": "reasoning_text", "text": full_reasoning}],
                         },
@@ -27163,7 +27189,9 @@ async def _responses_stream(
                         {
                             "type": "message",
                             "id": msg_st["item_id"],
-                            "status": "completed",
+                            "status": (
+                                "completed" if msg_st is not message_state else active_item_status
+                            ),
                             "role": "assistant",
                             "content": [
                                 {
@@ -27179,7 +27207,7 @@ async def _responses_stream(
                 if st["name"] in custom_tool_names:
                     item = {
                         "type": "custom_tool_call",
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "input": _responses_custom_tool_input(st["arguments"]),
@@ -27188,7 +27216,7 @@ async def _responses_stream(
                     item = {
                         "type": "function_call",
                         "id": st["item_id"],
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "arguments": st["arguments"],
@@ -27540,6 +27568,15 @@ async def _responses_stream(
                 },
             )
 
+        # Healing changes a natural stop into tool_calls, but it must not erase
+        # an authoritative truncation or failure reason from the upstream model.
+        if healer is not None and healer.healed and stream_finish_reason in (None, "stop"):
+            stream_finish_reason = "tool_calls"
+
+        incomplete_reason = _responses_incomplete_reason(stream_finish_reason)
+        truncated = incomplete_reason is not None
+        active_item_status = "incomplete" if truncated else "completed"
+
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:
             close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
@@ -27577,7 +27614,7 @@ async def _responses_stream(
                         "item": {
                             "type": "reasoning",
                             "id": st["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "summary": [],
                             "content": [{"type": "reasoning_text", "text": full_reasoning}],
                         },
@@ -27618,7 +27655,7 @@ async def _responses_stream(
                         "item": {
                             "type": "message",
                             "id": st["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "role": "assistant",
                             "content": [
                                 {"type": "output_text", "text": _msg_text, "annotations": []}
@@ -27637,7 +27674,7 @@ async def _responses_stream(
                     "output_index": st["output_index"],
                     "item": {
                         "type": "custom_tool_call",
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "input": custom_input,
@@ -27692,7 +27729,7 @@ async def _responses_stream(
                 "item": {
                     "type": "function_call",
                     "id": st["item_id"],
-                    "status": "completed",
+                    "status": active_item_status,
                     "call_id": st["call_id"],
                     "name": st["name"],
                     "arguments": st["arguments"],
@@ -27701,17 +27738,18 @@ async def _responses_stream(
             api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
             yield _sse("response.output_item.done", item_done)
 
-        # response.completed
         total_tokens = input_tokens + output_tokens
-        completed_response = {
-            "type": "response.completed",
+        terminal_event = "response.incomplete" if truncated else "response.completed"
+        terminal_response = {
+            "type": terminal_event,
             "response": {
                 "id": resp_id,
                 "object": "response",
                 "created_at": created_at,
-                "status": "completed",
+                "status": "incomplete" if truncated else "completed",
+                "incomplete_details": ({"reason": incomplete_reason} if truncated else None),
                 "model": _clean_model,
-                "output": _snapshot_output(),
+                "output": _snapshot_output(active_item_status),
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -27719,15 +27757,10 @@ async def _responses_stream(
                 },
             },
         }
-        # A healed call reaches the client as a function_call item while the upstream chunk
-        # still says "stop", so report what this adapter emitted -- same rule the chat
-        # stream's synthetic finish line applies.
-        if healer is not None and healer.healed:
-            stream_finish_reason = "tool_calls"
         if stream_finish_reason:
             api_monitor.set_perf(monitor_id, stop_reason = stream_finish_reason)
         api_monitor.finish(monitor_id)
-        yield _sse("response.completed", completed_response)
+        yield _sse(terminal_event, terminal_response)
 
     async def admitted_event_generator():
         # Register for the body's whole lifetime, admission wait included: the run holds a decode

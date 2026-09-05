@@ -359,7 +359,8 @@ class TestFriendlyUpstreamError:
 
 
 # =====================================================================
-# ChatMessage — tool role, tool_calls, optional content
+
+# ChatMessage - tool role, tool_calls, optional content
 # =====================================================================
 
 
@@ -527,7 +528,8 @@ class TestChatMessageToolRoles:
 
 
 # =====================================================================
-# ChatCompletionRequest — standard OpenAI tool fields
+
+# ChatCompletionRequest - standard OpenAI tool fields
 # =====================================================================
 
 
@@ -2341,7 +2343,11 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_param(resp, param)
 
-    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+    # Same two rejection sites, and same reason to pin one, as the GGUF case below.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inference_route
 
         class _NoGGUFBackend:
@@ -2363,6 +2369,9 @@ class TestChatCompletionRequestToolFields:
             "_detect_safetensors_features",
             lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
+        monkeypatch.setattr(
+            inference_route, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
@@ -2381,9 +2390,13 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
     def test_multiturn_tool_loop_messages(self):
@@ -2429,7 +2442,8 @@ class TestChatCompletionRequestToolFields:
 
 
 # =====================================================================
-# anthropic_tool_choice_to_openai — pure translation helper
+
+# anthropic_tool_choice_to_openai - pure translation helper
 # =====================================================================
 
 
@@ -2460,7 +2474,8 @@ class TestAnthropicToolChoiceToOpenAI:
 
 
 # =====================================================================
-# _build_passthrough_payload — tool_choice propagation
+
+# _build_passthrough_payload - tool_choice propagation
 # =====================================================================
 
 
@@ -2768,6 +2783,8 @@ class TestOpenAIPassthroughSSETerminalState:
 
 
 # =====================================================================
+
+# =====================================================================
 # Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
@@ -2878,7 +2895,8 @@ class TestPassthroughReasoningKwargs:
 
 
 # =====================================================================
-# OpenAI API compatibility helpers — verified spec edge cases
+
+# OpenAI API compatibility helpers - verified spec edge cases
 # =====================================================================
 
 
@@ -3442,7 +3460,8 @@ class TestOpenAICompatibilityHelpers:
 
 
 # =====================================================================
-# _friendly_error — httpx transport failures
+
+# _friendly_error - httpx transport failures
 # =====================================================================
 
 
@@ -3468,7 +3487,7 @@ class TestFriendlyErrorHttpx:
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
-        # — a context-size message must still produce "Message too long".
+        # - a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
@@ -4195,7 +4214,14 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == "tool_choice"
 
-    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+    # Two sites reject this shape and `_should_validate_before_switch()` picks
+    # which; the early one runs before the api_monitor row is opened. It reads
+    # process-wide state, so unpinned this asserted whichever site the xdist
+    # worker happened to leave reachable. Pinned, both sites are covered.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inf_mod
 
         def _plain(**kwargs):
@@ -4214,6 +4240,9 @@ class TestGgufVisionToolRouting:
             generate_chat_completion_with_tools = _tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(
+            inf_mod, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
@@ -4236,9 +4265,15 @@ class TestGgufVisionToolRouting:
             )
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened, so there is no
+            # row to fail; opening one here would be a behaviour change, not a fix.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
+        # Neither site may leave a row running.
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
@@ -10136,6 +10171,8 @@ class TestApiMonitorAudioInput:
 
 
 # =====================================================================
+
+# =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10294,6 +10331,8 @@ class TestResponsesChatTemplateKwargs:
 
         asyncio.run(_run())
 
+
+# =====================================================================
 
 # =====================================================================
 # GGUF chat-template role alternation: coalesce orphaned user turns left

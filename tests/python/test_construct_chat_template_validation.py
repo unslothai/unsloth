@@ -66,7 +66,6 @@ def test_error_message_excerpt_is_bounded():
             extra_eos_tokens = ["</s>"],
         )
     msg = str(exc_info.value)
-    # Excerpt is capped well under the template length.
     assert len(msg) < 1000
     assert "{OUTPUT}" in msg
 
@@ -86,9 +85,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
 @pytest.mark.parametrize(
     "chat_template",
     [
-        # User turn begins with {INPUT} (no prefix before the sentinel).
         "{INPUT} [/INST] {OUTPUT}</s>{INPUT} [/INST] {OUTPUT}</s>",
-        # Assistant turn begins with {OUTPUT} (no prefix before the sentinel).
         "User: {INPUT}\n{OUTPUT}</s>User: {INPUT}\n{OUTPUT}</s>",
     ],
 )
@@ -294,7 +291,6 @@ def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_m
     assert default_system_message in rendered
     assert "### User's turn: Hi" in rendered
 
-    # The generation prompt uses its own literal, not process().
     prompted = _render(
         jinja_template,
         [{"role": "user", "content": "Hi"}],

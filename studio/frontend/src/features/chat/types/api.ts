@@ -50,10 +50,8 @@ export interface LoadModelRequest {
 
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
-  /**
-     * Stop any chats still generating instead of getting a 409: a load replaces the single
-     * llama-server they all decode on. Set only after the user confirms.
-     */
+  /** Stop any chats still generating instead of getting a 409: a load replaces the single
+   *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
@@ -68,63 +66,44 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
-  /**
-   * Speculative decoding mode for GGUF models. Canonical values: "auto"
-   * (platform-aware: DSpark or DFlash when the model ships that sidecar, else
-   * MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp" (force draft-mtp),
-   * "dspark" (force draft-dspark with a sidecar), "dflash" (force draft-dflash
-   * with a sidecar), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
-   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"draft-dspark"/
-   * "draft-dflash"/"ngram-mod"/"ngram-simple" are still accepted by the backend.
-   */
+  /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
+   *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
+   *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
   speculative_type?: string | null;
-  /**
-   * Override --spec-draft-n-max for drafter speculative decoding. Applied only
-   * when speculative_type resolves to "mtp", "mtp+ngram", "dspark" or "dflash".
-   */
+  /** Override --spec-draft-n-max for drafter speculative decoding. Applied only when speculative_type
+   *  resolves to "mtp", "mtp+ngram", "dspark" or "dflash". */
   spec_draft_n_max?: number | null;
-  /**
-   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
-   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
-   */
+  /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
+   *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
   /** prompt batch size (--batch-size), 1..65536; omit/null = llama.cpp default 2048, gguf only */
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
   n_ubatch?: number | null;
-  /** weight loading mode (--load-mode): auto/none/mmap/mlock/mmap+mlock/dio.
-   *  Omit/null = llama.cpp's own `auto`. Settings -> Model Memory overrides it. */
+  /** Weight loading mode (--load-mode): auto/none/mmap/mlock/mmap+mlock/dio. Omit/null = llama.cpp's
+   *  own `auto`. Settings -> Model Memory overrides it. */
   load_mode?: string | null;
-  /** KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v);
-   *  omit/null = llama.cpp default f16. Only reaches the command line when the
-   *  load attaches a separate draft model. */
+  /** KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v); omit/null = f16. Only
+   *  reaches the command line when the load attaches a separate draft model. */
   spec_draft_cache_type?: string | null;
   /** context checkpoints per slot (--ctx-checkpoints); omit/null = default 32, 0 disables */
   ctx_checkpoints?: number | null;
   /** host prompt cache size in MiB (--cache-ram); omit/null = default 8192, 0 disables, -1 unlimited */
   cache_ram?: number | null;
-  /**
-   * Pass-through llama-server args, one argv token per entry, appended after
-   * Unsloth's own flags so llama.cpp's last-wins parser takes these. Flags Unsloth
-   * manages are refused with a 4xx naming the flag. Omit/null inherits the stored
-   * per-model value; [] launches with none. GGUF only.
-   */
+  /** Pass-through llama-server args, one argv token per entry, appended after Unsloth's own flags so
+   *  llama.cpp's last-wins parser takes these. Managed flags are refused with a 4xx naming the
+   *  flag. Omit/null inherits the stored per-model value; [] launches with none. GGUF only. */
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[] | null;
-  /**
-   * Split the model across GPUs by tensor (--split-mode tensor) instead
-   * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
-   */
+  /** Split the model across GPUs by tensor (--split-mode tensor) instead of by layer for GGUF models.
+   *  Multi-GPU only. */
   tensor_parallel?: boolean | null;
-  /**
-   * Load a vision-capable GGUF without its mmproj, freeing the VRAM the
-   * projector would occupy. Image input is unavailable for the session;
-   * text generation is unaffected.
-   */
+  /** Load a vision-capable GGUF without its mmproj, freeing the VRAM the projector would occupy.
+   *  Image input is unavailable for the session; text generation is unaffected. */
   disable_vision?: boolean | null;
-  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
-   *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
-   *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
+  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs and caps context to
+   *  fit VRAM. "manual": you own the offload, with gpu_layers -1 handing sizing to llama.cpp's
+   *  --fit and >= 0 pinning layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
   /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
   gpu_layers?: number;
@@ -148,8 +127,8 @@ export interface ValidateModelResponse {
   display_name?: string | null;
   is_gguf?: boolean;
   is_diffusion?: boolean;
-  /** The diffusion check was inconclusive, so `is_diffusion: false` above means
-   *  "not known to be diffusion", not "known to be ordinary". */
+  /** The diffusion check was inconclusive, so `is_diffusion: false` above means "not known to be
+   *  diffusion", not "known to be ordinary". */
   diffusion_unknown?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
@@ -158,15 +137,14 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
-  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
-   * this + 1 (llama.cpp counts the output layer as offloadable too); null
-   *  until downloaded. */
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is this + 1, since llama.cpp
+   *  counts the output layer as offloadable. Null until downloaded. */
   layer_count?: number | null;
-  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
-   *  0 for dense models, null until downloaded. */
+  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling); 0 for dense models,
+   *  null until downloaded. */
   moe_layer_count?: number | null;
-  /** Embedded GGUF chat template, returned when include_chat_template is set
-   *  (native lease-backed picks); null for non-GGUF, over-cap, or not read. */
+  /** Embedded GGUF chat template, returned when include_chat_template is set; null for non-GGUF,
+   *  over-cap, or not read. */
   chat_template?: string | null;
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
@@ -187,10 +165,9 @@ export interface GgufVariantDetail {
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
   partial?: boolean;
-  /** Variants sharing this key share one companion download footprint (text
-   *  encoder, VAE, tokenizer, configs). The set is not repo-wide: one repo can
-   *  hold GGUFs of different families, and FLUX.2-klein picks its text encoder
-   *  per checkpoint size. Null/absent means unknown, so the repo is one group. */
+  /** Variants sharing this key share one companion download footprint. The set is not repo-wide: one
+   *  repo can hold GGUFs of different families, and FLUX.2-klein picks its text encoder per
+   *  checkpoint size. Null/absent means unknown, so the repo is one group. */
   dependency_key?: string | null;
 }
 
@@ -232,9 +209,8 @@ export interface LoadModelResponse {
   is_gguf?: boolean;
   is_local_model?: boolean;
   is_diffusion?: boolean;
-  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
-   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
-   *  this carries the standing request. */
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
+   *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -276,9 +252,9 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
-  /** The load ran with the vision projector deliberately left unloaded. Echoes the
-   * request, so it round-trips the Advanced Settings switch even on a GGUF that
-   * never had a projector -- unlike vision_disabled_by_user below. */
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
+   *  round-trips the Advanced Settings switch even on a GGUF that never had a projector, unlike
+   *  vision_disabled_by_user below. */
   disable_vision?: boolean;
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
@@ -297,11 +273,9 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the load was invoked with (else the --parallel default). Null for
-   * non-GGUF loads. */
+  /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
   requested_parallel_slots?: number | null;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null for
-   * non-GGUF loads. */
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -323,8 +297,8 @@ export interface UnloadModelRequest {
   model_path: string;
   /** Cancel this exact in-flight load; never unload an already-resident model. */
   cancel_load_request_id?: string | null;
-  /** Stop any chats still generating instead of getting a 409: the unload takes down the
-   * llama-server they all decode on. */
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the llama-server
+   *  they all decode on. */
   force_cancel_active?: boolean;
 }
 
@@ -336,9 +310,8 @@ export interface InferenceStatusResponse {
   is_gguf?: boolean;
   is_local_model?: boolean;
   is_diffusion?: boolean;
-  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
-   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
-   *  this carries the standing request. */
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
+   *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
   diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
@@ -384,9 +357,8 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
-  /** The load ran with the vision projector deliberately left unloaded. Echoes the
-   * request, so it round-trips the Advanced Settings switch even on a GGUF that
-   * never had a projector -- unlike vision_disabled_by_user below. */
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
+   *  round-trips the Advanced Settings switch even on a GGUF that never had a projector. */
   disable_vision?: boolean;
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
@@ -405,11 +377,9 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the active load was invoked with (else the --parallel default).
-   * Null when no GGUF model is loaded. */
+  /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null when
-   * no GGUF model is loaded. */
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -428,27 +398,14 @@ export interface InferenceStatusResponse {
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
-  /**
-   * Why a speculative drafter was disabled despite being requested.
-   * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
-   * it; "runtime_error" -> the current build could not run it;
-   * "drafter_not_found" -> its MTP, DSpark or DFlash sidecar was unavailable;
-   * "drafter_no_vram" -> an Auto-mode fit downgrade: the model pins on GPU but
-   * the drafter's reserve does not, and Auto keeps the context rather than
-   * shrink it (choose the drafter in Settings to force it);
-   * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
-   * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
-   * (updating won't help; choose MTP in Settings to force it);
-   * "mtp_partial_offload" -> an Auto-mode policy downgrade for an embedded
-   * Hybrid Mamba MTP head on a partially offloaded placement, whose recurrent
-   * rollback copies cost more layers than the drafting wins back (updating
-   * won't help; choose MTP in Settings to force it). Null otherwise.
-   */
-  /**
-   * Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto
-   * resolves the kind itself, so speculative_type still reads "auto", and a fallback leaves
-   * the engaged type at "default": neither names the file to fix.
-   */
+  /** Why a speculative drafter was disabled despite being requested. "binary_no_mtp"/
+   *  "binary_outdated": updating llama.cpp would re-enable it. "runtime_error": the build could
+   *  not run it. "drafter_not_found": its sidecar was unavailable. "drafter_no_vram": an
+   *  Auto-mode fit downgrade. "mla_mtp_disabled" and "mtp_partial_offload": Auto-mode policy
+   *  downgrades where MTP costs more than it wins. Null otherwise. */
+  /** Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto resolves the kind
+   *  itself, so speculative_type still reads "auto" and a fallback leaves the engaged type at
+   *  "default": neither names the file to fix. */
   spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
   /** Only for a binary stand-down: whether a different llama-server is installed now. */
@@ -487,8 +444,8 @@ export interface ApiMonitorEntry {
   updated_at: number;
   finished_at?: number | null;
   duration_ms?: number | null;
-  // duration_ms covers the whole request, queue wait and prefill included. decode_ms is
-  // only the generating span, and is absent unless the engine reported it.
+  // duration_ms covers the whole request, queue wait and prefill included. decode_ms is only the
+  // generating span, and is absent unless the engine reported it.
   decode_ms?: number | null;
   context_length?: number | null;
   context_usage?: number | null;
@@ -519,15 +476,15 @@ export interface ApiMonitorQueue {
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
-  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
-  // the browser's clock. Absent on a backend older than the field.
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting the
+  // browser's clock. Absent on an older backend.
   server_time?: number;
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
   /** Live slot/queue occupancy; null when no llama model is loaded. */
   queue?: ApiMonitorQueue | null;
-  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  /** Absent on older backends: treat only an explicit `false` as disabled. */
   logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
@@ -574,13 +531,9 @@ export type OpenAIMessageContentPart =
 
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
-/**
- * OpenAI Chat Completions tool_call shape. Assistant turns echo function calls
- * as `tool_calls`; the matching result rides on a separate `role="tool"`
- * message keyed by `tool_call_id`. `extra_content.google.thought_signature` is
- * the Gemini round-trip field the backend translator emits (on `delta.
- * tool_calls`) and consumes (when rebuilding the functionCall part next turn).
- */
+/** OpenAI Chat Completions tool_call shape. Assistant turns echo function calls as `tool_calls`;
+ *  the matching result rides on a separate `role="tool"` message keyed by `tool_call_id`.
+ *  `extra_content.google.thought_signature` is the Gemini round-trip field. */
 export interface OpenAIToolCallPart {
   id?: string;
   type?: "function";
@@ -606,7 +559,7 @@ export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;
-  /** Reasoning-class OpenAI models reject these — caller may omit. */
+  /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
   max_tokens: number;
@@ -631,11 +584,9 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
-  /**
-   * Resume the trailing assistant turn rather than opening a new one: the rendered
-   * prompt ends inside the partial answer, so the model emits its next token. Local
-   * models only -- the external-provider proxy forwards an explicit field list.
-   */
+  /** Resume the trailing assistant turn rather than opening a new one: the rendered prompt ends inside
+   *  the partial answer, so the model emits its next token. Local models only, since the
+   *  external-provider proxy forwards an explicit field list. */
   continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
@@ -646,12 +597,9 @@ export interface OpenAIChatCompletionsRequest {
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
-  /**
-   * Local models + enable_tools only. Gate level for local tool calls: "ask"
-   * prompts on every call, "auto" prompts only on calls flagged unsafe, "off"
-   * never prompts, "full" never prompts and drops the sandbox. Unset behaves
-   * as "ask".
-   */
+  /** Local models plus enable_tools only. Gate level for local tool calls: "ask" prompts on every
+   *  call, "auto" only on calls flagged unsafe, "off" never, "full" never and drops the
+   *  sandbox. Unset behaves as "ask". */
   permission_mode?: "ask" | "auto" | "off" | "full";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
@@ -687,54 +635,34 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
-  /**
-   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the
-   * backend also accepts a cached-content resource name (`cachedContents/...`)
-   * string, forwarded as `generationConfig.cachedContent`.
-   */
+  /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
+   *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
-  /**
-   * OpenAI shell-tool container id from the prior response in this thread. When
-   * set and the Code pill is on, the backend routes the next /v1/responses with
-   * `environment.type="container_reference"` so filesystem state persists; unset
-   * → `container_auto` (fresh container). OpenAI cloud + gpt-5.5 family only.
-   */
+  /** OpenAI shell-tool container id from the prior response in this thread. When set and the Code
+   *  pill is on, the backend routes the next /v1/responses with
+   *  `environment.type="container_reference"` so filesystem state persists; unset means a fresh
+   *  container. OpenAI cloud and the gpt-5.5 family only. */
   openai_code_exec_container_id?: string | null;
-  /**
-   * Anthropic code_execution container id from the prior response in this
-   * thread. When set and the Code pill is on, the backend forwards a top-level
-   * `container` on /v1/messages so filesystem state persists; unset →
-   * auto-created. Anthropic provider with `code_execution` in `enabled_tools`.
-   */
+  /** Anthropic code_execution container id from the prior response in this thread. When set and the
+   *  Code pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
+   *  state persists; unset is auto-created. */
   anthropic_code_exec_container_id?: string | null;
-  /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere.
-   * See https://platform.claude.com/docs/en/build-with-claude/fast-mode
-   */
+  /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
-  /**
-   * Opt into the OpenAI-standard trailing usage chunk on streams
-   * (`choices: []` with `usage` + llama-server `timings` populated). The
-   * backend only emits it when `include_usage` is set; the local chat UI
-   * sends it so the context-usage bar and tok/s readout populate.
-   */
+  /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
+   *  `include_usage` is set; the local chat UI sends it so the context-usage bar and tok/s
+   *  readout populate. */
   stream_options?: { include_usage?: boolean } | null;
 }
 
 export interface OpenAIChatDelta {
   role?: string;
   content?: string | null;
-  /**
-   * Streamed assistant tool calls. The Gemini and OpenAI Responses translators
-   * emit incremental deltas (function name + arguments fragments) so the
-   * chat-adapter can render tool cards as they arrive.
-   */
+  /** Streamed assistant tool calls. The Gemini and OpenAI Responses translators emit incremental
+   *  deltas so the chat-adapter can render tool cards as they arrive. */
   tool_calls?: OpenAIToolCallPart[];
-  /**
-   * Provider-specific passthrough. Gemini ships `thoughtSignature`, citations,
-   * `native_part`, etc., here so the round-trip can replay them on follow-up
-   * turns without bleeding into other providers.
-   */
+  /** Provider-specific passthrough. Gemini ships `thoughtSignature`, citations, `native_part` and the
+   *  like here so the round-trip can replay them without bleeding into other providers. */
   extra_content?: Record<string, unknown>;
 }
 
@@ -757,43 +685,37 @@ export interface OpenAIChatChunk {
     prompt_tokens_after?: number;
     context_length?: number;
     fits: boolean;
-    // Present when the evicted turns were archived and searched. Counts only, never
-    // message text: this rides an SSE chunk that reaches the client.
+    // Present when the evicted turns were archived and searched. Counts only, never message text: this
+    // rides an SSE chunk that reaches the client.
     archived_messages?: number;
     recalled_chunks?: number;
-    // Present only when `fits` is false: the floor the conversation cannot go below, and
-    // how much of it is the message just sent. Together they say whether the history or
-    // that one message is the problem, i.e. whether "shorten the conversation" helps.
+    // Present only when `fits` is false: the floor the conversation cannot go below, and how much of
+    // it is the message just sent. Together they say whether the history or that one message is
+    // the problem.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
-    // Whether `latest_turn_tokens` is a real token count or the four-characters-a-token
-    // estimate the fit falls back to when nothing could price the turn at all. A turn the
-    // template renders as nothing on its own is priced by difference and stays exact.
-    // Only the counted one may be quoted as the turn's size.
+    // Whether `latest_turn_tokens` is a real count or the four-characters-a-token estimate the fit
+    // falls back to. Only the counted one may be quoted as the turn's size.
     latest_turn_exact?: boolean;
-    // The floor both counts above carry: what a rendered prompt costs with no messages in
-    // it, which on a tool-enabled request is the whole tool catalogue. Subtract it before
-    // comparing them, or the catalogue is blamed on the turn. Absent from an older server,
-    // where zero reproduces the old behaviour.
+    // The floor both counts above carry: what a rendered prompt costs with no messages, which on a
+    // tool-enabled request is the whole tool catalogue. Subtract it before comparing them, or the
+    // catalogue is blamed on the turn.
     shared_prompt_tokens?: number;
-    // Where the compaction boundary sits in the messages THIS request was sent with.
-    // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
-    // times cannot advance the boundary past the turns actually evicted.
+    // Where the compaction boundary sits in the messages THIS request was sent with. Absolute, unlike
+    // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
+    // boundary past the turns actually evicted.
     boundary_messages?: number;
-    // The text the boundary landed ON, so the count can be re-derived by position. A count
-    // is only valid against the transcript it was counted on, and deleting an already
-    // evicted prompt shortens that transcript; without the anchor the replayed count then
-    // evicts live turns instead. Carried through untouched, like boundary_messages.
+    // The text the boundary landed ON, so the count can be re-derived by position: a count is only
+    // valid against the transcript it was counted on, and deleting an already evicted prompt
+    // shortens that transcript.
     boundary_anchor?: string;
-    // How much extra trim the fit that set the boundary above used. Replayed against the
-    // request's own ratio: a boundary cut under more headroom than the caller now asks for
-    // is discarded, so lowering the setting hands the history back.
+    // How much extra trim the fit that set the boundary used. Replayed against the request's own
+    // ratio, so a boundary cut under more headroom than the caller now asks for is discarded.
     boundary_headroom_ratio?: number;
-    // Whose message that is: in a tool loop the last one is often a tool result rather
-    // than anything the user typed.
+    // Whose message that is: in a tool loop the last one is often a tool result rather than anything the user typed.
     latest_turn_role?: string;
-    // The prompt's share of the window (context_length minus the reply reserve), which is
-    // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
+    // The prompt's share of the window (context_length minus the reply reserve), which is what one turn
+    // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
   };
 }

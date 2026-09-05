@@ -142,14 +142,14 @@ def run(
         except Exception as exc:  # noqa: BLE001
             note = f"attn({attn})={type(exc).__name__}:{str(exc)[:60]}"
             print(f"    [{tag}] {note}", flush = True)
-            del pipe  # free the resident pipe so a skipped variant doesn't leak VRAM
+            del pipe
             torch.cuda.empty_cache()
             return None
     else:
         # set_attention_backend is process-wide and fresh processors inherit it, so force native for no-attn variants.
         try:
             pipe.transformer.set_attention_backend("native")
-        except Exception as exc:  # noqa: BLE001 — best-effort isolation
+        except Exception as exc:  # noqa: BLE001 - best-effort isolation
             print(
                 f"    [{tag}] attn(native-reset)={type(exc).__name__}:{str(exc)[:60]}", flush = True
             )
