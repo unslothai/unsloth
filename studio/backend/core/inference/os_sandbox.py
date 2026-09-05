@@ -125,6 +125,17 @@ _LINUX_ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+# CA trust roots, bound read-only only when the network allowlist is on: without
+# them OpenSSL inside the sandbox has no bundle (Debian keeps it under /etc/ssl,
+# Fedora and RHEL under /etc/pki) and every HTTPS fetch through the proxy fails
+# certificate verification. pip carries certifi, curl, git and urllib do not.
+_LINUX_CA_TRUST_PATHS = (
+    "/etc/ssl",
+    "/etc/pki",
+    "/etc/ca-certificates",
+    "/etc/ca-certificates.conf",
+    "/etc/crypto-policies",
+)
 _WSL_HIDDEN_PATHS = ("/usr/lib/wsl",)
 
 
@@ -585,7 +596,9 @@ def _linux_mount_points() -> tuple[str, ...]:
 
 def _fingerprint_roots() -> tuple[str, ...]:
     """Paths whose mount topology the sandbox actually exposes or masks."""
-    roots: list[str] = ["/", *_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, "/etc", "/nix/store", "/tmp"]
+    roots: list[str] = [
+        "/", *_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *_LINUX_CA_TRUST_PATHS, "/etc", "/nix/store", "/tmp"
+    ]
     try:
         roots.extend(_runtime_read_paths())
     except Exception:  # noqa: BLE001 - interpreter introspection must not break fingerprinting
@@ -1313,7 +1326,9 @@ class LinuxBubblewrapBackend:
                 f"Bubblewrap is not a root-controlled executable: {candidate}",
             )
         system_roots = tuple(
-            path for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES) if os.path.exists(path)
+            path
+            for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *_LINUX_CA_TRUST_PATHS)
+            if os.path.exists(path)
         )
         try:
             _validate_runtime_paths(
@@ -1351,7 +1366,9 @@ class LinuxBubblewrapBackend:
         _validate_linux_workdir_environment(workdir)
         runtime_paths = _runtime_read_paths()
         system_roots = tuple(
-            path for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES) if os.path.exists(path)
+            path
+            for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *_LINUX_CA_TRUST_PATHS)
+            if os.path.exists(path)
         )
         _validate_runtime_paths(
             system_roots,
@@ -1415,6 +1432,9 @@ class LinuxBubblewrapBackend:
             argv.extend(("--ro-bind", "/nix/store", "/nix/store"))
         for path in _LINUX_ETC_FILES:
             argv.extend(("--ro-bind-try", path, path))
+        if spec.network_policy == "allowlist":
+            for path in _LINUX_CA_TRUST_PATHS:
+                argv.extend(("--ro-bind-try", path, path))
         argv.extend(("--ro-bind", passwd, "/etc/passwd"))
         argv.extend(("--ro-bind", group, "/etc/group"))
         private_tmp_runtime_paths: list[str] = []
@@ -1455,43 +1475,61 @@ class LinuxBubblewrapBackend:
         cleanup_callbacks: list[Callable[[], None]] = []
         spawn_callback = None
         network_audit = None
-        if network_bridge:
-            allowlist = _network_allowlist_for_launch()
-            proxy = AllowlistProxy(allowlist)
-            host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-            cleanup_callbacks.extend((proxy.close, host_end.close, sandbox_end.close))
-            pass_fds.append(sandbox_end.fileno())
-            argv.extend(("--setenv", _NETWORK_BRIDGE_ENV, str(sandbox_end.fileno())))
-            spawn_callback = _bridged_spawn(proxy, host_end, sandbox_end)
-            network_audit = proxy.audit
-        wrapper = _linux_wrapper_source(limit = _nproc_limit(), network_bridge = network_bridge)
-        argv.extend(
-            (
-                "--",
-                sys.executable,
-                "-I",
-                "-S",
-                "-c",
-                wrapper,
-                *spec.argv,
+        proxy: AllowlistProxy | None = None
+        bridge_ends: tuple[socket.socket, socket.socket] | None = None
+        # Nothing owns the proxy or the socketpair until PreparedSandboxLaunch
+        # holds their cleanup callbacks, so anything that raises in between has
+        # to close them here, the way the Seatbelt backend does.
+        try:
+            if network_bridge:
+                allowlist = _network_allowlist_for_launch()
+                proxy = AllowlistProxy(allowlist)
+                host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+                bridge_ends = (host_end, sandbox_end)
+                cleanup_callbacks.extend((proxy.close, host_end.close, sandbox_end.close))
+                pass_fds.append(sandbox_end.fileno())
+                argv.extend(("--setenv", _NETWORK_BRIDGE_ENV, str(sandbox_end.fileno())))
+                spawn_callback = _bridged_spawn(proxy, host_end, sandbox_end)
+                network_audit = proxy.audit
+            wrapper = _linux_wrapper_source(
+                limit = _nproc_limit(), network_bridge = network_bridge
             )
-        )
-        return PreparedSandboxLaunch(
-            argv = tuple(argv),
-            workdir = workdir,
-            env = env,
-            preexec_fn = spec.launcher_preexec_fn,
-            backend = self.identity,
-            pass_fds = tuple(pass_fds),
-            owned_files = [seccomp_filter],
-            cleanup_paths = [identity_dir],
-            timeout_seconds = spec.timeout_seconds,
-            close_fds = spec.close_fds,
-            terminate_descendants = spec.terminate_descendants,
-            spawn_callback = spawn_callback,
-            cleanup_callbacks = cleanup_callbacks,
-            network_audit = network_audit,
-        )
+            argv.extend(
+                (
+                    "--",
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    wrapper,
+                    *spec.argv,
+                )
+            )
+            return PreparedSandboxLaunch(
+                argv = tuple(argv),
+                workdir = workdir,
+                env = env,
+                preexec_fn = spec.launcher_preexec_fn,
+                backend = self.identity,
+                pass_fds = tuple(pass_fds),
+                owned_files = [seccomp_filter],
+                cleanup_paths = [identity_dir],
+                timeout_seconds = spec.timeout_seconds,
+                close_fds = spec.close_fds,
+                terminate_descendants = spec.terminate_descendants,
+                spawn_callback = spawn_callback,
+                cleanup_callbacks = cleanup_callbacks,
+                network_audit = network_audit,
+            )
+        except Exception:
+            if proxy is not None:
+                proxy.close()
+            for end in bridge_ends or ():
+                try:
+                    end.close()
+                except OSError:
+                    pass
+            raise
 
 
 def _bridged_spawn(
@@ -1689,6 +1727,26 @@ _MACOS_READ_ROOTS = (
     "/System/Library/CoreServices/.SystemVersionPlatform.plist",
     "/System/Library/CoreServices/SystemVersion.plist",
 )
+# Readable only when the network allowlist is on: the trust store OpenSSL reads
+# (/private/etc/ssl) and what Security.framework needs to evaluate a server
+# certificate (the system keychains, the trust settings database, and trustd
+# through mach-lookup); curl and Foundation clients cannot verify TLS without
+# them, and Python's OpenSSL needs the cert.pem the system ships.
+_MACOS_TLS_TRUST_PATHS = (
+    "/private/etc/ssl",
+    "/System/Library/Keychains",
+    "/Library/Keychains",
+    "/System/Library/Security",
+    "/private/var/db/mds",
+    "/Library/Preferences/com.apple.security.plist",
+    "/Library/Preferences/com.apple.security.revocation.plist",
+)
+_MACOS_TLS_MACH_SERVICES = (
+    "com.apple.SecurityServer",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.ocspd",
+)
 _MACOS_DENIED_EXECUTABLES = (
     "/usr/bin/open",
     "/usr/bin/osascript",
@@ -1816,7 +1874,14 @@ def _macos_seatbelt_profile(
     runtime_paths: tuple[str, ...],
     proxy_port: int | None = None,
 ) -> str:
-    readable_paths = (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
+    readable_paths = (
+        *_MACOS_READ_ROOTS,
+        *(_MACOS_TLS_TRUST_PATHS if proxy_port else ()),
+        *_MACOS_DEVICES,
+        *runtime_paths,
+        workdir,
+        private_tmp,
+    )
     read_filters = [
         '(literal "/")',
         *_sbpl_path_filters(readable_paths),
@@ -1873,6 +1938,11 @@ def _macos_seatbelt_profile(
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup",
         '  (global-name "com.apple.system.opendirectoryd.libinfo")',
+        *(
+            [f"  (global-name {json.dumps(name)})" for name in _MACOS_TLS_MACH_SERVICES]
+            if proxy_port
+            else []
+        ),
         '  (global-name "com.apple.PowerManagement.control"))',
     ]
     return "\n".join(lines) + "\n"

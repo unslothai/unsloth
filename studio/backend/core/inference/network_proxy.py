@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """Loopback HTTP CONNECT proxy with a host allowlist for OS-isolated tool launches.
 
 The sandboxes built by ``os_sandbox`` deny every network path by default. This
@@ -79,13 +81,49 @@ REQUIRE_PUBLIC_ADDRESSES = True
 
 MAX_HEADER_BYTES = 16 * 1024
 MAX_TUNNELS = 64
+# Every proxy in this process shares this cap as well, so a session that opens
+# many launches at once cannot turn the backend into a few hundred threads.
+MAX_TOTAL_TUNNELS = 256
+# A ClientHello that does not fit in this many bytes is not inspected; the
+# tunnel proceeds and the audit counts it as one without a checked name.
+MAX_CLIENT_HELLO_BYTES = 8 * 1024
 CONNECT_TIMEOUT_SECONDS = 20.0
 IDLE_TIMEOUT_SECONDS = 120.0
 HEADER_TIMEOUT_SECONDS = 15.0
 MAX_AUDITED_HOSTS = 128
 
-_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+# ``fullmatch`` and not ``match``: with ``$`` a trailing newline still matched,
+# so a label ending in a control character passed validation.
+_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+# Every character a hostname may hold once IDNA encoding has run. Anything else
+# (control characters, spaces, quotes) is refused before the label checks, so it
+# can never reach the audit or the model-facing trailer.
+_HOST_CHARS_RE = re.compile(r"[A-Za-z0-9.-]+")
+# The audit boundary. A denied host comes straight off an untrusted CONNECT
+# line, so it is coerced to the characters a hostname may hold plus the "*" a
+# wildcard entry shows; a reason is coerced to printable ASCII. Neither can then
+# carry a newline into the tool result the model reads.
+_AUDIT_HOST_RE = re.compile(r"[^A-Za-z0-9.\-*]")
+_AUDIT_REASON_RE = re.compile(r"[^\x20-\x7e]")
+MAX_AUDIT_HOST_CHARS = 253
+MAX_AUDIT_REASON_CHARS = 200
+MAX_TRAILER_ENTRIES = 20
+
+# How a denial is worded to the model. An upstream failure is not the allowlist
+# refusing a host, and saying so sends the model chasing a policy that allowed
+# the host all along.
+POLICY_REFUSAL = "policy"
+UPSTREAM_FAILURE = "upstream"
+PROXY_REFUSAL = "proxy"
+_DENIAL_HEADINGS = {
+    POLICY_REFUSAL: "[network] Connections refused by the sandbox network allowlist:",
+    UPSTREAM_FAILURE: "[network] Connections that could not be reached:",
+    PROXY_REFUSAL: "[network] Connections the sandbox network proxy could not serve:",
+}
+_DENIAL_ORDER = (POLICY_REFUSAL, UPSTREAM_FAILURE, PROXY_REFUSAL)
+
 _PROXY_USER = "sandbox"
+_PROXY_USER_BYTES = _PROXY_USER.encode("ascii")
 PROXY_ENV_KEYS = (
     "HTTPS_PROXY",
     "https_proxy",
@@ -101,6 +139,26 @@ class AllowlistError(ValueError):
     """An allowlist entry that the proxy could never enforce safely."""
 
 
+def sanitize_audit_host(host: object) -> str:
+    """Coerce a host to something safe to show on one line of a tool result."""
+    text = host if isinstance(host, str) else str(host)
+    return _AUDIT_HOST_RE.sub("?", text)[:MAX_AUDIT_HOST_CHARS]
+
+
+def sanitize_audit_reason(reason: object) -> str:
+    """Coerce a denial reason to printable ASCII on a single line."""
+    text = reason if isinstance(reason, str) else str(reason)
+    return _AUDIT_REASON_RE.sub("?", text)[:MAX_AUDIT_REASON_CHARS]
+
+
+def _denial_kind(status: int) -> str:
+    if status == 502:
+        return UPSTREAM_FAILURE
+    if status == 503:
+        return PROXY_REFUSAL
+    return POLICY_REFUSAL
+
+
 def _is_ip_literal(host: str) -> bool:
     candidate = host.strip("[]")
     try:
@@ -113,7 +171,8 @@ def _is_ip_literal(host: str) -> bool:
     try:
         socket.inet_aton(candidate)
         return True
-    except OSError:
+    except (OSError, ValueError, UnicodeEncodeError):
+        # ValueError is what an embedded NUL raises, not OSError.
         return False
 
 
@@ -126,25 +185,32 @@ def normalize_host(host: str) -> str:
     """
     if not isinstance(host, str):
         raise AllowlistError("host must be a string")
+    # Every message below echoes the sanitized spelling: an AllowlistError text
+    # can end up in the audit, and from there in front of the model.
+    shown = sanitize_audit_host(host)
     stripped = host.strip().rstrip(".")
     if not stripped:
         raise AllowlistError("empty host")
     if len(stripped) > 253:
         raise AllowlistError("host is too long")
     if _is_ip_literal(stripped):
-        raise AllowlistError(f"IP literals are not allowed: {host!r}")
+        raise AllowlistError(f"IP literals are not allowed: {shown!r}")
     try:
         ascii_host = stripped.encode("idna").decode("ascii").lower()
     except UnicodeError as exc:
-        raise AllowlistError(f"host is not a valid IDNA name: {host!r}") from exc
+        raise AllowlistError(f"host is not a valid IDNA name: {shown!r}") from exc
     if _is_ip_literal(ascii_host):
-        raise AllowlistError(f"IP literals are not allowed: {host!r}")
+        raise AllowlistError(f"IP literals are not allowed: {shown!r}")
+    if not _HOST_CHARS_RE.fullmatch(ascii_host):
+        raise AllowlistError(f"host holds a character a hostname may not: {shown!r}")
     labels = ascii_host.split(".")
     for label in labels:
-        if not _LABEL_RE.match(label):
-            raise AllowlistError(f"invalid hostname label {label!r} in {host!r}")
+        if not _LABEL_RE.fullmatch(label):
+            raise AllowlistError(
+                f"invalid hostname label {sanitize_audit_host(label)!r} in {shown!r}"
+            )
     if labels[-1].isdigit():
-        raise AllowlistError(f"numeric top-level label in {host!r}")
+        raise AllowlistError(f"numeric top-level label in {shown!r}")
     if ascii_host == "localhost" or ascii_host.endswith(".localhost"):
         raise AllowlistError("localhost is never proxied")
     if ascii_host.endswith(".local"):
@@ -237,13 +303,17 @@ class ProxyCredential:
         if scheme.lower() != "basic" or not payload:
             return False
         try:
-            decoded = base64.b64decode(payload.strip(), validate = True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError, ValueError):
+            decoded = base64.b64decode(payload.strip(), validate = True)
+        except (binascii.Error, ValueError):
             return False
-        user, _, presented = decoded.partition(":")
-        return hmac.compare_digest(user, _PROXY_USER) and hmac.compare_digest(
-            presented, self.token
-        )
+        # Bytes, not str: ``compare_digest`` raises TypeError on a str holding
+        # non-ASCII, and an unauthenticated request must never raise.
+        user, sep, presented = decoded.partition(b":")
+        if not sep:
+            return False
+        user_ok = hmac.compare_digest(user, _PROXY_USER_BYTES)
+        token_ok = hmac.compare_digest(presented, self.token.encode("utf-8"))
+        return user_ok and token_ok
 
     def proxy_url(self, port: int) -> str:
         return f"http://{_PROXY_USER}:{self.token}@127.0.0.1:{port}"
@@ -258,16 +328,110 @@ def proxy_environment(port: int, credential: ProxyCredential) -> dict[str, str]:
     return env
 
 
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.IPv6Network("64:ff9b:1::/48")
+_SIX_TO_FOUR = ipaddress.IPv6Network("2002::/16")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 form carries, for the forms ``ipv4_mapped`` misses.
+
+    ``ipv4_mapped`` only covers ``::ffff:0:0/96``. ``::7f00:1`` (deprecated
+    IPv4-compatible) and ``64:ff9b::7f00:1`` (the RFC 6052 NAT64 form of
+    127.0.0.1) are both reported global by ``ipaddress``, so on a host with a
+    NAT64 gateway an allowlisted name could resolve back to loopback.
+    """
+    packed = ip.packed
+    if packed[:12] == b"\x00" * 12:
+        return ipaddress.IPv4Address(packed[12:16])
+    if ip in _NAT64_WELL_KNOWN:
+        return ipaddress.IPv4Address(packed[12:16])
+    if ip in _NAT64_LOCAL_USE:
+        # RFC 6052 skips the byte at offset 8 for prefixes shorter than /96.
+        return ipaddress.IPv4Address(bytes((packed[6], packed[7], packed[9], packed[10])))
+    if ip in _SIX_TO_FOUR:
+        return ipaddress.IPv4Address(packed[2:6])
+    return None
+
+
 def public_address(address: str) -> bool:
-    """True for a global unicast address; IPv4-mapped IPv6 is judged as IPv4."""
+    """True for a global unicast address; every IPv4-in-IPv6 form is judged as IPv4."""
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:
-        ip = mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        mapped = ip.ipv4_mapped
+        if mapped is None:
+            mapped = _embedded_ipv4(ip)
+        if mapped is not None:
+            ip = mapped
     return bool(ip.is_global) and not ip.is_multicast
+
+
+def _client_hello_sni(data: bytes) -> tuple[str, str]:
+    """Read the SNI out of a TLS ClientHello.
+
+    Returns ``(status, name)`` where status is one of ``incomplete`` (more bytes
+    may decide it), ``not-tls`` (never will), ``absent`` (a ClientHello with no
+    server name) or ``found``. The parse is deliberately total: any surprise is
+    ``not-tls``, which lets the tunnel through rather than breaking a client
+    speaking something the sandbox is allowed to speak.
+    """
+    if len(data) < 5:
+        return ("incomplete", "")
+    if data[0] != 0x16:  # not a TLS handshake record
+        return ("not-tls", "")
+    record_length = int.from_bytes(data[3:5], "big")
+    if record_length == 0 or record_length > MAX_CLIENT_HELLO_BYTES:
+        return ("not-tls", "")
+    if len(data) < 5 + record_length:
+        return ("incomplete", "")
+    body = data[5 : 5 + record_length]
+    try:
+        if len(body) < 4 or body[0] != 0x01:  # not a ClientHello
+            return ("not-tls", "")
+        handshake_length = int.from_bytes(body[1:4], "big")
+        hello = body[4 : 4 + handshake_length]
+        if len(hello) < handshake_length:
+            # Fragmented across records; do not guess at a name.
+            return ("not-tls", "")
+        pos = 2 + 32  # legacy_version and random
+        if len(hello) < pos + 1:
+            return ("not-tls", "")
+        pos += 1 + hello[pos]  # legacy_session_id
+        if len(hello) < pos + 2:
+            return ("not-tls", "")
+        pos += 2 + int.from_bytes(hello[pos : pos + 2], "big")  # cipher_suites
+        if len(hello) < pos + 1:
+            return ("not-tls", "")
+        pos += 1 + hello[pos]  # legacy_compression_methods
+        if len(hello) < pos + 2:
+            return ("absent", "")
+        extensions_end = min(len(hello), pos + 2 + int.from_bytes(hello[pos : pos + 2], "big"))
+        pos += 2
+        while pos + 4 <= extensions_end:
+            kind = int.from_bytes(hello[pos : pos + 2], "big")
+            length = int.from_bytes(hello[pos + 2 : pos + 4], "big")
+            pos += 4
+            chunk = hello[pos : pos + length]
+            pos += length
+            if kind != 0 or len(chunk) < 2:
+                continue
+            entries = chunk[2 : 2 + int.from_bytes(chunk[0:2], "big")]
+            cursor = 0
+            while cursor + 3 <= len(entries):
+                name_kind = entries[cursor]
+                name_length = int.from_bytes(entries[cursor + 1 : cursor + 3], "big")
+                cursor += 3
+                name = entries[cursor : cursor + name_length]
+                cursor += name_length
+                if name_kind == 0 and len(name) == name_length and name:
+                    return ("found", name.decode("latin-1"))
+            return ("absent", "")
+        return ("absent", "")
+    except (IndexError, ValueError):  # pragma: no cover - the slicing above is total
+        return ("not-tls", "")
 
 
 def _default_resolver(host: str, port: int) -> list[str]:
@@ -291,8 +455,12 @@ class NetworkAudit:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._allowed: dict[str, int] = {}
-        self._denied: dict[str, tuple[int, str]] = {}
+        # Keyed by (host, reason, kind). Keying by host alone kept only the most
+        # recent reason, so a host blocked fifty times by the allowlist and once
+        # by a DNS hiccup was reported to the model as a DNS problem.
+        self._denied: dict[tuple[str, str, str], int] = {}
         self._overflow = 0
+        self._sni_absent = 0
 
     def record_allowed(self, host: str) -> None:
         with self._lock:
@@ -301,40 +469,89 @@ class NetworkAudit:
                 return
             self._allowed[host] = self._allowed.get(host, 0) + 1
 
-    def record_denied(self, host: str, reason: str) -> None:
+    def record_sni_absent(self) -> None:
+        """A tunnel whose first bytes carried no server name to check."""
         with self._lock:
-            if host not in self._denied and len(self._denied) >= MAX_AUDITED_HOSTS:
+            self._sni_absent += 1
+
+    def record_denied(self, host: str, reason: str, kind: str = POLICY_REFUSAL) -> None:
+        # Sanitize here, not at the point of display: this is the boundary where
+        # an untrusted CONNECT authority enters data the model is shown.
+        key = (
+            sanitize_audit_host(host),
+            sanitize_audit_reason(reason),
+            kind if kind in _DENIAL_HEADINGS else POLICY_REFUSAL,
+        )
+        with self._lock:
+            if key not in self._denied and len(self._denied) >= MAX_AUDITED_HOSTS:
                 self._overflow += 1
                 return
-            count, _ = self._denied.get(host, (0, reason))
-            self._denied[host] = (count + 1, reason)
+            self._denied[key] = self._denied.get(key, 0) + 1
 
     def summary(self) -> dict[str, object]:
         with self._lock:
-            return {
-                "allowed": dict(self._allowed),
-                "denied": {
-                    host: {"count": count, "reason": reason}
-                    for host, (count, reason) in self._denied.items()
-                },
-                "unrecorded": self._overflow,
-            }
+            allowed = dict(self._allowed)
+            entries = list(self._denied.items())
+            overflow = self._overflow
+            sni_absent = self._sni_absent
+        denied: dict[str, dict[str, object]] = {}
+        for (host, reason, kind), count in entries:
+            record = denied.get(host)
+            if record is None:
+                denied[host] = {
+                    "count": count,
+                    "reason": reason,
+                    "kind": kind,
+                    "reasons": [{"reason": reason, "kind": kind, "count": count}],
+                }
+                continue
+            record["count"] = int(record["count"]) + count
+            reasons = record["reasons"]
+            assert isinstance(reasons, list)
+            reasons.append({"reason": reason, "kind": kind, "count": count})
+        return {
+            "allowed": allowed,
+            "denied": denied,
+            "unrecorded": overflow,
+            "sni_absent": sni_absent,
+        }
+
+    def denied_entries(self) -> list[tuple[str, int, str, str]]:
+        """One entry per (host, reason, kind), so no reason is overwritten."""
+        with self._lock:
+            return [
+                (host, count, reason, kind)
+                for (host, reason, kind), count in self._denied.items()
+            ]
 
     def denied_hosts(self) -> list[tuple[str, int, str]]:
-        with self._lock:
-            return [(host, count, reason) for host, (count, reason) in self._denied.items()]
+        return [(host, count, reason) for host, count, reason, _ in self.denied_entries()]
 
 
 class _Denied(Exception):
-    def __init__(self, status: int, reason: str, host: str = "") -> None:
+    def __init__(self, status: int, reason: str, host: str = "", kind: str | None = None) -> None:
         super().__init__(reason)
         self.status = status
         self.reason = reason
         self.host = host
+        self.kind = kind or _denial_kind(status)
+
+
+class _TunnelAborted(Exception):
+    """A tunnel refused after the 200, where no HTTP status can be sent."""
+
+    def __init__(self, host: str, reason: str) -> None:
+        super().__init__(reason)
+        self.host = host
+        self.reason = reason
 
 
 class AllowlistProxy:
     """One proxy per launch; ``close()`` stops the listener and every tunnel."""
+
+    # Shared by every instance, so the per-launch cap is not the only bound on
+    # how many tunnels this process can hold. A test lowers it on the class.
+    global_slots = threading.BoundedSemaphore(MAX_TOTAL_TUNNELS)
 
     def __init__(
         self,
@@ -346,6 +563,7 @@ class AllowlistProxy:
         require_public: bool | None = None,
         connect_timeout: float = CONNECT_TIMEOUT_SECONDS,
         idle_timeout: float = IDLE_TIMEOUT_SECONDS,
+        header_timeout: float = HEADER_TIMEOUT_SECONDS,
         max_tunnels: int = MAX_TUNNELS,
     ) -> None:
         self.allowlist = allowlist
@@ -359,6 +577,10 @@ class AllowlistProxy:
         self._require_public = REQUIRE_PUBLIC_ADDRESSES if require_public is None else require_public
         self._connect_timeout = connect_timeout
         self._idle_timeout = idle_timeout
+        # A wall-clock budget for the whole request head, not per recv: a client
+        # dribbling one byte every few seconds otherwise held a tunnel slot for
+        # hours and could starve the launch of every slot.
+        self._header_timeout = header_timeout
         self._slots = threading.BoundedSemaphore(max_tunnels)
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -443,11 +665,68 @@ class AllowlistProxy:
                 time.sleep(0.05)
                 continue
             if not self._slots.acquire(blocking = False):
-                self._refuse(client, 503, "too many concurrent tunnels")
+                # Recorded, so the model is told why pip failed instead of
+                # seeing a bare proxy error with no explanation.
+                self.audit.record_denied(
+                    "",
+                    "the sandbox network proxy was at its concurrent tunnel cap",
+                    PROXY_REFUSAL,
+                )
+                self._dispatch_refusal(client, 503, "too many concurrent tunnels")
                 continue
+            if not self.global_slots.acquire(blocking = False):
+                self._slots.release()
+                self.audit.record_denied(
+                    "",
+                    "the backend was at its process-wide tunnel cap",
+                    PROXY_REFUSAL,
+                )
+                self._dispatch_refusal(
+                    client, 503, "too many concurrent tunnels in this backend"
+                )
+                continue
+            try:
+                threading.Thread(
+                    target = self._serve_client, args = (client,), daemon = True
+                ).start()
+            except BaseException as exc:
+                # RuntimeError("can't start new thread") would otherwise burn the
+                # slot for the life of the launch and leak the accepted socket.
+                logger.warning("Tool network proxy could not start a worker: %s", exc)
+                self._release_slots()
+                try:
+                    client.close()
+                except OSError:
+                    pass
+
+    def _dispatch_refusal(self, client: socket.socket, status: int, reason: str) -> None:
+        """Answer a refusal off the accept thread, with a timeout on the write.
+
+        ``accept`` hands back a blocking socket with no timeout, so a client
+        advertising a zero receive window would otherwise wedge the single
+        accept thread inside ``sendall`` and stop the proxy serving anyone.
+        """
+        try:
+            client.settimeout(self._header_timeout)
+        except OSError:
+            pass
+        try:
             threading.Thread(
-                target = self._serve_client, args = (client,), daemon = True
+                target = self._refuse,
+                args = (client, status, reason),
+                name = "studio-tool-network-refuse",
+                daemon = True,
             ).start()
+        except BaseException as exc:
+            logger.warning("Tool network proxy could not start a refusal worker: %s", exc)
+            self._refuse(client, status, reason)
+
+    def _release_slots(self) -> None:
+        for semaphore in (self._slots, self.global_slots):
+            try:
+                semaphore.release()
+            except ValueError:  # pragma: no cover - a release without an acquire
+                logger.warning("Tool network proxy released a tunnel slot twice")
 
     def _track(self, sock: socket.socket) -> None:
         with self._tunnel_lock:
@@ -461,18 +740,31 @@ class AllowlistProxy:
         upstream: socket.socket | None = None
         self._track(client)
         try:
-            host, port = self._authorize(client)
+            host, port, pipelined = self._authorize(client)
             upstream = self._connect_upstream(host, port)
             self.audit.record_allowed(host)
             self._track(upstream)
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            pipelined = self._check_server_name(client, host, pipelined)
+            if pipelined:
+                # A client that wrote its ClientHello in the same segment as the
+                # CONNECT head would otherwise hang until the idle timeout.
+                upstream.sendall(pipelined)
             self._splice(client, upstream)
+        except _TunnelAborted as aborted:
+            self.audit.record_denied(aborted.host, aborted.reason, POLICY_REFUSAL)
+            logger.debug("Tool network tunnel aborted: %s", aborted.reason)
         except _Denied as denied:
-            if denied.host:
-                self.audit.record_denied(denied.host, denied.reason)
+            if denied.host or denied.kind != POLICY_REFUSAL:
+                self.audit.record_denied(denied.host, denied.reason, denied.kind)
             self._refuse(client, denied.status, denied.reason)
         except OSError as exc:
             logger.debug("Tool network tunnel ended: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - one request must not kill the worker
+            logger.warning(
+                "Tool network proxy failed to serve a request: %s", exc, exc_info = True
+            )
+            self._refuse(client, 400, "the proxy could not process this request")
         finally:
             for sock in (client, upstream):
                 if sock is None:
@@ -482,7 +774,39 @@ class AllowlistProxy:
                     sock.close()
                 except OSError:
                     pass
-            self._slots.release()
+            self._release_slots()
+
+    def _check_server_name(self, client: socket.socket, host: str, pipelined: bytes) -> bytes:
+        """Refuse a tunnel whose ClientHello names a host other than the CONNECT one.
+
+        Without this the allowlist checks only the name in the CONNECT line: a
+        client can name an allowlisted host, then ask the shared front end it
+        lands on for a different site entirely (domain fronting). A client that
+        sends no server name is let through, since that is legal, but the audit
+        counts it so the gap is visible.
+        """
+        buffer = pipelined
+        deadline = time.monotonic() + self._header_timeout
+        status, name = _client_hello_sni(buffer)
+        while status == "incomplete" and len(buffer) < MAX_CLIENT_HELLO_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                client.settimeout(max(0.1, remaining))
+                chunk = client.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            status, name = _client_hello_sni(buffer)
+        if status == "found":
+            if name.strip().rstrip(".").lower() != host:
+                raise _TunnelAborted(host, "SNI does not match the CONNECT host")
+            return buffer
+        self.audit.record_sni_absent()
+        return buffer
 
     def _refuse(self, client: socket.socket, status: int, reason: str) -> None:
         reasons = {
@@ -513,10 +837,15 @@ class AllowlistProxy:
             except OSError:
                 pass
 
-    def _read_head(self, client: socket.socket) -> bytes:
-        client.settimeout(HEADER_TIMEOUT_SECONDS)
+    def _read_head(self, client: socket.socket) -> tuple[bytes, bytes]:
+        """The request head and whatever the client pipelined behind it."""
+        deadline = time.monotonic() + self._header_timeout
         buffer = b""
         while b"\r\n\r\n" not in buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _Denied(400, "request header timed out")
+            client.settimeout(max(0.1, remaining))
             try:
                 chunk = client.recv(4096)
             except socket.timeout as exc:
@@ -526,12 +855,14 @@ class AllowlistProxy:
             buffer += chunk
             if len(buffer) > MAX_HEADER_BYTES:
                 raise _Denied(400, "request head too large")
-        return buffer
+        client.settimeout(self._header_timeout)
+        head, _, pipelined = buffer.partition(b"\r\n\r\n")
+        return head, pipelined
 
-    def _authorize(self, client: socket.socket) -> tuple[str, int]:
-        head = self._read_head(client)
+    def _authorize(self, client: socket.socket) -> tuple[str, int, bytes]:
+        head, pipelined = self._read_head(client)
         try:
-            text = head.split(b"\r\n\r\n", 1)[0].decode("latin-1")
+            text = head.decode("latin-1")
         except UnicodeDecodeError as exc:  # pragma: no cover - latin-1 cannot fail
             raise _Denied(400, "undecodable request head") from exc
         lines = text.split("\r\n")
@@ -553,7 +884,8 @@ class AllowlistProxy:
                 "only CONNECT tunnels are proxied; cleartext http:// requests are refused",
                 shown,
             )
-        return self._parse_authority(target)
+        host, port = self._parse_authority(target)
+        return host, port, pipelined
 
     @staticmethod
     def _host_from_absolute_target(target: str) -> str:
@@ -566,11 +898,11 @@ class AllowlistProxy:
         try:
             return normalize_host(host)
         except AllowlistError:
-            return host[:253]
+            return sanitize_audit_host(host)
 
     def _parse_authority(self, target: str) -> tuple[str, int]:
         if target.startswith("["):
-            raise _Denied(403, "IPv6 literals are not allowed", target[:64])
+            raise _Denied(403, "IPv6 literals are not allowed", sanitize_audit_host(target[:64]))
         host, sep, port_text = target.rpartition(":")
         if not sep or not host:
             raise _Denied(400, "CONNECT target must be host:port")
@@ -580,7 +912,7 @@ class AllowlistProxy:
         try:
             normalized = normalize_host(host)
         except AllowlistError as exc:
-            raise _Denied(403, f"host refused: {exc}", host[:253]) from exc
+            raise _Denied(403, f"host refused: {exc}", sanitize_audit_host(host)) from exc
         if port not in self._allowed_ports:
             raise _Denied(
                 403,
@@ -609,10 +941,18 @@ class AllowlistProxy:
                         host,
                     )
         last_error: OSError | None = None
+        # One budget for the whole loop, not per answer: a name with a dozen
+        # black-holed answers would otherwise hold a worker for a dozen timeouts.
+        deadline = time.monotonic() + self._connect_timeout
         for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if last_error is None:
+                    last_error = socket.timeout("the connect budget ran out")
+                break
             try:
                 upstream = socket.create_connection(
-                    (address, port), timeout = self._connect_timeout
+                    (address, port), timeout = min(self._connect_timeout, remaining)
                 )
             except OSError as exc:
                 last_error = exc
@@ -672,15 +1012,30 @@ def _send_all_blocking(sock: socket.socket, data: bytes, timeout: float) -> None
 
 
 def format_denied_trailer(audit: NetworkAudit) -> str:
-    """The tool-result trailer naming refused hosts, or an empty string."""
-    denied = audit.denied_hosts()
-    if not denied:
+    """The tool-result trailer naming refused hosts, or an empty string.
+
+    Every host and reason is sanitized again here, so the trailer holds one line
+    per entry and no control characters even if the audit was filled by hand.
+    """
+    entries = audit.denied_entries()
+    if not entries:
         return ""
-    lines = ["", "[network] Connections refused by the sandbox network allowlist:"]
-    for host, count, reason in sorted(denied)[:20]:
-        shown = host or "(no host)"
-        suffix = f" ({count} attempts)" if count > 1 else ""
-        lines.append(f"  - {shown}{suffix}: {reason}")
-    if len(denied) > 20:
-        lines.append(f"  - and {len(denied) - 20} more")
+    grouped: dict[str, list[tuple[str, int, str]]] = {}
+    for host, count, reason, kind in entries:
+        bucket = kind if kind in _DENIAL_HEADINGS else POLICY_REFUSAL
+        grouped.setdefault(bucket, []).append(
+            (sanitize_audit_host(host), count, sanitize_audit_reason(reason))
+        )
+    lines = [""]
+    for kind in _DENIAL_ORDER:
+        group = grouped.get(kind)
+        if not group:
+            continue
+        lines.append(_DENIAL_HEADINGS[kind])
+        for host, count, reason in sorted(group)[:MAX_TRAILER_ENTRIES]:
+            shown = host or "(no host)"
+            suffix = f" ({count} attempts)" if count > 1 else ""
+            lines.append(f"  - {shown}{suffix}: {reason}")
+        if len(group) > MAX_TRAILER_ENTRIES:
+            lines.append(f"  - and {len(group) - MAX_TRAILER_ENTRIES} more")
     return "\n".join(lines)

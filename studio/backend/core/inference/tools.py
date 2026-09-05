@@ -10089,6 +10089,34 @@ def _network_denied_trailer(prepared_launch) -> str:
         return ""
 
 
+# How many cleanup diagnostics a result names before it says "and N more".
+_MAX_CLEANUP_DIAGNOSTICS = 20
+
+
+def _isolation_cleanup_trailer(prepared_launch, tool_name: str) -> str:
+    """Name whatever the OS isolation could not release, or an empty string.
+
+    ``PreparedSandboxLaunch.cleanup`` fills ``cleanup_diagnostics`` when a
+    callback raises or a private path cannot be removed. Those only ever reached
+    the backend log, so a launch that leaked a mount or a temporary directory
+    looked to the user and the model like a clean run.
+    """
+    diagnostics = getattr(prepared_launch, "cleanup_diagnostics", None)
+    if not isinstance(diagnostics, (list, tuple)) or not diagnostics:
+        return ""
+    diagnostics = [str(item) for item in diagnostics]
+    logger.warning(
+        "Sandbox cleanup incomplete after %s: %s", tool_name, "; ".join(diagnostics)
+    )
+    lines = ["", "[isolation] cleanup incomplete:"]
+    for diagnostic in diagnostics[:_MAX_CLEANUP_DIAGNOSTICS]:
+        # One line per diagnostic: the text can carry an exception message.
+        lines.append("  - " + " ".join(str(diagnostic).split()))
+    if len(diagnostics) > _MAX_CLEANUP_DIAGNOSTICS:
+        lines.append(f"  - and {len(diagnostics) - _MAX_CLEANUP_DIAGNOSTICS} more")
+    return "\n".join(lines)
+
+
 def apply_os_isolated_tool_descriptions(
     tools: list[dict], network_allowlist: tuple[str, ...] | list[str] | None = None
 ) -> list[dict]:
@@ -16711,7 +16739,11 @@ def _python_exec(
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
+            # A cancelled `pip install` still has to say the host was refused.
+            cancelled = "Execution cancelled." + _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+            )
+            return cancelled + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
                 else ""
@@ -16725,19 +16757,34 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        # Before the fit, not after it. Defusing inserts a space into every line that
-        # opens with a marker, so a result full of them grows after it has been measured
-        # and the text replayed to the model is larger than the prefix that was admitted.
-        # Before ours is appended, and whether or not one is: a program's own marker line
-        # is not an envelope.
-        result = _defuse_sentinels(result)
-        result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
-            if result.strip()
-            else "(no output)" + hint
-        )
+        # Defusing runs before the fit, not after it: it inserts a space into every
+        # line that opens with a marker, so a result full of them grows after it has
+        # been measured and the text replayed to the model is larger than the prefix
+        # that was admitted. A program's own marker line is not an envelope, and
+        # neither is one that reached a trailer.
+        if prepared_launch is not None:
+            # Released here and not only in the finally, so a cleanup that could
+            # not finish is reported instead of being logged and forgotten. It
+            # is idempotent: every list is popped, so the finally's call is a
+            # no-op.
+            prepared_launch.cleanup()
+        # Both trailers go on before the defuse and the fit. A sandboxed process
+        # steers what the network trailer names, so a forged sentinel line in it
+        # has to be broken like any other output, and the trailers have to be
+        # charged to the same budget the result was measured against.
+        trailer = _network_denied_trailer(prepared_launch)
+        trailer += _isolation_cleanup_trailer(prepared_launch, "python_exec")
+        trailer = _defuse_sentinels(trailer) if trailer else ""
+        if result.strip():
+            # The trailer rides with the hint: priced against the same budget and kept
+            # past the cut, where a trailer glued to the body was the first thing lost
+            # on an output that overran the room.
+            result = _truncate(
+                _defuse_sentinels(result), workdir = spill_dir, scope = spill_scope, hint = hint + trailer
+            )
+        else:
+            result = "(no output)" + hint + trailer
 
-        result += _network_denied_trailer(prepared_launch)
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
         # whatever the next new chat wrote there.
@@ -16956,7 +17003,11 @@ def _bash_exec(
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
+            # Cancelling does not make a refused host any less worth reporting.
+            cancelled = "Execution cancelled." + _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+            )
+            return cancelled + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
@@ -16965,13 +17016,18 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _defuse_sentinels(result)  # before the fit; see _python_exec
-        result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
-            if result.strip()
-            else "(no output)" + hint
-        )
-        result += _network_denied_trailer(prepared_launch)
+        if prepared_launch is not None:
+            prepared_launch.cleanup()  # before the result is final; see _python_exec
+        trailer = _network_denied_trailer(prepared_launch)
+        trailer += _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+        trailer = _defuse_sentinels(trailer) if trailer else ""
+        if result.strip():
+            # Defused, then fitted with the trailer priced as part of the hint; see _python_exec.
+            result = _truncate(
+                _defuse_sentinels(result), workdir = spill_dir, scope = spill_scope, hint = hint + trailer
+            )
+        else:
+            result = "(no output)" + hint + trailer
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, None, call_token)

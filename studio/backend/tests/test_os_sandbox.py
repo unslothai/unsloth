@@ -1095,7 +1095,10 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     assert launched_kwargs["env"] == {"MODE": "prepared"}
     assert launched_kwargs["close_fds"] is True
     assert launched_kwargs["stdin"] is subprocess.DEVNULL
-    assert prepared.cleanup.call_count == 1
+    # The result path releases the launch before it finalises the result, so the
+    # cleanup diagnostics can be reported; the finally block calls it again and
+    # that second call is a no-op, since every cleanup list is popped.
+    assert prepared.cleanup.call_count in (1, 2)
     assert lifecycle_events == ["popen", prepared.execution_record]
     if kind == "python":
         assert specs[0].argv[0:2] == (sys.executable, "-u")
@@ -1103,6 +1106,34 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     else:
         # Required mode: on Windows this is cmd even when Git bash exists.
         assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok", os_isolated = True))
+
+
+def test_prepared_launch_cleanup_is_idempotent_and_records_its_failures(tmp_path):
+    """The tool result path calls cleanup, then the finally calls it again."""
+    calls: list[str] = []
+    private = tmp_path / "private"
+    private.mkdir()
+
+    def failing() -> None:
+        calls.append("failing")
+        raise RuntimeError("the private mount is still busy")
+
+    prepared = os_sandbox.PreparedSandboxLaunch(
+        argv = ("true",),
+        workdir = str(tmp_path),
+        env = {},
+        preexec_fn = None,
+        backend = "test-native",
+        cleanup_paths = [str(private)],
+        cleanup_callbacks = [failing],
+    )
+    prepared.cleanup()
+    assert calls == ["failing"]
+    assert prepared.cleanup_diagnostics == ["RuntimeError: the private mount is still busy"]
+    assert not private.exists()
+    prepared.cleanup()
+    assert calls == ["failing"], "the second cleanup has nothing left to do"
+    assert len(prepared.cleanup_diagnostics) == 1
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
@@ -2462,6 +2493,8 @@ def test_linux_deny_policy_argv_carries_no_bridge(monkeypatch, tmp_path):
     prepared = backend.prepare(_spec(workdir, sys.executable, "-c", "pass"))
     try:
         assert os_sandbox._NETWORK_BRIDGE_ENV not in prepared.argv
+        # Without a network the CA bundles stay outside the sandbox.
+        assert not any(path in prepared.argv for path in os_sandbox._LINUX_CA_TRUST_PATHS)
         assert len(prepared.pass_fds) == 1
         assert prepared.spawn_callback is None
         assert prepared.network_audit is None
@@ -2496,11 +2529,57 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         # sets them inside the namespace once the handshake completed.
         assert "HTTPS_PROXY" not in prepared.env
         assert "--unshare-all" in argv
+        # The CA bundles ride along, or TLS through the proxy fails verification.
+        for path in os_sandbox._LINUX_CA_TRUST_PATHS:
+            assert argv[argv.index(path) - 1] == "--ro-bind-try"
     finally:
         prepared.cleanup()
     # Cleanup closed both socketpair ends and the proxy.
     with pytest.raises(OSError):
         os.fstat(control_fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Bubblewrap argv is Linux-only")
+def test_linux_prepare_closes_the_proxy_and_the_bridge_when_it_fails(monkeypatch, tmp_path):
+    """Nothing owns the proxy until PreparedSandboxLaunch does, so prepare must."""
+    backend, workdir = _bridge_argv_test_setup(monkeypatch, tmp_path)
+    from core.inference import network_proxy
+
+    created: list[network_proxy.AllowlistProxy] = []
+    closed: list[network_proxy.AllowlistProxy] = []
+
+    class _RecordingProxy(network_proxy.AllowlistProxy):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+        def close(self) -> None:
+            closed.append(self)
+            super().close()
+
+    pairs: list[tuple[socket.socket, socket.socket]] = []
+    real_socketpair = socket.socketpair
+
+    def recording_socketpair(*args, **kwargs):
+        pair = real_socketpair(*args, **kwargs)
+        pairs.append(pair)
+        return pair
+
+    def unusable_wrapper(**kwargs):
+        raise RuntimeError("the wrapper source could not be built")
+
+    monkeypatch.setattr(os_sandbox, "AllowlistProxy", _RecordingProxy)
+    monkeypatch.setattr(os_sandbox.socket, "socketpair", recording_socketpair)
+    monkeypatch.setattr(os_sandbox, "_linux_wrapper_source", unusable_wrapper)
+    plan = os_sandbox.replace(
+        _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
+    )
+    with pytest.raises(RuntimeError):
+        backend.prepare(plan)
+    assert created and closed == created
+    assert pairs, "the bridge socketpair was never created"
+    for end in pairs[0]:
+        assert end.fileno() == -1, "a socketpair end outlived the failed prepare"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the wrapper uses socket.send_fds on Linux")
@@ -2823,6 +2902,16 @@ def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
     assert '(allow network-outbound (remote ip "localhost:43111"))' in with_proxy
     assert with_proxy.count("remote ip") == 1
     assert "(deny default)" in with_proxy
+    # TLS trust: the OpenSSL bundle and the Security.framework services ride along
+    # with the proxy only; a no-network launch keeps them out of reach.
+    # The filter keeps only paths that exist on this host; on macOS they all do, on a
+    # Linux test host the set is usually empty, so the assertion tracks existence.
+    for path in os_sandbox._MACOS_TLS_TRUST_PATHS:
+        assert (path in with_proxy) is os.path.exists(path)
+        assert path not in base
+    for name in os_sandbox._MACOS_TLS_MACH_SERVICES:
+        assert f'(global-name "{name}")' in with_proxy
+        assert name not in base
 
 
 def test_macos_prepare_starts_a_proxy_and_publishes_it_in_the_environment(monkeypatch, tmp_path):
