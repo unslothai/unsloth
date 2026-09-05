@@ -530,6 +530,13 @@ jobs:
   # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
   # condition as the stable tags above. Verified by reading it back, and a token
   # that cannot edit the description fails the job rather than warning.
+  #
+  # DOCKER_API_KEY cannot do this: the Hub answers a PATCH made with a JWT from an
+  # organization access token with 403 "token issued from organization access
+  # token is not allowed" (run 33943728004). Editing the description needs a
+  # PERSONAL access token of a user who owns or edits the repository, so it uses
+  # DOCKERHUB_README_USERNAME + DOCKERHUB_README_TOKEN and skips, visibly, until
+  # those are set.
   hub-readme:
     needs: merge-studio
     if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
@@ -544,14 +551,16 @@ jobs:
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
-          # Organization access tokens are exchanged at /v2/auth/token, not
-          # /v2/users/login/, which rejects organization accounts.
+          if [ -z "${{ secrets.DOCKERHUB_README_TOKEN }}" ] || [ -z "${{ secrets.DOCKERHUB_README_USERNAME }}" ]; then
+            echo "::notice::DOCKERHUB_README_USERNAME / DOCKERHUB_README_TOKEN are not set, so the Docker Hub page was NOT updated from ${README}. Add a personal access token of a user who can edit ${IMAGE_NAME}; the organization token cannot."
+            exit 0
+          fi
           TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
             -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${REGISTRY_USERNAME}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            -d "{\"identifier\": \"${{ secrets.DOCKERHUB_README_USERNAME }}\", \"secret\": \"${{ secrets.DOCKERHUB_README_TOKEN }}\"}" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
-            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
+            echo "::error::Could not exchange DOCKERHUB_README_TOKEN for a Hub API token; the Hub page was not updated."
             exit 1
           fi
           BODY="$(python3 -c 'import json,sys; print(json.dumps({"full_description": open(sys.argv[1], encoding="utf-8").read()}))' "$README")"

@@ -80,6 +80,7 @@ def _run_sync(
     *,
     live_after_patch: str,
     token: str = "tok",
+    secret: str = "not-a-secret",
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -101,7 +102,11 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", "not-a-secret")
+    # the secrets are GitHub expressions; the test decides whether they are "set"
+    script = (
+        step.replace("${{ secrets.DOCKERHUB_README_TOKEN }}", secret)
+        .replace("${{ secrets.DOCKERHUB_README_USERNAME }}", "readme-user" if secret else "")
+    )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
@@ -140,3 +145,16 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
+
+
+def test_the_sync_skips_visibly_without_the_personal_token(sync_job: dict, tmp_path: Path):
+    """The organization token cannot edit the page (403 "token issued from
+    organization access token is not allowed"), so the sync needs a personal token.
+    Until one is configured the job must not fail the publish, and must not stay
+    silent either: a notice names the secrets, and no PATCH is attempted."""
+    step = sync_job["steps"][-1]["run"]
+    res, log = _run_sync(step, tmp_path, live_after_patch = "# the old page", secret = "")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "::notice::" in res.stdout and "DOCKERHUB_README_TOKEN" in res.stdout
+    assert "PATCH" not in log, "a PATCH was attempted without a personal token"
+    assert "auth/token" not in log
