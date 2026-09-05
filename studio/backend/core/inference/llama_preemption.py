@@ -99,6 +99,27 @@ DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 STATIC_BATCH_ENV = "UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH"
 DEFAULT_PREEMPT_STATIC_BATCH = False
 
+# Goes the other way: drop the batch term for a prefill whose cells the ledger has
+# ALREADY booked, and keep it only where nothing else covers the chunk.
+#
+# An unmeasured holder's whole charge is added on top of the resident figure by
+# `_committed_locked`, precisely because llama-server cannot see a prompt that has not
+# been prefilled. The chunk it is about to submit is a SUBSET of those cells, so
+# reserving a batch for it as well reserves the same room twice. A measured holder is
+# different: a round boundary re-baselines it inside `max(resident, measured)`, where a
+# larger resident figure from other chats can mask its growth entirely, so that one still
+# needs the term.
+#
+# Measured 2026-09-05 on the 4B at -c 8192, four tool chats of ~1000 prompt tokens. The
+# double charge puts the ceiling at 6136 for exactly as long as an arrival is being
+# admitted, which is when arrivals are judged: mean time to first token was 30.6s with it
+# and 1.8s without, over three runs each, with four of four completing either way. Off by
+# default all the same, because the argument above rests on `resident` being no more
+# stale than the reaction headroom covers, and that is a property of the sampling
+# interval rather than something this module can check.
+CHARGED_PREFILL_ENV = "UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED"
+DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED = False
+
 # A pending prefill that never happens must not hold the buffer up forever. Every
 # announcement is cleared by the first token that comes back, by the pause that cancels
 # it, or by the participant leaving; this is the backstop for the path that does none of
@@ -1236,10 +1257,13 @@ class PreemptionController:
         rather than count it twice.
         """
         now = time.monotonic()
+        # See CHARGED_PREFILL_ENV: an unmeasured holder's chunk comes out of cells
+        # `_committed_locked` has already added on top of the resident figure.
+        skip_charged = _bool_env(CHARGED_PREFILL_ENV, DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED)
         return sum(
             p.prefill_pending(now)
             for gen_id, p in self._participants.items()
-            if exclude is None or gen_id != exclude
+            if (exclude is None or gen_id != exclude) and not (skip_charged and not p.measured)
         )
 
     def _buffer_locked(self, *, pending: Optional[int] = None) -> int:

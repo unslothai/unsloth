@@ -406,3 +406,37 @@ class TestTheRouteReadsTheLaunchesBatchSize:
             BUDGET, slots = SLOTS, draft_tokens = DRAFTS,
             batch_tokens = 512, pending_prefill = 5000,
         ) == IDLE_BUFFER, "512 is under the reaction headroom, which then covers it"
+
+
+class TestNotReservingRoomTwiceForTheSameChunk:
+    """`UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED=1`, off by default.
+
+    `_committed_locked` adds an unmeasured holder's whole charge on top of the resident
+    figure, so the chunk it is about to submit is already inside room the ledger booked.
+    A measured holder's round-boundary growth is not: it lands inside
+    `max(resident, measured)`, where other chats' resident cells can mask it.
+    """
+
+    def test_an_admitted_prompt_stops_costing_a_batch(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED", "1")
+        c = _controller("test://uncharged")
+        c.register("arriving", tokens = 3499, signal = PreemptSignal())
+        assert c.snapshot().prefilling == 0
+        assert c.snapshot().buffer == IDLE_BUFFER
+        # And its charge is still reserved, in `committed` where it belongs.
+        assert c.committed_tokens() == 3499
+
+    def test_a_round_boundarys_growth_still_costs_one(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED", "1")
+        c = _controller("test://uncharged-growth")
+        c.register("chat", tokens = 1000, signal = PreemptSignal())
+        c.observe("chat", 20)
+        c.note_tokens("chat", 4000)
+        assert c.snapshot().prefilling == 2980
+        assert c.snapshot().buffer == PREFILL_BUFFER
+
+    def test_the_default_still_reserves_for_an_arrival(self):
+        c = _controller("test://charged-default")
+        c.register("arriving", tokens = 3499, signal = PreemptSignal())
+        assert c.snapshot().prefilling == 3499
+        assert c.snapshot().buffer == PREFILL_BUFFER
