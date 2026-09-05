@@ -2005,6 +2005,34 @@ def test_hf_cache_entry_skips_unreadable_sibling_for_mmproj(tmp_path, monkeypatc
     )
 
 
+def test_image_preflight_uses_the_projector_selected_for_load(tmp_path, monkeypatch):
+    from utils.models import model_config as config_module
+
+    selected = tmp_path / "selected"
+    sibling = tmp_path / "sibling"
+    selected.mkdir()
+    sibling.mkdir()
+    (selected / "model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    audio = selected / "mmproj-model-F16.gguf"
+    image = sibling / "mmproj-model-F16.gguf"
+    audio.write_bytes(b"GGUF audio")
+    image.write_bytes(b"GGUF image")
+    roots = (str(selected), str(sibling))
+    monkeypatch.setattr(
+        config_module, "mmproj_accepts_image", lambda path: str(path) == str(image.resolve())
+    )
+    config = config_module.ModelConfig.from_identifier(
+        str(selected), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
+    )
+    assert config.gguf_mmproj_file == str(audio.resolve())
+    assert not config_module.is_vision_model(
+        str(selected),
+        gguf_variant = "Q4_K_M",
+        gguf_companion_roots = roots,
+        require_image = True,
+    )
+
+
 def test_companion_roots_skip_only_the_unreadable_sibling(tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -2151,8 +2179,9 @@ def test_auto_switch_display_alias_keeps_repo_level_companion_scope(tmp_path, mo
     assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
 
 
+@pytest.mark.parametrize("advertised", [False, True])
 def test_repo_level_request_reloads_resident_snapshot_without_companion_roots(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, advertised
 ):
     from pathlib import Path
 
@@ -2165,6 +2194,9 @@ def test_repo_level_request_reloads_resident_snapshot_without_companion_roots(
     (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
 
     backend = _FakeBackend(str(old), "Q4_K_M")
+    if advertised:
+        backend._openai_advertised_id = "org/Vision-GGUF"
+        backend._openai_gguf_companion_roots = (str(old),)
     recorder = _LoadRecorder(backend)
     _wire(
         monkeypatch,
@@ -3230,6 +3262,7 @@ def test_inactive_cache_revision_aliases_keep_exact_companion_scope(tmp_path, mo
     selected = repo / "snapshots" / "weights-revision"
     selected.mkdir(parents = True)
     (selected / "model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (selected / "model-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF partial")
     companion = repo / "snapshots" / "companion-revision" / "MTP"
     companion.mkdir(parents = True)
     (companion / "mtp-model-Q8_0.gguf").write_bytes(b"GGUF companion")
@@ -3264,6 +3297,8 @@ def test_inactive_cache_revision_aliases_keep_exact_companion_scope(tmp_path, mo
     assert display_entry.repo_level_companions is True
     assert path_entry.repo_level_companions is False
     assert revision_entry.repo_level_companions is False
+    assert path_entry.variants == ("Q4_K_M",)
+    assert revision_entry.variants == ("Q4_K_M",)
     assert {
         entry.load_path for entry in (repo_entry, display_entry, path_entry, revision_entry)
     } == {str(selected)}

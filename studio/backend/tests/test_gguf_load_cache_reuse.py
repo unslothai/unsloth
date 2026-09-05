@@ -710,7 +710,8 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
+    @pytest.mark.parametrize("roots_match", [True, False])
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self, roots_match):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -728,6 +729,11 @@ class TestLoadHubDownloadExclusion:
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
+        if not roots_match:
+            request._gguf_companion_roots = ("weights-revision", "companion-revision")
+
+        class MetadataReached(BaseException):
+            pass
 
         with (
             _reuse_route(route, backend, response),
@@ -735,13 +741,15 @@ class TestLoadHubDownloadExclusion:
                 route,
                 "ModelConfig",
                 SimpleNamespace(
-                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(
-                        AssertionError("resident reuse must not resolve model metadata")
-                    )
+                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(MetadataReached())
                 ),
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
+            if not roots_match:
+                with pytest.raises(MetadataReached):
+                    _run_route_load(route, request)
+                return
             result = _run_route_load(route, request)
 
         assert result is response

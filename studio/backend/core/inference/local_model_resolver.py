@@ -169,7 +169,12 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
     return (str(selected), *(str(path) for path in siblings))
 
 
-def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+def _local_gguf_entry(
+    loader_id: str,
+    info,
+    *,
+    exact_snapshot: bool = False,
+) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
@@ -230,6 +235,14 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         else:
             load_dir = p
             variants, _ = list_local_gguf_variants(str(load_dir))
+        if exact_snapshot:
+            from hub.utils.gguf import list_local_gguf_variants as inventory_variants
+            from hub.utils.inventory_scan import complete_snapshot_variants
+
+            complete = complete_snapshot_variants(str(load_dir))
+            offered, _ = inventory_variants(str(load_dir))
+            complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
+            variants = [v for v in variants if str(v.filename).casefold() in complete_files]
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -595,7 +608,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         path_alias_entry = entry
         if entry.repo_level_companions and _is_abs_path_id(raw_id):
             from types import SimpleNamespace
-            path_alias_entry = _local_gguf_entry(loader_id, SimpleNamespace(path = raw_id))
+            path_alias_entry = _local_gguf_entry(
+                loader_id, SimpleNamespace(path = raw_id), exact_snapshot = True
+            )
         snapshot_name = (
             Path(raw_id).name if entry.repo_level_companions and _is_abs_path_id(raw_id) else None
         )
