@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import getpass
 import glob
 import importlib.util
 import logging
@@ -327,7 +328,17 @@ def estimate_kv_bytes(
 
 
 def _ssh_user() -> str:
-    return os.environ.get("USER") or os.environ.get("USERNAME") or "nvidianew"
+    """This session's login, which is the peer's too (`unsloth spark provision` mirrors
+    the install as one account): the environment first, then the login database, so a
+    service context that sets no USER still names the right account."""
+    for var in ("USER", "USERNAME", "LOGNAME"):
+        value = os.environ.get(var)
+        if value:
+            return value
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "nvidia"
 
 
 def ssh_argv(

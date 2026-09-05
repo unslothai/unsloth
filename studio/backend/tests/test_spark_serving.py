@@ -112,6 +112,19 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch):
+    """The peer is reached as the account that ran `provision`: the environment's login,
+    else the login database, never a hardcoded account."""
+    import getpass
+
+    monkeypatch.setenv("USER", "alice")
+    assert ss._ssh_user() == "alice"
+    for var in ("USER", "USERNAME", "LOGNAME"):
+        monkeypatch.delenv(var, raising = False)
+    assert ss._ssh_user() == getpass.getuser()
+    assert ss.ssh_argv("192.168.200.13", "true")[-2] == f"{getpass.getuser()}@192.168.200.13"
+
+
 # ── The gate ─────────────────────────────────────────────────────────────
 
 
