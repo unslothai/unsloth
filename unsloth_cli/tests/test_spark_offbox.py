@@ -67,6 +67,22 @@ def test_no_heavy_imports_at_module_scope(rel: str) -> None:
     assert not offenders, f"{rel} imports {offenders} at module scope"
 
 
+def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
+    """The peer is reached as the account that ran `provision`: the environment's login,
+    else the login database. A hardcoded developer account here would ssh to the wrong
+    user on every pair but one, and only in the service contexts that unset USER."""
+    import getpass
+
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setenv("USER", "alice")
+    assert sc._ssh_user() == "alice"
+    for var in ("USER", "USERNAME", "LOGNAME"):
+        monkeypatch.delenv(var, raising = False)
+    assert sc._ssh_user() == getpass.getuser()
+    source = (REPO / "studio/spark_cluster.py").read_text()
+    assert "nvidianew" not in source, "spark_cluster.py names a developer login"
+
+
 def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
     """`is_dgx_spark()` must answer False without touching the filesystem or network."""
     sc = _load("studio/spark_cluster.py")

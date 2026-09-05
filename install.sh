@@ -6067,7 +6067,10 @@ _unsloth_spark_cluster_offer() {
     # Idempotent: a Spark that was already paired must not re-ask on every
     # update. "configured" means a previous run saved a plan AND a cabled rail
     # still carries IPv4, so this is a settled question, not an unanswered one.
-    _sp_state=$("$VENV_DIR/bin/python" -m studio.spark_cluster detect 2>/dev/null \
+    # `detect` exits 1 on a Spark with no cable (its exit status IS the cable test, see
+    # spark_cluster.py main), and this script runs under `set -euo pipefail`, so that
+    # status has to be swallowed here or a lone Spark aborts the install on this line.
+    _sp_state=$({ "$VENV_DIR/bin/python" -m studio.spark_cluster detect 2>/dev/null || true; } \
         | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     if [ "$_sp_state" = "configured" ]; then
         step "spark" "second Spark already paired" "$C_OK"

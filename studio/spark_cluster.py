@@ -32,6 +32,7 @@ one subnet cannot drive both functions.
 
 from __future__ import annotations
 
+import getpass
 import ipaddress
 import json
 import os
@@ -95,6 +96,21 @@ def is_dgx_spark() -> bool:
 # What every entry point says off a Spark. One string, so the answer cannot drift
 # between commands, and so a caller can match on it.
 NOT_A_SPARK = "This machine is not a DGX Spark; nothing to do."
+
+
+def _ssh_user() -> str:
+    """The login to reach the peer as: this session's, since `provision` mirrors the
+    install as the same account on both nodes. The environment first, then the login
+    database, so a service or cron context that sets no USER still names the right
+    account rather than a fixed one."""
+    for var in ("USER", "USERNAME", "LOGNAME"):
+        value = os.environ.get(var)
+        if value:
+            return value
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "nvidia"
 
 
 # ── Rail discovery (pure sysfs, no subprocesses) ─────────────────────────────
@@ -1029,7 +1045,7 @@ def peer_llama_bundle_identity(peer_ip: str, timeout: int = 30) -> Optional[Dict
         servers = _RPC_SERVER_NAMES,
     )
     blob = base64.b64encode(source.encode()).decode()
-    user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
+    user = _ssh_user()
     try:
         proc = subprocess.run(
             [
@@ -1515,7 +1531,7 @@ def nccl_bandwidth(
     if not osp.exists(local_probe):
         return None
     remote_probe = "/tmp/spark_nccl_probe.py"
-    user = os.environ.get("USER", "nvidianew")
+    user = _ssh_user()
     ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
     try:
         subprocess.run(
@@ -1633,7 +1649,7 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     out["include"] = inc
     out["local"] = bool(inc) and osp.exists(osp.join(inc, "Python.h"))
     if peer_ip and shutil.which("ssh"):
-        user = os.environ.get("USER", "nvidianew")
+        user = _ssh_user()
         # Ask the PEER's own interpreter where its headers live rather than assuming it
         # matches ours. Triton builds against whichever Python that node's venv runs, so
         # checking our include path over there answers the wrong question -- and the whole
@@ -1694,7 +1710,7 @@ def cache_symmetry(peer_ip: str) -> Dict[str, Optional[bool]]:
     out: Dict[str, Optional[bool]] = {}
     if not shutil.which("ssh"):
         return out
-    user = os.environ.get("USER", "nvidianew")
+    user = _ssh_user()
     for c in SHARED_CACHES:
         local = osp.expanduser(c)
         if not osp.isdir(local):
@@ -1790,7 +1806,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
                     "BatchMode=yes",
                     "-o",
                     "StrictHostKeyChecking=no",
-                    f"{os.environ.get('USER', 'nvidianew')}@{peer_ip}",
+                    f"{_ssh_user()}@{peer_ip}",
                     cmd,
                 ],
                 capture_output = True,
@@ -2031,7 +2047,7 @@ def peer_gpu_busy(peer_ip: str, timeout: int = 25) -> Dict[str, Any]:
     if not shutil.which("ssh"):
         out["reason"] = "ssh unavailable, so the peer's GPU state cannot be checked"
         return out
-    user = os.environ.get("USER", "nvidianew")
+    user = _ssh_user()
     # The RC marker separates "nvidia-smi ran and listed nothing" (idle) from
     # "nvidia-smi did not run" (unknown). Without it both are an empty string, and
     # reading the second as idle is exactly the fail-open mistake.
@@ -2609,7 +2625,7 @@ def provision_peer(
                 f"Wait for the job, or pass force=True if you are certain."
             )
             return results
-    user = os.environ.get("USER", "nvidianew")
+    user = _ssh_user()
     targets = []
     for path, label in provision_paths():
         local = osp.expanduser(path)
@@ -4240,7 +4256,7 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
     redirect the peer's errors are lost entirely, because the head only ever reports
     `DistStoreError: Timed out ... 1/2 clients joined` and never says why its peer left.
     """
-    user = os.environ.get("USER", "nvidianew")
+    user = _ssh_user()
     activate = venv_activate()
     env = "; ".join(f"export {k}={v}" for k, v in plan["env"].items())
     remote = (
