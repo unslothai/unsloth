@@ -80,6 +80,7 @@ def _run_sync(
     *,
     live_after_patch: str,
     token: str = "tok",
+    secret: str = "not-a-secret",
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -101,7 +102,9 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", "not-a-secret")
+    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
+        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
@@ -122,8 +125,20 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     step = sync_job["steps"][-1]["run"]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "-X PATCH https://hub.docker.com/v2/repositories/unsloth/unsloth/" in log
+    assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
+
+
+def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_path: Path):
+    """Docker Hub rejects every organization access token on
+    /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
+    token is not allowed", whatever its scopes; only the namespace-scoped route
+    accepts it. That 403 failed the sync on every publish before this test existed."""
+    step = sync_job["steps"][-1]["run"]
+    _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
+    assert "/v2/repositories/" not in log
+    assert "/v2/namespaces/unsloth/repositories/unsloth" in log
 
 
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):

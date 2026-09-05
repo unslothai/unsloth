@@ -530,6 +530,12 @@ jobs:
   # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
   # condition as the stable tags above. Verified by reading it back, and a token
   # that cannot edit the description fails the job rather than warning.
+  #
+  # Uses DOCKER_API_KEY on the namespace-scoped route. The legacy
+  # /v2/repositories/{owner}/{repo}/ path answers every organization access token
+  # with 403 "token issued from organization access token is not allowed" (run
+  # 33943728004), which is what failed this job on each publish before; the token
+  # also needs the repository edit permission.
   hub-readme:
     needs: merge-studio
     if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
@@ -544,27 +550,30 @@ jobs:
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
-          # Organization access tokens are exchanged at /v2/auth/token, not
-          # /v2/users/login/, which rejects organization accounts.
+          # The organization token is only accepted on the namespace-scoped routes.
+          # The legacy /v2/repositories/{owner}/{repo}/ path answers every
+          # organization token with 403 "token issued from organization access token
+          # is not allowed", whatever its scopes. The token needs the repository
+          # edit permission on ${IMAGE_NAME}.
+          HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
           TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
             -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${REGISTRY_USERNAME}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
             exit 1
           fi
           BODY="$(python3 -c 'import json,sys; print(json.dumps({"full_description": open(sys.argv[1], encoding="utf-8").read()}))' "$README")"
-          CODE="$(curl -sS -o /tmp/hub_patch.json -w '%{http_code}' -X PATCH \
-            "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/" \
+          CODE="$(curl -sS -o /tmp/hub_patch.json -w '%{http_code}' -X PATCH "$HUB" \
             -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
             --data-binary "$BODY")"
           echo "PATCH returned HTTP ${CODE}"
           # Read it back rather than trusting the status code.
-          LIVE="$(curl -sS "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/" \
+          LIVE="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "$HUB" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("full_description",""))')"
           if [ "$LIVE" != "$(cat "$README")" ]; then
-            echo "::error::The Hub page does not match ${README} after PATCH ${CODE}. The token most likely lacks permission to edit the repository description."
+            echo "::error::The Hub page does not match ${README} after PATCH ${CODE}. DOCKER_API_KEY most likely lacks the repository edit permission on ${IMAGE_NAME}."
             head -c 400 /tmp/hub_patch.json; echo
             exit 1
           fi
