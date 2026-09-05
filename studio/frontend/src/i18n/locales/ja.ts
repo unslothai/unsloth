@@ -1419,6 +1419,16 @@ export const ja = {
         images: "ウェブ検索の画像を表示",
         imagesDescription:
           "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",

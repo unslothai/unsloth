@@ -482,6 +482,8 @@ class ChatSettingsPayload(BaseModel):
     allowArtifactNetworkAccess: Optional[bool] = None
     # Read by the web_search tool at call time, so it lives with the install, not one browser.
     searchImages: Optional[bool] = None
+    webSearchProvider: Optional[Literal["duckduckgo", "parallel"]] = None
+    parallelSearchApiKey: Optional[str] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
@@ -540,6 +542,20 @@ class ChatSettingsPayload(BaseModel):
         if isinstance(value, bool):
             raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
         return value
+
+    @field_validator("parallelSearchApiKey", mode = "before")
+    @classmethod
+    def _clean_parallel_key(cls, value: Any) -> Any:
+        # Stripped, empty means unset, capped: the key is a Bearer secret that
+        # must never be logged, only stored trimmed and forwarded as a header.
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        key = value.strip()
+        if not key:
+            return None
+        return key[:500]
 
     @field_validator("researchModelTimeoutSeconds")
     @classmethod

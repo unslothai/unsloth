@@ -1432,6 +1432,16 @@ export const ar = {
         images: "عرض الصور من البحث على الويب",
         imagesDescription:
           "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Unsloth الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",

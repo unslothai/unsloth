@@ -1437,6 +1437,16 @@ export const it = {
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
           "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
+        provider: "Search provider",
+        providerDescription:
+          "DuckDuckGo is the default. Parallel runs searches through Parallel's free search API instead.",
+        duckduckgo: "DuckDuckGo",
+        parallel: "Parallel",
+        apiKey: "*** API key (optional)",
+        apiKeyDescription:
+          "Parallel works with no key. Add one for higher limits. Get a key at",
+        apiKeyLink: "platform.parallel.ai",
+        apiKeyPlaceholder: "Leave empty for free use",
       },
       artifacts: {
         title: "Canvas",

@@ -13059,6 +13059,24 @@ def _web_search(
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
+        try:
+            from .parallel_search import (
+                PARALLEL_PROVIDER_ID,
+                parallel_api_key,
+                parallel_web_fetch,
+                web_search_provider,
+            )
+            if web_search_provider() == PARALLEL_PROVIDER_ID:
+                return parallel_web_fetch(
+                    url.strip(),
+                    timeout = fetch_timeout,
+                    cancel_event = cancel_event,
+                    website_policy = website_policy,
+                    api_key = parallel_api_key(),
+                    max_chars = _page_char_budget(),
+                )
+        except Exception as exc:  # noqa: BLE001 - fall back to the direct fetch
+            logger.debug("parallel fetch failed (%s), falling back", type(exc).__name__)
         return _fetch_page_text(
             url.strip(),
             timeout = fetch_timeout,
@@ -13084,6 +13102,51 @@ def _web_search(
     # request, and discard results that land after the client has gone.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    try:
+        from .parallel_search import (
+            PARALLEL_PROVIDER_ID,
+            parallel_api_key,
+            parallel_web_search,
+            web_search_provider,
+        )
+        if web_search_provider() == PARALLEL_PROVIDER_ID:
+            try:
+                text = parallel_web_search(
+                    query,
+                    max_results = max_results,
+                    timeout = timeout,
+                    cancel_event = cancel_event,
+                    website_policy = website_policy,
+                    api_key = parallel_api_key(),
+                )
+            except Exception as exc:  # noqa: BLE001 - fall back to ddgs below
+                logger.debug(
+                    "parallel search failed (%s), falling back to ddgs", type(exc).__name__
+                )
+            else:
+                if include_images and subjects:
+                    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+                    if found is not None:
+                        text += "\n\n---\n\n" + found
+                elif include_images:
+                    try:
+                        from ddgs import DDGS as _DDGS
+
+                        from .web_access_policy import scope_search_query as _scope
+                        text += _web_search_images_suffix(
+                            _DDGS(timeout = timeout),
+                            _scope(query, website_policy),
+                            max_results,
+                            cancel_event,
+                            website_policy,
+                        )
+                    except Exception:  # noqa: BLE001 - pictures are a garnish
+                        pass
+                elif subjects:
+                    text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
+                return text
+    except Exception:  # noqa: BLE001 - provider read must never break search
+        pass
     try:
         from ddgs import DDGS
 
