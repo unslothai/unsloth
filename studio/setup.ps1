@@ -5115,18 +5115,32 @@ $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL
 # Re-exported, not just held locally: install_python_stack.py reads it when it rewrites
 # the manifest, so a fresh-shell update would otherwise erase the index for good.
 if ($WinArm64TorchIndexUrl) {
-    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
+    # What gets RECORDED is the index the torch steps will USE, which is the generic pin when
+    # there is one -- $_cudaIndexUrl prefers it, and $WinArm64TorchIndexUrl above never
+    # consults it. Recording the WoA chain instead named an NVIDIA channel the run had not
+    # installed from, and the next fresh shell went back there.
+    #
+    # BOTH records, not just the marker. install_python_stack.py writes this variable into
+    # the manifest as woa_torch_index, and the read chain above prefers the manifest over the
+    # marker, so exporting the old chain here left the manifest shadowing a marker that had
+    # already been corrected. An unpersistable pin is handled at each end: write_manifest
+    # keeps only NVIDIA's own channels, and Save-WoaTorchIndexMarker clears the marker rather
+    # than leaving the previous answer behind.
+    $_woaMarkerIndex = Get-PinnedTorchIndexUrl
+    if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }
+    else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
+    # install.ps1's torchaudio and prerelease answers were measured on the index it probed.
+    # If the pin has moved us off that one, they describe a different channel, so they are
+    # dropped here rather than travelling with an index they were never about. Within this
+    # run $WinArm64HandoffApplies already refuses them; this is for the next one in the same
+    # shell, which would otherwise find them sitting beside a matching index.
+    if ($_woaMarkerIndex -ne $_woaHandoffIndex) {
+        Remove-Item Env:UNSLOTH_WOA_HAS_TORCHAUDIO -ErrorAction SilentlyContinue
+        Remove-Item Env:UNSLOTH_WOA_TORCH_PRERELEASE -ErrorAction SilentlyContinue
+    }
+    $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex
     # Written BEFORE the manifest is dropped below, which is the whole point: from here on
     # an interrupted run still leaves the next one able to find this index.
-    #
-    # What gets recorded is the index the torch steps will USE, which is the generic pin
-    # when there is one -- $_cudaIndexUrl prefers it, and $WinArm64TorchIndexUrl above never
-    # consults it. Recording the WoA chain instead left a marker naming an NVIDIA channel
-    # the run had not installed from, and the next fresh shell read it and went back there.
-    # An unrecordable pin clears the marker rather than leaving that lie behind, which is
-    # what Save-WoaTorchIndexMarker does with anything outside NVIDIA's own channels.
-    $_woaMarkerIndex = Get-PinnedTorchIndexUrl
-    if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
 Restore-WoaResolverEnvironment

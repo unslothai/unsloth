@@ -1,0 +1,17 @@
+accelerate==1.14.0
+datasets==4.3.0
+diffusers==0.40.0
+huggingface-hub==1.30.0
+numpy==2.5.2
+packaging==26.3
+peft==0.20.0
+protobuf==7.36.1
+psutil==7.2.2
+sentence-transformers==6.0.1
+sentencepiece==0.2.2
+tqdm==4.70.0
+transformers==5.5.0
+trl==0.23.1
+tyro==1.0.16
+unsloth-zoo==2026.9.1
+wheel==0.48.0

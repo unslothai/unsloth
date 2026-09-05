@@ -367,7 +367,7 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
     def test_the_index_re_export_is_not_trapped_either(self):
         blocks = self._enclosing_blocks(
             self._setup(),
-            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl",
+            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex",
         )
         assert not any(
             "NoTorchMode" in b for b in blocks
@@ -377,11 +377,12 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         """The bug this guards: recovering the index into a local variable only."""
         text = self._setup()
         assign = text.index("$WinArm64TorchIndexUrl = if (")
-        export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
+        export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
         stack = text.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert assign < export < stack, "recovered, re-exported, then read by the stack"
+        block = text.rindex("if ($WinArm64TorchIndexUrl) {", 0, export)
         assert (
-            "if ($WinArm64TorchIndexUrl) {" in text[export - 120 : export]
+            "$_woaMarkerIndex = Get-PinnedTorchIndexUrl" in text[block:export]
         ), "guarded: an empty recovery must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
@@ -2587,7 +2588,7 @@ class TestAChangedPinInvalidatesTheHandover:
     def test_the_handover_index_is_read_before_it_is_overwritten(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         capture = text.index("$_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX)")
-        rewrite = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
+        rewrite = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
         assert capture < rewrite, (
             "the handover value is read after setup.ps1 overwrites it, so the comparison "
             "always succeeds and the staleness check does nothing"
@@ -3572,8 +3573,12 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
     def test_the_saved_value_prefers_the_pin(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$_woaMarkerIndex = Get-PinnedTorchIndexUrl" in text
-        assert "if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }" in text
+        assert "else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }" in text
         assert "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex" in text
+        # The same value the marker gets, or the manifest shadows the marker on the next
+        # fresh shell: install_python_stack.py writes this export into woa_torch_index, and
+        # the read chain prefers the manifest.
+        assert "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex" in text
 
     def test_the_pin_is_read_before_it_is_used(self):
         """Get-PinnedTorchIndexUrl is a function, so only its DEFINITION has to precede this."""
@@ -3626,7 +3631,8 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
                 # A previous run recorded the public channel; this run may not inherit it.
                 "Save-WoaTorchIndexMarker -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'",
                 "$_woaMarkerIndex = Get-PinnedTorchIndexUrl",
-                "if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }",
+                "if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }",
+                "else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }",
                 "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex",
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
@@ -3639,6 +3645,49 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
+
+
+class TestTheManifestRecordsTheSameIndexAsTheMarker:
+    """The marker was corrected; the manifest kept the old answer and outranked it.
+
+    install_python_stack.py writes $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX into the manifest as
+    woa_torch_index, and $WinArm64TorchIndexUrl above reads the manifest BEFORE the marker. So
+    exporting the WoA chain while saving the pin left the two records disagreeing, and the
+    losing one was the correct one.
+    """
+
+    def test_the_export_and_the_save_carry_one_value(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
+        save = text.index("Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex")
+        resolve = text.index("$_woaMarkerIndex = Get-PinnedTorchIndexUrl")
+        assert resolve < export < save, "resolved once, then written to both records"
+
+    def test_the_stack_writes_that_variable_into_the_manifest(self):
+        """The premise: without this read the export would reach nothing."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert 'UNSLOTH_WOA_SELECTED_TORCH_INDEX' in source
+        assert "woa_torch_index" in source
+
+    def test_the_manifest_is_preferred_over_the_marker_on_read(self):
+        """Which is why the two must agree rather than the marker being enough."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        chain = text.index("$_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir")
+        assert (
+            "if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }"
+            in text[chain : chain + 300]
+        )
+
+    def test_a_moved_pin_drops_the_probed_indexs_flags(self):
+        """torchaudio and prerelease were measured on the index install.ps1 probed."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        guard = text.index("if ($_woaMarkerIndex -ne $_woaHandoffIndex) {")
+        body = text[guard : text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX", guard)]
+        assert "Remove-Item Env:UNSLOTH_WOA_HAS_TORCHAUDIO" in body
+        assert "Remove-Item Env:UNSLOTH_WOA_TORCH_PRERELEASE" in body
+        assert guard < text.index(
+            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex"
+        ), "compared before the overwrite, or the two are always equal"
 
 
 class TestThePypiPyarrowWheelIsPinnedToo:
