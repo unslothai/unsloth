@@ -2080,6 +2080,20 @@ class TestUnifiedMemoryOptOut:
         _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["-ngl", "-1"])
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
+    def test_a_user_fit_off_with_no_count_is_a_full_offload(self, tmp_path, monkeypatch, probe_env):
+        """Auto mode emits no count on the fitting path; a trailing --fit off
+        leaves llama.cpp's default -1 with nothing to lower it."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--fit", "off"])
+        assert "--gpu-layers" not in _cmd and "-ngl" not in _cmd
+        assert _cmd[len(_cmd) - 1 - _cmd[::-1].index("--fit") + 1] == "off"
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_user_fit_off_with_a_partial_count_is_not(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._auto_mode_with(
+            tmp_path, monkeypatch, extra_args = ["--fit", "off", "--gpu-layers", "4"]
+        )
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
     def test_a_user_count_below_the_block_count_never_takes_it(
         self, tmp_path, monkeypatch, probe_env
     ):

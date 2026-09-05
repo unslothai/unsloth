@@ -10374,7 +10374,9 @@ class LlamaCppBackend:
         already set by user" and the caller downgrades it to a warning, see
         ``_env_fixes_gpu_layers``), so a concrete count above the block count, or an
         inherited LLAMA_ARG_N_GPU_LAYERS that says so, is a forced full offload even
-        under ``--fit on``. An unknown block count or CPU placement answers False.
+        under ``--fit on``. So is no count at all once the fitter is off: llama.cpp's
+        default is ``-1``, every layer, and nothing is left to lower it. An unknown
+        block count for a concrete count, or CPU placement, answers False.
         """
         args = [str(a) for a in argv or ()]
         if self._argv_offloads_every_layer(args, env):
@@ -10382,9 +10384,6 @@ class LlamaCppBackend:
         if _device_selection_is_cpu(args, env):
             return False
         if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
-            return False
-        n_layers = self.n_layers
-        if not n_layers:
             return False
         try:
             requested = parse_gpu_layers_override(args)
@@ -10398,8 +10397,15 @@ class LlamaCppBackend:
                 requested = int(raw)
             except ValueError:
                 return False
+        if requested is None:
+            # No count anywhere: the default -1 stands, so only an active fitter
+            # can make this anything but a full offload.
+            return not fit_is_effectively_on(args, env)
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
         # -1 is the default the fitter is free to lower; a concrete count stands.
-        return requested is not None and requested > n_layers
+        return requested > n_layers
 
     @staticmethod
     def _rows_the_child_can_reach(detected_gpus, pinned_ids) -> list:
