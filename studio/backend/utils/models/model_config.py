@@ -1856,12 +1856,13 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     if not scored:
         return None
 
-    # Score first, then longest shared prefix, then shorter stem.
+    # Score first, then longest shared prefix, then shorter stem. The prefix is read past
+    # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
     best = max(
         scored,
         key = lambda sc: (
             sc[0],
-            _shared_prefix_len(model_stem, sc[1].stem.lower()),
+            _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
             -len(sc[1].stem),
         ),
     )
@@ -1965,7 +1966,8 @@ def detect_mtp_file(
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
     # Both tiers are collected before either is emitted: two sidecars can
@@ -2113,7 +2115,8 @@ def detect_dspark_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
 

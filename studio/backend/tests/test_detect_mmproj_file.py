@@ -384,6 +384,16 @@ def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path)
     assert detect_mmproj_file(str(model)) == str(gemma.resolve())
 
 
+def test_assets_holding_two_same_family_projectors_pairs_by_name(tmp_path: Path):
+    """Two Qwen downloads share one assets/ dir. Without header metadata both projectors
+    survive the family gate, so the name tie-break has to read past the mmproj- marker;
+    comparing raw stems ties at zero and the shorter name (the wrong model) won."""
+    model = _touch(tmp_path / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    mine = _touch(tmp_path / "assets" / "mmproj-Qwen3.6-35B-A3B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mine.resolve())
+
+
 def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Path):
     model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")

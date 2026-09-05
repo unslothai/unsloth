@@ -104,7 +104,8 @@ def detect_dflash_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    dirs = [start_dir]
+    # Hermes stages a download's drafter under models/assets/, like its projector.
+    dirs = [start_dir, start_dir / "assets"]
     if search_root is not None:
         dirs.append(Path(search_root))
 
