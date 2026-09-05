@@ -18,6 +18,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
 )
 
 try:
@@ -68,7 +69,7 @@ from unsloth_zoo.gradient_checkpointing import (
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -1195,8 +1196,19 @@ class FastBaseModel:
         # is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config
         # model is never silently loaded as text-only.
         is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
+        # Seq2Seq VLMs (e.g. T5Gemma2) route to AutoModelForSeq2SeqLM, which is not a VLM
+        # auto class. They still ship a vision tower (SigLIP nested in encoder.vision_config)
+        # and a processor_config.json, so use AutoProcessor to keep the image_processor.
+        _encoder_vision = getattr(getattr(auto_config, "encoder", None), "vision_config", None)
+        is_seq2seq_vlm = (
+            auto_model is AutoModelForSeq2SeqLM
+            and not text_only
+            and (_encoder_vision is not None or hasattr(auto_config, "vision_config"))
+        )
         is_whisper = whisper_language is not None and whisper_task is not None
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+        auto_processor = (
+            AutoProcessor if (is_vlm or is_seq2seq_vlm or is_whisper) else AutoTokenizer
+        )
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -2178,12 +2190,18 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
+        if (
+            task_type == TaskType.CAUSAL_LM
+            and AutoModelForSeq2SeqLM._model_mapping.get(type(model.config), None) is not None
+        ):
+            task_type = TaskType.SEQ_2_SEQ_LM
+
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on
