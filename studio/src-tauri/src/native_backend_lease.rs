@@ -19,6 +19,7 @@ pub enum NativePathOperation {
     DatasetImport,
     Attach,
     LinkDocuments,
+    SetProjectWorkspace,
     Reveal,
     Open,
 }
@@ -30,6 +31,7 @@ pub enum NativePathKind {
     Dataset,
     Attachment,
     DocumentFolder,
+    ProjectWorkspace,
     Artifact,
 }
 
@@ -256,5 +258,31 @@ mod tests {
         assert!(payload["modified_ms"].is_null());
         assert_eq!(payload["device_id"], "7");
         assert_eq!(payload["file_id"], "8");
+    }
+
+    #[test]
+    fn project_workspace_lease_has_scoped_contract_values() {
+        let lease = sign_path_lease(
+            b"01234567890123456789012345678901",
+            NativePathLeaseRequest {
+                operation: NativePathOperation::SetProjectWorkspace,
+                canonical_path: "/tmp/project".to_string(),
+                path_kind: NativePathKind::ProjectWorkspace,
+                path_type: NativePathType::Directory,
+                source_kind: NativePathSourceKind::Dialog,
+                token: "workspace_token".to_string(),
+                display_label: "project".to_string(),
+                size_bytes: None,
+                modified_ms: None,
+                device_id: Some("7".to_string()),
+                file_id: Some("8".to_string()),
+            },
+        )
+        .unwrap();
+        let payload = decode_payload(&lease.native_path_lease);
+
+        assert_eq!(payload["operation"], "set-project-workspace");
+        assert_eq!(payload["path_kind"], "project-workspace");
+        assert_eq!(payload["path_type"], "directory");
     }
 }

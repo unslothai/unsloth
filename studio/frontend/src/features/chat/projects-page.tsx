@@ -36,11 +36,17 @@ import { toast } from "@/lib/toast";
 import {
   deleteChatProject,
   renameChatProject,
+  setChatProjectWorkspace,
   useChatProjects,
   useChatRuntimeStore,
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import {
+  consumeNativePathToken,
+  pickNativeProjectWorkspace,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
@@ -82,7 +88,7 @@ const PROJECTS_PAGE_STEP = 12;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
-const PROJECTS_ROW_HEIGHT = 68;
+const PROJECTS_ROW_HEIGHT = 78;
 
 // Modified column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
 // once it is over a week old.
@@ -113,6 +119,7 @@ function formatModified(ts: number): string {
 
 export function ProjectsPage() {
   const navigate = useNavigate();
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
@@ -134,6 +141,9 @@ export function ProjectsPage() {
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+  const [workspaceUpdatingId, setWorkspaceUpdatingId] = useState<string | null>(
+    null,
+  );
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -323,6 +333,47 @@ export function ProjectsPage() {
       toast.error("Failed to rename project", {
         description: err instanceof Error ? err.message : undefined,
       });
+    }
+  }
+
+  async function chooseProjectWorkspace(project: ProjectRecord) {
+    if (workspaceUpdatingId) return;
+    setWorkspaceUpdatingId(project.id);
+    try {
+      const selected = await pickNativeProjectWorkspace();
+      if (!selected) return;
+      const lease = await consumeNativePathToken(
+        selected.token,
+        "set-project-workspace",
+      );
+      await setChatProjectWorkspace(project.id, {
+        kind: "external",
+        nativePathLease: lease.nativePathLease,
+      });
+      toast.success("Working directory updated", {
+        description: selected.path,
+      });
+    } catch (error) {
+      toast.error("Couldn't update the working directory", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkspaceUpdatingId(null);
+    }
+  }
+
+  async function switchToManagedWorkspace(project: ProjectRecord) {
+    if (workspaceUpdatingId) return;
+    setWorkspaceUpdatingId(project.id);
+    try {
+      await setChatProjectWorkspace(project.id, { kind: "managed" });
+      toast.success("Using an Unsloth managed folder");
+    } catch (error) {
+      toast.error("Couldn't update the working directory", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setWorkspaceUpdatingId(null);
     }
   }
 
@@ -597,8 +648,24 @@ export function ProjectsPage() {
                   className="size-5"
                 />
               </span>
-              <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
-                {project.name}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ui-15 font-semibold text-foreground">
+                  {project.name}
+                </span>
+                {project.workspaceKind === "external" ? (
+                  <span
+                    title={project.workspacePath ?? undefined}
+                    className={`block truncate text-xs ${
+                      project.workspaceAvailable === false
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {project.workspaceAvailable === false
+                      ? `Folder unavailable · ${project.workspacePath ?? "Unknown folder"}`
+                      : project.workspacePath}
+                  </span>
+                ) : null}
               </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
                 {formatModified(project.updatedAt)}
@@ -650,6 +717,38 @@ export function ProjectsPage() {
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Rename</span>
                     </DropdownMenuItem>
+                    {isTauri && nativePathLeasesSupported ? (
+                      <>
+                        <DropdownMenuItem
+                          disabled={workspaceUpdatingId !== null}
+                          onSelect={() => void chooseProjectWorkspace(project)}
+                        >
+                          <HugeiconsIcon
+                            icon={FolderAddIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>
+                            {project.workspaceKind === "external"
+                              ? "Change folder"
+                              : "Use existing folder"}
+                          </span>
+                        </DropdownMenuItem>
+                        {project.workspaceKind === "external" ? (
+                          <DropdownMenuItem
+                            disabled={workspaceUpdatingId !== null}
+                            onSelect={() => void switchToManagedWorkspace(project)}
+                          >
+                            <HugeiconsIcon
+                              icon={Folder02Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Use managed folder</span>
+                          </DropdownMenuItem>
+                        ) : null}
+                      </>
+                    ) : null}
                     <DropdownMenuItem
                       onSelect={(e) => {
                         e.stopPropagation();

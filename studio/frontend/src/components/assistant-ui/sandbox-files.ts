@@ -115,12 +115,19 @@ export function sandboxRoutePrefix(sessionId: string): {
  * The sandbox a chat's tool calls run in. Threads inside a project share the
  * project's workspace, so their files land in one place instead of one folder
  * per thread.
+ *
+ * `workspaceSessionId` is required rather than optional: changing a project's
+ * working directory rotates it, so a caller that omits it silently gets the
+ * pre-rotation `project-<id>` and hands the user a session that no longer
+ * exists. Pass the project's current value, or `undefined` when there is no
+ * project and the thread's own id is the answer.
  */
 export function sandboxSessionIdFor(
   threadId: string | undefined,
   projectId: string | null | undefined,
+  workspaceSessionId: string | null | undefined,
 ): string | undefined {
-  return projectId ? `project-${projectId}` : threadId;
+  return projectId ? workspaceSessionId || `project-${projectId}` : threadId;
 }
 
 export function sandboxFilePath(sessionId: string, filename: string): string {

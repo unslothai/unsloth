@@ -70,7 +70,7 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
 
 def _probe_payload():
     from routes import chat_history
-    return chat_history.ChatProject(
+    return chat_history.ChatProjectCreate(
         id = "11111111-2222-3333-4444-555555555555",
         name = "Probe",
         instructions = "",
@@ -117,9 +117,9 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload: (_ for _ in ()).throw(
-            ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))
-        ),
+        lambda payload, external_workspace_path = None, external_workspace_identity = None: (
+            _ for _ in ()
+        ).throw(ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))),
     )
 
     with pytest.raises(HTTPException) as caught:
@@ -144,8 +144,179 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload: (_ for _ in ()).throw(PermissionError(13, "studio.db")),
+        lambda payload, external_workspace_path = None, external_workspace_identity = None: (
+            _ for _ in ()
+        ).throw(PermissionError(13, "studio.db")),
     )
 
     with pytest.raises(PermissionError):
         chat_history.save_project(_probe_payload(), current_subject = "tester")
+
+
+def test_external_project_creation_requires_a_native_folder_grant():
+    from fastapi import HTTPException
+
+    payload = _probe_payload().model_copy(update = {"workspaceKind": "external"})
+
+    with pytest.raises(HTTPException) as caught:
+        from routes import chat_history
+        chat_history.save_project(payload, current_subject = "tester")
+
+    assert caught.value.status_code == 400
+    assert "selected workspace folder" in str(caught.value.detail)
+
+
+def test_external_project_creation_uses_only_the_verified_folder(tmp_path, monkeypatch):
+    from routes import chat_history
+
+    selected = tmp_path / "project"
+    selected.mkdir()
+    payload = _probe_payload().model_copy(
+        update = {"workspaceKind": "external", "nativePathLease": "signed"}
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_workspace_path",
+        lambda lease: (str(selected.resolve()), ("1", "2")),
+    )
+
+    def save(
+        project,
+        external_workspace_path = None,
+        external_workspace_identity = None,
+    ):
+        captured["path"] = external_workspace_path
+        captured["identity"] = external_workspace_identity
+        return {
+            **project,
+            "rootPath": str(tmp_path / "managed"),
+            "workspacePath": external_workspace_path,
+            "workspaceKind": "external",
+            "workspaceAvailable": True,
+            "sandboxPath": external_workspace_path,
+        }
+
+    monkeypatch.setattr(chat_history, "upsert_chat_project", save)
+
+    created = chat_history.save_project(payload, current_subject = "tester")
+
+    assert captured["path"] == str(selected.resolve())
+    assert captured["identity"] == ("1", "2")
+    assert created.workspacePath == str(selected.resolve())
+
+
+def test_external_project_creation_rejects_an_existing_project_before_using_the_grant(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import chat_history
+
+    payload = _probe_payload().model_copy(
+        update = {"workspaceKind": "external", "nativePathLease": "signed"}
+    )
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: {"id": project_id})
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_workspace_path",
+        lambda lease: (_ for _ in ()).throw(AssertionError("grant was used")),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(payload, current_subject = "tester")
+
+    assert caught.value.status_code == 409
+
+
+def test_busy_project_does_not_consume_the_workspace_grant(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import chat_history
+
+    resolved = []
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_workspace_path",
+        lambda lease: resolved.append(lease),
+    )
+    monkeypatch.setattr(
+        tools,
+        "update_project_workspace_when_idle",
+        lambda project_id, update: (False, None),
+    )
+    payload = chat_history.ChatProjectPatch(
+        workspaceKind = "external",
+        nativePathLease = "signed",
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history.patch_project("project-1", payload, current_subject = "tester")
+
+    assert caught.value.status_code == 409
+    assert resolved == []
+
+
+def test_busy_orphan_workspace_returns_conflict(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage.studio_db import ProjectWorkspaceConflictError
+
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_workspace_path",
+        lambda lease: ("/selected/project", ("1", "2")),
+    )
+    monkeypatch.setattr(
+        tools,
+        "update_project_workspace_when_idle",
+        lambda project_id, update: (True, update()),
+    )
+
+    def reject_busy_workspace(project_id, path, identity):
+        raise ProjectWorkspaceConflictError(
+            "Wait for active tool calls in the selected folder to finish"
+        )
+
+    monkeypatch.setattr(chat_history, "set_chat_project_workspace", reject_busy_workspace)
+    payload = chat_history.ChatProjectPatch(
+        workspaceKind = "external",
+        nativePathLease = "signed",
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history.patch_project("project-1", payload, current_subject = "tester")
+
+    assert caught.value.status_code == 409
+    assert "active tool calls" in str(caught.value.detail)
+
+
+def test_unavailable_external_project_does_not_break_the_project_list(monkeypatch):
+    from routes import chat_history
+
+    project = {
+        "id": "project-1",
+        "name": "Project",
+        "instructions": "",
+        "rootPath": "/managed/project-1",
+        "workspacePath": "/moved/project",
+        "workspaceKind": "external",
+        "workspaceAvailable": False,
+        "sandboxPath": "/moved/project",
+        "archived": False,
+        "createdAt": 1,
+        "updatedAt": 1,
+    }
+    monkeypatch.setattr(chat_history, "list_chat_projects", lambda include_archived: [project])
+    monkeypatch.setattr(
+        chat_history,
+        "ensure_chat_project_workspace",
+        lambda project_id: (_ for _ in ()).throw(AssertionError("external folder was recreated")),
+    )
+
+    response = chat_history.list_projects(current_subject = "tester")
+
+    assert response.projects[0].workspaceAvailable is False
+    assert response.projects[0].workspacePath == "/moved/project"

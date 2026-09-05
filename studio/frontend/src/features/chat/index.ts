@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { NewProjectDialog } from "./components/new-project-dialog";
 export {
   addScanFolder,
   browseFolders,
@@ -249,6 +250,7 @@ export {
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatProject,
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
@@ -335,6 +337,7 @@ export {
   deleteChatProject,
   moveChatItemToProject,
   renameChatProject,
+  setChatProjectWorkspace,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";

@@ -365,12 +365,21 @@ def _validate_current_stat(
     else:
         raise NativePathLeaseError("Native path grant has an unsupported path type.")
 
-    if grant.size_bytes is not None and st.st_size != grant.size_bytes:
+    check_content_fingerprint = grant.path_kind != "project-workspace"
+    if (
+        check_content_fingerprint
+        and grant.size_bytes is not None
+        and st.st_size != grant.size_bytes
+    ):
         raise NativePathLeaseError("Native path changed after it was selected.")
     current_modified_ms = int(st.st_mtime_ns // 1_000_000)
-    if grant.modified_ms is not None and current_modified_ms != grant.modified_ms:
+    if (
+        check_content_fingerprint
+        and grant.modified_ms is not None
+        and current_modified_ms != grant.modified_ms
+    ):
         raise NativePathLeaseError("Native path changed after it was selected.")
-    if grant.path_kind == "document-folder" and not identity_options:
+    if grant.path_kind in {"document-folder", "project-workspace"} and not identity_options:
         raise NativePathLeaseError("Native path grant is missing its folder identity.")
     current_identity = (st.st_dev, st.st_ino)
     expected_identity = _runtime_identity(identity_options)
