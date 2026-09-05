@@ -2169,17 +2169,17 @@ class TestTheRecoveryPrependsRatherThanStandsDown:
     @staticmethod
     def _block() -> str:
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        start = text.index('    if (Test-Path -LiteralPath $wheels -PathType Container) {')
-        return text[start:text.index("\n}", start)]
+        start = text.index("    if (Test-Path -LiteralPath $wheels -PathType Container) {")
+        return text[start : text.index("\n}", start)]
 
     def test_it_prepends(self):
         block = self._block()
-        assert '$env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"' in block, (
-            "UV_FIND_LINKS is comma-separated, and ours goes first"
-        )
-        assert '$env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"' in block, (
-            "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
-        )
+        assert (
+            '$env:UV_FIND_LINKS = "$wheels,$($env:UV_FIND_LINKS)"' in block
+        ), "UV_FIND_LINKS is comma-separated, and ours goes first"
+        assert (
+            '$env:PIP_FIND_LINKS = "$_woaSafeWheels $($env:PIP_FIND_LINKS)"' in block
+        ), "PIP_FIND_LINKS is split on whitespace, and ours must be the 8.3-safe form"
         assert "-notcontains" in block, "a second run must not keep prepending"
 
     @requires_pwsh
@@ -2187,30 +2187,52 @@ class TestTheRecoveryPrependsRatherThanStandsDown:
         "var, before, expected, why",
         [
             ("UV_FIND_LINKS", "", "/home/u/woa/wheels", "nothing set: ours alone"),
-            ("UV_FIND_LINKS", "/mnt/mirror", "/home/u/woa/wheels,/mnt/mirror",
-             "the regression: a caller mirror no longer suppresses ours"),
-            ("UV_FIND_LINKS", "/home/u/woa/wheels,/mnt/mirror",
-             "/home/u/woa/wheels,/mnt/mirror", "already first: unchanged, not doubled"),
-            ("PIP_FIND_LINKS", "/mnt/mirror", "/home/u/woa/wheels /mnt/mirror",
-             "whitespace for pip"),
-            ("PIP_FIND_LINKS", "/home/u/woa/wheels", "/home/u/woa/wheels",
-             "already present: unchanged"),
+            (
+                "UV_FIND_LINKS",
+                "/mnt/mirror",
+                "/home/u/woa/wheels,/mnt/mirror",
+                "the regression: a caller mirror no longer suppresses ours",
+            ),
+            (
+                "UV_FIND_LINKS",
+                "/home/u/woa/wheels,/mnt/mirror",
+                "/home/u/woa/wheels,/mnt/mirror",
+                "already first: unchanged, not doubled",
+            ),
+            (
+                "PIP_FIND_LINKS",
+                "/mnt/mirror",
+                "/home/u/woa/wheels /mnt/mirror",
+                "whitespace for pip",
+            ),
+            (
+                "PIP_FIND_LINKS",
+                "/home/u/woa/wheels",
+                "/home/u/woa/wheels",
+                "already present: unchanged",
+            ),
         ],
     )
     def test_the_block(self, var, before, expected, why):
-        script = "\n".join([
-            "function Get-UvSafePath { param([string]$p) return $p }",
-            "$wheels = '/home/u/woa/wheels'",
-            "Remove-Item Env:UV_FIND_LINKS,Env:PIP_FIND_LINKS -ErrorAction SilentlyContinue",
-            (f"$env:{var} = '{before}'" if before else ""),
-            self._block().replace(
-                "if (Test-Path -LiteralPath $wheels -PathType Container) {", "if ($true) {", 1,
-            ),
-            f"Write-Output ('[' + $env:{var} + ']')",
-        ])
+        script = "\n".join(
+            [
+                "function Get-UvSafePath { param([string]$p) return $p }",
+                "$wheels = '/home/u/woa/wheels'",
+                "Remove-Item Env:UV_FIND_LINKS,Env:PIP_FIND_LINKS -ErrorAction SilentlyContinue",
+                (f"$env:{var} = '{before}'" if before else ""),
+                self._block().replace(
+                    "if (Test-Path -LiteralPath $wheels -PathType Container) {",
+                    "if ($true) {",
+                    1,
+                ),
+                f"Write-Output ('[' + $env:{var} + ']')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
@@ -2242,7 +2264,8 @@ class TestTheMergedOverrideFileIsRebasedToo:
             "Resolve-WoaOverrideLine",
         )
         setup = _function_source(
-            SETUP_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine",
+            SETUP_PS1.read_text(encoding = "utf-8"),
+            "Resolve-WoaOverrideLine",
         )
         assert normalized(install) == normalized(setup)
 
@@ -2255,35 +2278,47 @@ class TestAWheelhouseThatIsTheStagingDirectory:
 
     def test_both_staging_copies_are_guarded(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in text, (
-            "the pyarrow copy, which is not inside a try and so was fatal"
-        )
-        assert "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in text, (
-            "and the extra-wheel loop, which swallowed the error but miscounted"
-        )
+        assert (
+            "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in text
+        ), "the pyarrow copy, which is not inside a try and so was fatal"
+        assert (
+            "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in text
+        ), "and the extra-wheel loop, which swallowed the error but miscounted"
 
     @requires_pwsh
     @pytest.mark.parametrize(
         "a, b, expected, why",
         [
             ("/x/woa/wheels/a.whl", "/x/woa/wheels/a.whl", "True", "the same file"),
-            ("/x/woa/wheels/a.whl", "/x/woa/wheels/../wheels/a.whl", "True",
-             "the same file spelled differently"),
-            ("/x/woa/wheels/a.whl", "/X/WOA/WHEELS/A.WHL", "True",
-             "Windows paths are case-insensitive, and this only runs there"),
+            (
+                "/x/woa/wheels/a.whl",
+                "/x/woa/wheels/../wheels/a.whl",
+                "True",
+                "the same file spelled differently",
+            ),
+            (
+                "/x/woa/wheels/a.whl",
+                "/X/WOA/WHEELS/A.WHL",
+                "True",
+                "Windows paths are case-insensitive, and this only runs there",
+            ),
             ("/x/mirror/a.whl", "/x/woa/wheels/a.whl", "False", "different files"),
             ("", "/x/woa/wheels/a.whl", "False", "nothing is not a path"),
         ],
     )
     def test_the_comparison(self, a, b, expected, why):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Test-WoaSamePath"),
-            f"Write-Output (Test-WoaSamePath '{a}' '{b}')",
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Test-WoaSamePath"),
+                f"Write-Output (Test-WoaSamePath '{a}' '{b}')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
@@ -2295,12 +2330,17 @@ class TestAWheelhouseThatIsTheStagingDirectory:
         wheel.write_text("x", encoding = "utf-8")
         done = subprocess.run(
             [
-                PWSH, "-NoProfile", "-NonInteractive", "-Command",
+                PWSH,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
                 '$ErrorActionPreference = "Stop"; '
                 f"try {{ Copy-Item -LiteralPath '{wheel}' -Destination '{wheel}' -Force; "
                 "Write-Output 'OK' } catch { Write-Output 'THREW' }",
             ],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "THREW"
