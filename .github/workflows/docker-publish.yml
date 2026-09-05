@@ -56,12 +56,9 @@ env:
 # at all. The accepted cost is that two main commits can race to retag :core/:latest,
 # which is self-correcting on the next push, where a cancelled run leaves that commit
 # with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test resolve a :core-sha-/:sha- tag rather than tags[0], and
-# then verify that the manifest behind it holds the arches THIS run pushed. That last
-# step is the load-bearing one, because the sha tag is only immutable across COMMITS:
-# a branch push and a lightweight v* tag push at one commit produce the same short
-# sha, and the concurrency group is keyed on the ref, so those two runs never wait for
-# each other and both write that name.
+# handoff and the smoke test resolve this run's own :core-build-<run_id>/:build-<run_id>
+# tag rather than tags[0], and then verify that the manifest behind it holds the arches
+# THIS run pushed. Those tags are unique per run and removed by the cleanup job.
 # tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -306,8 +303,10 @@ jobs:
             # dispatch, else a feature ref overwrites :core with non-main bits
             type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
-            type=schedule,pattern=core-nightly
-            type=sha,prefix=core-sha-,format=short
+            # one immutable pin per daily rebuild; pruned after 60 days by cleanup
+            type=schedule,pattern=core-nightly-{{date 'YYYY.MM.DD'}}
+            # this run's handle for the digest handoff below; cleanup removes it
+            type=raw,value=core-build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
@@ -327,19 +326,14 @@ jobs:
         id: manifest_digest
         working-directory: /tmp/digests
         run: |
-          # NOT tags[0]: metadata-action sorts by priority (raw=200 above sha=100), so
-          # on a main push that is the mutable :core, which an unserialised second run
-          # can retag between the manifest creation and this inspection.
-          TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          # NOT tags[0]: on a main push that is the mutable :core, which an
+          # unserialised second run can retag between the manifest creation and this
+          # inspection. :core-build-<run_id> is this run's own name.
+          TAG="$(jq -r '([.tags[] | select(contains(":core-build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
-          # :core-sha- is immutable across COMMITS, which is the only case the tag
-          # choice above defends against. It is NOT unique across REFS: a branch push
-          # and a lightweight v* tag push at the same commit produce the same short
-          # sha, and the concurrency group is keyed on the ref, so the two runs are
-          # never serialised against each other and both write this name. Confirm the
-          # manifest we are about to hand to build-studio really is the one this run
-          # pushed, because baking another run's base image is silent otherwise.
+          # Still confirm the manifest we hand to build-studio holds what this run
+          # pushed: baking another run's base image would be silent otherwise.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
           # A build leg does not push a bare image manifest: with provenance and SBOM
@@ -478,8 +472,8 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
-            type=schedule,pattern=nightly
-            type=sha,prefix=sha-,format=short
+            type=schedule,pattern=nightly-{{date 'YYYY.MM.DD'}}
+            type=raw,value=build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
@@ -499,10 +493,10 @@ jobs:
         id: studio_manifest_digest
         working-directory: /tmp/digests
         run: |
-          # Same reasoning as the base merge: :sha- is shared by every ref sitting on
-          # this commit, so resolve it once here and hand the smoke test an immutable
-          # digest rather than a name another run can retag under it.
-          TAG="$(jq -r '([.tags[] | select(contains(":sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          # Same reasoning as the base merge: resolve this run's own :build-<run_id>
+          # once and hand the smoke test an immutable digest rather than a name
+          # another run can retag under it.
+          TAG="$(jq -r '([.tags[] | select(contains(":build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
@@ -592,11 +586,9 @@ jobs:
       # with the merge jobs' gates.
       - name: Pull and smoke-test the base image
         run: |
-          # By digest, not by name. Every ref sitting on this commit publishes the
-          # same :core-sha- tag, and those runs are in different concurrency groups,
-          # so a name resolved here can be another run's image. merge already had to
-          # resolve this digest to hand build-studio a base, and it verified that the
-          # manifest is the one it pushed.
+          # By digest, not by name: the :core-build-<run_id> tag is gone once cleanup
+          # ran, and merge already verified that the manifest behind this digest is
+          # the one it pushed.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}"
           echo "smoke-testing $REF"
           docker pull "$REF"
@@ -621,3 +613,53 @@ jobs:
           [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
           [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
+
+  # The :build-<run_id> / :core-build-<run_id> handles exist only for the digest
+  # handoff and verification above; the published names are :core, :latest, :studio,
+  # the release tags and one dated nightly pin per image. This removes the handles
+  # (namespace-scoped route: the legacy /v2/repositories path rejects the
+  # organization token) and, on the daily rebuild, prunes nightly pins older than
+  # 60 days. A dispatch with overridden inputs publishes nothing durable by design,
+  # so it keeps its handles for whoever dispatched it to pull and delete.
+  cleanup:
+    needs: [merge, merge-studio, hub-readme, smoke-test]
+    if: ${{ always() && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Remove this run's handle tags, prune old nightly pins
+        env:
+          NIGHTLY_KEEP_DAYS: "60"
+        run: |
+          HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
+          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; handle tags of run ${{ github.run_id }} were not removed."
+            exit 1
+          fi
+          failed=0
+          drop() {
+            # 204 removed, 404 never existed (a failed merge); anything else is a
+            # leftover that would show on the tag list
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "${HUB}/tags/$1" -H "Authorization: Bearer ${TOKEN}")"
+            case "$code" in
+              204|404) echo "removed ${IMAGE_NAME}:$1 (HTTP ${code})" ;;
+              *) echo "::error::${IMAGE_NAME}:$1 not removed (HTTP ${code})"; failed=1 ;;
+            esac
+          }
+          drop "core-build-${{ github.run_id }}"
+          drop "build-${{ github.run_id }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            cutoff="$(date -u -d "-${NIGHTLY_KEEP_DAYS} days" +%Y.%m.%d)"
+            for name in $(curl -sS "${HUB}/tags?page_size=100" -H "Authorization: Bearer ${TOKEN}" \
+                          | python3 -c 'import json,sys,re; print("\n".join(t["name"] for t in json.load(sys.stdin).get("results", []) if re.fullmatch(r"(core-)?nightly-\d{4}\.\d{2}\.\d{2}", t["name"])))'); do
+              stamp="${name##*nightly-}"
+              if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi
+            done
+          fi
+          test "$failed" = 0

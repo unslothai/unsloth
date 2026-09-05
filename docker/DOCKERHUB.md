@@ -10,7 +10,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 |---|---|---|
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
-| `sha-<commit>`, `core-sha-<commit>` | The same two images, pinned to one commit of `main` | Reproducible runs. |
+| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 | `<version>`, `core-<version>` | Release builds | Pin a release. |
 
 `latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
