@@ -6,6 +6,7 @@
 !supervisord.conf
 !studio_launch.sh
 !studio_password.sh
+!studio_run.sh
 !unsloth_studio_update.sh
 !unsloth_llama_update.sh
 !unsloth_jupyter_tunnel.sh

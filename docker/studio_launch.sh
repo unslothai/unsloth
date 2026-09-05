@@ -108,18 +108,26 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
 fi
 
 export UNSLOTH_JUPYTER_NOTE="${JUPYTER_NOTE}"  # for the ready summary (studio-password)
-STUDIO_AUTH="${UNSLOTH_STUDIO_HOME}/auth"
-if [[ -e "${STUDIO_AUTH}/auth.db" && ! -s "${STUDIO_AUTH}/.bootstrap_password" ]]; then
-    # A password is stored (Studio deletes the bootstrap file on the first change).
-    # UNSLOTH_STUDIO_PASSWORD only sets the initial one: the CLI exits 1 when one is
-    # already set, and supervisord would give up on Studio after a restart.
-    unset UNSLOTH_STUDIO_PASSWORD
+# UNSLOTH_STUDIO_PASSWORD only sets the initial admin password, and `unsloth studio`
+# exits 1 when handed one after that. So it goes to a root-only file that
+# unsloth-studio-run consumes while nothing is stored, and never into supervisord's
+# environment, where every respawn of the studio program would see it again.
+INITIAL_FILE="${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/run/unsloth/studio-initial-password}"
+rm -f "$INITIAL_FILE"
+if unsloth-studio-run --stored; then
     STUDIO_NOTE="user unsloth, password set on an earlier boot"
+    UNSLOTH_STUDIO_PASSWORD_STATE=stored
 elif [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
+    mkdir -p "$(dirname "$INITIAL_FILE")"
+    (umask 077 && printf '%s' "$UNSLOTH_STUDIO_PASSWORD" > "$INITIAL_FILE")
     STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
+    UNSLOTH_STUDIO_PASSWORD_STATE=initial
 else
     STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
+    UNSLOTH_STUDIO_PASSWORD_STATE=generated
 fi
+unset UNSLOTH_STUDIO_PASSWORD
+export UNSLOTH_STUDIO_PASSWORD_STATE  # read by unsloth-studio-password
 echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then

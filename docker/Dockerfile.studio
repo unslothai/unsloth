@@ -153,6 +153,7 @@ RUN set -eux \
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
 COPY studio_password.sh /usr/local/bin/unsloth-studio-password
+COPY studio_run.sh /usr/local/bin/unsloth-studio-run
 # In-place updaters (no image pull):
 #   unsloth-studio-update  refresh Studio packages (backend + frontend) and restart
 #   unsloth-llama-update   swap the baked llama.cpp prebuilt to the latest release
@@ -209,6 +210,7 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
  && /opt/unsloth-venv/bin/python -m unsloth_branding --verify
 RUN chmod +x /usr/local/bin/unsloth-studio-launch \
              /usr/local/bin/unsloth-studio-password \
+             /usr/local/bin/unsloth-studio-run \
              /usr/local/bin/unsloth-studio-update \
              /usr/local/bin/unsloth-llama-update \
              /usr/local/bin/unsloth-jupyter-tunnel
