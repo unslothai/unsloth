@@ -183,8 +183,14 @@ class TestInstallPs1Mirror:
     def test_uv_override_is_space_safe(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
         # uv reads UV_OVERRIDE as a space-separated list, and the default StudioHome sits
-        # under %USERPROFILE%, which routinely contains a space.
-        assert re.search(r"\$env:UV_OVERRIDE\s*=\s*Get-UvSafePath\s+\$WoaOverrides", source)
+        # under %USERPROFILE%, which routinely contains a space. The value is now built
+        # from more than one path -- ours plus any caller file kept in its own directory
+        # -- so what matters is that EVERY entry goes through the 8.3 helper.
+        assert re.search(
+            r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source
+        )
+        assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in source
+        assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', source)
         assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", source, flags = re.M)
 
     def test_the_selected_torch_index_is_redacted(self):

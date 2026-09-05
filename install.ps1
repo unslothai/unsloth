@@ -503,6 +503,71 @@ function Install-UnslothStudio {
         return ($a.Post -ge $b.Post)
     }
 
+    # Rewrite the relative file references in one requirements line so it still means the
+    # same thing from another directory. uv and pip both resolve a nested -r/-c/-f and a
+    # bare path against the file that CONTAINS the line, so a line moved into the managed
+    # overrides file otherwise points at $StudioHome\woa\nested.txt and the resolve dies.
+    # Only paths are touched: an ordinary requirement, a URL and a marker come back
+    # unchanged.
+    function Resolve-WoaOverrideLine {
+        param([string]$Line, [string]$BaseDir)
+        if (-not $BaseDir -or $Line -match '^\s*(#|$)') { return $Line }
+        $abs = {
+            param([string]$p)
+            if (-not $p -or $p -match '^[A-Za-z][A-Za-z0-9+.-]*://' -or [System.IO.Path]::IsPathRooted($p)) { return $p }
+            try { return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($BaseDir, $p)) } catch { return $p }
+        }
+        # -r / --requirement / -c / --constraint / -f / --find-links, with the value in the
+        # next token or after "=".
+        if ($Line -match '^(\s*)(-r|--requirement|-c|--constraint|-f|--find-links)([=\s]+)(.+?)(\s*)$') {
+            $quoted = $Matches[4].Trim('"')
+            return "$($Matches[1])$($Matches[2])$($Matches[3])$(& $abs $quoted)$($Matches[5])"
+        }
+        # "pkg @ file:relative" and a bare local wheel / sdist path. Groups are copied out
+        # before the next -match, which replaces $Matches.
+        if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
+            $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
+            if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
+            return $Line
+        }
+        if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
+            $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
+            if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest" }
+        }
+        return $Line
+    }
+
+    # Does a win_arm64 wheel for $Project exist that THIS interpreter can install? PyPI
+    # first, then the configured wheelhouse, the same two places Get-WoaPyarrowSource
+    # looks. Exact tags are the whole test because the one caller is the free-threaded
+    # branch, where abi3 and py3-none are not options anyway. Unreachable answers false,
+    # which keeps the x64 stack rather than committing to a resolve that cannot finish.
+    function Test-WoaWheelAvailable {
+        param([string]$Project, [string]$PythonMinor, [string]$AbiTag = "")
+        $tag = "cp" + ($PythonMinor -replace '\.', '')
+        if (-not $AbiTag) { $AbiTag = $tag }
+        $pattern = "$Project-[^`"'<>\s]*?win_arm64\.whl"
+        try {
+            $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/$Project/" -UseBasicParsing -TimeoutSec 20)
+            foreach ($match in [regex]::Matches($body, $pattern)) {
+                if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return $true }
+            }
+        } catch {}
+        if (-not $script:WoaWheelhouse) { return $false }
+        if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
+            $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "$Project-*win_arm64.whl" -ErrorAction SilentlyContinue |
+                Where-Object { Test-WoaWheelTags -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
+            return [bool]$local
+        }
+        try {
+            $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
+            foreach ($match in [regex]::Matches($index, $pattern)) {
+                if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return $true }
+            }
+        } catch {}
+        return $false
+    }
+
     # Can this host get a pyarrow that imports? PyPI first (so a published win_arm64 wheel
     # ends this special case for good), then an explicitly supplied wheel, then the
     # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
@@ -763,6 +828,20 @@ function Install-UnslothStudio {
         if (-not $pyarrowSource) {
             substep "windows on arm: native CUDA torch is available, but no win_arm64 pyarrow wheel could be found." "Yellow"
             substep "using the x64 stack instead. Set UNSLOTH_PYARROW_WHEEL to a win_arm64 pyarrow wheel for the native install." "Yellow"
+            return
+        }
+        # Same argument one dependency further, and only for a free-threaded build. The
+        # win_arm64 av (PyAV) wheel that constraints.txt requires is cp311-abi3, which
+        # covers every GIL interpreter from 3.11 up but nothing free-threaded: those do
+        # not implement the stable ABI (CPython #111506, PEP 703). PyAV does publish
+        # cp314-cp314t, so 3.14t is fine and 3.13t is not -- which is a question about the
+        # index, not a rule to hard-code, so it is asked. Unreachable counts as absent
+        # here: on a GIL build this probe never runs, so nothing air-gapped regresses,
+        # and the alternative on a free-threaded one is a native venv that dies building
+        # PyAV from source with the ARM64 stack already committed to.
+        if ($FreeThreaded -and -not (Test-WoaWheelAvailable -Project "av" -PythonMinor $PythonMinor -AbiTag $_woaAbiTag)) {
+            substep "windows on arm: no win_arm64 av (PyAV) wheel for this free-threaded interpreter ($_woaAbiTag)." "Yellow"
+            substep "using the x64 stack instead. A GIL build of the same Python takes the native path." "Yellow"
             return
         }
         $script:WoaNativeCudaTorch = $true
@@ -5300,17 +5379,38 @@ exit 0
             $_woaName = (($_woaLine -split '[\s<>=!~;@\[]', 2)[0]).Trim()
             if ($_woaName) { $_woaOwnNames[($_woaName -replace '[-_.]+', '-').ToLowerInvariant()] = $true }
         }
+        # Folding is the LAST resort, not the default. A caller's file may carry
+        # "-r nested.txt" or a relative wheel path, and uv resolves those against the
+        # directory of the file that contains them -- so copying the line into
+        # $StudioHome\woa moves its base and the resolve dies on a missing file. A file
+        # that names none of our packages is therefore passed through untouched, beside
+        # ours, which is also what setup.ps1's recovery does. Only a file that DOES
+        # conflict has to be rewritten, and then its relative references are made
+        # absolute against the directory they were written for.
+        $_woaKeepFiles = @()
         if ($env:UV_OVERRIDE) {
             foreach ($_woaOvFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
                 if (-not (Test-Path -LiteralPath $_woaOvFile -PathType Leaf)) { continue }
                 try { $_woaOvFull = Convert-Path -LiteralPath $_woaOvFile } catch { continue }
                 # ReadAllLines, not Get-Content: PS 5.1 decodes a BOM-less file with the
                 # ANSI code page and would mangle a non-ASCII path.
-                foreach ($_woaOvLine in [System.IO.File]::ReadAllLines($_woaOvFull)) {
+                $_woaOvLines = [System.IO.File]::ReadAllLines($_woaOvFull)
+                $_woaOvDir = [System.IO.Path]::GetDirectoryName($_woaOvFull)
+                $_woaOvConflicts = $false
+                foreach ($_woaOvLine in $_woaOvLines) {
+                    if ($_woaOvLine -match '^\s*(#|$)') { continue }
+                    $_woaOvName = ((($_woaOvLine -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
+                    if ($_woaOvName -and $_woaOwnNames.ContainsKey($_woaOvName)) { $_woaOvConflicts = $true; break }
+                }
+                if (-not $_woaOvConflicts) {
+                    $_woaKeepFiles += $_woaOvFull
+                    continue
+                }
+                foreach ($_woaOvLine in $_woaOvLines) {
                     if ($_woaOvLine -match '^\s*(#|$)') { continue }
                     $_woaOvName = ((($_woaOvLine -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
                     if ($_woaOvName -and $_woaOwnNames.ContainsKey($_woaOvName)) { continue }
-                    $WoaOverrideLines += $_woaOvLine
+                    $WoaOverrideLines += (Resolve-WoaOverrideLine -Line $_woaOvLine -BaseDir $_woaOvDir)
                 }
             }
         }
@@ -5319,7 +5419,10 @@ exit 0
         [System.IO.File]::WriteAllLines($WoaOverrides, [string[]]$WoaOverrideLines, (New-Object System.Text.UTF8Encoding($false)))
         # Space-safe: uv splits UV_OVERRIDE on whitespace and pip splits its repeatable
         # options the same way, and the default StudioHome sits under %USERPROFILE%.
-        $env:UV_OVERRIDE = Get-UvSafePath $WoaOverrides
+        # Ours first, then the caller's non-conflicting files in their own directories.
+        $_woaOverrideValue = @(Get-UvSafePath $WoaOverrides)
+        foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }
+        $env:UV_OVERRIDE = ($_woaOverrideValue -join " ")
         # Find-links are search paths: additive, no conflict semantics, so the caller's
         # keep working alongside ours. Ours first, so a win_arm64 wheel staged for this
         # host wins a tie against the same name elsewhere. UV_FIND_LINKS is
