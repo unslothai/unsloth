@@ -19147,6 +19147,7 @@ class LlamaCppBackend:
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 _mtp_will_engage = False  # set in the fit try; read by the unified-memory price
+                _separate_draft_launches = False  # same; a sidecar displaces an embedded head
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -22923,6 +22924,10 @@ class LlamaCppBackend:
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 _unified_opt_in = self._unified_memory_opted_in(env)
+                # The selection the setting was priced for. The arch gate and the
+                # arch-crash retry re-select without rebinding gpu_indices, and a
+                # later respawn must re-price against what the child actually sees.
+                _unified_gpu_indices = gpu_indices
 
                 # Price only what a forced full offload puts on the device. With the
                 # fitter or an explicit partial placement owning the layer count, the
@@ -22936,7 +22941,13 @@ class LlamaCppBackend:
                     blocks (``_mtp_will_engage`` by default); a retry that drops the
                     drafter passes both."""
                     run_argv = cmd if argv is None else argv
-                    engages = _mtp_will_engage if mtp_engages is None else mtp_engages
+                    # The trailing blocks load only when the EMBEDDED head drafts: a
+                    # sidecar wins over it (llama.cpp loads the draft model on
+                    # has_dft()), whichever device the sidecar lands on.
+                    if mtp_engages is None:
+                        engages = _mtp_will_engage and not _separate_draft_launches
+                    else:
+                        engages = mtp_engages
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
                     need = int(model_size)
@@ -22951,7 +22962,7 @@ class LlamaCppBackend:
                     # only an untied one subtracts it. Trailing NextN/MTP blocks
                     # stay unloaded unless a draft engages. A table that cannot be
                     # read cannot price either, so it takes nothing.
-                    layout = self._tensor_spill_layout(model_path)
+                    layout = self._tensor_spill_layout(model_path, all_shards = True)
                     if layout is None or not getattr(layout, "complete", True):
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
@@ -22972,7 +22983,7 @@ class LlamaCppBackend:
                     if not _unified_env_applied:
                         return
                     if self._unified_memory_for_launch(
-                        gpu_indices,
+                        _unified_gpu_indices,
                         _unified_need_now(argv = run_cmd, mtp_engages = mtp_engages),
                         opted_in = _unified_opt_in,
                     ):
@@ -23154,6 +23165,7 @@ class LlamaCppBackend:
                         self._clear_split_placement_env(env)
                         # The setting is process-wide, so recompute it after changing
                         # the selected devices. Ownership protects inherited values.
+                        _unified_gpu_indices = _survivors
                         _survivors_gain_unified = self._unified_memory_for_launch(
                             _survivors, _unified_need_now(), opted_in = _unified_opt_in
                         )
@@ -24056,6 +24068,7 @@ class LlamaCppBackend:
                         )
                         self._kill_process()
                         gpu_indices = _remaining
+                        _unified_gpu_indices = _remaining
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the CRASHED
                         # set. The canonical #7624 shape crashes on the APU and retries
                         # on the dGPU, where it is harmful, so withdraw it, but only
@@ -26904,7 +26917,12 @@ class LlamaCppBackend:
         logger.info("Tensor spill: dropping the plan for the %s retry; %s", why, "using --fit on")
         return [*stripped, "--fit", "on"]
 
-    def _tensor_spill_layout(self, model_path: "Optional[str]") -> "Optional[ModelLayout]":
+    def _tensor_spill_layout(
+        self,
+        model_path: "Optional[str]",
+        *,
+        all_shards: bool = False,
+    ) -> "Optional[ModelLayout]":
         """The GGUF's placement buckets, read once per path and cached.
 
         Per BLOCK, not per bucket total, so the planner can spill the minimum set
@@ -26926,14 +26944,18 @@ class LlamaCppBackend:
         # (size, mtime_ns) stat identity _slot_launch_fingerprint uses.
         try:
             st = os.stat(model_path)
-            key = (model_path, st.st_size, st.st_mtime_ns)
+            key = (model_path, st.st_size, st.st_mtime_ns, all_shards)
         except OSError:
-            key = (model_path, None, None)
+            key = (model_path, None, None, all_shards)
         cached = getattr(self, "_spill_layout_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
         try:
-            layout = layout_from_gguf(model_path)
+            layout = (
+                layout_from_gguf(model_path, all_shards = True)
+                if all_shards
+                else layout_from_gguf(model_path)
+            )
         except Exception as e:  # unreadable, truncated, or an arch we cannot bucket
             logger.debug("Tensor spill: cannot read layout from %s (%s)", model_path, e)
             layout = None

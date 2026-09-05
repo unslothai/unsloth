@@ -841,7 +841,7 @@ def _run_auto_load(
     # nothing (the unified-memory gate fails closed on it). Hand the load a
     # readable one unless the test brought its own.
     if "_tensor_spill_layout" not in vars(backend):
-        backend._tensor_spill_layout = lambda _path: _priced_layout()
+        backend._tensor_spill_layout = lambda _path, **_kw: _priced_layout()
     # Off by default: the APU RAM preflight is not what most of these cells are
     # about. A test that IS about it passes its own recording stub.
     backend._apu_ram_shortfall_message = apu_ram_stub or (lambda *_args, **_kwargs: None)
@@ -2142,7 +2142,7 @@ class TestUnifiedMemoryOptOut:
         the file size but never loaded."""
         backend = LlamaCppBackend()
         backend._nextn_predict_layers = 1
-        backend._tensor_spill_layout = lambda _path: (
+        backend._tensor_spill_layout = lambda _path, **_kw: (
             None
             if excluded_bytes is None
             else types.SimpleNamespace(excluded_block_bytes = excluded_bytes)
@@ -2186,7 +2186,7 @@ class TestUnifiedMemoryOptOut:
 
     def _with_layout(self, **fields):
         backend = LlamaCppBackend()
-        backend._tensor_spill_layout = lambda _path: _priced_layout(**fields)
+        backend._tensor_spill_layout = lambda _path, **_kw: _priced_layout(**fields)
         return backend
 
     def test_cpu_pinned_embeddings_are_not_priced(self, tmp_path, monkeypatch, probe_env):
@@ -2262,6 +2262,20 @@ class TestUnifiedMemoryOptOut:
         text_only = [e for c, e in launches if "--mmproj" not in c]
         assert text_only, [c for c, _e in launches]
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for e in text_only)
+
+    def test_a_sidecar_drafter_displaces_the_embedded_head(self, tmp_path, monkeypatch, probe_env):
+        """A draft requested with a sidecar loads the sidecar, not the file's
+        trailing blocks (llama.cpp loads the draft model on has_dft()), so the
+        30 GiB base is what reaches the carve-out."""
+        sidecar = tmp_path / "draft.gguf"
+        sidecar.write_bytes(b"GGUF")
+        _cmd, env = self._load(
+            tmp_path,
+            monkeypatch,
+            backend = self._with_unloaded_mtp_blocks(10 * GIB),
+            extra_args = ["--spec-type", "draft-mtp", "-md", str(sidecar)],
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_an_unreadable_tensor_table_cannot_price_the_blocks(
         self, tmp_path, monkeypatch, probe_env
@@ -3376,6 +3390,33 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_narrowed_selection_is_what_a_later_retry_reprices(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """After the gate narrows onto the APU, a drafterless retry must price
+        against that APU, not the pre-gate mixed pair the swap cannot help."""
+        torch = self._apu_and_dgpu(monkeypatch, 40_000)
+        backend = LlamaCppBackend()
+        backend._nextn_predict_layers = 1
+        backend._tensor_spill_layout = lambda _path, **_kw: _priced_layout()
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            ["gfx1151"],
+            returncode = 1,
+            output = "failed to create llama_context",
+            model_bytes = 400 * GIB,
+            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
+            intent_kwargs = {"extra_args": ["--spec-type", "draft-mtp"]},
+            backend = backend,
+        )
+        first_cmd, first_env = launches[0]
+        assert "draft-mtp" in first_cmd and first_env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+        retries = [(c, e) for c, e in launches if "--spec-default" in c and "draft-mtp" not in c]
+        assert retries, [c for c, _e in launches]
+        assert all(e.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for _c, e in retries)
 
     def test_the_opt_out_survives_that_narrowing(self, tmp_path, monkeypatch, probe_env):
         torch = self._apu_and_dgpu(monkeypatch, 40_000)
