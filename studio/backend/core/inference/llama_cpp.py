@@ -32216,7 +32216,9 @@ class LlamaCppBackend:
                 try:
                     preempt_policy.on_preempted(_checkpoint)
                 except Exception:
-                    logger.debug("preemption policy raised on pause; resuming anyway", exc_info = True)
+                    logger.debug(
+                        "preemption policy raised on pause; resuming anyway", exc_info = True
+                    )
                 # Tell the client it is paused, not broken, exactly as the plain path
                 # does. The route turns this into the `: preempt-paused` comment and the
                 # GUI into "Paused while another chat finishes". This loop never yielded
