@@ -593,15 +593,25 @@ _NAV_BOX = "style={{ width: titlebarNavigationWidth }}"
 def _open_tag(source: str, marker: str) -> str:
     """The opening JSX tag of the element carrying ``marker``.
 
-    Brace depth is tracked because a `>` inside `{...}` is an operator or an arrow,
-    not the end of the tag.
+    Braces and quotes are both tracked. A `>` inside `{...}` is an operator or an
+    arrow, and a `>` inside a class string is a Tailwind child selector such as
+    `[&>svg]:size-4`; neither ends the tag, and both are common here.
     """
     at = source.index(marker)
-    start = source.rindex("<", 0, at)
-    depth = 0
+    start = at
+    while True:
+        start = source.rindex("<", 0, start)
+        if source[start + 1 : start + 2].isalpha():
+            break
+    depth, quote = 0, ""
     for index in range(start, len(source)):
         char = source[index]
-        if char == "{":
+        if quote:
+            if char == quote and source[index - 1] != "\\":
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
@@ -611,14 +621,26 @@ def _open_tag(source: str, marker: str) -> str:
 
 
 def _has_left_inset(open_tag: str) -> bool:
-    """Whether the tag's classes give it a non-zero left padding.
+    """Whether the tag leaves a non-zero left padding in the element's resting state.
 
-    Only quoted strings are read, so a class named in a comment inside the tag does
-    not count, and the value is left free: the inset has to exist, not measure 12px.
+    Last one wins, because cn() resolves through tailwind-merge: `cn("pl-4", "pl-0")`
+    renders flush however the earlier token reads. Variant-prefixed utilities like
+    `hover:pl-4` do not set the resting state, and an arbitrary value is measured
+    rather than compared as text, so `pl-[0px]` is zero. Only quoted strings are read,
+    so a class named in a comment inside the tag does not count.
     """
-    classes = " ".join(re.findall(r'"([^"]*)"', open_tag))
-    found = re.findall(r"\bpl-(\d+(?:\.\d+)?|\[[^\]]+\])", classes)
-    return any(value != "0" for value in found)
+    effective = None
+    for token in " ".join(re.findall(r'"([^"]*)"', open_tag)).split():
+        if ":" in token:
+            continue
+        match = re.fullmatch(r"pl-(\d+(?:\.\d+)?|\[[^\]]+\])", token)
+        if match:
+            effective = match.group(1)
+    if effective is None:
+        return False
+    if effective.startswith("["):
+        return re.fullmatch(r"\[0(?:\.0+)?[a-z%]*\]", effective) is None
+    return float(effective) != 0
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
