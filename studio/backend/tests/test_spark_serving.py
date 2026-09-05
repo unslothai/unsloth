@@ -313,8 +313,14 @@ def test_rpc_server_and_layer_split_arguments():
     ]
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
     assert extra == [
-        "--rpc", "192.168.200.13:50052", "--device", "RPC0,CUDA0", "-sm", "layer",
-        "--cache-ram", "0",
+        "--rpc",
+        "192.168.200.13:50052",
+        "--device",
+        "RPC0,CUDA0",
+        "-sm",
+        "layer",
+        "--cache-ram",
+        "0",
     ]
     assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
     # Pipeline groups ride on the same launch, with a slot count that gives every
