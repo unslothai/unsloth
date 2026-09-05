@@ -1144,7 +1144,7 @@ class TestArchCrashRetryEnv:
         )
         return _fake_torch(
             [
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1151", free_mib = 40000, total_bytes = 8 * GIB, is_integrated = 1),
                 _device("gfx1030", free_mib = 12049),
             ],
             vendor = "amd",
@@ -1164,6 +1164,7 @@ class TestArchCrashRetryEnv:
             None,  # no marker: the proactive gate fails open, so the crash path runs
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
+            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out without moving the placement
         )
         # The APU is pinned first, so the crashed spawn carries the env and the
         # respawns are masked onto the discrete card. The unrelated --fit off retry
@@ -1911,7 +1912,7 @@ class TestArchCrashRetryOntoAnApu:
         return _fake_torch(
             [
                 _device("gfx1030", free_mib = 40000),
-                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+                _device("gfx1151", free_mib = 12000, total_bytes = 8 * GIB, is_integrated = 1),
             ],
             vendor = "amd",
         )
@@ -1925,6 +1926,7 @@ class TestArchCrashRetryOntoAnApu:
             None,  # no marker: the proactive gate fails open, so the crash path runs
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
+            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out without moving the placement
         )
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in launches[0][1]
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
@@ -1957,6 +1959,7 @@ class TestUnifiedMemoryOptOut:
         tmp_path,
         monkeypatch,
         env_extra = None,
+        model_bytes = 40 * GIB,  # outgrows the fake 32 GiB carve-out
     ):
         return _run_auto_load(
             monkeypatch,
@@ -1965,12 +1968,36 @@ class TestUnifiedMemoryOptOut:
             None,
             returncode = None,
             env_extra = env_extra,
+            model_bytes = model_bytes,
         )
 
-    def test_the_apu_still_gets_it_by_default(self, tmp_path, monkeypatch, probe_env):
-        """Baseline: #5301 added the variable for exactly this hardware."""
+    def test_the_apu_gets_it_when_the_weights_outgrow_the_carve_out(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Baseline: #5301 added the variable for exactly this hardware, for the
+        load its carve-out cannot hold."""
         _cmd, env = self._load(tmp_path, monkeypatch)[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_weights_that_fit_the_carve_out_keep_it_unset(self, tmp_path, monkeypatch, probe_env):
+        """Managed pages fault Qwen3.8-Flash-Next on Linux gfx1151 (b10715 and b10798,
+        clean with the variable unset), so a load the carve-out holds never takes them."""
+        _cmd, env = self._load(tmp_path, monkeypatch, model_bytes = 20 * GIB)[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_enable_switch_takes_it_for_a_fitting_model(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, model_bytes = 20 * GIB
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_disable_switch_beats_the_enable_switch(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(
+            tmp_path,
+            monkeypatch,
+            {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1", "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     @pytest.mark.parametrize("value", ["0", "", "false", "FALSE", "no", "off", " 0 "])
     def test_a_falsy_user_value_is_not_passed_through(
@@ -2954,9 +2981,16 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         monkeypatch,
         torch,
         env_extra = None,
+        model_bytes = 40 * GIB,  # outgrows every carve-out below
     ):
         return _run_auto_load(
-            monkeypatch, tmp_path, torch, None, returncode = None, env_extra = env_extra
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            env_extra = env_extra,
+            model_bytes = model_bytes,
         )
 
     def test_a_small_carve_out_gets_it(self, tmp_path, monkeypatch, probe_env):
