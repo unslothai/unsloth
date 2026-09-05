@@ -160,6 +160,8 @@ interface ModelSelectorProps {
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  /** Disable the trigger button entirely (e.g. while a load is in flight). */
+  disabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -194,6 +196,7 @@ function ModelSelectorTrigger({
   triggerLabelClassName,
   dataTour,
   onEject,
+  disabled,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
@@ -207,12 +210,14 @@ function ModelSelectorTrigger({
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   return (
     <PopoverTrigger asChild={true}>
       <button
         type="button"
         data-tour={dataTour}
+        disabled={disabled}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
@@ -668,6 +673,7 @@ export function ModelSelector({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  disabled,
   variant = "outline",
   size = "default",
   className,
@@ -819,6 +825,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
         placeholder={placeholder}
+        disabled={disabled}
       />
       <ModelSelectorContent
         open={open}

@@ -13,11 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
@@ -27,6 +22,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import {
+  currentRuntimePerModelConfig,
+  resolveInitialConfig,
+  type ModelSelectorChangeMeta,
+} from "@/features/model-picker";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
@@ -36,7 +36,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
-  Download01Icon,
   Delete02Icon,
   Globe02Icon,
   PauseIcon,
@@ -46,7 +45,7 @@ import {
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { unloadResident } from "./unload-resident";
@@ -560,7 +559,34 @@ export function ApiMonitorPage(): ReactElement {
   const [unloadError, setUnloadError] = useState<string | null>(null);
   const { selectModel, loadingModel } = useChatModelRuntime();
   const models = useChatRuntimeStore((state) => state.models);
-  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const handleModelSelect = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) => {
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
+      const remembered = resolveInitialConfig(id, meta.ggufVariant);
+      const loadConfig =
+        meta.config ??
+        (remembered.remembered ? remembered.config : null);
+      void selectModel({
+        id,
+        ggufVariant: meta.ggufVariant,
+        source: meta.source,
+        isLora: meta.isLora,
+        isDownloaded: meta.isDownloaded,
+        expectedBytes: meta.expectedBytes,
+        isGguf: meta.isGguf,
+        isDiffusion: meta.isDiffusion,
+        nativePathToken: meta.nativePathToken,
+        nativePathExpiresAtMs: meta.nativePathExpiresAtMs,
+        ...(loadConfig
+          ? { keepSpeculative: true, config: loadConfig }
+          : {}),
+        previousConfig,
+      });
+    },
+    [selectModel],
+  );
 
   useEffect(() => {
     const refreshRemoteBase = () => {
@@ -714,50 +740,23 @@ export function ApiMonitorPage(): ReactElement {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Popover open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={loadingModel !== null}
-                title={loadingModel ? "Model is loading" : "Load a model"}
-                className="h-9 gap-1.5 rounded-full"
-              >
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                Load
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[400px]">
-              <ModelSelector.Content
-                open={modelSelectorOpen}
-                models={models}
-                loraModels={[]}
-                externalModels={[]}
-                value=""
-                onSelect={(id, meta) => {
-                  selectModel({
-                    id,
-                    ggufVariant: meta.ggufVariant,
-                    source: meta.source,
-                    isLora: meta.isLora,
-                    isDownloaded: meta.isDownloaded,
-                    expectedBytes: meta.expectedBytes,
-                    isGguf: meta.isGguf,
-                    isDiffusion: meta.isDiffusion,
-                    config: meta.config,
-                    nativePathToken: meta.nativePathToken,
-                    nativePathExpiresAtMs: meta.nativePathExpiresAtMs,
-                  });
-                  setModelSelectorOpen(false);
-                }}
-              />
-            </PopoverContent>
-          </Popover>
+          <span
+            title={loadingModel ? "Model is loading" : "Load a model"}
+            className="inline-flex"
+          >
+            <ModelSelector
+              models={models}
+              loraModels={[]}
+              externalModels={[]}
+              value=""
+              onValueChange={handleModelSelect}
+              variant="outline"
+              size="sm"
+              placeholder="Load"
+              disabled={loadingModel !== null}
+              className="h-9 gap-1.5 rounded-full"
+            />
+          </span>
           <Button
             type="button"
             variant="outline"
