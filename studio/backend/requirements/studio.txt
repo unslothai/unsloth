@@ -58,7 +58,9 @@ gguf==0.18.0; python_version < "3.10"
 av>=12.0.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
-sqlite-vec==0.1.9
+# sqlite-vec publishes win_amd64 only and no sdist, so there is no version to floor to
+# on win_arm64. The RAG store treats a missing sqlite_vec as "RAG unavailable".
+sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # pymupdf publishes a win_arm64 wheel from 1.28 only.
 pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
 pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"

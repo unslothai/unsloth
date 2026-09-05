@@ -303,3 +303,76 @@ def test_the_woa_pandas_split_covers_every_supported_python():
                 assert "3.0" not in str(
                     live[0].specifier
                 ), f"{label}: Python {py} must not be handed the pandas 3 row"
+
+
+def _skip_list_module():
+    """install_python_stack.py, loaded so the skip list is read rather than copied here."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_ips_marker_skiplist", REPO_ROOT / "studio" / "install_python_stack.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Scoped to `studio` deliberately. It is the extra a Windows-on-ARM user installs, the one
+# the installer's own path uses, and the only one whose rows are a claim about this
+# platform. The other 190-odd are x64 recipes -- `cu130onlytorch291` pins an explicit
+# win_amd64 wheel URL and an x64-only torch, `colab-*` targets x64 Linux -- so requiring an
+# ARM64 marker there would assert something those extras never promised.
+WOA_INSTALLABLE_EXTRAS = ["studio"]
+
+
+@pytest.mark.parametrize("extra", WOA_INSTALLABLE_EXTRAS)
+def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
+    """The runtime skip list cannot reach package METADATA, so the extra has to agree.
+
+    install_python_stack.py filters these names out of the requirements files it installs,
+    but `pip install "unsloth[studio]"` never runs that code: it resolves pyproject's rows
+    directly. A row left live on win_arm64 for a package with no wheel and no buildable
+    sdist there fails the install outright, and the runtime filtering gives no hint of it.
+
+    sqlite-vec was exactly this: win_amd64 wheels only, and no sdist at all, so the studio
+    extra could not resolve on a native ARM64 interpreter.
+    """
+    module = _skip_list_module()
+    skipped = {module._canonical_dist_name(n) for n in module.WINDOWS_ARM64_SKIP_PACKAGES}
+    woa = _env(("win32", "Windows", "ARM64", "nt"), "3.13")
+    live = [
+        str(req)
+        for req in _pyproject_extras()[extra]
+        if module._canonical_dist_name(req.name) in skipped
+        and (req.marker is None or req.marker.evaluate(woa))
+    ]
+    assert not live, (
+        f"pyproject[{extra}] leaves these live on Windows ARM64 even though the installer "
+        f"treats them as unavailable there, so `pip install unsloth[{extra}]` cannot "
+        f"resolve: {live}"
+    )
+
+
+@pytest.mark.parametrize(
+    "extra", WOA_INSTALLABLE_EXTRAS, ids = WOA_INSTALLABLE_EXTRAS,
+)
+def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
+    """A negative ARM64 marker is a scalpel: every other platform keeps the row.
+
+    Checked as an outcome rather than a spelling, over the same platform table the rest of
+    this file uses, so a marker that reads correctly but excludes (say) Windows x86 as well
+    is still caught.
+    """
+    module = _skip_list_module()
+    skipped = {module._canonical_dist_name(n) for n in module.WINDOWS_ARM64_SKIP_PACKAGES}
+    for req in _pyproject_extras()[extra]:
+        if module._canonical_dist_name(req.name) not in skipped or req.marker is None:
+            continue
+        for plat in PLATFORMS:
+            if (plat[0], plat[2]) == ("win32", "ARM64"):
+                continue
+            for py in PYTHONS:
+                assert req.marker.evaluate(_env(plat, py)), (
+                    f"pyproject[{extra}] {req.name} is dropped on {plat[0]}/{plat[2]}/"
+                    f"py{py} too, which is not what the ARM64 marker is for"
+                )
