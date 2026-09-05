@@ -1272,9 +1272,7 @@ class PreemptionController:
             # count as standing, or a sweep between the decision and the pause would
             # take the last decoder too.
             standing = any(
-                p.holds_kv
-                and not p.preemptable
-                and p.state != ParticipantState.PREEMPTING
+                p.holds_kv and not p.preemptable and p.state != ParticipantState.PREEMPTING
                 for p in self._participants.values()
             )
             spare = len(victims) if standing else max(0, len(victims) - 1)

@@ -129,9 +129,7 @@ class TestTheRouteReports:
         """After the controller moved the chat to DECODING by itself, a later
         TOOLS_RUNNING report must still go through."""
         controller = _controller()
-        monkeypatch.setattr(
-            inference_route, "get_preemption_controller", lambda key: controller
-        )
+        monkeypatch.setattr(inference_route, "get_preemption_controller", lambda key: controller)
         backend = type("B", (), {"base_url": "http://tool.test"})()
         _refresh, _observe, note_state = inference_route._openai_llama_residency_observer(
             llama_backend = backend, completion_id = "chat"
