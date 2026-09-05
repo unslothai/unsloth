@@ -6266,7 +6266,15 @@ if ($LocalLlamaCppLinked) {
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
                     if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda", "windows-arm64") }
                 } else { @("windows-cuda") }
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
+                # nvidia-smi is a probe, and a probe that did not answer is not evidence the GPU
+                # is gone: a transient failure during a direct update dropped windows-arm64-cuda
+                # from the expected set, deleted a working install three lines down, and then ran
+                # the selector with no NVIDIA evidence, which installs the CPU bundle. The WoA CUDA
+                # index this venv is on says the same thing nvidia-smi would have, and only
+                # NVIDIA's own channels are ever persisted, so it cannot be a CPU pin.
+                $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $WinArm64EffectiveTorchIndexUrl -and
+                    (Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl))
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

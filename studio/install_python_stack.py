@@ -5742,14 +5742,36 @@ WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
 }
 
 
+def _public_pypi_is_reachable() -> bool:
+    """Can this resolution actually reach public PyPI?
+
+    The table below records what PyPI publishes, which is only availability if PyPI is where
+    the resolve will look. Offline, or pointed at an exclusive corporate index, those wheels
+    are neither cached nor served: unblocking librosa there drops the skip and then fails the
+    whole extras pass on an unavailable numba, which is exactly what the skip prevents.
+    UV_INDEX_URL / UV_DEFAULT_INDEX REPLACE the default index; --extra-index-url adds to it,
+    so a configured extra leaves PyPI in play and is not consulted here.
+    """
+    if _uv_is_offline():
+        return False
+    for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
+        value = os.environ.get(var, "").strip()
+        if value and "pypi.org" not in value:
+            return False
+    if os.environ.get("PIP_NO_INDEX", "").strip().lower() not in ("", "0", "false"):
+        return False
+    return True
+
+
 def _public_index_win_arm64_versions(canonical: str) -> "set[str]":
     """Versions the public index publishes a usable win_arm64 wheel of, for THIS build.
 
-    Empty off win_arm64, and empty for an interpreter the recorded wheel is not tagged for.
-    The tag is judged by _wheel_matches_interpreter rather than by comparing strings, so a
-    free-threaded build does not claim a wheel built for the GIL one.
+    Empty off win_arm64, empty when the resolve cannot reach PyPI, and empty for an
+    interpreter the recorded wheel is not tagged for. The tag is judged by
+    _wheel_matches_interpreter rather than by comparing strings, so a free-threaded build does
+    not claim a wheel built for the GIL one.
     """
-    if not _is_win_arm64_interpreter():
+    if not _is_win_arm64_interpreter() or not _public_pypi_is_reachable():
         return set()
     return {
         version

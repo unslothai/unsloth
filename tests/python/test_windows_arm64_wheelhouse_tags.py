@@ -947,3 +947,54 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
         assert "librosa" not in ips._windows_arm64_skip_packages()
         assert "mecab" in ips._windows_arm64_skip_packages(), "the rest still drop"
+
+
+class TestThePublicIndexClaimNeedsTheIndex:
+    """What PyPI publishes is only availability if the resolve will look at PyPI.
+
+    Offline, or pointed at an exclusive corporate index, those wheels are neither cached nor
+    served. Unblocking librosa there drops the skip and then fails the whole extras pass on
+    an unavailable numba chain, which is the outcome the skip list exists to prevent.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _native(self, ips, monkeypatch):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        for var in ("UV_OFFLINE", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL", "PIP_NO_INDEX"):
+            monkeypatch.delenv(var, raising = False)
+
+    def test_the_default_case_still_claims_them(self, ips):
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
+
+    @pytest.mark.parametrize(
+        "var, value",
+        [
+            ("UV_OFFLINE", "1"),
+            ("UV_DEFAULT_INDEX", "https://pypi.corp.test/simple"),
+            ("UV_INDEX_URL", "https://pypi.corp.test/simple"),
+            ("PIP_INDEX_URL", "https://pypi.corp.test/simple"),
+            ("PIP_NO_INDEX", "1"),
+        ],
+    )
+    def test_an_unreachable_pypi_claims_nothing(self, ips, monkeypatch, var, value):
+        monkeypatch.setenv(var, value)
+        assert ips._public_index_win_arm64_versions("numba") == set()
+
+    def test_a_pypi_mirror_url_still_counts(self, ips, monkeypatch):
+        """Replacing the default index with PyPI itself changes nothing about availability."""
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
+
+    def test_an_extra_index_is_additive_and_not_consulted(self, ips, monkeypatch):
+        """--extra-index-url ADDS to the default, so PyPI is still in play."""
+        monkeypatch.setenv("UV_EXTRA_INDEX_URL", "https://pypi.corp.test/simple")
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
+
+    def test_librosa_goes_back_to_the_skip_list_offline(self, ips, monkeypatch, tmp_path):
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        assert "librosa" not in ips._windows_arm64_skip_packages()
+        monkeypatch.setenv("UV_OFFLINE", "1")
+        ips._find_links_wheel_versions.cache_clear()
+        assert "librosa" in ips._windows_arm64_skip_packages()

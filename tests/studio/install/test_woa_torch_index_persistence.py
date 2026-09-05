@@ -4263,3 +4263,97 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
+
+
+class TestTheOverrideFileDoesNotOutrankTheTorchPin:
+    """uv's --overrides replace a version even for a requirement named on the command line.
+
+    Verified against uv 0.10.7: an override of `packaging>=20` beat a CLI `packaging==24.0`.
+    The generated file carries torch>=2.4 and torchvision>=0.19, so it discarded the exact
+    CUDA pins the probe had just selected, and best-match then took PyPI's newer CPU wheel --
+    the whole native GPU path replaced by a CPU build that imports.
+    """
+
+    def test_the_trio_is_dropped_for_that_one_command(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function New-WoaTorchStepOverrideValue {" in text
+        body = _ps_function(INSTALL_PS1, "New-WoaTorchStepOverrideValue")
+        assert '@("torch", "torchvision", "torchaudio") -contains $name' in body
+
+    def test_it_is_applied_around_the_native_install_only(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        swap = text.index("$env:UV_OVERRIDE = New-WoaTorchStepOverrideValue")
+        guard = text.rindex("if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq \"win-arm64\" -and $env:UV_OVERRIDE) {", 0, swap)
+        assert guard < swap, "every other host must keep the overrides it had"
+
+    def test_the_original_value_is_restored(self):
+        """The later unsloth resolve still needs the drop list."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        swap = text.index("$env:UV_OVERRIDE = New-WoaTorchStepOverrideValue")
+        tail = text[swap : swap + 900]
+        assert "} finally {" in tail
+        assert "if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }" in tail
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "lines, expect_kept, why",
+        [
+            (["torch>=2.4", "torchvision>=0.19", "hf-transfer ; platform_machine == \"AMD64\""],
+             ["hf-transfer"], "the trio goes, the drop list stays"),
+            (["hf-transfer ; platform_machine == \"AMD64\"", "pyarrow==21.0.0"],
+             ["hf-transfer", "pyarrow"], "nothing to drop: the file is passed through untouched"),
+            (["torch_geometric>=2.0"], ["torch_geometric"], "a different package that starts with torch"),
+        ],
+    )
+    def test_what_survives_the_filter(self, tmp_path, lines, expect_kept, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        src = tmp_path / "ovr.txt"
+        src.write_text("\n".join(lines) + "\n", encoding = "utf-8")
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Get-WoaRequirementEntries"),
+                _ps_function(INSTALL_PS1, "Resolve-WoaOverrideLine"),
+                _ps_function(INSTALL_PS1, "New-WoaTorchStepOverrideValue"),
+                f"$v = New-WoaTorchStepOverrideValue -Value '{src}'",
+                "Get-Content -LiteralPath ($v.Trim('\"')) | ForEach-Object { Write-Output $_ }",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        out = done.stdout
+        for name in expect_kept:
+            assert name in out, f"{name} was dropped: {why}"
+        for name in ("torch>=", "torchvision>=", "torchaudio>="):
+            assert name not in out, f"{name} survived: {why}"
+
+
+class TestATransientProbeFailureKeepsTheCudaBundle:
+    """nvidia-smi is a probe, and one that did not answer is not evidence the GPU is gone.
+
+    During a direct update of a native ARM64 CUDA install, a transiently missing nvidia-smi
+    dropped windows-arm64-cuda from the expected kinds, deleted the working llama.cpp tree,
+    and ran the selector with no NVIDIA evidence, which installs the CPU bundle instead.
+    """
+
+    def test_the_persisted_cuda_index_counts_as_evidence(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv)" in text
+        assert "elseif ($_nvidiaEvidence) { $_nvidiaKinds }" in text
+
+    def test_only_a_persistable_index_counts(self):
+        """Test-WoaPersistableIndex passes only NVIDIA's own channels, so a /cpu pin cannot
+        claim to be NVIDIA evidence."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$_nvidiaEvidence = ")
+        assert "Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl" in text[start : start + 400]
+
+    def test_rocm_still_wins_the_branch(self):
+        """The ROCm arm is first and unchanged: this only widens the NVIDIA one."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        line = [l for l in text.splitlines() if "$expectedKinds = if (" in l][0]
+        assert line.index("$HasROCm") < line.index("$_nvidiaEvidence")

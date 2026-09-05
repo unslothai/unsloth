@@ -542,6 +542,36 @@ function Install-UnslothStudio {
     # uv follows a nested -r, so a conflict can sit one level down where a top-file scan finds
     # nothing, and two override files naming one package is an error. Each line carries the directory
     # it was READ from, which is what uv resolves its relative paths against.
+    # uv's --overrides replace the version of a requirement even when it is named directly on the
+    # command line (verified on 0.10.7: an override of packaging>=20 beat a CLI packaging==24.0), so
+    # the trio floors in the generated file discard the exact CUDA pins the probe selected and
+    # best-match then takes PyPI's newer CPU wheel. Drop ONLY the trio, and only for that one
+    # command: everything else the caller set still has to apply to torch's own dependencies.
+    function New-WoaTorchStepOverrideValue {
+        param([string]$Value)
+        if (-not $Value) { return $null }
+        $files = @()
+        foreach ($entry in ($Value -split '\s+' | Where-Object { $_ })) {
+            $path = $entry.Trim('"').Trim("'")
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $kept = @()
+            $dropped = $false
+            foreach ($line in (Get-WoaRequirementEntries -Path $path)) {
+                $name = ((($line.Line -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
+                if (@("torch", "torchvision", "torchaudio") -contains $name) { $dropped = $true; continue }
+                $kept += (Resolve-WoaOverrideLine -Line $line.Line -BaseDir $line.BaseDir)
+            }
+            if (-not $dropped) { $files += $path; continue }
+            # Flattened, because dropping a line from an include means the include cannot come
+            # along by reference. Every remaining path was rebased above.
+            $tmp = [System.IO.Path]::GetTempFileName()
+            [System.IO.File]::WriteAllLines($tmp, [string[]]$kept, (New-Object System.Text.UTF8Encoding($false)))
+            $files += $tmp
+        }
+        if (-not $files) { return "" }
+        return (($files | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join " ")
+    }
+
     function Get-WoaRequirementEntries {
         param([string]$Path, $Seen = $null, [int]$Depth = 0)
         if ($Depth -gt 8) { return @() }
@@ -6819,7 +6849,19 @@ exit 0
                 }
             }
             if (-not $script:PrevTorchPin) {
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
+                # Only where an exact pin is at stake; every other host keeps the overrides it had.
+                $_woaOverrideSaved = $null
+                $_woaOverrideSwapped = $false
+                if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64" -and $env:UV_OVERRIDE) {
+                    $_woaOverrideSaved = $env:UV_OVERRIDE
+                    $env:UV_OVERRIDE = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved
+                    $_woaOverrideSwapped = $true
+                }
+                try {
+                    $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
+                } finally {
+                    if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }
+                }
             }
             if ($torchInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
