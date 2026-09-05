@@ -25495,7 +25495,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
-    monitor_model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default")
+    monitor_model = _monitor_active_model() or str(
+        body.get("model") or _llama_public_model_id(llama_backend) or "default"
+    )
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         via_api_key = _request_used_api_key(request),
@@ -25800,12 +25802,15 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
+    monitor_model = _monitor_active_model() or str(
+        body.get("model") or _llama_public_model_id(llama_backend) or "default"
+    )
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
             via_api_key = _request_used_api_key(request),
             method = request.method,
-            model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+            model = monitor_model,
             prompt = prompt_text,
             context_length = llama_backend.context_length,
             subject = current_subject,
@@ -25818,7 +25823,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _client = _cancelable_nonstreaming_client()
     _tracker = _TrackedCancel(
         _cancel_event,
-        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        model = monitor_model,
         kind = "embeddings",
     )
     _tracker.__enter__()
