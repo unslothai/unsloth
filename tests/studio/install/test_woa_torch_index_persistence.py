@@ -2045,9 +2045,9 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             # The include is FLATTENED as it folds, not copied as an "-r" line: its contents
             # arrive rebased against the directory the include was written in, which is the
             # only way a conflict discovered one level down can also be removed.
-            assert "idna==3.10" in written, (
-                "the include's own lines did not come across, so folding dropped them"
-            )
+            assert (
+                "idna==3.10" in written
+            ), "the include's own lines did not come across, so folding dropped them"
             assert "-r " not in written, "an include line copied verbatim would move its base"
             assert "torch==2.9.0" not in written, "our own declaration still wins"
         else:
@@ -2440,8 +2440,9 @@ class TestAWheelhousePyarrowMustClearTheFloor:
             INSTALL_PS1.read_text(encoding = "utf-8"),
         )
         assert floor, "install.ps1 no longer declares the pyarrow floor"
-        constraints = (PACKAGE_ROOT / "studio" / "backend" / "requirements" /
-                       "single-env" / "constraints.txt").read_text(encoding = "utf-8")
+        constraints = (
+            PACKAGE_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
+        ).read_text(encoding = "utf-8")
         pinned = re.search(
             r'(?m)^pyarrow>=([0-9.]+);\s*sys_platform == "win32" and platform_machine == "ARM64"',
             constraints,
@@ -2488,7 +2489,9 @@ class TestAWheelhousePyarrowMustClearTheFloor:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
@@ -2508,9 +2511,10 @@ class TestThePrereleaseAnswerComesFromTheWheel:
             r"\$script:WoaTorchIsPrerelease\s*=\s*\[bool\]\(\$_woaTorchVersion\s*-match",
             text,
         ), "install.ps1 no longer derives the prerelease answer from the probed wheel"
-        assert "if ($script:WoaTorchIsPrerelease -or ($script:WoaTorchIndexUrl -match 'nightly'))" in text, (
-            "the --prerelease=allow gate is back to testing only the URL spelling"
-        )
+        assert (
+            "if ($script:WoaTorchIsPrerelease -or ($script:WoaTorchIndexUrl -match 'nightly'))"
+            in text
+        ), "the --prerelease=allow gate is back to testing only the URL spelling"
 
     def test_the_answer_is_handed_to_setup(self):
         """setup.ps1 cannot probe the index itself, so install.ps1 has to tell it."""
@@ -2530,12 +2534,13 @@ class TestThePrereleaseAnswerComesFromTheWheel:
     )
     def test_the_version_test_itself(self, version, expected):
         script = (
-            f"$v = '{version}'\n"
-            "Write-Output ([bool]($v -match '(?i)\\d(a|b|rc)\\d|\\.dev\\d'))"
+            f"$v = '{version}'\nWrite-Output ([bool]($v -match '(?i)\\d(a|b|rc)\\d|\\.dev\\d'))"
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, version
@@ -2561,27 +2566,50 @@ class TestAChangedPinInvalidatesTheHandover:
 
     def test_both_flags_are_gated_on_it(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert '$WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")' in text
+        assert (
+            '$WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")'
+            in text
+        )
         assert '($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1")' in text
 
     def test_the_effective_index_prefers_the_pin(self):
         """The same order the install itself uses, or the two would disagree."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl)" in text
-        assert '$_cudaIndexUrl = if ($PinnedTorchIndexUrl) { $TorchInstallIndexUrl }' in text
+        assert "$_cudaIndexUrl = if ($PinnedTorchIndexUrl) { $TorchInstallIndexUrl }" in text
 
     @requires_pwsh
     @pytest.mark.parametrize(
         "pinned, handoff, audio, expect_no_audio, why",
         [
-            ("", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
-             "unpinned and unchanged: the handover still describes this index"),
-            ("https://pypi.nvidia.com/nvtorch_oot", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
-             "pinned to the same index: still current"),
-            ("https://pypi.nvidia.com/nvtorch_oot/", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
-             "a trailing slash is not a different index"),
-            ("https://mirror.test/simple", "https://pypi.nvidia.com/nvtorch_oot", "1", "True",
-             "pinned elsewhere: the audio answer belongs to the old channel"),
+            (
+                "",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "1",
+                "False",
+                "unpinned and unchanged: the handover still describes this index",
+            ),
+            (
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "1",
+                "False",
+                "pinned to the same index: still current",
+            ),
+            (
+                "https://pypi.nvidia.com/nvtorch_oot/",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "1",
+                "False",
+                "a trailing slash is not a different index",
+            ),
+            (
+                "https://mirror.test/simple",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "1",
+                "True",
+                "pinned elsewhere: the audio answer belongs to the old channel",
+            ),
             ("", "", "1", "True", "no handover to trust"),
             ("", "https://pypi.nvidia.com/nvtorch_oot", "0", "True", "the handover says no audio"),
         ],
@@ -2605,7 +2633,9 @@ class TestAChangedPinInvalidatesTheHandover:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expect_no_audio, why
@@ -2633,7 +2663,9 @@ class TestAnOverrideConflictCanHideInAnInclude:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return [line for line in done.stdout.strip().splitlines() if line]
@@ -2644,13 +2676,17 @@ class TestAnOverrideConflictCanHideInAnInclude:
         nested = tmp_path / "managed"
         nested.mkdir()
         (nested / "nested.txt").write_text("torch<2.9\n", encoding = "utf-8")
-        (tmp_path / "top.txt").write_text("# a comment\nrich>=13\n-r managed/nested.txt\n", encoding = "utf-8")
-        lines = self._names(tmp_path, install)
-        assert any(line.startswith("torch<2.9|managed") for line in lines), (
-            f"the include was not followed, so a torch conflict reads as disjoint: {lines}"
+        (tmp_path / "top.txt").write_text(
+            "# a comment\nrich>=13\n-r managed/nested.txt\n", encoding = "utf-8"
         )
+        lines = self._names(tmp_path, install)
+        assert any(
+            line.startswith("torch<2.9|managed") for line in lines
+        ), f"the include was not followed, so a torch conflict reads as disjoint: {lines}"
         assert any(line.startswith("rich>=13|") for line in lines)
-        assert not any(line.startswith("-r ") for line in lines), "the include line survived as a line"
+        assert not any(
+            line.startswith("-r ") for line in lines
+        ), "the include line survived as a line"
 
     @requires_pwsh
     @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
