@@ -505,8 +505,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   mistral: OPENAI_COMPAT_BASE,
   // Gemini's generationConfig accepts temperature, topP, topK, presencePenalty; minP and
-  // repetitionPenalty are not in the contract. Shaping lives in _stream_gemini.
-  // Gemini also accepts a frequencyPenalty this panel does not surface.
+  // repetitionPenalty are not in the contract, see
+  // https://ai.google.dev/api/rest/v1beta/GenerationConfig.
+  // Gemini also accepts a frequencyPenalty this panel does not surface. Shaping lives in
+  // _stream_gemini in studio/backend/core/inference/external_provider.py.
   gemini: {
     temperature: true,
     topP: true,
@@ -765,8 +767,12 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   return withEnableThinkingStyle();
 }
 
-// Gemini's thinking ladder: 3.x uses the string thinkingLevel (Pro rejects MINIMAL);
-// 2.5 Flash/Pro use integer thinkingBudget (0=off on Flash, -1=dynamic, Pro rejects 0);
+// Gemini's thinking ladder: 3.x (Pro + Flash + Flash-Lite) and the gemini-pro-latest /
+// gemini-flash-latest aliases use the string `thinkingConfig.thinkingLevel`. Flash takes
+// MINIMAL/LOW/MEDIUM/HIGH, 3.1+ Pro takes LOW/MEDIUM/HIGH, and undotted legacy `gemini-3-pro`
+// takes LOW/HIGH only, so the backend coerces MINIMAL to LOW on any Pro and MEDIUM to HIGH on
+// the legacy one. 2.5 Flash/Pro use the integer
+// `thinkingConfig.thinkingBudget` (0=off on Flash, -1=dynamic, N>0=cap, Pro rejects 0);
 // 2.5 Flash-Lite and image ids get none. 3.x minors match by pattern so a new
 // `gemini-3.6-flash` cannot fall into the 2.5 branch. Mirrors _GEMINI3_FAMILY/_GEMINI3_PRO.
 const GEMINI3_PRO_PATTERN = /^gemini-3(\.\d+)?-pro/;
@@ -797,6 +803,7 @@ function resolveGeminiReasoningCapabilities(
   // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
   // BEFORE the broader `gemini-2.5-flash` prefix.
   // The backend maps "minimal" to that 512 floor in _stream_gemini.
+  // https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,

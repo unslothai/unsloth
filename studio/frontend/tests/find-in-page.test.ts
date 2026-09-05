@@ -1538,7 +1538,7 @@ test("registered ranges are cleared and repainted before deletion or replacement
 test("the bar keeps itself out of the region it searches", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1643,7 +1643,7 @@ test("dark mode sits above the cards it floats over", async () => {
 test("the bar stays out of a backgrounded scope, and off the document origin", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1847,7 +1847,7 @@ test("re-indexing while the document changes is a throttle, and says so", async 
 test("the bar has no border, and its buttons have a hover that shows", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -1870,7 +1870,7 @@ test("a long query rewinds to its first character when focus leaves", async () =
   // nothing about what was searched for.
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2037,7 +2037,7 @@ test("the rows progressive completion adds are re-anchored, not renumbered", asy
 test("Escape closes the bar from the walk buttons, not just the field", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2124,7 +2124,7 @@ test("the chord is left to the browser when the scope is behind a modal", async 
 test("the Enter that commits an IME candidate is left alone", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2139,7 +2139,7 @@ test("the Enter that commits an IME candidate is left alone", async () => {
 test("closing the bar hands focus back to where it came from", async () => {
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2236,7 +2236,7 @@ test("every navigation waits for the query to settle, buttons included", async (
   // will not paint until it settles, so calling `next`/`previous` from a click dropped it silently.
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2256,8 +2256,15 @@ test("every navigation waits for the query to settle, buttons included", async (
   // The helper queues the step and forces the settle rather than dropping it.
   assert.match(
     bar,
-    /if \(queryPending\) \{\s*queuedStepRef\.current = delta;\s*settleQuery\(\);/,
+    /if \(queryPending\) \{\s*queuedStepsRef\.current\.push\(\{ query, delta \}\);[\s\S]*?settleQuery\(\);/,
   );
+
+  assert.match(bar, /filter\([\s\S]*?\(step\) => step\.query === query/);
+
+  assert.match(bar, /queuedStepsRef\.current = \[\.\.\.pendingSteps\]/);
+  assert.match(bar, /for \(const step of steps\)/);
+
+  assert.match(bar, /if \(count > 0\) \{\s*for \(const step of steps\)/);
 });
 
 test("the seam between the workspace and the surfaces in front of it is recorded", () => {
@@ -2444,9 +2451,13 @@ test("closing preserves the query while leaving the shell forgets the session", 
     ),
     "utf8",
   );
-  assert.match(controller, /useEffect\(\(\) => reset, \[reset\]\);/);
+  assert.match(controller, /const \[query, setQuery\] = useState\(""\);/);
+  assert.match(
+    controller,
+    /const close = useCallback\(\(\) => \{[\s\S]*?setOpen\(false\);[\s\S]*?\}, \[\]\);/,
+  );
   assert.equal(controller.includes('setQuery("")'), false);
-  assert.match(controller, /useFindInPageStore/);
+  assert.equal(controller.includes("useFindInPageStore"), false);
 });
 
 test("the capped window follows the reader, not the top of the document", () => {
@@ -2623,7 +2634,7 @@ test("the cap flag is what the bar renders, not the count", async () => {
   assert.match(engine, /anchoredAt = viewportOffset\(index\);/);
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2637,7 +2648,7 @@ test("Escape is left to the IME while it is composing", async () => {
   // being typed, and the candidate window never sees the key it was aimed at.
   const bar = await readFile(
     new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
+      "../src/features/find-in-page/components/find-bar.tsx",
       import.meta.url,
     ),
     "utf8",
@@ -2777,4 +2788,29 @@ test("a container query resizing the scope invalidates the index", async () => {
     engine,
     /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/,
   );
+});
+
+test("nothing of the engine is mounted while the bar is closed", async () => {
+  const controller = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(controller, /if \(!enabled \|\| !open\) return null;/);
+  assert.match(
+    controller,
+    /lazy\(\(\) => import\("\.\/find-bar-loader\.tsx"\)\)/,
+  );
+  assert.equal(controller.includes("useFindInPage("), false);
+
+  const loadedBar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal((loadedBar.match(/useFindInPage\(/g) ?? []).length, 1);
 });

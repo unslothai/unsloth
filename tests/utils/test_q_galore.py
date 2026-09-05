@@ -65,7 +65,7 @@ class TestGaLoreProjector:
     def test_project_and_back_tall(self):
         """Project → project_back preserves shape for tall matrices."""
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
-        grad = torch.randn(16, 8)  # tall
+        grad = torch.randn(16, 8)
         low = proj.project(grad, step = 0)
         assert low.shape == (16, 4)
 
@@ -90,7 +90,7 @@ class TestGaLoreProjector:
         assert proj.svd_count == 1
 
         proj.project(grad, step = 1)
-        assert proj.svd_count == 1  # No recomputation
+        assert proj.svd_count == 1
 
         proj.project(grad, step = 100)
         assert proj.svd_count == 2  # Recomputed
@@ -367,7 +367,6 @@ class TestQGaLoreIntegration:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
-        # Simulate splitting the non-GaLore group for embedding LR.
         embed_lr = 5e-5
         new_groups = []
         for group in groups:
@@ -392,7 +391,6 @@ class TestQGaLoreIntegration:
                 g["lr"] = embed_lr
                 new_groups.append(g)
 
-        # 3 groups: galore, non-galore non-embed, embed.
         embed_groups = [g for g in new_groups if g.get("lr") == embed_lr]
         assert len(embed_groups) == 1
         assert embed_groups[0]["lr"] == embed_lr

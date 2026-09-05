@@ -63,8 +63,8 @@ ENGINE = os.environ.get("PW_ENGINE", "chromium")
 PORT = int(os.environ.get("SMOKE_PORT", "5219"))
 PREFERENCES_KEY = "unsloth_chat_preferences"
 
-# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the
-# same window, so every reading is taken well clear of both.
+# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is taken
+# well clear of both.
 SETTLE_MS = 600
 
 # The tail of the command the approval card renders. Deliberately past the
@@ -172,14 +172,12 @@ def run(base_url: str, pw) -> dict:
     console: list[str] = []
     page.on("console", lambda m: console.append(f"{m.type}: {m.text}"))
 
-    # --- 1 baseline -------------------------------------------------------
     fresh(page, base_url, False)
     s["1_baseline"] = probe(page)
     for card in CARDS:
         if s["1_baseline"][card]["aria_expanded"] != "true":
             p.append(f"1: {card} is not open with the preference OFF (baseline broken)")
 
-    # --- 2 fresh mount ----------------------------------------------------
     fresh(page, base_url, True)
     s["2_fresh_mount"] = probe(page)
     for card in ("controlled", "uncontrolled"):
@@ -207,7 +205,6 @@ def run(base_url: str, pw) -> dict:
         elif after_updates[card]["aria_expanded"] != "true":
             p.append(f"3: {card} LOST its manual expansion across live updates")
 
-    # --- 4 live toggle, cards and group ----------------------------------
     fresh(page, base_url, False)
     page.click('[data-probe="group-trigger"]')
     settle(page)
@@ -281,7 +278,6 @@ def run(base_url: str, pw) -> dict:
         if any(m[1] != 0 for m in runs):
             p.append(f"6: a {label} close moved the scroll position: {[m[1] for m in runs]}")
 
-    # --- 7 approval -------------------------------------------------------
     fresh(page, base_url, True)
     page.evaluate("() => window.__setAwaitingApproval(true)")
     settle(page)
@@ -334,7 +330,6 @@ def run(base_url: str, pw) -> dict:
             p.append(f"10: {card} is open under prefers-reduced-motion")
     reduced.close()
 
-    # --- 11 toggle storm --------------------------------------------------
     fresh(page, base_url, False)
     page.evaluate(
         """() => {
@@ -410,8 +405,8 @@ def run(base_url: str, pw) -> dict:
             if raw is None
             else '{"state":{"collapseToolActivityByDefault":' + raw + '},"version":0}'
         )
-        # add_init_script takes no arguments, so values are baked in; json.dumps
-        # also makes the corrupt-JSON case survive being a string literal.
+        # add_init_script takes no arguments, so values are baked in;
+        # json.dumps also makes the corrupt-JSON case survive being a string literal.
         seeded.add_init_script(
             f"window.localStorage.setItem({json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
         )
@@ -424,9 +419,9 @@ def run(base_url: str, pw) -> dict:
             p.append(f"13: {label} takes the page down")
         seeded.close()
     s["13_malformed_record"] = malformed
-    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is
-    # true of every boolean in this store and unreachable from Studio's own UI.
 
+    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is true of every boolean in this store and
+    # unreachable from Studio's own UI.
     results["console"] = console
     browser.close()
     return results
