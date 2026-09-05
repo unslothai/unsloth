@@ -77,6 +77,39 @@ def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
     assert gpu_assert.parse_compute_apps("") == {}
 
 
+def test_listed_pids_are_counted_even_when_no_memory_is_attributed():
+    """Windows (WDDM) and unified-memory parts list every CUDA process with [N/A].
+    The GB10 lists a -ngl 0 server too, so this is neither "nothing on the card" nor
+    proof of offload: it is the signal to fall back to the device delta."""
+    text = "pid, used_gpu_memory\n1234, [N/A]\n5678, [N/A]\n"
+    assert gpu_assert.parse_compute_apps(text) == {}
+    assert gpu_assert.count_listed_pids(text) == 2
+
+
+def test_listed_pids_ignore_the_header_and_junk_rows():
+    assert gpu_assert.count_listed_pids("pid, used_gpu_memory\n[N/A], [N/A]\n\n") == 0
+    assert gpu_assert.count_listed_pids("") == 0
+    assert gpu_assert.count_listed_pids("1234, 2048\n5678, [N/A]\n") == 2
+
+
+def test_an_all_unattributed_listing_reads_as_cannot_enumerate(monkeypatch):
+    import run_studio_gpu  # the payload, on sys.path beside gpu_assert
+
+    """So cli_run_gpu_failure takes its device-delta branch rather than concluding that
+    no process appeared. Readable rows still come back as the usual dict."""
+    class _P:
+        def __init__(self, out):
+            self.returncode = 0
+            self.stdout = out
+
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, [N/A]\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() is None
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, 512\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() == {4242: 512}
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P(""))
+    assert run_studio_gpu.nvidia_compute_apps() == {}
+
+
 # ------------------------------------------------------------ llama.cpp log
 
 

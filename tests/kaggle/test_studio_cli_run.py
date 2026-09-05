@@ -202,6 +202,19 @@ def test_a_real_cpu_fallback_still_fails():
     assert failure and "served from the CPU" in failure
 
 
+def test_a_unified_memory_part_that_cannot_attribute_is_judged_on_the_device_delta():
+    """Measured on a GB10 (Windows, unified memory): nvidia-smi lists the server with
+    [N/A], the device counter reads 132 MiB idle, 272 MiB with a bare CUDA context
+    (-ngl 0) and 560 MiB with the 270M model offloaded. The verdict must pass the
+    second and fail the first, with nothing to attribute per process."""
+    failure, detail = _verdict()(None, None, 132.0, 560.0)
+    assert failure is None, failure
+    assert detail["vram_delta_mib"] == 428.0
+    failure, detail = _verdict()(None, None, 132.0, 272.0)
+    assert failure and "served from the CPU" in failure
+    assert detail["vram_delta_mib"] == 140.0
+
+
 def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
     """An nvidia-smi that answers a total but cannot enumerate apps still gets a
     verdict rather than a silent pass."""

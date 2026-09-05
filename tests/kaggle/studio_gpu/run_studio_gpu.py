@@ -86,6 +86,7 @@ from gpu_assert import (  # noqa: E402
     is_cuda_install,
     offload_verdict,
     parse_compute_apps,
+    count_listed_pids,
 )
 from studio_client import (  # noqa: E402
     Studio,
@@ -261,7 +262,14 @@ def nvidia_compute_apps() -> dict[int, int] | None:
     )
     if proc.returncode != 0:
         return None
-    return parse_compute_apps(proc.stdout)
+    apps = parse_compute_apps(proc.stdout)
+    if not apps and count_listed_pids(proc.stdout) > 0:
+        # Processes were listed but none carried a readable figure: WDDM and
+        # unified-memory parts report [N/A] for every one, including a -ngl 0
+        # server. That cannot attribute anything, so it is the same as not
+        # enumerating, and the device-wide delta decides (see count_listed_pids).
+        return None
+    return apps
 
 
 def visible_device_indices() -> list[int] | None:
