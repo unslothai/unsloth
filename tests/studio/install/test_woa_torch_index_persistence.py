@@ -3666,7 +3666,7 @@ class TestTheManifestRecordsTheSameIndexAsTheMarker:
     def test_the_stack_writes_that_variable_into_the_manifest(self):
         """The premise: without this read the export would reach nothing."""
         source = STACK_PY.read_text(encoding = "utf-8")
-        assert 'UNSLOTH_WOA_SELECTED_TORCH_INDEX' in source
+        assert "UNSLOTH_WOA_SELECTED_TORCH_INDEX" in source
         assert "woa_torch_index" in source
 
     def test_the_manifest_is_preferred_over_the_marker_on_read(self):
