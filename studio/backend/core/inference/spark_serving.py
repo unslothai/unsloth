@@ -17,7 +17,15 @@ this module decides between three layouts and runs whichever one the workload al
                this node's llama-server launched with ``--rpc <peer>:<port> --device
                CUDA0,RPC0 -sm layer``. Pipeline parallelism is enabled by llama.cpp
                itself when the RPC backend advertises async and events (b10796 does),
-               so no flag is added for it.
+               so no flag is added for it. When the bundle's llama-server has
+               ``--pipeline-groups`` (the unslothai/llama.cpp fork: N contexts from one
+               model, the slots partitioned across them, N interleaved decode loops so
+               one group's batch runs on the peer's layers while another's runs here)
+               the launch adds ``--pipeline-groups 2`` and an even slot count. Measured
+               with Qwen3.8-27B: 1.27x to 1.50x of one Spark at 32 to 128 concurrent
+               rows with both GPUs near 80 percent, against 0.85x to 1.01x for the
+               one-context split. The flag is probed for with ``llama-server --help``
+               once per binary; a bundle without it launches exactly as before.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
@@ -45,6 +53,7 @@ import os
 import os.path as osp
 import re
 import shlex
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -60,10 +69,15 @@ ENV_RPC_BIND = "UNSLOTH_SPARK_RPC_BIND"  # ggml-rpc-server -H on the peer; defau
 ENV_PREFILL_HEAVY = (
     "UNSLOTH_SPARK_PREFILL_HEAVY"  # "1": tell the planner the work is long-prompt prefill
 )
+# Layer split only: 0 disables, N sets it; default 2 when the bundle has the flag.
+ENV_PIPELINE_GROUPS = "UNSLOTH_SPARK_PIPELINE_GROUPS"
 
 TOPOLOGIES = ("single", "replicas", "layer_split")
 RPC_PORT_DEFAULT = 50052
 PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt length
+PIPELINE_GROUPS_DEFAULT = 2  # two Sparks, two interleaved decode loops (see spark_cluster)
+PIPELINE_GROUPS_FLAG = "--pipeline-groups"
+HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
 SUPERVISOR_INTERVAL_S = 1.0
@@ -511,11 +525,164 @@ def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[s
     return argv
 
 
-def layer_split_extra_args(peer: str, port: int) -> List[str]:
+# Where a bundle keeps its executables: the Linux/macOS layout, the Windows layout, the
+# raw tarball layout, a flat directory. Same order as spark_cluster._BUNDLE_SUBDIRS.
+_BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
+
+
+def llama_server_binary() -> Optional[str]:
+    """The managed bundle's llama-server, or None. Resolved through
+    ``spark_cluster.llama_bundle_dir`` so it is the binary the peer was provisioned
+    with and the one this node launches on a default install."""
+    sc = _cluster()
+    try:
+        bundle = Path(sc.llama_bundle_dir()) if sc is not None else None
+    except Exception:
+        return None
+    if bundle is None:
+        return None
+    for parts in _BUNDLE_SUBDIRS:
+        candidate = bundle.joinpath(*parts, "llama-server")
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+# ``llama-server --help`` text keyed by (binary path, mtime): one run per build, and a
+# reinstall at the same path (new mtime) probes again. A failed or hung run is cached
+# as empty so a broken binary costs one timeout, not one per load.
+_HELP_TEXT: Dict[Tuple[str, float], str] = {}
+
+
+def llama_server_help(binary: Optional[str] = None) -> str:
+    """The bundle llama-server's ``--help`` output, empty when the binary is missing,
+    cannot run, exits without printing, or hangs past ``HELP_PROBE_TIMEOUT_S``.
+    Never raises; the answer is cached per binary path and mtime."""
+    path = binary or llama_server_binary()
+    if not path:
+        return ""
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return ""
+    key = (str(path), mtime)
+    cached = _HELP_TEXT.get(key)
+    if cached is not None:
+        return cached
+    text = ""
+    try:
+        done = subprocess.run(
+            [str(path), "--help"],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            timeout = HELP_PROBE_TIMEOUT_S,
+        )
+        text = (done.stdout or b"").decode("utf-8", "replace") + (done.stderr or b"").decode(
+            "utf-8", "replace"
+        )
+    except Exception as exc:
+        logger.info("spark serving: llama-server --help probe failed for %s: %s", path, exc)
+        text = ""
+    _HELP_TEXT[key] = text
+    return text
+
+
+def llama_server_supports(flag: str, binary: Optional[str] = None) -> bool:
+    """Whether the bundle's llama-server accepts ``flag``, from its ``--help`` text.
+    False on every failure, so a flag the build may lack is never passed."""
+    try:
+        text = llama_server_help(binary)
+    except Exception:
+        return False
+    if not text or not flag:
+        return False
+    return re.search(re.escape(flag) + r"(?![\w-])", text) is not None
+
+
+def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
+    """The slot count a pass-through already sets (``-np`` / ``--parallel``, last wins,
+    the same rule as llama.cpp and LlamaCppBackend._extra_args_n_parallel)."""
+    found: Optional[int] = None
+    args = [str(a) for a in (extra_args or [])]
+    for index, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name not in ("-np", "--parallel"):
+            continue
+        value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
+        try:
+            found = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> Dict[str, Any]:
+    """How many pipeline groups a layer-split llama-server should run, and with how
+    many slots. Only ever consulted for a layer split.
+
+    ``pipeline_groups`` is 0 with a ``reason`` when the env says so, the value is not
+    a number, or the bundle's llama-server has no ``--pipeline-groups`` (the fork's
+    flag is not in every prebuilt yet; a build without it launches as today).
+    Otherwise it is the env value or ``PIPELINE_GROUPS_DEFAULT``, and ``slots`` is the
+    launch's slot count rounded up to a multiple of it, at least one per group, so no
+    group is left without a slot. ``requested_slots`` is the count before rounding.
+    """
+    requested = _extra_args_slots(extra_args)
+    base = max(1, int(requested if requested is not None else (slots or 1)))
+    out: Dict[str, Any] = {
+        "pipeline_groups": 0,
+        "reason": None,
+        "slots": base,
+        "requested_slots": base,
+    }
+    raw = (os.environ.get(ENV_PIPELINE_GROUPS) or "").strip()
+    groups = PIPELINE_GROUPS_DEFAULT
+    if raw:
+        try:
+            groups = int(raw)
+        except ValueError:
+            out["reason"] = (
+                f"{ENV_PIPELINE_GROUPS}={raw!r} is not a number; {PIPELINE_GROUPS_FLAG} not added"
+            )
+            return out
+    if groups <= 1:
+        out["reason"] = (
+            f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
+            if raw
+            else f"{PIPELINE_GROUPS_FLAG} not added"
+        )
+        return out
+    if not llama_server_supports(PIPELINE_GROUPS_FLAG):
+        out["reason"] = f"bundle llama-server lacks {PIPELINE_GROUPS_FLAG}"
+        return out
+    out["pipeline_groups"] = groups
+    out["slots"] = max(groups, -(-base // groups) * groups)
+    return out
+
+
+def layer_split_extra_args(
+    peer: str,
+    port: int,
+    *,
+    pipeline_groups: int = 0,
+    slots: Optional[int] = None,
+) -> List[str]:
     """What the local llama-server needs to use the peer's rpc-server. No pipeline
-    flag: llama.cpp turns pipelining on by itself once the RPC backend advertises
-    async and events, which b10796 does."""
-    return ["--rpc", f"{peer}:{port}", "--device", "CUDA0,RPC0", "-sm", "layer"]
+    flag by default: llama.cpp turns pipelining on by itself once the RPC backend
+    advertises async and events, which b10796 does. ``pipeline_groups`` above 1 adds
+    the fork's ``--pipeline-groups N`` and, with ``slots``, a ``--parallel`` that
+    overrides the emitted one (extras come last and llama.cpp is last-wins, and the
+    backend reads the override back for its own slot accounting)."""
+    out = ["--rpc", f"{peer}:{port}", "--device", "CUDA0,RPC0", "-sm", "layer"]
+    if pipeline_groups and int(pipeline_groups) > 1:
+        out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
+        if slots is not None:
+            out += ["--parallel", str(max(1, int(slots)))]
+    return out
 
 
 class PeerProcess:
@@ -700,6 +867,8 @@ class SparkServing:
         self.relaunch_gave_up: bool = False
         self.relaunch_log: List[Dict[str, Any]] = []
         self.peer_model_present: Optional[bool] = None
+        self.pipeline_groups: int = 0
+        self.pipeline_groups_reason: Optional[str] = None
         self._supervisor: Optional[asyncio.Task] = None
         self._relaunch_task: Optional[asyncio.Task] = None
         self._lock: Optional[asyncio.Lock] = None
@@ -764,7 +933,7 @@ class SparkServing:
             peer = peer_address()
             if not peer:
                 return request
-            return await self._start_layer_split(request, peer, plan, local_file)
+            return await self._start_layer_split(request, peer, plan, local_file, users)
         except Exception as exc:
             self.last_error = f"before_load: {exc}"[:300]
             logger.warning(
@@ -773,14 +942,43 @@ class SparkServing:
             return request
 
     async def _start_layer_split(
-        self, request: Any, peer: str, plan: Dict[str, Any], local_file: Optional[str]
+        self,
+        request: Any,
+        peer: str,
+        plan: Dict[str, Any],
+        local_file: Optional[str],
+        slots: int = 1,
     ) -> Any:
         sc = _cluster()
         port = int(getattr(sc, "RPC_DEFAULT_PORT", RPC_PORT_DEFAULT))
+        # The --help probe forks the bundle's llama-server (once per build; cached), so
+        # it runs off the loop like every other blocking step here.
+        groups = await asyncio.to_thread(
+            pipeline_groups_plan, slots, list(getattr(request, "llama_extra_args", None) or [])
+        )
 
         def _with_rpc_args(req: Any) -> Any:
             extra = list(getattr(req, "llama_extra_args", None) or [])
-            extra += layer_split_extra_args(peer, port)
+            extra += layer_split_extra_args(
+                peer,
+                port,
+                pipeline_groups = int(groups["pipeline_groups"]),
+                slots = int(groups["slots"]),
+            )
+            self.pipeline_groups = int(groups["pipeline_groups"])
+            self.pipeline_groups_reason = groups.get("reason")
+            if self.pipeline_groups:
+                logger.info(
+                    "spark serving: %s %d with %d slots (%d asked for)",
+                    PIPELINE_GROUPS_FLAG,
+                    self.pipeline_groups,
+                    int(groups["slots"]),
+                    int(groups["requested_slots"]),
+                )
+            else:
+                logger.info(
+                    "spark serving: no pipeline groups: %s", self.pipeline_groups_reason
+                )
             try:
                 return req.model_copy(update = {"llama_extra_args": extra})
             except AttributeError:
@@ -790,6 +988,7 @@ class SparkServing:
         def _fall_back(reason: str) -> Any:
             self.topology, self.reason = "single", reason
             self.plan = dict(plan, topology = "single", reason = reason)
+            self.pipeline_groups, self.pipeline_groups_reason = 0, None
             logger.warning("spark serving: %s", reason)
             return request
 
@@ -898,6 +1097,10 @@ class SparkServing:
                 self.topology = "layer_split"
                 if self.peer_process is None:
                     self.reason = "llama-server launched with a user-supplied --rpc"
+                    self.pipeline_groups = 0
+                    self.pipeline_groups_reason = (
+                        "llama-server launched with a user-supplied --rpc; nothing added"
+                    )
                 self._ensure_supervisor()
                 return
             if self.topology == "layer_split":
@@ -1176,11 +1379,19 @@ class SparkServing:
                     logger.warning("spark serving: peer teardown failed", exc_info = True)
             self.attached_backend = None
             self.attached_port = None
+            self.pipeline_groups, self.pipeline_groups_reason = 0, None
             if self.topology != "single":
                 self.topology = "single"
                 self.reason = "detached"
 
     def status(self) -> Dict[str, Any]:
+        # pipeline_groups: the --pipeline-groups value this node's llama-server was
+        # launched with, or 0 and the reason (no flag in the bundle, disabled by env,
+        # or not a layer split at all).
+        if self.topology == "layer_split":
+            groups, groups_reason = self.pipeline_groups, self.pipeline_groups_reason
+        else:
+            groups, groups_reason = 0, f"not a layer split (topology {self.topology})"
         return {
             "enabled": enabled(),
             "topology": self.topology,
@@ -1189,6 +1400,8 @@ class SparkServing:
             "plan": self.plan,
             "preflight": self.preflight,
             "peer_model_present": self.peer_model_present,
+            "pipeline_groups": groups,
+            "pipeline_groups_reason": groups_reason,
             "router": self.router.status() if self.router is not None else None,
             "peer_process": self.peer_process.snapshot() if self.peer_process is not None else None,
             "relaunch_attempts": self.relaunch_attempts,
@@ -1213,6 +1426,7 @@ def reset_for_tests() -> None:
     _STATE = None
     _CLUSTER = None
     _CLUSTER_LOOKED_UP = False
+    _HELP_TEXT.clear()
 
 
 # ── Thin module-level entry points used by the rest of the backend ───────────

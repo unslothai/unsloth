@@ -2976,6 +2976,40 @@ LAYER_SPLIT_DECODE_SPEEDUP = {
 }
 LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
 LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
+
+# ── Layer split WITH pipeline groups, measured ───────────────────────────────
+# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp fork, not yet in every
+# prebuilt): N contexts from one model, the slots partitioned across them, N
+# interleaved decode loops, so while one group's batch is on the peer's layers the
+# other's is on this node's and neither GPU waits for the wire. Qwen3.8-27B-UD-Q4_K_XL
+# on a prototype of that build, two DGX Sparks, measured 2026-09-05 with UNCAPPED
+# clocks and closed-loop concurrent clients; aggregate decode tok/s:
+#
+#   rows |  1 Spark | split, 1 context | split, 2 groups || 1 context | 2 groups
+#     32 |   116    |       110        |       147       ||   0.95x   |  1.27x
+#     64 |   139    |       126        |       200       ||   0.91x   |  1.44x
+#    128 |   150    |       138        |       225       ||   0.92x   |  1.50x
+#    256 |    94    |       138        |       250       ||   1.47x   |  2.66x
+#
+# Per-node GPU utilisation went from about 46 percent to about 80 percent. The
+# 256-row single-Spark control is KV-thrashing, so the advertised range stops at 128
+# rows. This does NOT move the replicas rule for a model that fits: at 32 rows two
+# replicas measured 1.91x against 1.27x here, so replicas still win there; the groups
+# make the split that a model too large for one node needs anyway use both GPUs.
+PIPELINE_GROUPS_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL on a llama.cpp --pipeline-groups prototype, two DGX Sparks, "
+    "2026-09-05, uncapped clocks"
+)
+# rows: (one Spark, split with one context, split with two groups), decode tok/s
+PIPELINE_GROUPS_DECODE_TOKS = {
+    32: (116, 110, 147),
+    64: (139, 126, 200),
+    128: (150, 138, 225),
+    256: (94, 138, 250),
+}
+PIPELINE_GROUPS_SPLIT_SPEEDUP = {32: 1.27, 64: 1.44, 128: 1.50}  # two groups over one Spark
+PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.27, 1.50)  # 32 to 128 rows
+PIPELINE_GROUPS_GPU_UTIL = (0.46, 0.80)  # per node, without and with the groups
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
@@ -3003,6 +3037,24 @@ def layer_split_decode_speedup(prompt_tokens: int = 512, users: int = 1) -> floa
     return _measured_cell(LAYER_SPLIT_DECODE_SPEEDUP, prompt_tokens, users)
 
 
+def pipeline_groups_note() -> str:
+    """What a layer split delivers with and without pipeline groups, for reasons and
+    the ``spark plan`` text. The serving side adds the flag only when the bundle's
+    llama-server has it, so both halves are stated."""
+    low, high = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
+    rows = sorted(PIPELINE_GROUPS_SPLIT_SPEEDUP)
+    decode = LAYER_SPLIT_DECODE_SPEEDUP[512]
+    return (
+        f"With pipeline groups (llama-server --pipeline-groups 2, added when the bundle "
+        f"has it) the pair delivers {low:.2f}x to {high:.2f}x of one Spark at {rows[0]} to "
+        f"{rows[-1]} concurrent rows with both GPUs near "
+        f"{PIPELINE_GROUPS_GPU_UTIL[1] * 100:.0f} percent; without them expect "
+        f"{min(decode.values()):.2f}x to {max(decode.values()):.2f}x on decode and "
+        f"{LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to {LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x "
+        f"on prefill."
+    )
+
+
 def recommend_topology(
     model_bytes: float,
     kv_bytes_per_user: float,
@@ -3015,7 +3067,10 @@ def recommend_topology(
 
     The rules, from the measurements above:
 
-    * a model that does not fit on one node is a ``layer_split``: the only option;
+    * a model that does not fit on one node is a ``layer_split``: the only option,
+      and the one place the second GPU pays on decode: with the fork's pipeline
+      groups the pair measured 1.27x to 1.50x of one Spark at 32 to 128 rows
+      (PIPELINE_GROUPS_SPLIT_SPEEDUP); the one-context split stays at 0.85x to 1.01x;
     * a model that fits, with 8 or more concurrent users, is ``replicas``;
     * a model that fits, with fewer users, is ``single``: leave the second node idle,
       because a second copy buys 1.00x to 1.13x and nothing helps one user except
@@ -3044,6 +3099,7 @@ def recommend_topology(
         "reason": "",
         "speedup": None,
         "prefill_speedup": None,
+        "pipeline_groups_speedup": None,
         "fits_one_node": fits_model,
         "users": users,
         "prompt_tokens": prompt_tokens,
@@ -3057,13 +3113,11 @@ def recommend_topology(
         out.update(
             topology = "layer_split",
             prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+            pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
             reason = (
                 f"the model ({model_bytes / gib:.1f} GiB) does not fit in one node's "
                 f"{free / gib:.1f} GiB, so a layer split across both Sparks is the only way "
-                f"to run it. That is a capacity feature: expect decode about "
-                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x of what one node would do if it "
-                f"could, and prefill {LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to "
-                f"{LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x."
+                f"to run it. " + pipeline_groups_note()
             ),
         )
         return out
@@ -3084,13 +3138,13 @@ def recommend_topology(
             out.update(
                 topology = "layer_split",
                 prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
+                pipeline_groups_speedup = PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE,
                 reason = (
                     f"the model fits, but model plus KV for {users} users "
                     f"({single_need / gib:.1f} GiB) exceeds one node even when halved "
                     f"across replicas ({replica_need / gib:.1f} GiB against "
                     f"{free / gib:.1f} GiB free), so only a layer split, which spreads the KV "
-                    f"with the layers, has the room. Capacity, not speed: decode about "
-                    f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
+                    f"with the layers, has the room. " + pipeline_groups_note()
                 ),
             )
         return out

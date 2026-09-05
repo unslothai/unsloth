@@ -880,6 +880,62 @@ def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
     assert out["topology"] == "layer_split"
 
 
+def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
+    """A split is the only way to run a model that does not fit, and with the fork's
+    pipeline groups it is also the one place the second GPU pays on decode. The
+    reason says both halves, because the serving side adds the flag only when the
+    bundle's llama-server has it; a bundle without it is today's 0.85x to 1.01x."""
+    sc = _load("studio/spark_cluster.py")
+    out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 512, 113 * _GIB)
+    assert out["topology"] == "layer_split"
+    assert out["pipeline_groups_speedup"] == sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
+    assert sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE == (1.27, 1.50)
+    reason = out["reason"]
+    for text in (
+        "pipeline groups",
+        "--pipeline-groups 2",
+        "1.27x to 1.50x",
+        "32 to 128",
+        "80 percent",
+    ):
+        assert text in reason, (text, reason)
+    assert "without them expect 0.85x to 1.01x on decode and 1.7x to 1.85x on prefill" in reason
+    # The KV-overflow split says the same.
+    kv = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
+    assert kv["topology"] == "layer_split" and "pipeline groups" in kv["reason"]
+    assert kv["pipeline_groups_speedup"] == sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE
+    # `spark plan` prints serving["reason"], so the plan text carries it too.
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    plan = sc.plan_deployment(
+        budget * 1.5, n_nodes = 2, intent = "throughput", concurrency = 32
+    )
+    assert plan["serving"]["topology"] == "layer_split"
+    assert "pipeline groups" in plan["serving"]["reason"]
+    # The ratios are the measured tok/s, nothing rounded in the planner's favour.
+    for rows, ratio in sc.PIPELINE_GROUPS_SPLIT_SPEEDUP.items():
+        one, _one_context, groups = sc.PIPELINE_GROUPS_DECODE_TOKS[rows]
+        assert ratio == round(groups / one, 2), (rows, ratio, groups / one)
+    assert sc.PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE == (
+        min(sc.PIPELINE_GROUPS_SPLIT_SPEEDUP.values()),
+        max(sc.PIPELINE_GROUPS_SPLIT_SPEEDUP.values()),
+    )
+
+
+def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -> None:
+    """At 32 rows two replicas measured 1.91x and the grouped split 1.27x, so a model
+    that fits still gets replicas, and its reason never mentions pipeline groups."""
+    sc = _load("studio/spark_cluster.py")
+    assert sc.REPLICAS_DECODE_SPEEDUP[512][32] > sc.PIPELINE_GROUPS_SPLIT_SPEEDUP[32]
+    for users in (8, 16, 32, 64, 128):
+        out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
+        assert out["topology"] == "replicas", (users, out)
+        assert out["pipeline_groups_speedup"] is None
+        assert "pipeline groups" not in out["reason"]
+    for users in (1, 2, 4):
+        out = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
+        assert out["topology"] == "single" and out["pipeline_groups_speedup"] is None
+
+
 def test_recommend_topology_replicas_from_eight_users_up() -> None:
     sc = _load("studio/spark_cluster.py")
     for users in (8, 12, 16, 32, 64):

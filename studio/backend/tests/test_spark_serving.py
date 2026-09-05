@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -41,6 +42,7 @@ class StubCluster:
         self.spark = spark
         self.peer = peer
         self.topology = topology
+        self.bundle: Optional[Path] = None  # the fixture points this at an empty tmp dir
         self.planner_calls: List[Dict[str, Any]] = []
         self.preflight_result: Dict[str, Any] = {
             "ok": True,
@@ -61,7 +63,7 @@ class StubCluster:
         return [{"ipv4": ["192.168.200.12"]}] if self.spark else []
 
     def llama_bundle_dir(self) -> Path:
-        return Path.home() / ".unsloth" / "llama.cpp"
+        return self.bundle or Path.home() / ".unsloth" / "llama.cpp"
 
     def rpc_server_binary(self) -> Optional[str]:
         return str(Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "ggml-rpc-server")
@@ -96,16 +98,50 @@ class StubCluster:
 
 
 @pytest.fixture
-def cluster(monkeypatch):
+def cluster(monkeypatch, tmp_path):
     stub = StubCluster()
+    # An empty bundle: no llama-server to probe, so the machine running the tests
+    # never decides whether a layer split gets pipeline groups.
+    stub.bundle = tmp_path / "bundle"
+    stub.bundle.mkdir()
     ss.reset_for_tests()
     monkeypatch.setattr(ss, "_CLUSTER", stub)
     monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", True)
     monkeypatch.delenv(ss.ENV_TOGGLE, raising = False)
     monkeypatch.delenv(ss.ENV_TOPOLOGY, raising = False)
     monkeypatch.delenv(ss.ENV_PEER, raising = False)
+    monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
     yield stub
     ss.reset_for_tests()
+
+
+# A stand-in llama-server: prints a --help that may or may not name the flag, and
+# records every run beside itself so a test can see whether the probe ran at all.
+_FAKE_HELP_WITH_FLAG = """usage: llama-server [options]
+  -np, --parallel N            number of server slots (default: 4)
+  --pipeline-groups N          number of pipeline groups the slots are split over
+"""
+_FAKE_HELP_WITHOUT_FLAG = """usage: llama-server [options]
+  -np, --parallel N            number of server slots (default: 4)
+  --kv-unified                 one KV buffer shared by all slots
+"""
+
+
+def write_fake_llama_server(directory: Path, help_text: str, *, body: str = "") -> Path:
+    directory.mkdir(parents = True, exist_ok = True)
+    script = directory / "llama-server"
+    script.write_text(
+        "#!/bin/sh\n"
+        'echo run >> "$0.calls"\n' + body + "cat <<'EOF'\n" + help_text + "EOF\n",
+        encoding = "utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def probe_runs(script: Path) -> int:
+    calls = Path(str(script) + ".calls")
+    return len(calls.read_text().splitlines()) if calls.exists() else 0
 
 
 def run(coro):
@@ -273,7 +309,30 @@ def test_rpc_server_and_layer_split_arguments():
     ]
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
     assert extra == ["--rpc", "192.168.200.13:50052", "--device", "CUDA0,RPC0", "-sm", "layer"]
-    assert not any("pipeline" in a for a in extra), "llama.cpp enables pipelining itself"
+    assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
+    # Pipeline groups ride on the same launch, with a slot count that gives every
+    # group a slot; the --parallel here overrides the emitted one (last wins).
+    grouped = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2, slots = 4)
+    assert grouped == [
+        "--rpc",
+        "192.168.200.13:50052",
+        "--device",
+        "CUDA0,RPC0",
+        "-sm",
+        "layer",
+        "--pipeline-groups",
+        "2",
+        "--parallel",
+        "4",
+    ]
+    assert ss.layer_split_extra_args("p", 1, pipeline_groups = 1, slots = 4) == extra[:0] + [
+        "--rpc",
+        "p:1",
+        "--device",
+        "CUDA0,RPC0",
+        "-sm",
+        "layer",
+    ]
 
 
 def test_peer_binary_candidates_prefer_the_local_bundle_path(cluster):
@@ -687,3 +746,192 @@ def test_ssh_user_defers_to_the_cluster_module(cluster, monkeypatch):
     assert ss.ssh_argv("192.168.200.13", "true")[-2] == "bob@192.168.200.13"
     del cluster._ssh_user
     assert ss._ssh_user() == "alice"
+
+
+# ── Pipeline groups: the --help probe and the layer-split launch ─────────────
+
+
+def test_llama_server_supports_probes_help_once_per_binary_and_mtime(cluster, tmp_path):
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    assert ss.llama_server_binary() == str(script)
+    assert ss.llama_server_supports("--pipeline-groups") is True
+    assert ss.llama_server_supports("--parallel") is True
+    assert ss.llama_server_supports("--pipeline") is False, "a prefix is not the flag"
+    assert ss.llama_server_supports("--no-such-flag") is False
+    assert probe_runs(script) == 1, "one --help run answers every flag"
+    # A reinstall at the same path is a new mtime and is probed again.
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    os.utime(script, (time.time() + 5, time.time() + 5))
+    assert ss.llama_server_supports("--pipeline-groups") is False
+    assert probe_runs(script) == 2
+
+
+def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_path):
+    assert ss.llama_server_binary() is None
+    assert ss.llama_server_supports("--pipeline-groups") is False, "no binary in the bundle"
+    assert ss.llama_server_supports("--pipeline-groups", str(tmp_path / "missing")) is False
+    script = write_fake_llama_server(cluster.bundle / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    assert ss.llama_server_binary() == str(script)
+    assert ss.llama_server_supports("--pipeline-groups") is False
+    assert ss.llama_server_supports("", str(script)) is False
+    # A binary that dies before printing anything is a binary without the flag.
+    crashing = write_fake_llama_server(
+        tmp_path / "crash", _FAKE_HELP_WITH_FLAG, body = "exit 3\n"
+    )
+    assert ss.llama_server_supports("--pipeline-groups", str(crashing)) is False
+    # So is one that is not executable at all; nothing raises.
+    dud = tmp_path / "dud" / "llama-server"
+    dud.parent.mkdir()
+    dud.write_text("not a program")
+    assert ss.llama_server_supports("--pipeline-groups", str(dud)) is False
+
+
+def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tmp_path):
+    script = write_fake_llama_server(
+        tmp_path / "slow", _FAKE_HELP_WITH_FLAG, body = "sleep 5\n"
+    )
+    monkeypatch.setattr(ss, "HELP_PROBE_TIMEOUT_S", 0.3)
+    started = time.monotonic()
+    assert ss.llama_server_supports("--pipeline-groups", str(script)) is False
+    assert time.monotonic() - started < 3.0
+    assert ss.llama_server_supports("--pipeline-groups", str(script)) is False
+    assert probe_runs(script) == 1, "the timeout is cached; one stall per build"
+
+
+def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    for asked, slots in ((1, 2), (2, 2), (3, 4), (4, 4), (5, 6), (16, 16)):
+        plan = ss.pipeline_groups_plan(asked)
+        assert plan["pipeline_groups"] == 2 and plan["slots"] == slots, (asked, plan)
+        assert plan["slots"] % 2 == 0 and plan["slots"] >= 2
+        assert plan["requested_slots"] == asked and plan["reason"] is None
+    # A pass-through slot count wins over the request's, as it does in the launch.
+    plan = ss.pipeline_groups_plan(8, ["--seed", "1", "-np", "3"])
+    assert plan["requested_slots"] == 3 and plan["slots"] == 4
+    assert ss.pipeline_groups_plan(8, ["--parallel=5"])["slots"] == 6
+    # N groups need a multiple of N.
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
+    plan = ss.pipeline_groups_plan(4)
+    assert plan["pipeline_groups"] == 3 and plan["slots"] == 6
+    assert ss.pipeline_groups_plan(1)["slots"] == 3
+    # 0 and 1 disable; garbage disables and says so; none of these run the probe.
+    for value in ("0", "1", "two"):
+        monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, value)
+        plan = ss.pipeline_groups_plan(4)
+        assert plan["pipeline_groups"] == 0 and plan["slots"] == 4, (value, plan)
+        assert ss.ENV_PIPELINE_GROUPS in plan["reason"], (value, plan)
+
+
+def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster):
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    plan = ss.pipeline_groups_plan(3)
+    assert plan == {
+        "pipeline_groups": 0,
+        "reason": "bundle llama-server lacks --pipeline-groups",
+        "slots": 3,
+        "requested_slots": 3,
+    }
+
+
+def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
+    cluster, monkeypatch, tmp_path
+):
+    cluster.topology = "layer_split"
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    out = run(ss.before_load(_FakeRequest(str(model), llama_extra_args = ["--seed", "1"]), 3))
+    assert out.llama_extra_args == [
+        "--seed",
+        "1",
+        "--rpc",
+        "192.168.200.13:50052",
+        "--device",
+        "CUDA0,RPC0",
+        "-sm",
+        "layer",
+        "--pipeline-groups",
+        "2",
+        "--parallel",
+        "4",
+    ], "three slots asked for; two groups need an even count"
+    assert started and started[0].name == "ggml-rpc-server"
+    status = ss.status()
+    assert status["topology"] == "layer_split"
+    assert status["pipeline_groups"] == 2 and status["pipeline_groups_reason"] is None
+    # A second load reuses the rpc-server and the cached probe: still two groups.
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "4"]
+    assert probe_runs(script) == 1
+    run(ss.shutdown())
+    status = ss.status()
+    assert status["pipeline_groups"] == 0
+    assert "not a layer split" in status["pipeline_groups_reason"]
+
+
+def test_before_load_launches_as_before_without_the_flag(cluster, monkeypatch, tmp_path):
+    cluster.topology = "layer_split"
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+    out = run(ss.before_load(_FakeRequest(str(model)), 3))
+    assert out.llama_extra_args == [
+        "--rpc",
+        "192.168.200.13:50052",
+        "--device",
+        "CUDA0,RPC0",
+        "-sm",
+        "layer",
+    ], "no --pipeline-groups and no --parallel override on a bundle without the flag"
+    status = ss.status()
+    assert status["topology"] == "layer_split" and status["pipeline_groups"] == 0
+    assert status["pipeline_groups_reason"] == "bundle llama-server lacks --pipeline-groups"
+    run(ss.shutdown())
+
+
+def test_pipeline_groups_env_override_disables_or_sets_n(cluster, monkeypatch, tmp_path):
+    cluster.topology = "layer_split"
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "0")
+    out = run(ss.before_load(_FakeRequest(str(model)), 3))
+    assert "--pipeline-groups" not in out.llama_extra_args
+    assert "--parallel" not in out.llama_extra_args
+    assert probe_runs(script) == 0, "disabled by env: the binary is never run"
+    status = ss.status()
+    assert status["pipeline_groups"] == 0
+    assert status["pipeline_groups_reason"] == f"disabled by {ss.ENV_PIPELINE_GROUPS}=0"
+    run(ss.shutdown())
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "3", "--parallel", "6"]
+    assert ss.status()["pipeline_groups"] == 3
+    run(ss.shutdown())
+
+
+def test_pipeline_groups_never_run_for_single_or_replicas(cluster, monkeypatch, tmp_path):
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    _patch_remote(monkeypatch)
+    for topology in ("single", "replicas"):
+        cluster.topology = topology
+        request = _FakeRequest(str(model))
+        out = run(ss.before_load(request, 16))
+        assert out is request and out.llama_extra_args is None
+        status = ss.status()
+        assert status["pipeline_groups"] == 0
+        assert status["pipeline_groups_reason"] == "not a layer split (topology single)"
+    assert probe_runs(script) == 0, "the probe belongs to the layer split alone"
+    # Off a Spark the payload is the fixed refusal, with no probe and no new field.
+    cluster.spark = False
+    assert ss.status() == {
+        "enabled": False,
+        "topology": None,
+        "reason": "not a paired DGX Spark",
+    }
+    assert probe_runs(script) == 0
