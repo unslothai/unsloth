@@ -148,7 +148,6 @@ from importlib.metadata import PackageNotFoundError
 
 
 def _nvidia_smi_gpu_name():
-    """Return the first GPU name from nvidia-smi, or None if the probe fails."""
     try:
         smi = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -164,7 +163,6 @@ def _nvidia_smi_gpu_name():
 
 
 def _cuda_visible_devices_hides_nvidia():
-    """Return whether CUDA_VISIBLE_DEVICES deliberately hides every NVIDIA GPU."""
     mask = os.environ.get("CUDA_VISIBLE_DEVICES")
     if mask is None:
         return False
@@ -173,7 +171,6 @@ def _cuda_visible_devices_hides_nvidia():
 
 
 def _reraise_device_type_error_with_gpu_hint(exception):
-    """Add a PyTorch mismatch hint when nvidia-smi sees an otherwise hidden GPU."""
     # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
     if "ROCm" in str(exception):
         raise exception
@@ -289,7 +286,7 @@ try:
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
 
-# Zoo can return "cpu" when its GPU initialization is disabled, but this check can still raise.
+# Unsloth's own detection repeats zoo's, so it can raise even after zoo's import succeeded.
 try:
     from .device_type import arch_lacks_bf16, hip_visible_archs
 except NotImplementedError as device_type_error:

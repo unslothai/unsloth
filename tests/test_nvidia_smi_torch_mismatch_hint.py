@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the NVIDIA GPU/PyTorch mismatch hint."""
-
 from __future__ import annotations
 
 import ast
@@ -42,7 +40,6 @@ def _smi(
     stdout = "NVIDIA GB10\n",
     raises = None,
 ):
-    """Stub nvidia-smi and record whether it was reached at all."""
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -65,7 +62,6 @@ def _raise_through_handler(helper, original):
 
 
 def test_every_raise_site_is_wrapped():
-    """All three device checks must reach the helper before it is deleted."""
     tree = ast.parse(_GPU_INIT.read_text(encoding = "utf-8"))
     handlers = [
         n
@@ -140,7 +136,6 @@ def test_deliberately_hidden_gpu_is_not_a_broken_build(helper, monkeypatch, mask
 
 @pytest.mark.parametrize("mask", ["0", "0,1", "1", "GPU-fake-uuid"])
 def test_a_partial_mask_keeps_the_hint_but_names_itself(helper, monkeypatch, mask):
-    """Non-empty masks can also select no devices, so the hint names the mask."""
     _smi(monkeypatch)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
