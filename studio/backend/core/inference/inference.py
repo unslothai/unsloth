@@ -959,6 +959,10 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        tool_execution_mode: str = "os_isolation_required",
+        current_subject: Optional[str] = None,
+        tool_ui_session_id: Optional[str] = None,
+        limited_grant: Optional[str] = None,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -968,7 +972,9 @@ class InferenceBackend:
         * ``{"type": "status", "text": ...}``
         * ``{"type": "content", "text": cumulative_text}``
         * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
+          with ``execution_record`` once a local process is actually launching
         * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
+          with the same local-process ``execution_record``
         """
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
@@ -1052,6 +1058,10 @@ class InferenceBackend:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = _turn_stats,
+            tool_execution_mode = tool_execution_mode,
+            current_subject = current_subject,
+            tool_ui_session_id = tool_ui_session_id,
+            limited_grant = limited_grant,
         )
 
     def generate_chat_response(

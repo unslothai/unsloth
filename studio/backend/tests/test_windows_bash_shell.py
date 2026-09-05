@@ -180,7 +180,9 @@ def test_multiline_script_runs_every_line_on_windows():
             "done",
         ]
     )
-    out = tools._bash_exec(script)
+    # Native Windows is intentionally unqualified for ordinary OS-sandboxed
+    # execution. This regression owns the existing explicit bypass shell path.
+    out = tools._bash_exec(script, disable_sandbox = True)
     for expected in ("line 1 unsloth", "line 2 unsloth", "line 3 unsloth"):
         assert expected in out, out
 

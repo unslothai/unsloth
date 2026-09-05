@@ -36,6 +36,9 @@ class CodexRunContext:
     response_format: dict[str, Any] | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    current_subject: str | None = None
+    tool_ui_session_id: str | None = None
+    limited_grant: str | None = None
 
 
 @dataclass(frozen = True)
@@ -48,6 +51,7 @@ class CodexToolPolicy:
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
     nudge_tool_calls: bool | None = None
+    tool_execution_mode: str = "os_isolation_required"
 
 
 class CodexTransport:
@@ -107,6 +111,9 @@ def stream_codex_with_studio_tools(
             model = run.model,
             tool_choice = run.tool_choice,
             continue_final_message = run.continue_final_message,
+            current_subject = run.current_subject,
+            tool_ui_session_id = run.tool_ui_session_id,
+            limited_grant = run.limited_grant,
         ),
         policy = ToolLoopPolicy(
             tools = policy.tools,
@@ -118,6 +125,7 @@ def stream_codex_with_studio_tools(
             rag_scope = policy.rag_scope,
             auto_heal = False,
             nudge_tool_calls = policy.nudge_tool_calls,
+            tool_execution_mode = policy.tool_execution_mode,
         ),
         cancel_event = cancel_event,
     )

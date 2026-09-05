@@ -555,6 +555,212 @@ export interface OpenAIChatMessage {
   name?: string;
 }
 
+export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
+
+/** Launch-time protection facts emitted by the backend that ran the tool. */
+export interface ToolExecutionRecord {
+  requested_mode: ToolExecutionMode;
+  effective_mode: ToolExecutionMode;
+  environment: string;
+  backend: string;
+  profile_id: string;
+  probe_generation: string;
+  os_isolation: boolean;
+  retained_safeguards: string[];
+  limitations?: string[];
+}
+
+/** Reserved backend metadata. Model/provider arguments must never retain it. */
+export const TOOL_EXECUTION_RECORD_ARG_KEY =
+  "__unsloth_execution_record" as const;
+
+const BACKEND_EXECUTION_RECORD = Symbol("unsloth.backend-execution-record");
+type BackendExecutionRecord = ToolExecutionRecord & {
+  [BACKEND_EXECUTION_RECORD]: true;
+};
+
+const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
+
+export function stripUntrustedExecutionMetadata(args: unknown): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  return Object.fromEntries(
+    Object.entries(args as Record<string, unknown>).filter(
+      ([key]) => key !== TOOL_EXECUTION_RECORD_ARG_KEY,
+    ),
+  );
+}
+
+function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const modes = new Set<ToolExecutionMode>([
+    "os_isolation_required",
+    "limited",
+    "full",
+  ]);
+  if (
+    !modes.has(record.requested_mode as ToolExecutionMode) ||
+    !modes.has(record.effective_mode as ToolExecutionMode) ||
+    typeof record.environment !== "string" ||
+    typeof record.backend !== "string" ||
+    typeof record.profile_id !== "string" ||
+    typeof record.probe_generation !== "string" ||
+    typeof record.os_isolation !== "boolean" ||
+    !Array.isArray(record.retained_safeguards) ||
+    !record.retained_safeguards.every((item) => typeof item === "string") ||
+    (record.limitations !== undefined &&
+      (!Array.isArray(record.limitations) ||
+        !record.limitations.every((item) => typeof item === "string")))
+  ) {
+    return null;
+  }
+  return {
+    requested_mode: record.requested_mode as ToolExecutionMode,
+    effective_mode: record.effective_mode as ToolExecutionMode,
+    environment: record.environment,
+    backend: record.backend,
+    profile_id: record.profile_id,
+    probe_generation: record.probe_generation,
+    os_isolation: record.os_isolation,
+    retained_safeguards: [...record.retained_safeguards] as string[],
+    limitations: Array.isArray(record.limitations)
+      ? ([...record.limitations] as string[])
+      : [],
+  };
+}
+
+/** Parse and brand a record received on a backend-owned tool event. */
+export function parseBackendExecutionRecord(
+  value: unknown,
+): ToolExecutionRecord | null {
+  const record = parseExecutionRecordShape(value);
+  if (!record) return null;
+  Object.defineProperty(record, BACKEND_EXECUTION_RECORD, {
+    value: true,
+    enumerable: false,
+  });
+  return record;
+}
+
+function isBackendExecutionRecord(
+  record: ToolExecutionRecord | null,
+): record is BackendExecutionRecord {
+  return (
+    record !== null &&
+    (record as BackendExecutionRecord)[BACKEND_EXECUTION_RECORD] === true
+  );
+}
+
+export type ToolCardState = {
+  toolCallId: string;
+  executionRecord?: ToolExecutionRecord;
+};
+
+/** Attach only a record created by parseBackendExecutionRecord. */
+export function attachAuthoritativeExecutionRecord<T extends ToolCardState>(
+  card: T,
+  record: ToolExecutionRecord | null,
+): Omit<T, "executionRecord"> & ToolCardState {
+  const ordinaryCard = Object.fromEntries(
+    Object.entries(card).filter(([key]) => key !== "executionRecord"),
+  ) as Omit<T, "executionRecord">;
+  if (isBackendExecutionRecord(record)) {
+    authoritativeExecutionRecords.set(card.toolCallId, record);
+    return { ...ordinaryCard, executionRecord: record };
+  }
+  authoritativeExecutionRecords.delete(card.toolCallId);
+  return ordinaryCard;
+}
+
+/** Read the process-local backend record associated with this live card. */
+export function toolExecutionRecordFromCard(
+  toolCallId: string,
+): ToolExecutionRecord | null {
+  return authoritativeExecutionRecords.get(toolCallId) ?? null;
+}
+
+export function discardAuthoritativeExecutionRecord(toolCallId: string): void {
+  authoritativeExecutionRecords.delete(toolCallId);
+}
+
+function stripUntrustedRecordEnvelope(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      ([key]) => key !== "executionRecord" && key !== "execution_record",
+    ),
+  );
+}
+
+/** Stored/imported message content has no backend-event provenance. */
+export function stripUntrustedExecutionMetadataFromContent(
+  content: unknown,
+): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map((part) => {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      Array.isArray(part) ||
+      (part as Record<string, unknown>).type !== "tool-call"
+    ) {
+      return part;
+    }
+    const sanitized = Object.fromEntries(
+      Object.entries(part as Record<string, unknown>).filter(
+        ([key]) => key !== "executionRecord",
+      ),
+    );
+    sanitized.args = stripUntrustedExecutionMetadata(sanitized.args);
+    if ("result" in sanitized) {
+      sanitized.result = stripUntrustedRecordEnvelope(sanitized.result);
+    }
+    if ("artifact" in sanitized) {
+      sanitized.artifact = stripUntrustedRecordEnvelope(sanitized.artifact);
+    }
+    return sanitized;
+  });
+}
+
+/** A card label derived only from the backend's launch-time record. */
+export function toolExecutionRecordLabel(
+  record: ToolExecutionRecord | null,
+): string | null {
+  if (!record) return null;
+  if (record.effective_mode === "full") {
+    return "Full access · security restrictions disabled";
+  }
+  if (record.effective_mode === "limited") {
+    return "Limited · no OS isolation";
+  }
+  if (!record.os_isolation) return null;
+  if (record.backend === "windows-lpac") {
+    return "Preview OS isolation · LPAC (Windows)";
+  }
+  if (record.backend === "macos-seatbelt") {
+    return "Preview OS isolation · Seatbelt (lifecycle unverified)";
+  }
+  const environment = record.environment.toLowerCase();
+  const usesBubblewrap = record.backend.toLowerCase().includes("bubblewrap");
+  const backend = usesBubblewrap ? "Bubblewrap" : record.backend;
+  if (usesBubblewrap && environment === "native_linux") {
+    return `Protected · ${backend}`;
+  }
+  if (environment === "wsl2") {
+    return `Preview OS isolation · ${backend} (WSL2)`;
+  }
+  if (environment === "container") {
+    return `Preview OS isolation · ${backend} (Container)`;
+  }
+  if (environment === "colab") {
+    return `Preview OS isolation · ${backend} (Colab)`;
+  }
+  if (usesBubblewrap) {
+    return `Preview OS isolation · ${backend} (${record.environment})`;
+  }
+  return `Protected · ${backend}`;
+}
+
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
@@ -603,6 +809,12 @@ export interface OpenAIChatCompletionsRequest {
   permission_mode?: "ask" | "auto" | "off" | "full";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
+  /** Requested Python/Terminal protection mode, revalidated at launch. */
+  tool_execution_mode?: ToolExecutionMode;
+  /** Page-lifetime identity bound to a Limited grant. */
+  tool_ui_session_id?: string;
+  /** Opaque, session-only consent proof. Sent only for current Limited mode. */
+  limited_grant?: string;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

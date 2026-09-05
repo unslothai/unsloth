@@ -36,6 +36,12 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
 from .context_window import _RESULT_NOTICE_RESERVE
+from .os_sandbox import (
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+    prepare_tool_launch,
+    spawn_prepared_launch,
+)
 
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
@@ -7099,7 +7105,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec():
+def _sandbox_preexec_impl(*, apply_no_new_privs: bool, apply_nproc: bool) -> None:
     """Best-effort sandbox setup for sandboxed subprocesses (modules are
     resolved at import time so the forked child runs no imports)."""
     try:
@@ -7113,10 +7119,11 @@ def _sandbox_preexec():
         pass
 
     if _libc is not None:
-        try:
-            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
-        except (OSError, AttributeError):
-            pass
+        if apply_no_new_privs:
+            try:
+                _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            except (OSError, AttributeError):
+                pass
 
         try:
             _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
@@ -7129,11 +7136,12 @@ def _sandbox_preexec():
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
@@ -7158,6 +7166,76 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _sandbox_preexec() -> None:
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = True)
+
+
+def _limited_resource_limits() -> tuple[int, int, int, int]:
+    try:
+        limits = (
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024**3,
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384")),
+        )
+    except ValueError as exc:
+        raise RuntimeError("Limited mode resource-limit configuration is invalid") from exc
+    if any(value <= 0 for value in limits):
+        raise RuntimeError("Limited mode resource limits must be positive")
+    if sys.platform == "darwin":
+        # Darwin can report RLIM_INFINITY for NOFILE while rejecting values
+        # above the kernel's current per-process descriptor ceiling.
+        try:
+            limits = (*limits[:3], min(limits[3], int(os.sysconf("SC_OPEN_MAX"))))
+        except (ValueError, OSError):
+            raise RuntimeError("Limited mode could not determine the macOS file limit")
+    return limits
+
+
+def _limited_preexec() -> None:
+    """Establish every resource limit promised by Limited mode or abort exec."""
+    os.setsid()
+    os.umask(0o077)
+    if _resource is None:
+        raise RuntimeError("POSIX resource limits are unavailable")
+
+    def apply_limit(resource_name: str, requested: int) -> None:
+        resource_id = getattr(_resource, resource_name, None)
+        if resource_id is None:
+            raise RuntimeError(f"{resource_name} is unavailable")
+        inherited_soft, inherited_hard = _resource.getrlimit(resource_id)
+        bounds = [requested]
+        for inherited in (inherited_soft, inherited_hard):
+            if inherited != _resource.RLIM_INFINITY:
+                bounds.append(inherited)
+        target = min(bounds)
+        if target <= 0:
+            raise RuntimeError(f"{resource_name} cannot be established")
+        _resource.setrlimit(resource_id, (target, target))
+
+    nproc, memory, cpu_time, nofile = _limited_resource_limits()
+    apply_limit("RLIMIT_NPROC", nproc)
+    apply_limit("RLIMIT_FSIZE", 100 * 1024 * 1024)
+    # Darwin exposes AS, DATA, and RSS constants through Python, but rejects
+    # setting each one in this launch context. Its other four limits are still
+    # mandatory; Linux additionally enforces this address-space bound.
+    if sys.platform != "darwin":
+        apply_limit("RLIMIT_AS", memory)
+    apply_limit("RLIMIT_CPU", cpu_time)
+    apply_limit("RLIMIT_NOFILE", nofile)
+
+
+def _sandbox_launcher_preexec() -> None:
+    """Limits safe for a native sandbox launcher before it enters isolation.
+
+    A setuid Bubblewrap helper cannot start under ``no_new_privs``. NPROC is
+    installed by a tiny interpreter wrapper after Bubblewrap enters the new
+    namespace; applying the per-host-UID limit to the launcher can make its
+    required fork fail on a busy host. All other existing limits remain.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
 
 
 def _bypass_preexec():
@@ -9949,6 +10027,37 @@ _FULL_ACCESS_TOOL_BY_NAME = {
     "terminal": TERMINAL_TOOL_FULL_ACCESS,
 }
 
+_LIMITED_TOOL_DESCRIPTION_PREFIX = (
+    "This tool runs with Unsloth software safeguards but without OS isolation; "
+    "it may access anything available to the Studio process. "
+)
+
+
+def apply_limited_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Describe the actual Limited boundary for model-visible local tools."""
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if name not in ("python", "terminal"):
+            out.append(tool)
+            continue
+        host_description = str(
+            _FULL_ACCESS_TOOL_BY_NAME[name]["function"].get("description", "")
+        ).replace("The code sandbox is disabled, so ", "")
+        out.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "description": _LIMITED_TOOL_DESCRIPTION_PREFIX + host_description,
+                },
+            }
+        )
+        swapped = True
+    return out if swapped else tools
+
 
 def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
     """Swap python/terminal/edit_file for their Full access schemas.
@@ -10399,6 +10508,11 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10416,6 +10530,8 @@ def execute_tool(
     output). Purely observational: the returned result string is identical
     with or without it. Tools without incremental output ignore it.
     ``website_policy``: hidden server-validated domain limits for web_search.
+    ``tool_execution_mode``: Required (default), explicitly granted Limited,
+    or existing Full access for local Python/Terminal launches.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     # Set unconditionally, so a value from an earlier call on this thread can never be
@@ -10445,6 +10561,9 @@ def execute_tool(
             "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
     if name == "search_knowledge_base":
         return _fit_result_to_room(
             _search_knowledge_base_with_budget(
@@ -10562,6 +10681,11 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                launch_record_callback = launch_record_callback,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10573,6 +10697,11 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                launch_record_callback = launch_record_callback,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -14358,7 +14487,7 @@ def _forget_tool_pid(proc) -> None:
         pass
 
 
-def _capture_process_group(proc):
+def _capture_process_group(proc, *, require_windows_resource_limits: bool = False):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
@@ -14369,9 +14498,17 @@ def _capture_process_group(proc):
     there left a payload that outlived its wrapper unsignalled.
     """
     if os.name == "nt":
-        job = _windows_job_capture(proc)
+        owned_job = getattr(proc, "_unsloth_job", None)
+        if owned_job is not None:
+            return ("windows-job", owned_job)
+        job = _windows_job_capture(
+            proc,
+            apply_resource_limits = require_windows_resource_limits,
+        )
         if job is not None:
             return ("windows-job", job)
+        if require_windows_resource_limits:
+            return None
         # No job available, so fall back to the pid, carrying its creation-time
         # identity: a posix group id cannot be recycled while a member lives,
         # but this bare pid can, and the timeout path may fire much later.
@@ -14414,7 +14551,56 @@ class _WindowsToolJob:
         self.close()
 
 
-def _windows_job_capture(proc) -> "_WindowsToolJob | None":
+def _resume_windows_process(kernel32, ctypes, proc) -> bool:
+    """Resume the sole initial thread of a CREATE_SUSPENDED child."""
+    from ctypes import wintypes
+
+    class _ThreadEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", wintypes.LONG),
+            ("tpDeltaPri", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    H, BOOL, DWORD = wintypes.HANDLE, wintypes.BOOL, wintypes.DWORD
+    kernel32.CreateToolhelp32Snapshot.argtypes = [DWORD, DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = H
+    kernel32.Thread32First.argtypes = [H, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.Thread32First.restype = BOOL
+    kernel32.Thread32Next.argtypes = [H, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.Thread32Next.restype = BOOL
+    kernel32.OpenThread.argtypes = [DWORD, BOOL, DWORD]
+    kernel32.OpenThread.restype = H
+    kernel32.ResumeThread.argtypes = [H]
+    kernel32.ResumeThread.restype = DWORD
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+    if not snapshot or int(snapshot) == -1:
+        return False
+    thread = None
+    try:
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while found:
+            if int(entry.th32OwnerProcessID) == int(proc.pid):
+                thread = kernel32.OpenThread(0x0002, False, entry.th32ThreadID)
+                break
+            found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        if not thread:
+            return False
+        return kernel32.ResumeThread(thread) != 0xFFFFFFFF
+    finally:
+        if thread:
+            kernel32.CloseHandle(thread)
+        kernel32.CloseHandle(snapshot)
+
+
+def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_WindowsToolJob | None":
     """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
     the pid-based fallback."""
     if os.name != "nt":
@@ -14423,7 +14609,12 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         import ctypes
         from ctypes import wintypes
 
-        H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
+        H, BOOL, DWORD, UINT = (
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            wintypes.DWORD,
+            wintypes.UINT,
+        )
         kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         # Explicit widths: without them ctypes truncates a 64-bit handle to
         # c_int and every call silently works on a bogus one.
@@ -14431,6 +14622,13 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.CreateJobObjectW.restype = H
         kernel32.AssignProcessToJobObject.argtypes = [H, H]
         kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
@@ -14439,9 +14637,89 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
+        if apply_resource_limits:
+
+            class _BasicLimits(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", DWORD),
+                    ("SchedulingClass", DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    (name, ctypes.c_uint64)
+                    for name in (
+                        "ReadOperationCount",
+                        "WriteOperationCount",
+                        "OtherOperationCount",
+                        "ReadTransferCount",
+                        "WriteTransferCount",
+                        "OtherTransferCount",
+                    )
+                ]
+
+            class _ExtendedLimits(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimits),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            try:
+                nproc = max(
+                    1,
+                    int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+                )
+                memory = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
+                    )
+                    * 1024
+                    * 1024
+                    * 1024
+                )
+                cpu_time = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+                    )
+                    * 10_000_000
+                )
+            except ValueError:
+                kernel32.CloseHandle(job)
+                return None
+            info = _ExtendedLimits()
+            info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
+            info.BasicLimitInformation.ActiveProcessLimit = nproc
+            info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200
+            info.ProcessMemoryLimit = memory
+            info.JobMemoryLimit = memory
+            if not kernel32.SetInformationJobObject(
+                job,
+                9,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                kernel32.CloseHandle(job)
+                return None
         # The Popen handle, not a fresh OpenProcess: it already refers to this
         # child, so there is no window for the pid to be recycled first.
         if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        if apply_resource_limits and not _resume_windows_process(kernel32, ctypes, proc):
+            kernel32.TerminateJobObject(job, 1)
             kernel32.CloseHandle(job)
             return None
         return _WindowsToolJob(job, kernel32)
@@ -16012,6 +16290,11 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -16023,8 +16306,13 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
-    # Validate imports and code safety (skipped when the sandbox is disabled)
-    if not disable_sandbox:
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
+    full_access = effective_execution_mode == "full"
+
+    # Validate imports and code safety (skipped only for explicit Full access).
+    if not full_access:
         error = _check_code_safety(code)
         if error:
             # Capped like any other result: the analyzer names every occurrence it
@@ -16047,6 +16335,7 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    prepared_launch = None
     workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
@@ -16069,11 +16358,46 @@ def _python_exec(
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
-        if disable_sandbox:
+        safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
+        if full_access:
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
+        launch_argv = (sys.executable, "-u", tmp_path)
+        launch_preexec = (
+            _bypass_preexec
+            if full_access
+            else _limited_preexec
+            if effective_execution_mode == "limited"
+            else _sandbox_preexec
+        )
+        prepared_launch = prepare_tool_launch(
+            ToolLaunchPlan(
+                argv = launch_argv,
+                workdir = workdir,
+                env = safe_env,
+                preexec_fn = launch_preexec,
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
+                requested_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                timeout_seconds = timeout,
+                execution_kind = "python",
+            )
+        )
+        launch_argv = prepared_launch.argv
+        workdir = prepared_launch.workdir
+        safe_env = prepared_launch.env
+        launch_preexec = prepared_launch.preexec_fn
+        launch_timeout = prepared_launch.timeout_seconds
+        if launch_timeout is None and timeout is not None:
+            launch_timeout = timeout
+        if effective_execution_mode == "limited" and sys.platform != "win32":
+            # Validate in the parent so configuration failures remain actionable;
+            # the child repeats this immediately before exec and applies them.
+            _limited_resource_limits()
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16084,22 +16408,51 @@ def _python_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = prepared_launch.close_fds,
         )
+        if not full_access:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            if effective_execution_mode == "limited":
+                # The child cannot run between creation and assignment to its
+                # resource-limited Job Object.
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
-        pgid = _capture_process_group(proc)
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
+        ):
+            pgid = _capture_process_group(proc, require_windows_resource_limits = True)
+            if pgid is None:
+                _kill_process_tree(proc)
+                proc.wait()
+                raise SandboxUnavailableError(
+                    "Limited mode could not establish Windows process resource limits"
+                )
+        else:
+            pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
+        if launch_record_callback is not None and prepared_launch.execution_record is not None:
+            try:
+                launch_record_callback(prepared_launch.execution_record)
+            except Exception:
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                proc.wait()
+                raise
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -16114,7 +16467,11 @@ def _python_exec(
         # outlived the leader, and returns bytes identical to communicate() so
         # the streaming vs non-streaming result stays byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid = pgid
+            proc,
+            launch_timeout,
+            output_callback,
+            cancel_event,
+            pgid = pgid,
         )
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
@@ -16171,6 +16528,8 @@ def _python_exec(
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
         _forget_tool_pid(locals().get("proc"))
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -16186,6 +16545,11 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
@@ -16197,8 +16561,13 @@ def _bash_exec(
     if not command or not command.strip():
         return "No command provided."
 
-    # Block dangerous commands (skipped when the sandbox is disabled)
-    if not disable_sandbox:
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
+    full_access = effective_execution_mode == "full"
+
+    # Block dangerous commands (skipped only for explicit Full access).
+    if not full_access:
         blocked = _find_blocked_commands(command)
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what
@@ -16221,6 +16590,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared_launch = None
     try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
@@ -16230,7 +16600,40 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
+        launch_argv = tuple(_get_shell_cmd(command))
+        launch_preexec = (
+            _bypass_preexec
+            if full_access
+            else _limited_preexec
+            if effective_execution_mode == "limited"
+            else _sandbox_preexec
+        )
+        prepared_launch = prepare_tool_launch(
+            ToolLaunchPlan(
+                argv = launch_argv,
+                workdir = workdir,
+                env = safe_env,
+                preexec_fn = launch_preexec,
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
+                requested_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                timeout_seconds = timeout,
+                execution_kind = "terminal",
+            )
+        )
+        launch_argv = prepared_launch.argv
+        workdir = prepared_launch.workdir
+        safe_env = prepared_launch.env
+        launch_preexec = prepared_launch.preexec_fn
+        launch_timeout = prepared_launch.timeout_seconds
+        if launch_timeout is None and timeout is not None:
+            launch_timeout = timeout
+        if effective_execution_mode == "limited" and sys.platform != "win32":
+            _limited_resource_limits()
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16242,18 +16645,45 @@ def _bash_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = prepared_launch.close_fds,
         )
+        if not full_access:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            if effective_execution_mode == "limited":
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
-        pgid = _capture_process_group(proc)
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited" or prepared_launch.backend == "windows-lpac"
+        ):
+            pgid = _capture_process_group(proc, require_windows_resource_limits = True)
+            if pgid is None:
+                _kill_process_tree(proc)
+                proc.wait()
+                raise SandboxUnavailableError(
+                    "Limited mode could not establish Windows process resource limits"
+                )
+        else:
+            pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
+        if launch_record_callback is not None and prepared_launch.execution_record is not None:
+            try:
+                launch_record_callback(prepared_launch.execution_record)
+            except Exception:
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                proc.wait()
+                raise
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -16267,7 +16697,11 @@ def _bash_exec(
         # captured group on cancellation and returns bytes identical to
         # communicate(), keeping streaming vs non-streaming byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid = pgid
+            proc,
+            launch_timeout,
+            output_callback,
+            cancel_event,
+            pgid = pgid,
         )
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
@@ -16305,3 +16739,5 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
