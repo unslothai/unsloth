@@ -5090,14 +5090,22 @@ $WinArm64Venv = Test-WinArm64Venv
 # all, so a repair or a missing companion on this venv could not resolve. Absent -- an
 # older installer that recorded nothing -- this stays empty and every index choice is
 # exactly as before.
-$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
+$WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL) {
+    # The user's own win_arm64 channel, ahead of both the handover and the manifest. This
+    # is the variable install.ps1 took its instruction from, and it is the one case the
+    # manifest cannot cover: write_manifest persists only NVIDIA's own channels, because
+    # any other URL could carry a credential, so a corporate mirror is recoverable
+    # nowhere else. Without this a fresh-shell update fell back to the driver-derived
+    # download.pytorch.org family, which publishes no win_arm64 CUDA wheel at all.
+    $env:UNSLOTH_WOA_TORCH_INDEX_URL.Trim().TrimEnd('/')
+} elseif ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv) {
     # A direct `unsloth studio update` runs in a fresh shell, where the handover variable
     # is gone. The manifest carries the same answer across runs; it holds only NVIDIA's own
-    # channels, since write_manifest refuses any URL that could carry a credential, so a
-    # user's pinned mirror is not recovered here and is supplied through their own
-    # environment as before. Empty on every other host, leaving the index unchanged.
+    # channels, since write_manifest refuses any URL that could carry a credential -- which
+    # is exactly why the branch above exists for the mirror case. Empty on every other
+    # host, leaving the index unchanged.
     Get-PersistedWoaTorchIndex -VenvPath $VenvDir
 } else { "" }
 # Put it back in the environment, not just in this variable: install_python_stack.py reads

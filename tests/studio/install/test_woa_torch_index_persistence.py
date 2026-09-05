@@ -1149,7 +1149,21 @@ class TestTheSuppliedPyarrowWheelIsValidated:
     working x64 path.
     """
 
-    ZIP = b"PK\x03\x04" + b"\0" * 64
+    # A REAL archive. The check opens the file rather than reading its first two bytes,
+    # because a PK header proves nothing about an interrupted download -- which is now
+    # one of the cases below.
+    ZIP = "zip"
+    HEADER_ONLY = b"PK\x03\x04" + b"\0" * 64
+
+    @staticmethod
+    def _write(path: pathlib.Path, content) -> None:
+        if content == "zip":
+            import zipfile
+
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("pyarrow/__init__.py", "")
+        else:
+            path.write_bytes(content)
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -1159,15 +1173,17 @@ class TestTheSuppliedPyarrowWheelIsValidated:
             ("pyarrow-21.0.0-cp312-cp312-win_arm64.whl", ZIP, "", "another interpreter minor"),
             ("pyarrow-21.0.0-cp313-cp313-win_amd64.whl", ZIP, "", "an x64 wheel"),
             ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", b"not a zip", "", "a truncated download"),
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", HEADER_ONLY, "",
+             "an interrupted one that still carries the PK signature"),
             ("numpy-2.0.0-cp313-cp313-win_arm64.whl", ZIP, "", "a wheel for another project"),
             ("pyarrow-21.0.0.tar.gz", ZIP, "", "an sdist, which cannot be staged"),
         ],
     )
     def test_only_a_matching_readable_wheel_selects_native(
-        self, tmp_path: pathlib.Path, name: str, content: bytes, expected: str, why: str
+        self, tmp_path: pathlib.Path, name: str, content, expected: str, why: str
     ):
         wheel = tmp_path / name
-        wheel.write_bytes(content)
+        self._write(wheel, content)
         assert self._probe(str(wheel)) == expected, why
 
     @requires_pwsh
@@ -1186,6 +1202,9 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 "$script:WoaWheelhouse = 'https://example.test/wheels'",
                 _function_source(text, "Test-WoaWheelTags"),
+                # The supplied-wheel branch opens the archive now, so its helper is
+                # needed too; PowerShell does not hoist.
+                _function_source(text, "Test-ZipArchiveReadable"),
                 _function_source(text, "Get-WoaPyarrowSource"),
                 f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
                 "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
@@ -2344,3 +2363,141 @@ class TestAWheelhouseThatIsTheStagingDirectory:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "THREW"
+
+
+class TestTheSuppliedWheelIsOpenedNotSniffed:
+    """A truncated download still starts with "PK".
+
+    Accepting one selected the native path, staged the broken file, and failed the pyarrow
+    resolve with the working x64 stack already given up.
+    """
+
+    def test_the_zip_helper_is_used(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = text[text.index("if ($env:UNSLOTH_PYARROW_WHEEL) {") :][:1800]
+        assert "if (Test-ZipArchiveReadable -Path $_paWheel) { return \"local\" }" in block
+        assert "ReadByte()" not in block, "the two-byte signature sniff is gone"
+
+    def test_the_helper_is_defined_before_this_runs(self):
+        """PowerShell does not hoist: a call above the definition is a runtime error."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.index("function Test-ZipArchiveReadable") < text.index(
+            "function Get-WoaPyarrowSource"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "payload, expected, why",
+        [
+            (b"PK\x03\x04" + b"\x00" * 64, "False",
+             "the regression: a PK header with no central directory"),
+            (b"not a zip at all", "False", "nothing zip-like"),
+            (b"", "False", "an empty file"),
+            (None, "True", "a real archive"),
+        ],
+    )
+    def test_the_check(self, tmp_path, payload, expected, why):
+        import zipfile
+
+        wheel = tmp_path / "pyarrow-21.0.0-cp313-cp313-win_arm64.whl"
+        if payload is None:
+            with zipfile.ZipFile(wheel, "w") as zf:
+                zf.writestr("pyarrow/__init__.py", "")
+        else:
+            wheel.write_bytes(payload)
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            _function_source(text, "Test-ZipArchiveReadable"),
+            f"Write-Output (Test-ZipArchiveReadable -Path '{wheel}')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
+
+
+class TestAConfiguredWoaMirrorSurvivesAFreshShell:
+    """write_manifest persists only NVIDIA's own channels, because any other URL could
+    carry a credential. So a corporate win_arm64 mirror is recoverable nowhere but the
+    variable the user set, and ignoring it sent a fresh-shell update to the
+    driver-derived download.pytorch.org family, which has no win_arm64 CUDA wheel at all.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "configured, handover, persisted, expected, why",
+        [
+            ("https://mirror.corp/woa", "", "", "https://mirror.corp/woa",
+             "the regression: a fresh shell with only the user's own variable"),
+            ("https://mirror.corp/woa/", "", "", "https://mirror.corp/woa",
+             "trailing slash trimmed, as the other branches do"),
+            ("https://mirror.corp/woa", "https://pypi.nvidia.com/oot", "",
+             "https://mirror.corp/woa", "the user's channel outranks the handover"),
+            ("", "https://pypi.nvidia.com/oot", "", "https://pypi.nvidia.com/oot",
+             "unchanged when it is not set"),
+            ("", "", "https://pypi.nvidia.com/oot", "https://pypi.nvidia.com/oot",
+             "and the manifest still answers when nothing else does"),
+        ],
+    )
+    def test_the_precedence(self, configured, handover, persisted, expected, why):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WinArm64TorchIndexUrl = if ($WinArm64Venv")
+        end = text.index('} else { "" }', start) + len('} else { "" }')
+        script = "\n".join([
+            "$WinArm64Venv = $true",
+            "$VenvDir = '/nonexistent'",
+            f"function Get-PersistedWoaTorchIndex {{ param($VenvPath) return '{persisted}' }}",
+            f"$env:UNSLOTH_WOA_TORCH_INDEX_URL = '{configured}'",
+            f"$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = '{handover}'",
+            text[start:end],
+            "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
+
+    @requires_pwsh
+    def test_a_non_arm64_venv_still_reads_nothing(self):
+        """Every other host must see exactly the index choice it saw before."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WinArm64TorchIndexUrl = if ($WinArm64Venv")
+        end = text.index('} else { "" }', start) + len('} else { "" }')
+        script = "\n".join([
+            "$WinArm64Venv = $false",
+            "$VenvDir = '/nonexistent'",
+            "function Get-PersistedWoaTorchIndex { param($VenvPath) throw 'must not be called' }",
+            "$env:UNSLOTH_WOA_TORCH_INDEX_URL = 'https://mirror.corp/woa'",
+            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = 'https://pypi.nvidia.com/oot'",
+            text[start:end],
+            "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "[]"
+
+    def test_install_ps1_still_does_not_write_that_variable(self):
+        """It is the user's INPUT. Writing it would make a second run read its own answer
+        back as an instruction, which is what the handover variable is for."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert not re.search(r"\$env:UNSLOTH_WOA_TORCH_INDEX_URL\s*=", text)
+
+    def test_a_mirror_is_still_not_persisted(self):
+        """The reason this branch has to exist; if the manifest ever took one, the
+        credential rule would have been weakened instead."""
+        module = _load_manifest_module()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            written = module.write_manifest(
+                pathlib.Path(tmp), woa_torch_index = "https://mirror.corp/woa",
+            )
+            payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
+        assert "woa_torch_index" not in payload

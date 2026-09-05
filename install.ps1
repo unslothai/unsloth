@@ -610,16 +610,13 @@ function Install-UnslothStudio {
                 $_paName = Split-Path -Leaf $_paWheel
                 if (($_paName -like "pyarrow-*") -and (Test-WoaWheelTags -Name $_paName -PyTag $tag -AbiTag $AbiTag) -and
                     ($_paName -like "*win_arm64.whl")) {
-                    # Two bytes off a stream, not ReadAllBytes: a pyarrow wheel is tens of
-                    # megabytes and none of it but the signature is being inspected.
-                    $_paIsZip = $false
-                    try {
-                        $_paStream = [System.IO.File]::OpenRead($_paWheel)
-                        try {
-                            $_paIsZip = ($_paStream.ReadByte() -eq 0x50 -and $_paStream.ReadByte() -eq 0x4B)
-                        } finally { $_paStream.Dispose() }
-                    } catch { $_paIsZip = $false }
-                    if ($_paIsZip) { return "local" }
+                    # The whole archive, not the first two bytes: an interrupted download
+                    # still starts with "PK", and accepting one selected the native path,
+                    # staged the truncated file and then failed the pyarrow resolve with
+                    # the working x64 stack already given up. ZipFile::OpenRead reads the
+                    # central directory at the end of the file, so this stays cheap on a
+                    # wheel tens of megabytes long. Same check the staged wheels get.
+                    if (Test-ZipArchiveReadable -Path $_paWheel) { return "local" }
                     substep "windows on arm: UNSLOTH_PYARROW_WHEEL is not a readable wheel archive -- ignoring it." "Yellow"
                 } else {
                     substep "windows on arm: UNSLOTH_PYARROW_WHEEL is not a $tag win_arm64 pyarrow wheel -- ignoring it." "Yellow"
