@@ -182,6 +182,30 @@ test("records carry the network policy and the card label says when the allowlis
     ),
     "Full access · security restrictions disabled",
   );
+  // Full access and Limited launches report "unrestricted": the backend emits the field on
+  // every record, so the value must parse or every Full and Limited card would lose its label.
+  const fullRecord = parseBackendExecutionRecord(
+    record({
+      effective_mode: "full",
+      os_isolation: false,
+      backend: "none",
+      network_policy: "unrestricted",
+    }),
+  );
+  assert.ok(fullRecord);
+  assert.equal(fullRecord.network_policy, "unrestricted");
+  assert.equal(toolExecutionRecordLabel(fullRecord), "Full access · security restrictions disabled");
+  const tokenRecord = parseBackendExecutionRecord(
+    record({
+      effective_mode: "limited",
+      os_isolation: false,
+      backend: "windows-restricted-token",
+      profile_id: "windows-restricted-token-write-isolation-v1",
+      network_policy: "unrestricted",
+    }),
+  );
+  assert.ok(tokenRecord);
+  assert.equal(toolExecutionRecordLabel(tokenRecord), "Limited · restricted token (Windows)");
   // Unknown policies and malformed host lists invalidate the record rather than degrading.
   assert.equal(
     parseBackendExecutionRecord({ ...record(), network_policy: "open" }),

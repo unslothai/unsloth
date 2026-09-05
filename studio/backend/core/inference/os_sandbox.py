@@ -2799,6 +2799,8 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                         "job_object",
                     ),
                     limitations = tuple(limited.limitations),
+                    # The token fences writes only; the host network is reachable.
+                    network_policy = "unrestricted",
                 )
                 return prepared
         if not descendant_sweep_supported():
