@@ -726,10 +726,8 @@ test("a name resent or grown after a call closed invents nothing", () => {
 test("an argument fragment that is not a string does not abort the stream", () => {
   // llama-server has shipped `arguments` as a decoded object rather than the
   // string the API specifies, and the chunk is cast rather than validated.
-  // The object is serialized rather than dropped -- it is the call's whole
-  // payload -- so it stands as one complete arguments document, and a further
-  // fragment in the same slot reads as the next parallel call. The stream
-  // keeps working either way, which is what this pins.
+  // A serialized object is one complete arguments document, so a further fragment
+  // in the same slot is the next parallel call rather than a continuation.
   const parts = run([
     [
       {
@@ -1582,13 +1580,7 @@ test("a tool that really takes a _raw parameter keeps it either way", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// D. Decoded-object argument deltas (extracted from #9909 at review invitation)
-// ---------------------------------------------------------------------------
-
 test("decoded object arguments preserve their JSON payload", () => {
-  // llama-server has shipped `function.arguments` as a decoded object. The
-  // string-only guard read those as "" -- stream alive, payload silently gone.
   assert.equal(
     streamedToolCallArguments({ query: "雪", nested: [1, { ok: true }] }),
     '{"query":"雪","nested":[1,{"ok":true}]}',
@@ -1604,8 +1596,7 @@ test("string fragments pass through byte-exact and junk contributes nothing", ()
 });
 
 test("the adapter's delta site reads arguments through the helper", () => {
-  // The guard it replaces dropped a decoded object's payload; pinned so a
-  // tidy-up cannot quietly bring the typeof-ternary back.
+  // Pinned so a tidy-up cannot bring the payload-dropping typeof-ternary back.
   assert.ok(
     adapterSource.includes(
       "const deltaArgs = streamedToolCallArguments(",

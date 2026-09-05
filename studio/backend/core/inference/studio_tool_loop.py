@@ -284,10 +284,9 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
 def _argument_fragment(value: Any) -> Any:
     """A decoded-object ``arguments`` delta as the text it would have streamed as.
 
-    llama-server and some OpenAI-compatible servers decode the arguments before forwarding
-    the delta, so a dict or list arrives where a string fragment is expected. Anything else
-    passes through untouched: ``None`` still means "announced, no arguments field", and the
-    string path stays byte-exact. Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``.
+    llama-server has shipped a decoded object where a string fragment belongs
+    (ggml-org/llama.cpp#20198). Everything else passes through untouched, so ``None`` still means
+    "announced, no arguments field". Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``.
     """
     if isinstance(value, (dict, list)):
         try:

@@ -989,10 +989,8 @@ def _call_delta(index, call_id, name, arguments):
 
 
 def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
-    """A provider that decodes ``function.arguments`` before forwarding the delta (llama-server,
-    some OpenAI-compatible servers) sends a dict where a string fragment is expected. The
-    accumulator used to keep only string fragments, so the call executed with ``{}`` and its
-    authoritative tool_start then overwrote the payload the frontend had recovered.
+    """A string-only accumulator ran the tool with ``{}``, and the backend's authoritative
+    tool_start then overwrote the payload the frontend had recovered, so both ends are pinned.
     """
     transport = FakeTransport(
         [

@@ -6999,7 +6999,6 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
-                  // A string-only guard read those as "": stream alive, payload silently dropped. Serializing keeps it.
                   const deltaArgs = streamedToolCallArguments(
                     call.function?.arguments,
                   );
