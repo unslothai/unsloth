@@ -1413,6 +1413,7 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
+        skills: "Agentenfähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",

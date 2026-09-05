@@ -8,6 +8,7 @@ import {
   serverTuningLoadPayload,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { useTextareaSkillMentions } from "@/components/assistant-ui/skill-mentions";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -68,6 +69,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -108,6 +110,7 @@ import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
@@ -580,6 +583,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
@@ -649,6 +653,14 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+
+  const skillMentions = useTextareaSkillMentions({
+    text,
+    setText,
+    inputRef: textareaRef,
+    composingRef,
+    enabled: supportsTools,
+  });
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -2006,6 +2018,12 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <BookOpenIcon />
+        Agent Skills
+      </DropdownMenuItem>
+    ),
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -2157,6 +2175,8 @@ export function SharedComposer({
         void addFiles(e.dataTransfer.files);
       }}
     >
+      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
@@ -2233,6 +2253,8 @@ export function SharedComposer({
           )}
         </div>
       )}
+      {skillMentions.popover}
+
       <textarea
         ref={textareaRef}
         value={text}
@@ -2242,6 +2264,18 @@ export function SharedComposer({
           // textarea back to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
           setText(e.target.value);
+          skillMentions.update(
+            e.target.value,
+            e.target.selectionStart ?? e.target.value.length,
+          );
+        }}
+
+        onSelect={(event) => {
+          skillMentions.update(
+            event.currentTarget.value,
+            event.currentTarget.selectionStart ??
+              event.currentTarget.value.length,
+          );
         }}
         onCompositionStart={() => {
           setCompositionState(true);
@@ -2253,12 +2287,16 @@ export function SharedComposer({
           setCompositionState(false);
           setText(e.currentTarget.value);
         }}
-        onKeyDown={onKeyDown}
+        onKeyDown={(event) => {
+          if (!skillMentions.onKeyDown(event)) onKeyDown(event);
+        }}
         onPaste={handleFilePaste}
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
           setCompositionState(false);
+
+          skillMentions.close();
         }}
         placeholder="Send to both models..."
         // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to

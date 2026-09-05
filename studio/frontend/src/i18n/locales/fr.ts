@@ -1410,6 +1410,7 @@ export const fr = {
           "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
+        skills: "Compétences des agents",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
