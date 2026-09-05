@@ -621,9 +621,9 @@ class TestSetupPs1WindowsOnArmCudaPreservation:
     def test_any_explicit_pin_is_exempt(self):
         condition = self._condition()
         assert "-not $_pinnedIdx" in condition
-        assert "$_woaCpuPinned" not in condition, (
-            "a cu129 mirror pin is as much an instruction as a /cpu one"
-        )
+        assert (
+            "$_woaCpuPinned" not in condition
+        ), "a cu129 mirror pin is as much an instruction as a /cpu one"
 
     def test_the_exemption_reads_a_variable_that_is_always_assigned(self):
         # Not $_pinLeaf: that is assigned only inside `if ($_pinnedIdx)`, so reading it

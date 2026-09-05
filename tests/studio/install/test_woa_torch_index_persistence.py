@@ -1214,9 +1214,9 @@ class TestCallerResolverConfigurationSurvives:
             "a file that names none of our packages is passed to uv where it is, which "
             "keeps its relative -r and wheel paths resolving"
         )
-        assert "$WoaOverrideLines += (Resolve-WoaOverrideLine" in block, (
-            "and a conflicting one is folded line by line, rebased as it goes"
-        )
+        assert (
+            "$WoaOverrideLines += (Resolve-WoaOverrideLine" in block
+        ), "and a conflicting one is folded line by line, rebased as it goes"
         assert "$_woaOwnNames.ContainsKey($_woaOvName)" in block, (
             "minus the packages this file declares -- uv combines override files and "
             "errors on a duplicate package, so a blind append could fail the resolve"
@@ -1952,9 +1952,9 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
             "asked only on a free-threaded build; a GIL one takes the abi3 wheel and "
             "must not gain a network call or a new way to fail"
         )
-        assert block.index("Test-WoaWheelAvailable") < block.index("$script:WoaNativeCudaTorch = $true"), (
-            "before the commit, not after: the point is to keep the x64 fallback"
-        )
+        assert block.index("Test-WoaWheelAvailable") < block.index(
+            "$script:WoaNativeCudaTorch = $true"
+        ), "before the commit, not after: the point is to keep the x64 fallback"
 
     def test_the_constraint_that_makes_this_matter_is_still_there(self):
         constraints = (
@@ -1966,10 +1966,18 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
     @pytest.mark.parametrize(
         "listing, abi, expected, why",
         [
-            ("av-17.1.0-cp311-abi3-win_arm64.whl", "cp313t", "False",
-             "the regression: abi3 is not installable on a free-threaded build"),
-            ("av-17.1.0-cp314-cp314t-win_arm64.whl", "cp314t", "True",
-             "PyAV does publish a free-threaded wheel, for 3.14t"),
+            (
+                "av-17.1.0-cp311-abi3-win_arm64.whl",
+                "cp313t",
+                "False",
+                "the regression: abi3 is not installable on a free-threaded build",
+            ),
+            (
+                "av-17.1.0-cp314-cp314t-win_arm64.whl",
+                "cp314t",
+                "True",
+                "PyAV does publish a free-threaded wheel, for 3.14t",
+            ),
             ("av-17.1.0-cp314-cp314t-win_arm64.whl", "cp313t", "False", "but not for 3.13t"),
             ("", "cp313t", "False", "nothing published at all"),
         ],
@@ -1978,16 +1986,20 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         minor = "3.14" if "314" in abi else "3.13"
         body = f'<a href="{listing}">a</a>' if listing else "<html></html>"
-        script = "\n".join([
-            f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
-            "$script:WoaWheelhouse = $null",
-            _function_source(text, "Test-WoaWheelTags"),
-            _function_source(text, "Test-WoaWheelAvailable"),
-            f"Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '{minor}' -AbiTag '{abi}')",
-        ])
+        script = "\n".join(
+            [
+                f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                "$script:WoaWheelhouse = $null",
+                _function_source(text, "Test-WoaWheelTags"),
+                _function_source(text, "Test-WoaWheelAvailable"),
+                f"Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '{minor}' -AbiTag '{abi}')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
@@ -1996,16 +2008,20 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
     def test_an_unreachable_index_answers_no(self):
         """The x64 stack still works; a native venv that cannot build PyAV does not."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            "function Invoke-RestMethod { param([Parameter(ValueFromRemainingArguments=$true)]$a) throw 'offline' }",
-            "$script:WoaWheelhouse = $null",
-            _function_source(text, "Test-WoaWheelTags"),
-            _function_source(text, "Test-WoaWheelAvailable"),
-            "Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '3.13' -AbiTag 'cp313t')",
-        ])
+        script = "\n".join(
+            [
+                "function Invoke-RestMethod { param([Parameter(ValueFromRemainingArguments=$true)]$a) throw 'offline' }",
+                "$script:WoaWheelhouse = $null",
+                _function_source(text, "Test-WoaWheelTags"),
+                _function_source(text, "Test-WoaWheelAvailable"),
+                "Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '3.13' -AbiTag 'cp313t')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "False"
@@ -2022,16 +2038,19 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         block = text[text.index("$_woaKeepFiles = @()") :][:2600]
         assert "$_woaKeepFiles += $_woaOvFull" in block, "kept where it is"
         assert "$_woaOvConflicts" in block, "only a package clash forces a rewrite"
-        assert "Resolve-WoaOverrideLine -Line $_woaOvLine -BaseDir $_woaOvDir" in block, (
-            "and a folded line has its relative references made absolute"
-        )
+        assert (
+            "Resolve-WoaOverrideLine -Line $_woaOvLine -BaseDir $_woaOvDir" in block
+        ), "and a folded line has its relative references made absolute"
 
     def test_the_kept_files_reach_uv(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }" in text
-        assert '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in text, (
-            "uv splits UV_OVERRIDE on whitespace and combines the files"
+        assert (
+            "foreach ($_woaKeepFile in $_woaKeepFiles) { $_woaOverrideValue += (Get-UvSafePath $_woaKeepFile) }"
+            in text
         )
+        assert (
+            '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in text
+        ), "uv splits UV_OVERRIDE on whitespace and combines the files"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -2044,8 +2063,11 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             ("-r /etc/n.txt", "-r /etc/n.txt", "an absolute path is already right"),
             ("-r https://x.test/n.txt", "-r https://x.test/n.txt", "so is a URL"),
             ("brotli==1.1.0", "brotli==1.1.0", "an ordinary requirement is untouched"),
-            ('foo ; platform_machine == "AMD64"', 'foo ; platform_machine == "AMD64"',
-             "and so is a marker"),
+            (
+                'foo ; platform_machine == "AMD64"',
+                'foo ; platform_machine == "AMD64"',
+                "and so is a marker",
+            ),
             ("foo @ https://x.test/a.whl", "foo @ https://x.test/a.whl", "a direct URL"),
             ("foo @ file:dist/a.whl", "foo @ file:/opt/corp/ov/dist/a.whl", "a relative file: URL"),
             ("dist/a.whl", "/opt/corp/ov/dist/a.whl", "a bare relative wheel path"),
@@ -2055,13 +2077,17 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
     )
     def test_the_rewriter(self, line, expected, why):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Resolve-WoaOverrideLine"),
-            f"Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{line}' -BaseDir '/opt/corp/ov') + ']')",
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Resolve-WoaOverrideLine"),
+                f"Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{line}' -BaseDir '/opt/corp/ov') + ']')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
@@ -2070,11 +2096,17 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
     @pytest.mark.parametrize(
         "caller_lines, folded, why",
         [
-            (["-r nested.txt"], False,
-             "the regression: no package clash, so the file stays where it was written"),
+            (
+                ["-r nested.txt"],
+                False,
+                "the regression: no package clash, so the file stays where it was written",
+            ),
             (["brotli==1.1.0"], False, "an unrelated package is still no clash"),
-            (["torch==2.9.0", "-r nested.txt"], True,
-             "torch is one of ours, so this file has to be folded, rebased as it goes"),
+            (
+                ["torch==2.9.0", "-r nested.txt"],
+                True,
+                "torch is one of ours, so this file has to be folded, rebased as it goes",
+            ),
         ],
     )
     def test_the_block_end_to_end(self, tmp_path, caller_lines, folded, why):
@@ -2089,29 +2121,33 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         caller = caller_dir / "ov.txt"
         caller.write_text("\n".join(caller_lines) + "\n", encoding = "utf-8")
         managed = tmp_path / "woa.txt"
-        script = "\n".join([
-            _function_source(text, "Resolve-WoaOverrideLine"),
-            "function Get-UvSafePath { param([string]$p) return $p }",
-            "$WoaOverrideLines = @('# generated', 'torch>=2.4', 'torchvision>=0.19')",
-            f"$WoaOverrides = '{managed}'",
-            f"$env:UV_OVERRIDE = '{caller}'",
-            text[start:end],
-            'Write-Output ("OVERRIDE=" + $env:UV_OVERRIDE)',
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Resolve-WoaOverrideLine"),
+                "function Get-UvSafePath { param([string]$p) return $p }",
+                "$WoaOverrideLines = @('# generated', 'torch>=2.4', 'torchvision>=0.19')",
+                f"$WoaOverrides = '{managed}'",
+                f"$env:UV_OVERRIDE = '{caller}'",
+                text[start:end],
+                'Write-Output ("OVERRIDE=" + $env:UV_OVERRIDE)',
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
-        value = [
-            line for line in done.stdout.splitlines() if line.startswith("OVERRIDE=")
-        ][-1][len("OVERRIDE="):].split()
+        value = [line for line in done.stdout.splitlines() if line.startswith("OVERRIDE=")][-1][
+            len("OVERRIDE=") :
+        ].split()
         written = managed.read_text(encoding = "utf-8")
         if folded:
             assert value == [str(managed)], why
-            assert str(caller_dir / "nested.txt") in written, (
-                "the include is rebased onto the directory it was written for"
-            )
+            assert (
+                str(caller_dir / "nested.txt") in written
+            ), "the include is rebased onto the directory it was written for"
             assert "torch==2.9.0" not in written, "our own declaration still wins"
         else:
             assert value == [str(managed), str(caller)], why

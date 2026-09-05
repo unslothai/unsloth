@@ -186,9 +186,7 @@ class TestInstallPs1Mirror:
         # under %USERPROFILE%, which routinely contains a space. The value is now built
         # from more than one path -- ours plus any caller file kept in its own directory
         # -- so what matters is that EVERY entry goes through the 8.3 helper.
-        assert re.search(
-            r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source
-        )
+        assert re.search(r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source)
         assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in source
         assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', source)
         assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", source, flags = re.M)
