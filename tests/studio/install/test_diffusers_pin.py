@@ -18,6 +18,9 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import subprocess
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
@@ -134,3 +137,39 @@ def test_install_sh_still_delegates_the_core_package_skip():
     """The handoff flag skips core packages while allowing other base entries through."""
     assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
     assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
+
+
+def test_no_generated_filter_snapshot_is_tracked():
+    """They are a copy of a file already in the tree, and one got committed.
+
+    _filter_requirements writes beside the source so relative -r/-c includes resolve.
+    pip_install unlinks them in a finally, but a test calling the helper directly, or an
+    install killed mid-run, leaves them in the checkout, where `git add -A` picks them up.
+    A stale snapshot then reads as a second, silently divergent copy of the pins.
+    """
+    done = subprocess.run(
+        ["git", "ls-files", "-z", "--", "studio/backend/requirements/"],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+    )
+    if done.returncode != 0:
+        pytest.skip("not a git checkout")
+    tracked = [p for p in done.stdout.split("\0") if p]
+    offenders = [p for p in tracked if _GENERATED_FILTER.fullmatch(pathlib.Path(p).name)]
+    assert not offenders, f"generated filter snapshots are tracked: {offenders}"
+
+
+def test_gitignore_covers_the_generated_snapshots():
+    """So the next `git add -A` cannot put one back."""
+    probe = REQ_ROOT / ".studio-filtered-abcd1234.txt"
+    assert _GENERATED_FILTER.fullmatch(probe.name), "the probe must match the generated shape"
+    done = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", str(probe)],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+    )
+    if done.returncode == 128:
+        pytest.skip("not a git checkout")
+    assert done.returncode == 0, f"{probe.name} is not ignored; .gitignore needs the pattern"
