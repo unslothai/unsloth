@@ -649,14 +649,25 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # regression inside the streaming message lands as NOT COMPARABLE, and a REORDER past another
     # message of the same role is demoted from DIFFER (10 of 11 injected differences still DIFFER).
     streaming = in_flight(base, treat)
-    # THE COMPOSER IS NOT A RENDERING DIFFERENCE. One arm finished and one still writing has its
-    # MESSAGES withheld correctly, but the dock is inside `.aui-thread-root`, so `digest_scaffold`
-    # carries Stop on one arm and Send on the other and `_any_moved` reported DIFFER while every
-    # settled row was byte-identical. THE NULL BATTERY CANNOT SEE THIS -- one build against itself
-    # has both arms generating and the bias cancels. WITHHELD RATHER THAN IGNORED: if a message or
-    # overlay also moved this never runs. AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the
-    # suppression argues in a circle.
     # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
+    #
+    # One arm finished and one still writing has its MESSAGES withheld correctly, but the dock is
+    # inside `.aui-thread-root`, so `digest_scaffold` carries Stop on one arm and Send on the other
+    # and `_any_moved` reported DIFFER on the single claim `thread scaffolding outside any message
+    # (373->381c)` while every settled row was byte-identical. THE NULL BATTERY CANNOT SEE THIS,
+    # which is why it survived a 15-of-15-to-0 null: one build against itself has both arms
+    # generating, so the bias is symmetric and cancels. WITHHELD RATHER THAN IGNORED: if a message
+    # or overlay also moved this never runs.
+    #
+    # AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the suppression argues in a circle:
+    # `generation_disagrees` reads `composer_control`, the token naming which control was rendered,
+    # so the composer would be excusing itself. A treatment that DROPS the Send button, renames it
+    # or selects the wrong control reaches this branch with every message and overlay agreeing, and
+    # a refusal here is a green run (`report` files NOT COMPARABLE under `blind` and exits on
+    # `stable_bad or one_sided`). `_run_state_disagrees` reads `streaming` (`isRunning()`) and
+    # `queued_idle` off the thread's run state, which the composer cannot manufacture: Stop against
+    # Send differs in `streaming`, Queue against Send differs in `queued_idle`, and arms agreeing on
+    # both while rendering different controls have no run-state explanation.
     if (
         generation_disagrees(base, treat)
         and _run_state_disagrees(base, treat)

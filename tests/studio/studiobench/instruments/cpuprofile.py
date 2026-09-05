@@ -225,7 +225,8 @@ def compare_with_trace_profile(
 # since a cross-check that can never fail reads as corroboration; and this instrument is only
 # meaningful at level 1, where the trace carries NO profiler categories and it gives stacks
 # without the ProfileChunk volume that dominates an L2 buffer (a real L1 capture had 1748 of 1748
-# standalone samples inside the trace's own `RunTask` span). At level 2 and above it stands down
+# standalone samples inside the trace's own `RunTask` span, so the two clocks agree and these
+# samples can still be joined to classified task windows). At level 2 and above it stands down
 # and says so.
 
 import time  # noqa: E402
