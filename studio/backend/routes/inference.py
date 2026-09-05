@@ -2435,15 +2435,28 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         erased for a waiting chat. Cheap and idempotent, so it is safe to call per chunk.
         None only asks; the current state comes back either way.
         """
-        if state is None or _gguf_live_state["state"] == state:
-            return _gguf_live_state["state"]
-        _gguf_live_state["state"] = state
+        # The ledger's own reading, not a local mirror of what was last sent. The
+        # controller moves a holder to DECODING by itself when its tokens arrive (see
+        # `observe`), and a mirror that still said TOOLS_RUNNING would swallow the next
+        # report as a repeat and leave the ledger a state behind.
         try:
-            get_preemption_controller(
+            controller = get_preemption_controller(
                 str(getattr(llama_backend, "base_url", "llama-server"))
-            ).note_state(completion_id, state)
+            )
+            participant = controller.participant(completion_id)
+            current = participant.state if participant is not None else _gguf_live_state["state"]
         except Exception:
-            logger.debug("could not report the tool-loop state", exc_info = True)
+            controller = None
+            current = _gguf_live_state["state"]
+        if state is None or current == state:
+            _gguf_live_state["state"] = current
+            return current
+        _gguf_live_state["state"] = state
+        if controller is not None:
+            try:
+                controller.note_state(completion_id, state)
+            except Exception:
+                logger.debug("could not report the tool-loop state", exc_info = True)
         return state
 
     def _gguf_observe_tokens(generated: int) -> None:
@@ -22501,6 +22514,12 @@ async def produce_openai_chat_completions(
                         if event["type"] in ("tool_output", "tool_args"):
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
+                            if event["type"] == "tool_args":
+                                # Streamed arguments are decoded tokens: a round that
+                                # answers a tool result with another tool call sends
+                                # these and no content, and a chat left TOOLS_RUNNING
+                                # through it cannot be paused while it grows.
+                                _gguf_note_state(ParticipantState.DECODING)
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 

@@ -424,6 +424,15 @@ _PREEMPTABLE = frozenset(
 # PREEMPTING is deliberately absent: it has already been asked and asking twice would
 # double-count the room its pause is going to free.
 
+# States a generated token contradicts. A holder reported here that then produces tokens
+# is decoding, whatever the route last said about it; `observe` moves it to DECODING.
+_DECODES_WHEN_TOKENS_ARRIVE = frozenset(
+    {
+        ParticipantState.TOOLS_RUNNING,
+        ParticipantState.PARKED_ON_TOOL,
+    }
+)
+
 
 def preemption_enabled() -> bool:
     return _bool_env(PREEMPT_ENV, DEFAULT_PREEMPT_ENABLED)
@@ -852,6 +861,18 @@ class PreemptionController:
                 # A token came back, so the prompt behind it is prefilled and resident.
                 participant.measured = True
                 participant.cells_reclaimed = False
+                # And the chat is decoding, whatever it was last reported as. The
+                # tool-loop route reports TOOLS_RUNNING at a tool start and DECODING at
+                # the next CONTENT chunk; a round that streams its next tool call sends
+                # tool-call deltas and no content, so nothing reported it and it stayed
+                # TOOLS_RUNNING, which is not preemptable, for the whole round. With
+                # the other holder exempt as the last one standing, nobody was chosen
+                # while `committed` climbed 5216 to 8288 past a 6136 ceiling, and
+                # llama-server ended both chats (2026-09-05, four browser chats on the
+                # 35B at -c 8192). A generated token is proof of decoding, so the ledger
+                # says so here rather than trusting the route to have noticed.
+                if participant.state in _DECODES_WHEN_TOKENS_ARRIVE:
+                    participant.state = ParticipantState.DECODING
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
@@ -1241,7 +1262,22 @@ class PreemptionController:
             # had. The wait line already holds newcomers, so this costs them nothing they
             # were not already paying. Without it, the crowned-winner exemption's removal
             # would have let a sweep empty the cache entirely.
-            spare = max(0, len(victims) - 1)
+            #
+            # One HOLDER, not one preemptable victim. A holder this sweep cannot choose
+            # (a raw passthrough, a chat in a tool) is standing already, and sparing a
+            # victim on top of it leaves two holders in a pool that fits neither: that is
+            # how a chat mis-reported as TOOLS_RUNNING while it streamed its next tool
+            # call exempted the leader beside it, and llama-server ended both when the
+            # pool overflowed. A holder already PREEMPTING is on its way out and does not
+            # count as standing, or a sweep between the decision and the pause would
+            # take the last decoder too.
+            standing = any(
+                p.holds_kv
+                and not p.preemptable
+                and p.state != ParticipantState.PREEMPTING
+                for p in self._participants.values()
+            )
+            spare = len(victims) if standing else max(0, len(victims) - 1)
             chosen: List[Participant] = []
             for victim in victims[:spare]:
                 if total + want <= ceiling:
