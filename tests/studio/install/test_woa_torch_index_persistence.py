@@ -1159,7 +1159,6 @@ class TestTheSuppliedPyarrowWheelIsValidated:
     def _write(path: pathlib.Path, content) -> None:
         if content == "zip":
             import zipfile
-
             with zipfile.ZipFile(path, "w") as zf:
                 zf.writestr("pyarrow/__init__.py", "")
         else:
@@ -1173,8 +1172,12 @@ class TestTheSuppliedPyarrowWheelIsValidated:
             ("pyarrow-21.0.0-cp312-cp312-win_arm64.whl", ZIP, "", "another interpreter minor"),
             ("pyarrow-21.0.0-cp313-cp313-win_amd64.whl", ZIP, "", "an x64 wheel"),
             ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", b"not a zip", "", "a truncated download"),
-            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", HEADER_ONLY, "",
-             "an interrupted one that still carries the PK signature"),
+            (
+                "pyarrow-21.0.0-cp313-cp313-win_arm64.whl",
+                HEADER_ONLY,
+                "",
+                "an interrupted one that still carries the PK signature",
+            ),
             ("numpy-2.0.0-cp313-cp313-win_arm64.whl", ZIP, "", "a wheel for another project"),
             ("pyarrow-21.0.0.tar.gz", ZIP, "", "an sdist, which cannot be staged"),
         ],
@@ -2375,7 +2378,7 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
     def test_the_zip_helper_is_used(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         block = text[text.index("if ($env:UNSLOTH_PYARROW_WHEEL) {") :][:1800]
-        assert "if (Test-ZipArchiveReadable -Path $_paWheel) { return \"local\" }" in block
+        assert 'if (Test-ZipArchiveReadable -Path $_paWheel) { return "local" }' in block
         assert "ReadByte()" not in block, "the two-byte signature sniff is gone"
 
     def test_the_helper_is_defined_before_this_runs(self):
@@ -2389,8 +2392,11 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
     @pytest.mark.parametrize(
         "payload, expected, why",
         [
-            (b"PK\x03\x04" + b"\x00" * 64, "False",
-             "the regression: a PK header with no central directory"),
+            (
+                b"PK\x03\x04" + b"\x00" * 64,
+                "False",
+                "the regression: a PK header with no central directory",
+            ),
             (b"not a zip at all", "False", "nothing zip-like"),
             (b"", "False", "an empty file"),
             (None, "True", "a real archive"),
@@ -2406,13 +2412,17 @@ class TestTheSuppliedWheelIsOpenedNotSniffed:
         else:
             wheel.write_bytes(payload)
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Test-ZipArchiveReadable"),
-            f"Write-Output (Test-ZipArchiveReadable -Path '{wheel}')",
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Test-ZipArchiveReadable"),
+                f"Write-Output (Test-ZipArchiveReadable -Path '{wheel}')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
@@ -2429,34 +2439,63 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
     @pytest.mark.parametrize(
         "configured, handover, persisted, expected, why",
         [
-            ("https://mirror.corp/woa", "", "", "https://mirror.corp/woa",
-             "the regression: a fresh shell with only the user's own variable"),
-            ("https://mirror.corp/woa/", "", "", "https://mirror.corp/woa",
-             "trailing slash trimmed, as the other branches do"),
-            ("https://mirror.corp/woa", "https://pypi.nvidia.com/oot", "",
-             "https://mirror.corp/woa", "the user's channel outranks the handover"),
-            ("", "https://pypi.nvidia.com/oot", "", "https://pypi.nvidia.com/oot",
-             "unchanged when it is not set"),
-            ("", "", "https://pypi.nvidia.com/oot", "https://pypi.nvidia.com/oot",
-             "and the manifest still answers when nothing else does"),
+            (
+                "https://mirror.corp/woa",
+                "",
+                "",
+                "https://mirror.corp/woa",
+                "the regression: a fresh shell with only the user's own variable",
+            ),
+            (
+                "https://mirror.corp/woa/",
+                "",
+                "",
+                "https://mirror.corp/woa",
+                "trailing slash trimmed, as the other branches do",
+            ),
+            (
+                "https://mirror.corp/woa",
+                "https://pypi.nvidia.com/oot",
+                "",
+                "https://mirror.corp/woa",
+                "the user's channel outranks the handover",
+            ),
+            (
+                "",
+                "https://pypi.nvidia.com/oot",
+                "",
+                "https://pypi.nvidia.com/oot",
+                "unchanged when it is not set",
+            ),
+            (
+                "",
+                "",
+                "https://pypi.nvidia.com/oot",
+                "https://pypi.nvidia.com/oot",
+                "and the manifest still answers when nothing else does",
+            ),
         ],
     )
     def test_the_precedence(self, configured, handover, persisted, expected, why):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$WinArm64TorchIndexUrl = if ($WinArm64Venv")
         end = text.index('} else { "" }', start) + len('} else { "" }')
-        script = "\n".join([
-            "$WinArm64Venv = $true",
-            "$VenvDir = '/nonexistent'",
-            f"function Get-PersistedWoaTorchIndex {{ param($VenvPath) return '{persisted}' }}",
-            f"$env:UNSLOTH_WOA_TORCH_INDEX_URL = '{configured}'",
-            f"$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = '{handover}'",
-            text[start:end],
-            "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
-        ])
+        script = "\n".join(
+            [
+                "$WinArm64Venv = $true",
+                "$VenvDir = '/nonexistent'",
+                f"function Get-PersistedWoaTorchIndex {{ param($VenvPath) return '{persisted}' }}",
+                f"$env:UNSLOTH_WOA_TORCH_INDEX_URL = '{configured}'",
+                f"$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = '{handover}'",
+                text[start:end],
+                "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
@@ -2467,18 +2506,22 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$WinArm64TorchIndexUrl = if ($WinArm64Venv")
         end = text.index('} else { "" }', start) + len('} else { "" }')
-        script = "\n".join([
-            "$WinArm64Venv = $false",
-            "$VenvDir = '/nonexistent'",
-            "function Get-PersistedWoaTorchIndex { param($VenvPath) throw 'must not be called' }",
-            "$env:UNSLOTH_WOA_TORCH_INDEX_URL = 'https://mirror.corp/woa'",
-            "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = 'https://pypi.nvidia.com/oot'",
-            text[start:end],
-            "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
-        ])
+        script = "\n".join(
+            [
+                "$WinArm64Venv = $false",
+                "$VenvDir = '/nonexistent'",
+                "function Get-PersistedWoaTorchIndex { param($VenvPath) throw 'must not be called' }",
+                "$env:UNSLOTH_WOA_TORCH_INDEX_URL = 'https://mirror.corp/woa'",
+                "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = 'https://pypi.nvidia.com/oot'",
+                text[start:end],
+                "Write-Output ('[' + $WinArm64TorchIndexUrl + ']')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "[]"
@@ -2497,7 +2540,8 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
 
         with tempfile.TemporaryDirectory() as tmp:
             written = module.write_manifest(
-                pathlib.Path(tmp), woa_torch_index = "https://mirror.corp/woa",
+                pathlib.Path(tmp),
+                woa_torch_index = "https://mirror.corp/woa",
             )
             payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
         assert "woa_torch_index" not in payload
