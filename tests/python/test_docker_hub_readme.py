@@ -155,4 +155,3 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
-
