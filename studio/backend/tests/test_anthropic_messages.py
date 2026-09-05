@@ -2794,6 +2794,35 @@ class TestAnthropicMessagesToolRouting:
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
 
+    def test_client_tool_non_streaming_expected_cancel_returns_anthropic_499(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled(*_args, **_kwargs):
+            raise inf_mod._NonStreamingRequestCancelled("Request cancelled.")
+
+        _mock_backend(monkeypatch, base_url = "http://llama.test")
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _cancelled)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert exc.value.status_code == 499
+        assert exc.value.detail["type"] == "error"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 

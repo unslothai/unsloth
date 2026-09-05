@@ -4241,6 +4241,17 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
     )
 
 
+class _NonStreamingRequestCancelled(Exception):
+    """Internal signal for an expected non-streaming cancel/disconnect."""
+
+    __slots__ = ()
+
+
+def _raise_if_nonstreaming_request_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _NonStreamingRequestCancelled("Request cancelled.")
+
+
 async def _await_cancel_or_disconnect_then_close_client(
     *, cancel_event, request: Optional[Request], client: httpx.AsyncClient
 ) -> None:
@@ -25680,11 +25691,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             except httpx.RequestError:
                 # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-                if _cancel_event.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(_cancel_event)
                 raise
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _openai_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -25839,11 +25851,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             )
         except httpx.RequestError:
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
-        if _cancel_event.is_set():
-            raise asyncio.CancelledError()
+        _raise_if_nonstreaming_request_cancelled(_cancel_event)
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -29088,6 +29101,9 @@ async def anthropic_messages(
     async def _monitored_anthropic(coro):
         try:
             response = await coro
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
@@ -30968,19 +30984,26 @@ async def _anthropic_passthrough_non_streaming(
         )
     )
 
-    async def _post(payload_body):
-        nonlocal target_url
+    async def _post_once(payload_body):
         try:
-            return await _client.post(
+            response = await _client.post(
                 target_url,
                 json = payload_body,
                 timeout = _llama_non_streaming_generation_timeout(),
             )
-        except httpx.RequestError as exc:
+        except httpx.RequestError:
             # The watcher closes the client to break a blocked POST, so a transport error
             # with the event set is the cancel, not a failure.
-            if cancel_event is not None and cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel_event)
+            raise
+        _raise_if_nonstreaming_request_cancelled(cancel_event)
+        return response
+
+    async def _post(payload_body):
+        nonlocal target_url
+        try:
+            return await _post_once(payload_body)
+        except httpx.RequestError as exc:
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
@@ -30991,11 +31014,7 @@ async def _anthropic_passthrough_non_streaming(
             if retry_url is None:
                 raise
             target_url = retry_url
-            return await _client.post(
-                target_url,
-                json = payload_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+            return await _post_once(payload_body)
 
     try:
         resp = await _post(body)
@@ -32809,6 +32828,9 @@ async def _openai_passthrough_non_streaming(
             status_code = 499,
             detail = _openai_admission_error_body(exc, status_code = 499),
         )
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
@@ -32887,11 +32909,9 @@ async def _openai_passthrough_non_streaming_upstream(
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
-                if cancel.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(cancel)
                 raise
-            if cancel.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel)
             return response
         finally:
             # Bounded: the watcher polls Request.is_disconnected(), which can swallow
