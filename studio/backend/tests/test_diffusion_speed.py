@@ -77,6 +77,23 @@ def _compile_runtime_independent_of_the_host(monkeypatch):
     ds_mod.torch_compile_runtime_available.cache_clear()
 
 
+def _stub_dynamo(monkeypatch):
+    """torch_compile_runtime_available's Windows probe does `import torch._dynamo` /
+    `import torch._dynamo.utils` for real, which needs a top-level `torch` package in
+    ``sys.modules`` too (the import system resolves the parent first). Give it a fully
+    initialized pair -- and a minimal top-level `torch` if the host has no real one -- so a
+    test that doesn't otherwise need torch doesn't fail this probe for a reason unrelated to
+    what it checks. Any test exercising the probe's OWN failure path overrides this after."""
+    dynamo = types.ModuleType("torch._dynamo")
+    dynamo.utils = types.ModuleType("torch._dynamo.utils")
+    if "torch" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setattr(sys.modules["torch"], "_dynamo", dynamo, raising = False)
+    monkeypatch.setitem(sys.modules, "torch._dynamo", dynamo)
+    monkeypatch.setitem(sys.modules, "torch._dynamo.utils", dynamo.utils)
+    return dynamo
+
+
 def _stub_torch(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
@@ -88,6 +105,7 @@ def _stub_torch(monkeypatch):
     # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
     torch.compile = lambda fn, **kwargs: fn
     monkeypatch.setitem(sys.modules, "torch", torch)
+    torch._dynamo = _stub_dynamo(monkeypatch)
     return torch
 
 
@@ -783,6 +801,7 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
 
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    _stub_dynamo(monkeypatch)
     _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     assert ds_mod.torch_compile_runtime_available() is True
@@ -795,6 +814,7 @@ def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
     monkeypatch.setattr(ds_mod.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    _stub_dynamo(monkeypatch)
 
     _set_crt_headers(monkeypatch, False)
     _clear_runtime_cache()
@@ -803,6 +823,36 @@ def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
     _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     assert ds_mod.torch_compile_runtime_available() is True
+    _clear_runtime_cache()
+
+
+def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
+    """Regression for #10350: a circular import can hand back a `torch._dynamo` that exists in
+    `sys.modules` but has no `.utils` yet (mirroring the real
+    `partially initialized module 'torch._dynamo' has no attribute 'utils'` failure). The gate
+    must decide eager here rather than let a GGUF load discover it mid-generation."""
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(ds_mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+
+    # A partially initialized module: present, but the submodule import that would populate
+    # `.utils` never finished -- so `import torch._dynamo.utils` raises, exactly like the report.
+    partial_dynamo = types.ModuleType("torch._dynamo")
+    monkeypatch.setitem(sys.modules, "torch._dynamo", partial_dynamo)
+    monkeypatch.delitem(sys.modules, "torch._dynamo.utils", raising = False)
+    _set_crt_headers(monkeypatch, True)
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is False
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+
+    # And the gate recovers once dynamo is genuinely importable, same shape as the Triton/MSVC
+    # positive controls above.
+    _stub_dynamo(monkeypatch)
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is True
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
     _clear_runtime_cache()
 
 
