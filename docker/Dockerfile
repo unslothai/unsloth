@@ -524,15 +524,28 @@ RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
 # can never ship again. libcuda.so.1 is exempt: that is the driver stub, injected
 # by nvidia-container-toolkit at `docker run --gpus`, never present in the image.
 # ldd needs no GPU, so this keeps the build host-independent.
+#
+# The name is not `nvidia-cublas-cu${major}` at every major: NVIDIA dropped the
+# suffix at CUDA 13, where `nvidia-cublas-cu13` is only a 0.0.1 sdist whose build
+# backend exits 1 with "use nvidia-cublas instead", failing the BUILD, not the
+# install. Neither project spans both majors: the unsuffixed one publishes 13.x
+# only, and nvidia-cublas-cu12 has no unsuffixed twin. Pin the major so a future
+# CUDA 14 cannot install over a 13 bundle; the unresolved-library check below is
+# what proves the right wheel landed.
 RUN set -eux \
  && CUDA_SO=/opt/unsloth/llama.cpp/libggml-cuda.so \
  && if [ -f "$CUDA_SO" ]; then \
         want="$(ldd "$CUDA_SO" | sed -n 's/^[[:space:]]*\(libcublas\.so\.[0-9]*\)[[:space:]]*=> not found$/\1/p' | head -n1)"; \
         if [ -n "$want" ]; then \
             major="${want##*.}"; \
-            echo ">> $want missing, installing nvidia-cublas-cu${major}"; \
+            if [ "$major" -ge 13 ]; then \
+                pkg="nvidia-cublas==${major}.*"; \
+            else \
+                pkg="nvidia-cublas-cu${major}"; \
+            fi; \
+            echo ">> $want missing, installing ${pkg}"; \
             /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-                "nvidia-cublas-cu${major}"; \
+                "${pkg}"; \
             ldconfig; \
         fi; \
         missing="$(ldd "$CUDA_SO" | grep 'not found' | grep -v 'libcuda\.so\.1 ' || true)"; \
