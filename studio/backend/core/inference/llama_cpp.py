@@ -7533,8 +7533,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _resolved_studio_root_and_is_legacy() -> "tuple[Optional[Path], bool]":
-        """Resolve the Unsloth install root and classify it as the legacy
-        ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
+        """Resolve the directory llama.cpp hangs off and classify it as the
+        legacy ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
 
         Returns (resolved_root, is_legacy). On any import/resolution failure the
         root is treated as legacy and resolved_root is None -- callers must read
@@ -7543,8 +7543,16 @@ class LlamaCppBackend:
         (cleanup) so the two never disagree on which root is legacy.
         """
         try:
-            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+            from utils.paths.storage_roots import (  # noqa: WPS433
+                studio_root as _sr,
+                unsloth_home as _uh,
+            )
 
+            # llama.cpp is a sibling of studio/ under the master root, the path run.py and
+            # main.py export, so a portable install is never the legacy layout.
+            master = _uh()
+            if master is not None:
+                return master, False
             resolved = _sr()
             legacy_studio = Path.home() / ".unsloth" / "studio"
             try:

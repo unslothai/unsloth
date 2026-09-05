@@ -1396,10 +1396,18 @@ try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):
     _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+from utils.paths.storage_roots import unsloth_home as _unsloth_home
+
+_MASTER_ROOT = _unsloth_home()
+# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
+# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
+    # The runtimes sit at the master root, beside studio/; deriving from the Studio root would
+    # pin a path one level too deep for every worker.
+    _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
+    _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
     # The CLI and generated launchers can export this path before run.py starts.

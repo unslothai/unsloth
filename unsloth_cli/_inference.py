@@ -131,10 +131,33 @@ def read_json_checking_deferred_error(url: str, response):
     return require_completed_padded_body(url, raise_for_deferred_error(url, body))
 
 
+_cache_env_seeded = False
+
+
+def _seed_cache_env() -> None:
+    """Pin the cache locations the backend pins, for in-process CLI commands.
+
+    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, which resolves against
+    the working directory and leaves an unsloth_compiled_cache cache_cleanup will not remove
+    (issue #8865).
+    """
+    global _cache_env_seeded
+    if _cache_env_seeded:
+        return
+    _cache_env_seeded = True
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+        setup_cache_env()
+    except Exception:  # noqa: BLE001 - never fail a command over cache placement
+        pass
+
+
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
+    # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
+    _seed_cache_env()
 
 
 def configure_quiet_logging() -> None:
