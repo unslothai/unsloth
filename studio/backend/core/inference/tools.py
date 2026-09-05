@@ -14526,8 +14526,11 @@ class _WindowsToolJob:
 
     Windows has no process groups, and ``taskkill`` cannot reach a tree whose
     root has already exited, which is exactly the case this capture exists for.
-    The job stays a valid handle on every descendant either way. Created without
-    kill-on-close, so releasing it never kills a process that outlived the call.
+    The job stays a valid handle on every descendant either way. When the job
+    carries Limited-mode resource limits it is also created with kill-on-close,
+    so a detached grandchild dies with the tool call instead of outliving it,
+    which is what the ``reaping`` safeguard promises. A plain capture (Full
+    access) keeps the historical behaviour and never kills on release.
     """
 
     def __init__(self, handle, kernel32):
@@ -14702,7 +14705,8 @@ def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_Wind
             info = _ExtendedLimits()
             info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
             info.BasicLimitInformation.ActiveProcessLimit = nproc
-            info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200
+            # PROCESS_TIME | ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY | KILL_ON_JOB_CLOSE
+            info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200 | 0x2000
             info.ProcessMemoryLimit = memory
             info.JobMemoryLimit = memory
             if not kernel32.SetInformationJobObject(
@@ -14821,6 +14825,23 @@ def _killpg_captured(pgid) -> None:
     try:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _terminate_limited_windows_job(pgid, effective_execution_mode) -> None:
+    """Once a Limited tool call's leader is done, take its whole Windows job with it.
+
+    The job was created with kill-on-close, so this is the eager half of the
+    same guarantee: a ``start /b`` grandchild left running by the leader does
+    not survive the call. No-op outside Limited mode and off Windows.
+    """
+    if effective_execution_mode != "limited" or not isinstance(pgid, tuple):
+        return
+    if pgid[0] != "windows-job":
+        return
+    try:
+        pgid[1].terminate()
+    except Exception:  # noqa: BLE001 - best effort; kill-on-close still applies
         pass
 
 
@@ -16472,6 +16493,7 @@ def _python_exec(
             cancel_event,
             pgid = pgid,
         )
+        _terminate_limited_windows_job(pgid, effective_execution_mode)
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
@@ -16701,6 +16723,7 @@ def _bash_exec(
             cancel_event,
             pgid = pgid,
         )
+        _terminate_limited_windows_job(pgid, effective_execution_mode)
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
