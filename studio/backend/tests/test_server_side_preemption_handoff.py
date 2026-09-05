@@ -142,7 +142,11 @@ class TestProbe:
 # ------------------------------------------------------------------------ the controller
 
 
-def _fill(controller, n = 4, tokens = 2000):
+def _fill(
+    controller,
+    n = 4,
+    tokens = 2000,
+):
     """Register `n` decoding chats. No sweep runs here: `register` never plans, so the
     caller sees the first decision itself."""
     signals = []
@@ -157,7 +161,11 @@ class TestController:
     def test_server_mode_chooses_nobody_and_holds_nothing_back(self):
         controller = get_preemption_controller("server")
         controller.configure(
-            budget = 8192, kv_unified = True, draft_tokens = 2, slots = 4, batch_tokens = 2048,
+            budget = 8192,
+            kv_unified = True,
+            draft_tokens = 2,
+            slots = 4,
+            batch_tokens = 2048,
             server_mode = True,
         )
         assert controller.server_mode is True
@@ -175,7 +183,11 @@ class TestController:
     def test_studio_mode_is_unchanged(self):
         controller = get_preemption_controller("studio")
         controller.configure(
-            budget = 8192, kv_unified = True, draft_tokens = 2, slots = 4, batch_tokens = 2048,
+            budget = 8192,
+            kv_unified = True,
+            draft_tokens = 2,
+            slots = 4,
+            batch_tokens = 2048,
             server_mode = False,
         )
         signals = _fill(controller, n = 4, tokens = 2400)
@@ -227,7 +239,9 @@ class TestController:
 
 
 def _delta(content: str) -> str:
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n\n"
+    return (
+        "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n\n"
+    )
 
 
 def _finish(reason: str = "stop") -> str:
@@ -273,7 +287,14 @@ class _Recorder:
         recorder = self
 
         @contextlib.contextmanager
-        def fake_stream_with_retry(_client, _url, payload, _cancel_event, headers = None, **_kw):
+        def fake_stream_with_retry(
+            _client,
+            _url,
+            payload,
+            _cancel_event,
+            headers = None,
+            **_kw,
+        ):
             recorder.payloads.append(copy.deepcopy(payload))
             yield _FakeResponse(chunks)
 
@@ -346,9 +367,10 @@ class TestTheStreamRelaysAServerPark:
         text, marks = _client_view(events)
         assert text == "Once upon a time"
         assert marks == [("paused", len("Once upon")), ("resumed", len("Once upon"))]
-        assert policy.events == ["server-parked", "server-resumed"], (
-            "the ledger is told, and the Studio-side pause handshake never runs"
-        )
+        assert policy.events == [
+            "server-parked",
+            "server-resumed",
+        ], "the ledger is told, and the Studio-side pause handshake never runs"
         assert len(recorder.payloads) == 1, "nothing was re-opened: the server resumed in place"
 
     def test_a_policy_without_the_hooks_is_fine(self, monkeypatch):
@@ -379,7 +401,13 @@ class TestTheStreamRelaysAServerPark:
         assert marks == []
 
     def test_a_park_before_the_first_token_is_shown_too(self, monkeypatch):
-        script = [": preempted\n\n", ": resumed\n\n", _delta("Hello"), _finish(), "data: [DONE]\n\n"]
+        script = [
+            ": preempted\n\n",
+            ": resumed\n\n",
+            _delta("Hello"),
+            _finish(),
+            "data: [DONE]\n\n",
+        ]
         recorder = _Recorder(monkeypatch, script, server_preempts = True)
         events = list(
             recorder.backend.generate_chat_completion(
