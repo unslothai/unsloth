@@ -96,7 +96,9 @@ def _run(
     bin_dir = home / "stub-bin"
     _stub(bin_dir, "curl", "exit 0\n" if services_up else "exit 7\n")
     # the admin row is "committed" unless the test parks a not-initialized marker
-    _stub(bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n')
+    _stub(
+        bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n'
+    )
     e = _clean_env(bin_dir)
     e.update(
         UNSLOTH_STUDIO_HOME = str(home),
