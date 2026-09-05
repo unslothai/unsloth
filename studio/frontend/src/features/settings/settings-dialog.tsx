@@ -417,7 +417,7 @@ export function SettingsDialog() {
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
         <DialogContent
           showCloseButton={false}
-          overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
+          overlayClassName="z-[60] bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
             // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
             const focusTarget = [opener, openerFallback].find(
@@ -433,7 +433,7 @@ export function SettingsDialog() {
             // Cap at 960px but shrink to the viewport so it doesn't clip on
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface z-[60] !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
