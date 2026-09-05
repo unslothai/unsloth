@@ -22156,9 +22156,11 @@ async def produce_openai_chat_completions(
 
             # One implementation, shared with the plain chat surfaces. See
             # _openai_llama_residency_observer for why it is not defined here any more.
-            _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state = _openai_llama_residency_observer(
-                llama_backend = llama_backend,
-                completion_id = completion_id,
+            _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state = (
+                _openai_llama_residency_observer(
+                    llama_backend = llama_backend,
+                    completion_id = completion_id,
+                )
             )
             _gguf_preempt_policy_hold = DeferredPreemptionPolicy()
             # Captured on the event loop, used from the stream's worker thread. The
@@ -23090,9 +23092,11 @@ async def produce_openai_chat_completions(
         # evicted, because `observe()` is the only thing that plans an eviction and
         # `on_tokens` is the only thing that calls it. Same implementation the tool loop
         # uses, not a second copy.
-        _plain_refresh_residency, _plain_observe_tokens, _plain_note_state = _openai_llama_residency_observer(
-            llama_backend = llama_backend,
-            completion_id = completion_id,
+        _plain_refresh_residency, _plain_observe_tokens, _plain_note_state = (
+            _openai_llama_residency_observer(
+                llama_backend = llama_backend,
+                completion_id = completion_id,
+            )
         )
         try:
             _plain_preempt_loop = asyncio.get_running_loop()
@@ -30142,9 +30146,11 @@ async def anthropic_messages(
         _anthropic_preempt_loop = asyncio.get_running_loop()
     except RuntimeError:
         _anthropic_preempt_loop = None
-    _anthropic_refresh_residency, _anthropic_observe_tokens, _anthropic_note_state = _openai_llama_residency_observer(
-        llama_backend = llama_backend,
-        completion_id = message_id,
+    _anthropic_refresh_residency, _anthropic_observe_tokens, _anthropic_note_state = (
+        _openai_llama_residency_observer(
+            llama_backend = llama_backend,
+            completion_id = message_id,
+        )
     )
 
     def _arm_anthropic(reservation) -> None:

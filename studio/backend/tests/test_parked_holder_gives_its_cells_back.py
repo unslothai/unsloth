@@ -115,7 +115,9 @@ class TestTheLedger:
         c.register("p", tokens = 10, state = ParticipantState.PAUSED)
         assert c.note_state("p", ParticipantState.TOOLS_RUNNING) is False
         c.register("q", tokens = 10)
-        assert c.note_state("q", ParticipantState.PAUSED) is False, "PAUSED is the preemptor's to set"
+        assert (
+            c.note_state("q", ParticipantState.PAUSED) is False
+        ), "PAUSED is the preemptor's to set"
         assert c.note_state("q", ParticipantState.TOOLS_RUNNING) is True
         assert c.note_state("q", ParticipantState.TOOLS_RUNNING) is False, "no change, no report"
 
@@ -200,7 +202,12 @@ class _ApprovalToolBackend(FakeLlamaCppBackend):
             "arguments": {},
             "awaiting_confirmation": True,
         }
-        yield {"type": "tool_result", "tool_call_id": "call_1", "name": "write_file", "result": "ok"}
+        yield {
+            "type": "tool_result",
+            "tool_call_id": "call_1",
+            "name": "write_file",
+            "result": "ok",
+        }
         yield {"type": "content", "text": "Let me check. Done."}
         yield {
             "type": "metadata",
@@ -234,7 +241,9 @@ def _scope(app, body: bytes) -> dict:
 
 class TestTheRouteReports:
     def test_the_approval_prompt_and_the_next_round_are_reported(self, monkeypatch):
-        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ApprovalToolBackend())
+        monkeypatch.setattr(
+            inference_route, "get_llama_cpp_backend", lambda: _ApprovalToolBackend()
+        )
         monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
 
         async def _fake_select(payload, **_kwargs):
