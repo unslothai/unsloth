@@ -132,6 +132,21 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "enough memory" not in msg.lower()
         assert "diffusion" not in msg.lower()
 
+    def test_unknown_llm_arch_on_managed_source_hints_update(self, monkeypatch, tmp_path):
+        # Desktop/Studio source builds lag after app upgrades; name the fix.
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("stub")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda b: True)
+        )
+        monkeypatch.setattr("utils.llama_cpp_freshness.read_install_marker", lambda b: None)
+        out = "error loading model: unknown model architecture: 'qwen4exp'"
+        msg = _classify(out, "/models/x.gguf", "local/x", None, str(binary))
+        assert "qwen4exp" in msg
+        assert "built from source" in msg.lower()
+        assert "Update llama.cpp" in msg
+
     # Exact match: a chat arch merely containing a diffusion token (wan,
     # sd1, flux, ...) must not be routed to the Images page.
     @pytest.mark.parametrize(

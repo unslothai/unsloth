@@ -110,6 +110,13 @@ class LlamaUpdateStatusResponse(BaseModel):
     source_build: bool = Field(
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
+    source_refresh: bool = Field(
+        False,
+        description = (
+            "True when Update would rebuild a managed source tree (no matching prebuilt). "
+            "Only meaningful when update_component is llama."
+        ),
+    )
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
