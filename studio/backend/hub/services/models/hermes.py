@@ -65,18 +65,13 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         stem = path.name[: part.start()]
         total = int(part.group(2))
         if all(
-            f"{stem}-{index:05d}-of-{part.group(2)}.gguf" in names
-            for index in range(2, total + 1)
+            f"{stem}-{index:05d}-of-{part.group(2)}.gguf" in names for index in range(2, total + 1)
         ):
             staged.append(path)
     return staged
 
 
-def scan_hermes_dir(
-    hermes_dir: Path,
-    *,
-    limit: Optional[int] = None,
-) -> List[LocalModelInfo]:
+def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[LocalModelInfo]:
     """Scan a Hermes models directory for downloaded models."""
     if not hermes_dir.exists() or not hermes_dir.is_dir():
         return []

@@ -388,4 +388,3 @@ def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Pa
     model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
     assert detect_mmproj_file(str(model)) is None
-

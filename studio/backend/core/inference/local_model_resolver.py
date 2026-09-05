@@ -456,7 +456,6 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     try:
         from hub.services.models.hermes import scan_hermes_dir
         from utils.paths import hermes_model_dirs
-
         for hermes_dir in hermes_model_dirs():
             found += scan_hermes_dir(hermes_dir)
     except Exception as exc:

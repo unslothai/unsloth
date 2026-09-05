@@ -924,7 +924,9 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = sources
+    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = (
+        sources
+    )
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
