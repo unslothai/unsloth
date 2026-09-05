@@ -10361,6 +10361,46 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
+    def _launch_forces_full_offload(
+        self,
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether the child puts every layer on a GPU whatever the fitter says.
+
+        ``_argv_offloads_every_layer`` defers to an active fitter, which is right
+        for crediting VRAM: the fitter may lower llama.cpp's default ``-1``. It
+        cannot lower a count the user fixed (common/fit.cpp throws "n_gpu_layers
+        already set by user" and the caller downgrades it to a warning, see
+        ``_env_fixes_gpu_layers``), so a concrete count above the block count, or an
+        inherited LLAMA_ARG_N_GPU_LAYERS that says so, is a forced full offload even
+        under ``--fit on``. An unknown block count or CPU placement answers False.
+        """
+        args = [str(a) for a in argv or ()]
+        if self._argv_offloads_every_layer(args, env):
+            return True
+        if _device_selection_is_cpu(args, env):
+            return False
+        if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
+            return False
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        if requested is None and env and _env_fixes_gpu_layers(env):
+            raw = str(env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
+            if raw == "all":
+                return True
+            try:
+                requested = int(raw)
+            except ValueError:
+                return False
+        # -1 is the default the fitter is free to lower; a concrete count stands.
+        return requested is not None and requested > n_layers
+
     @staticmethod
     def _rows_the_child_can_reach(detected_gpus, pinned_ids) -> list:
         """``detected_gpus`` narrowed to the cards THIS launch pinned the child to.
@@ -22863,7 +22903,7 @@ class LlamaCppBackend:
                 # fitter or an explicit partial placement owning the layer count, the
                 # load fits by spilling, so the whole-file size would overstate the
                 # need and take managed pages for a launch the carve-out holds.
-                _unified_need = model_size if self._argv_offloads_every_layer(cmd, env) else None
+                _unified_need = model_size if self._launch_forces_full_offload(cmd, env) else None
                 if _unified_opt_out:
                     # ggml tests presence, so passing a user's "0" through would
                     # ENABLE what they turned off (#8651). Only absence is off.
@@ -23034,7 +23074,7 @@ class LlamaCppBackend:
                         # the selected devices. Ownership protects inherited values.
                         _survivors_gain_unified = self._unified_memory_for_launch(
                             _survivors,
-                            model_size if self._argv_offloads_every_layer(cmd, env) else None,
+                            model_size if self._launch_forces_full_offload(cmd, env) else None,
                             opted_in = _unified_opt_in,
                         )
                         if _unified_env_applied and not _survivors_gain_unified:
@@ -23881,7 +23921,7 @@ class LlamaCppBackend:
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
                         _retry_unified_helps = self._unified_memory_for_launch(
                             _remaining,
-                            model_size if self._argv_offloads_every_layer(cmd, env) else None,
+                            model_size if self._launch_forces_full_offload(cmd, env) else None,
                             opted_in = _unified_opt_in,
                         )
                         # Everything recorded so far priced the CRASHED selection, and

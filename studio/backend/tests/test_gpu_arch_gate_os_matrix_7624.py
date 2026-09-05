@@ -2032,6 +2032,60 @@ class TestUnifiedMemoryOptOut:
         assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
+    def _auto_mode_with(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        extra_args = None,
+        env_extra = None,
+    ):
+        """Auto mode keeps --fit on for an oversized file; a user-fixed layer
+        count is what decides whether the fitter can still spill it."""
+        backend = LlamaCppBackend()
+        backend._n_layers = 8
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._strix_halo(monkeypatch),
+            None,
+            returncode = None,
+            model_bytes = 40 * GIB,
+            backend = backend,
+            intent_kwargs = {"extra_args": list(extra_args or [])},
+            env_extra = env_extra,
+        )[0]
+
+    def test_a_user_count_above_the_block_count_stands_under_the_fitter(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """llama.cpp's fitter refuses to lower a count the user set, so this is
+        a forced full offload even with --fit on."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "9"])
+        assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_an_inherited_count_above_the_block_count_stands_too(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._auto_mode_with(
+            tmp_path, monkeypatch, env_extra = {"LLAMA_ARG_N_GPU_LAYERS": "9"}
+        )
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_user_minus_one_still_leaves_the_fitter_in_charge(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """-1 is llama.cpp's default, which the fitter may lower, so the file spills."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["-ngl", "-1"])
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_a_user_count_below_the_block_count_never_takes_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "4"])
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
     def test_the_disable_switch_beats_the_enable_switch(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._load(
             tmp_path,
