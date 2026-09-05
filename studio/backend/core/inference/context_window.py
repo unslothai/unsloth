@@ -142,6 +142,26 @@ def estimate_messages_tokens_conservative(
     return total
 
 
+def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
+    """One token per UTF-8 byte: a bound, not a rate.
+
+    A byte-level BPE merges bytes and never splits one, so this holds for the text the
+    rates above mispredict -- dense charges ASCII the English four against a measured
+    1.13 for hex, and the conservative two stays deliberately below what a blob costs.
+    About 4x on prose, so it belongs only to a caller handing out room it then fills,
+    where an undercount is cache nobody accounted for and pessimism costs an answer.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        total += max(1, len(text.encode("utf-8")))
+    return total
+
+
 def group_turns(messages: list[dict]) -> list[list[dict]]:
     """Split messages into the turn groups the rolling window evicts as single units.
 
