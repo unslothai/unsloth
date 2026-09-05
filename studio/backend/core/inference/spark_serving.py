@@ -21,11 +21,14 @@ this module decides between three layouts and runs whichever one the workload al
                ``--pipeline-groups`` (the unslothai/llama.cpp fork: N contexts from one
                model, the slots partitioned across them, N interleaved decode loops so
                one group's batch runs on the peer's layers while another's runs here)
-               the launch adds ``--pipeline-groups 2`` and an even slot count. Measured
-               with Qwen3.8-27B: 1.27x to 1.50x of one Spark at 32 to 128 concurrent
-               rows with both GPUs near 80 percent, against 0.85x to 1.01x for the
-               one-context split. The flag is probed for with ``llama-server --help``
-               once per binary; a bundle without it launches exactly as before.
+               and ``UNSLOTH_SPARK_PIPELINE_GROUPS=2`` is set, the launch adds
+               ``--pipeline-groups 2`` and an even slot count. A two-context prototype
+               measured 1.27x to 1.50x of one Spark at 32 to 128 concurrent rows with
+               both GPUs near 80 percent, against 0.85x to 1.01x for the one-context
+               split; the server implementation does not reach that yet (it measured
+               0.82x of one context), so the flag is opt-in. It is probed for with
+               ``llama-server --help`` once per binary; a bundle without it, or an
+               unset env, launches exactly as before.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
@@ -69,13 +72,20 @@ ENV_RPC_BIND = "UNSLOTH_SPARK_RPC_BIND"  # ggml-rpc-server -H on the peer; defau
 ENV_PREFILL_HEAVY = (
     "UNSLOTH_SPARK_PREFILL_HEAVY"  # "1": tell the planner the work is long-prompt prefill
 )
-# Layer split only: 0 disables, N sets it; default 2 when the bundle has the flag.
+# Layer split only: N adds ``--pipeline-groups N`` when the bundle has the flag; unset
+# or 0 adds nothing. Opt-in for now: see PIPELINE_GROUPS_DEFAULT.
 ENV_PIPELINE_GROUPS = "UNSLOTH_SPARK_PIPELINE_GROUPS"
 
 TOPOLOGIES = ("single", "replicas", "layer_split")
 RPC_PORT_DEFAULT = 50052
 PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt length
-PIPELINE_GROUPS_DEFAULT = 2  # two Sparks, two interleaved decode loops (see spark_cluster)
+# 0 = opt-in. The two-context prototype measured 1.27x to 1.50x (spark_cluster), but the
+# first llama-server implementation of the flag (unslothai/llama.cpp PR #187, draft) LOST to a
+# single context on the same split: 79.0 against 96.7 tok/s at 32 concurrent, 82.1 against
+# 107.6 at 64, because the two groups' decodes slow each other down on the shared RPC link.
+# Adding the flag by default would make a layer split slower on a bundle that has it, so the
+# default is off until the server mode matches the prototype; set the env to 2 to use it.
+PIPELINE_GROUPS_DEFAULT = 0
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
@@ -626,8 +636,9 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
 
     ``pipeline_groups`` is 0 with a ``reason`` when the env says so, the value is not
     a number, or the bundle's llama-server has no ``--pipeline-groups`` (the fork's
-    flag is not in every prebuilt yet; a build without it launches as today).
-    Otherwise it is the env value or ``PIPELINE_GROUPS_DEFAULT``, and ``slots`` is the
+    flag is not in every prebuilt yet; a build without it launches as today), or the
+    env is unset and ``PIPELINE_GROUPS_DEFAULT`` is 0 (the current opt-in state; the
+    binary is not even probed then). Otherwise it is the env value, and ``slots`` is the
     launch's slot count rounded up to a multiple of it, at least one per group, so no
     group is left without a slot. ``requested_slots`` is the count before rounding.
     """
@@ -653,7 +664,8 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
         out["reason"] = (
             f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
             if raw
-            else f"{PIPELINE_GROUPS_FLAG} not added"
+            else f"{PIPELINE_GROUPS_FLAG} not added (opt in with {ENV_PIPELINE_GROUPS}=2 once "
+            f"the server mode beats one context; it does not yet)"
         )
         return out
     if not llama_server_supports(PIPELINE_GROUPS_FLAG):

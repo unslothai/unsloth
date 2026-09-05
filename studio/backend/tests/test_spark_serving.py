@@ -798,8 +798,21 @@ def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tm
     assert probe_runs(script) == 1, "the timeout is cached; one stall per build"
 
 
+def test_pipeline_groups_default_is_off_and_never_probes(cluster, monkeypatch):
+    """Opt-in until the server mode beats one context (PIPELINE_GROUPS_DEFAULT)."""
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
+    assert ss.PIPELINE_GROUPS_DEFAULT == 0
+    plan = ss.pipeline_groups_plan(3)
+    assert plan["pipeline_groups"] == 0 and plan["slots"] == 3
+    assert plan["reason"].startswith("--pipeline-groups not added")
+    assert f"{ss.ENV_PIPELINE_GROUPS}=2" in plan["reason"]
+    assert probe_runs(script) == 0, "off by default: the binary is never run"
+
+
 def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
     for asked, slots in ((1, 2), (2, 2), (3, 4), (4, 4), (5, 6), (16, 16)):
         plan = ss.pipeline_groups_plan(asked)
         assert plan["pipeline_groups"] == 2 and plan["slots"] == slots, (asked, plan)
@@ -822,8 +835,9 @@ def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
         assert ss.ENV_PIPELINE_GROUPS in plan["reason"], (value, plan)
 
 
-def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster):
+def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster, monkeypatch):
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
     plan = ss.pipeline_groups_plan(3)
     assert plan == {
         "pipeline_groups": 0,
@@ -841,6 +855,7 @@ def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
     model = tmp_path / "big.gguf"
     model.write_bytes(b"x")
     _calls, started = _patch_remote(monkeypatch)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
     out = run(ss.before_load(_FakeRequest(str(model), llama_extra_args = ["--seed", "1"]), 3))
     assert out.llama_extra_args == [
         "--seed",
@@ -876,6 +891,7 @@ def test_before_load_launches_as_before_without_the_flag(cluster, monkeypatch, t
     model = tmp_path / "big.gguf"
     model.write_bytes(b"x")
     _patch_remote(monkeypatch)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
     out = run(ss.before_load(_FakeRequest(str(model)), 3))
     assert out.llama_extra_args == [
         "--rpc",
