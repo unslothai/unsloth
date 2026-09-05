@@ -1515,7 +1515,12 @@ export async function* streamChatCompletions(
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Opt into Unsloth's UI control frames (tool cards, statuses, reasoning timing);
+      // the endpoint defaults to a clean OpenAI stream for external clients.
+      "X-Unsloth-Events": "1",
+    },
     body: JSON.stringify(payload),
     signal,
   });
