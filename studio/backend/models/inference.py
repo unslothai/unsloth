@@ -1767,20 +1767,64 @@ class CompactionContentPart(BaseModel):
     )
 
 
+class InputAudio(BaseModel):
+    # Non-empty: an empty payload is not lifted, so the turn would otherwise proceed as
+    # text alone and answer "transcribe this" about a recording that was never sent.
+    data: str = Field(
+        ..., min_length = 1, description = "Base64-encoded audio, without a data: prefix."
+    )
+    format: Optional[str] = Field(
+        None, description = 'Declared container, e.g. "wav"; the decoder sniffs it anyway.'
+    )
+
+
+class InputAudioContentPart(BaseModel):
+    """Audio content part in a multimodal message, in OpenAI's documented shape."""
+
+    type: Literal["input_audio"]
+    input_audio: InputAudio
+
+
+class UnknownContentPart(BaseModel):
+    """Catch-all for unmodelled part types, mirroring ``ResponsesUnknownContentPart``."""
+
+    type: str
+
+    model_config = {"extra": "allow"}
+
+
+_KNOWN_CONTENT_PART_TAGS = frozenset(
+    {
+        "text",
+        "image_url",
+        "input_audio",
+        "input_document",
+        "reasoning",
+        "image_generation_call",
+        "compaction",
+    }
+)
+
+
 def _content_part_discriminator(v):
-    if isinstance(v, dict):
-        return v.get("type")
-    return getattr(v, "type", None)
+    tag = v.get("type") if isinstance(v, dict) else getattr(v, "type", None)
+    # A list or dict tag is unhashable, so testing membership would raise TypeError out of
+    # request validation as a 500. Declining to name a member leaves pydantic to report it.
+    if not isinstance(tag, str):
+        return None
+    return tag if tag in _KNOWN_CONTENT_PART_TAGS else "unknown"
 
 
 ContentPart = Annotated[
     Union[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
+        Annotated[InputAudioContentPart, Tag("input_audio")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
         Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
         Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
+        Annotated[UnknownContentPart, Tag("unknown")],
     ],
     Discriminator(_content_part_discriminator),
 ]
