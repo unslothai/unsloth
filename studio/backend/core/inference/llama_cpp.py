@@ -22911,9 +22911,16 @@ class LlamaCppBackend:
                 # fitter or an explicit partial placement owning the layer count, the
                 # load fits by spilling, so the whole-file size would overstate the
                 # need and take managed pages for a launch the carve-out holds.
-                def _unified_need_now():
-                    """Bytes a forced full offload puts on the device, or None."""
-                    if model_size is None or not self._launch_forces_full_offload(cmd, env):
+                def _unified_need_now(argv = None, mtp_engages = None):
+                    """Bytes a forced full offload puts on the device, or None.
+
+                    ``argv`` is the command about to be spawned (``cmd`` by default)
+                    and ``mtp_engages`` whether a draft will load the trailing MTP
+                    blocks (``_mtp_will_engage`` by default); a retry that drops the
+                    drafter passes both."""
+                    run_argv = cmd if argv is None else argv
+                    engages = _mtp_will_engage if mtp_engages is None else mtp_engages
+                    if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
                     need = int(model_size)
                     # Trailing NextN/MTP blocks stay unloaded unless a draft engages
@@ -22921,7 +22928,7 @@ class LlamaCppBackend:
                     # model_size counts them, and a base that fits its carve-out
                     # must not take managed pages on their account. A table that
                     # cannot be read cannot price them, so it does not take them.
-                    if not _mtp_will_engage and self._nextn_predict_layers:
+                    if not engages and self._nextn_predict_layers:
                         layout = self._tensor_spill_layout(model_path)
                         if layout is None:
                             return None
@@ -24412,6 +24419,21 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    # The managed-memory price counted the MTP blocks a draft would
+                    # have loaded; this retry loads none. Re-price the base alone and
+                    # withdraw only what this launch set, so a base the carve-out
+                    # holds does not carry managed pages into the drafterless server.
+                    if _unified_env_applied and not self._unified_memory_for_launch(
+                        gpu_indices,
+                        _unified_need_now(argv = fallback_cmd, mtp_engages = False),
+                        opted_in = _unified_opt_in,
+                    ):
+                        env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
+                        _unified_env_applied = False
+                        logger.info(
+                            "Retry without speculative decoding no longer needs managed "
+                            "memory; dropped GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                        )
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"

@@ -1962,22 +1962,29 @@ class TestUnifiedMemoryOptOut:
         env_extra = None,
         model_bytes = 40 * GIB,  # outgrows the fake 32 GiB carve-out
         backend = None,
+        extra_args = None,
+        returncode = None,
+        output = "",
     ):
         # A forced full offload (manual mode at the picker's maximum, above the
         # block count) is the launch that can only fit with managed pages; under
         # the fitter the file would spill instead and never ask for them.
         backend = backend or LlamaCppBackend()
         backend._n_layers = 8
+        intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9}
+        if extra_args:
+            intent_kwargs["extra_args"] = list(extra_args)
         return _run_auto_load(
             monkeypatch,
             tmp_path,
             self._strix_halo(monkeypatch),
             None,
-            returncode = None,
+            returncode = returncode,
+            output = output,
             env_extra = env_extra,
             model_bytes = model_bytes,
             backend = backend,
-            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
+            intent_kwargs = intent_kwargs,
         )
 
     def test_a_forced_full_offload_that_outgrows_the_carve_out_gets_it(
@@ -2127,6 +2134,26 @@ class TestUnifiedMemoryOptOut:
             tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(4 * GIB)
         )[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_the_drafterless_retry_reprices_without_the_mtp_blocks(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """MTP engaged, so the first launch priced the blocks and took managed
+        memory; the retry without the drafter loads a base the carve-out holds."""
+        launches = self._load(
+            tmp_path,
+            monkeypatch,
+            backend = self._with_unloaded_mtp_blocks(10 * GIB),
+            extra_args = ["--spec-type", "draft-mtp"],
+            returncode = 1,
+            output = "failed to create llama_context",
+        )
+        first_cmd, first_env = launches[0]
+        assert "draft-mtp" in first_cmd, first_cmd
+        assert first_env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+        retries = [(c, e) for c, e in launches if "--spec-default" in c and "draft-mtp" not in c]
+        assert retries, [c for c, _e in launches]
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for _c, e in retries)
 
     def test_an_unreadable_tensor_table_cannot_price_the_blocks(
         self, tmp_path, monkeypatch, probe_env
