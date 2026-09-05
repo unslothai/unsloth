@@ -2,7 +2,8 @@
 # Default CMD of the full Unsloth image (Dockerfile.studio).
 #
 # Bootstraps the three services managed by supervisord:
-#   studio   port 8000   first-boot admin password printed in `docker logs`
+#   studio   port 8000   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
+#                        the generated one printed in `docker logs` (studio-password)
 #   jupyter  port 8888   password from JUPYTER_PASSWORD, or a random one
 #                        printed in `docker logs` when unset
 #   sshd     port 22     key-only; enabled when PUBLIC_KEY / SSH_KEY is set
@@ -10,6 +11,7 @@
 # Environment:
 #   JUPYTER_PORT       Jupyter port inside the container       (default 8888)
 #   JUPYTER_PASSWORD   Jupyter login password (unset: generated and printed)
+#   UNSLOTH_STUDIO_PASSWORD  Studio admin password (unset: generated and printed)
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
@@ -104,7 +106,15 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     fi
 fi
 
-echo "Unsloth Studio  -> http://localhost:8000   (first-boot password below)"
+STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
+if [[ -z "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
+    if [[ -e "${UNSLOTH_STUDIO_HOME}/auth/auth.db" && ! -s "${UNSLOTH_STUDIO_HOME}/auth/.bootstrap_password" ]]; then
+        STUDIO_NOTE="user unsloth, password set on an earlier boot"
+    else
+        STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
+    fi
+fi
+echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
     echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"

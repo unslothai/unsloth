@@ -23,13 +23,14 @@ Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud
 docker run -d --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8000:8000 -p 8888:8888 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth
 ```
 
-Then open Studio at `http://localhost:8000` and JupyterLab at `http://localhost:8888`. Studio prints its first-boot admin password in `docker logs <container>`. If `JUPYTER_PASSWORD` is not set, a random one is generated and printed there too.
+Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in `docker logs <container>`.
 
 The `docker/run.sh` helper in the repository sets these flags for you:
 
@@ -90,6 +91,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 
 | Variable | Effect |
 |---|---|
+| `UNSLOTH_STUDIO_PASSWORD` | Studio admin password for user `unsloth`. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
 | `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
 | `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
