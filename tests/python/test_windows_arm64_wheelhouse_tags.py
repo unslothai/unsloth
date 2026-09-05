@@ -902,9 +902,9 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
             if floor is None:
                 continue
             for version in tags.values():
-                assert ips._version_satisfies(version, floor[0]) is not False, (
-                    f"{name} {version} does not satisfy {floor[0]}"
-                )
+                assert (
+                    ips._version_satisfies(version, floor[0]) is not False
+                ), f"{name} {version} does not satisfy {floor[0]}"
 
     def test_nothing_is_claimed_off_win_arm64(self, ips, monkeypatch):
         """Every other platform must see exactly the availability it saw before."""

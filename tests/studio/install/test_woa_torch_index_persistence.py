@@ -4160,9 +4160,9 @@ class TestTheCompanionWheelsArePairedWithTorch:
                 if f'-Project "{project}"' in l and "Get-WoaCudaWheelVersion" in l
             ]
             assert line, f"{project} is not probed"
-            assert all("-PairWith $_woaTorchVersion" in l for l in line), (
-                f"{project} is still maximized independently of torch"
-            )
+            assert all(
+                "-PairWith $_woaTorchVersion" in l for l in line
+            ), f"{project} is still maximized independently of torch"
 
     def test_an_unpaired_companion_falls_back_rather_than_pinning(self):
         """A pin the index cannot satisfy is worse than the floor it replaced."""
@@ -4194,10 +4194,10 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index('$WinArm64TorchSpec = "torch>=2.4"')
         block = text[start : text.index("$_tritonSpec = ", start)]
-        assert block.index('"torch>=2.4"') < block.index("Get-WoaCudaWheelVersionParity"), (
-            "the floor must be the default the probe overrides, not the other way round"
-        )
-        assert 'if ($_woaTorchV) {' in block, "an empty probe must not pin anything"
+        assert block.index('"torch>=2.4"') < block.index(
+            "Get-WoaCudaWheelVersionParity"
+        ), "the floor must be the default the probe overrides, not the other way round"
+        assert "if ($_woaTorchV) {" in block, "an empty probe must not pin anything"
 
     @pytest.mark.parametrize(
         "install_fn, setup_fn",
