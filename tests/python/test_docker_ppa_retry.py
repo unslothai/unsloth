@@ -23,7 +23,9 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 def _retry_loops() -> list[str]:
     text = DOCKERFILE.read_text(encoding = "utf-8")
     joined = re.sub(r"\\\n\s*", " ", text)  # backslash continuations into one line
-    loops = re.findall(r"for i in [^;]*; do add-apt-repository -y ppa:deadsnakes/ppa .*?; done", joined)
+    loops = re.findall(
+        r"for i in [^;]*; do add-apt-repository -y ppa:deadsnakes/ppa .*?; done", joined
+    )
     return loops
 
 
@@ -33,7 +35,9 @@ def test_both_apt_stages_retry_the_ppa_add():
     assert len(_retry_loops()) == 2, "an add-apt-repository call lost its retry loop"
 
 
-def _run_loop(loop: str, tmp_path: Path, *, failures: int) -> tuple[subprocess.CompletedProcess, int]:
+def _run_loop(
+    loop: str, tmp_path: Path, *, failures: int
+) -> tuple[subprocess.CompletedProcess, int]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     counter = tmp_path / "calls"
