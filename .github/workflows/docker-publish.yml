@@ -342,12 +342,26 @@ jobs:
           # pushed, because baking another run's base image is silent otherwise.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # What a build job reports is the digest of an INDEX, not of a manifest:
+          # build-push-action attaches a provenance attestation, so one push covers the
+          # image manifest and the attestation together. `imagetools create` copies
+          # those CHILDREN into the merged index and never the source index digests, so
+          # looking for the pushed digests themselves matches nothing and fails every
+          # run. Compare what they contain. With attestations off a build pushes a bare
+          # manifest, which is then its own only child.
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              PUSHED="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}"
+              EXPECT="$(docker buildx imagetools inspect --raw "$PUSHED" \
+                  | jq -r --arg self "sha256:${d}" \
+                      'if (.manifests | length) > 0 then .manifests[].digest else $self end')"
+              while read -r child; do
+                  [ -n "$child" ] || continue
+                  grep -qxF "$child" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which is missing ${child} from the sha256:${d} this run pushed; another ref at this commit retagged it"
+                      missing=1
+                  }
+              done <<<"$EXPECT"
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
@@ -497,12 +511,26 @@ jobs:
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # What a build job reports is the digest of an INDEX, not of a manifest:
+          # build-push-action attaches a provenance attestation, so one push covers the
+          # image manifest and the attestation together. `imagetools create` copies
+          # those CHILDREN into the merged index and never the source index digests, so
+          # looking for the pushed digests themselves matches nothing and fails every
+          # run. Compare what they contain. With attestations off a build pushes a bare
+          # manifest, which is then its own only child.
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              PUSHED="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}"
+              EXPECT="$(docker buildx imagetools inspect --raw "$PUSHED" \
+                  | jq -r --arg self "sha256:${d}" \
+                      'if (.manifests | length) > 0 then .manifests[].digest else $self end')"
+              while read -r child; do
+                  [ -n "$child" ] || continue
+                  grep -qxF "$child" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which is missing ${child} from the sha256:${d} this run pushed; another ref at this commit retagged it"
+                      missing=1
+                  }
+              done <<<"$EXPECT"
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
