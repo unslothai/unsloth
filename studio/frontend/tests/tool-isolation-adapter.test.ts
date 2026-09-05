@@ -458,7 +458,11 @@ test("the store and adapter route every exit from Full through the shared transi
   // The send path reads the run snapshot, not the live store, for the isolation decision.
   assert.match(adapter, /const requestedMode = runtime\.toolExecutionMode;/);
   assert.match(adapter, /const requestedGrant = runtime\.limitedToolGrant;/);
-  assert.match(adapter, /const requestedNetworkPolicy = runtime\.toolNetworkPolicy;/);
+  // The queued snapshot is clamped by the live store: a withdrawn allowlist wins.
+  assert.match(
+    adapter,
+    /const requestedNetworkPolicy = queuedToolNetworkPolicy\(\s*runtime\.toolNetworkPolicy,\s*useChatRuntimeStore\.getState\(\)\.toolNetworkPolicy,\s*\);/,
+  );
   // Every network field on the wire goes through the capability-gated helper, never raw.
   assert.doesNotMatch(adapter, /tool_network_policy: requestedNetworkPolicy/);
   assert.doesNotMatch(adapter, /tool_network_policy: runtime\.toolNetworkPolicy/);

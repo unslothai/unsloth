@@ -88,7 +88,10 @@ test("the network allowlist summary names the host families without listing ever
   assert.match(summary, /6 hosts/);
   assert.match(summary, /HTTPS only/);
   assert.doesNotMatch(summary, /\u2014/);
-  assert.match(networkAllowlistSummary(["example.internal"]), /1 hosts/);
+  assert.match(summary, /send data to these hosts/);
+  const single = networkAllowlistSummary(["example.internal"]);
+  assert.match(single, /to 1 host\./);
+  assert.doesNotMatch(single, /hosts \(/);
   assert.match(networkAllowlistSummary([]), /No hosts/);
 });
 

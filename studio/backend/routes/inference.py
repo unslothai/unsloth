@@ -29573,6 +29573,7 @@ async def anthropic_messages(
         from core.inference.tools import (
             ALL_TOOLS,
             apply_full_access_tool_descriptions,
+            apply_limited_tool_descriptions,
             apply_os_isolated_tool_descriptions,
         )
 
@@ -29592,7 +29593,9 @@ async def anthropic_messages(
         _full_access = bool(getattr(payload, "bypass_permissions", False))
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
-        elif getattr(payload, "tool_execution_mode", "os_isolation_required") != "limited":
+        elif getattr(payload, "tool_execution_mode", "os_isolation_required") == "limited":
+            openai_tools = apply_limited_tool_descriptions(openai_tools)
+        else:
             openai_tools = apply_os_isolated_tool_descriptions(
                 openai_tools, network_allowlist = _requested_network_allowlist(payload)
             )

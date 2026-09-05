@@ -1955,6 +1955,23 @@ def _normalize_tool_network_policy(value: Any) -> Any:
     return "deny" if value is None else value
 
 
+def _reject_unenforceable_network_policy(request: Any) -> None:
+    """Limited mode has no OS boundary, so an allowlist there would be advisory only.
+
+    Decided once at the request edge: otherwise the turn is accepted, the model gets
+    plain Limited descriptions, and every Python or Terminal call fails with the
+    same launch error after the generation has been spent.
+    """
+    if (
+        getattr(request, "tool_network_policy", "deny") == "allowlist"
+        and getattr(request, "tool_execution_mode", None) == "limited"
+    ):
+        raise ValueError(
+            "tool_network_policy 'allowlist' requires tool_execution_mode "
+            "'os_isolation_required'; Limited mode cannot enforce a network allowlist"
+        )
+
+
 def _note_omitted_tool_execution_mode(request: Any) -> None:
     """Say once per process that a tools-enabled request left the mode to the default.
 
@@ -1976,7 +1993,9 @@ def _note_omitted_tool_execution_mode(request: Any) -> None:
     logging.getLogger(__name__).warning(
         "A tools-enabled request omitted tool_execution_mode; defaulting to "
         "os_isolation_required, so Python and Terminal need a qualified OS sandbox. "
-        "Clients that accept running without OS isolation must send permission_mode \"full\"."
+        "Clients that accept running without OS isolation must send "
+        "tool_execution_mode \"full\" (permission_mode \"full\" and bypass_permissions "
+        "true mean the same)."
     )
 
 
@@ -2594,6 +2613,11 @@ class ChatCompletionRequest(BaseModel):
         return _normalize_tool_network_policy(value)
 
     @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
+    @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
         """permission_mode='full' is the documented equivalent of
         bypass_permissions=true, so fold it in before any route guard reads
@@ -2766,6 +2790,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     @classmethod
     def _coerce_tool_network_policy(cls, value: Any) -> Any:
         return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
 
     # The very function the completion request runs, not a copy: a count renders replayed
     # tool history through the same templates, which read the id off the result message.
@@ -3261,6 +3290,11 @@ class ResponsesRequest(BaseModel):
         return _normalize_tool_network_policy(value)
 
     @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
+    @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ResponsesRequest":
         if self.tool_execution_mode == "full":
             self.permission_mode = "full"
@@ -3726,6 +3760,11 @@ class AnthropicMessagesRequest(BaseModel):
     @classmethod
     def _coerce_tool_network_policy(cls, value: Any) -> Any:
         return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
 
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":

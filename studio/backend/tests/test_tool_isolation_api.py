@@ -7,6 +7,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -192,14 +193,12 @@ def test_requested_network_allowlist_is_gated_on_mode_and_capability(monkeypatch
     # The description helper never forces a live probe.
     assert calls == [False]
     assert inference_route._requested_network_allowlist(ChatCompletionRequest(messages = [])) is None
-    assert (
-        inference_route._requested_network_allowlist(
-            ChatCompletionRequest(
-                messages = [], tool_network_policy = "allowlist", tool_execution_mode = "limited"
-            )
+    # Limited cannot enforce an allowlist, so the combination is refused at the edge
+    # (422) instead of failing every tool call after the generation was spent.
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest(
+            messages = [], tool_network_policy = "allowlist", tool_execution_mode = "limited"
         )
-        is None
-    )
     assert (
         inference_route._requested_network_allowlist(
             ChatCompletionRequest(

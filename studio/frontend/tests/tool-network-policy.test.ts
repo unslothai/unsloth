@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   capabilityOffersNetworkAllowlist,
   effectiveToolNetworkPolicy,
+  queuedToolNetworkPolicy,
 } from "../src/features/chat/utils/tool-network-policy.ts";
 
 const offers = { network_policies: ["deny", "allowlist"] as ("deny" | "allowlist")[] };
@@ -27,4 +28,13 @@ test("allowlist goes on the wire only for Required on a host that offers it", ()
   assert.equal(effectiveToolNetworkPolicy("allowlist", "os_isolation_required", denyOnly), "deny");
   assert.equal(effectiveToolNetworkPolicy("allowlist", "os_isolation_required", null), "deny");
   assert.equal(effectiveToolNetworkPolicy("deny", "os_isolation_required", offers), "deny");
+});
+
+test("a queued allowlist send is clamped by the live store in both directions", () => {
+  // Withdrawn while queued: the revocation wins.
+  assert.equal(queuedToolNetworkPolicy("allowlist", "deny"), "deny");
+  // Turned on after queueing: the snapshot keeps the send narrow.
+  assert.equal(queuedToolNetworkPolicy("deny", "allowlist"), "deny");
+  assert.equal(queuedToolNetworkPolicy("allowlist", "allowlist"), "allowlist");
+  assert.equal(queuedToolNetworkPolicy("deny", "deny"), "deny");
 });

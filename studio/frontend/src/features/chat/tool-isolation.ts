@@ -99,7 +99,7 @@ export function toolIsolationPresentation(
         state: "limited",
         label: `Limited · ${limitedBackend}`,
         description:
-          "Writes outside the sandbox directory are refused by the restricted token. Reads, the network and other processes are not isolated.",
+          "Writes outside the sandbox directory are refused by the restricted token; each execution record says whether it applied. Reads, the network and other processes are not isolated.",
       };
     }
     return {

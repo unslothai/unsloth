@@ -27,6 +27,8 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "Limited mode on Windows does not restrict the network; the tool can reach any host.",
   everyone_writable_objects_writable:
     "Limited mode on Windows can still write to locations that grant Everyone write access, such as some temp and public folders.",
+  network_allowlist_invalid:
+    "UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST could not be parsed or names no host, so network access for sandboxed tools stays off until it is fixed.",
   restricted_token_unavailable:
     "The write-restricted token could not be built on this Windows host, so Limited mode runs with software safeguards only and can write anywhere the Studio process can.",
   proxy_allowlist_only_https_connect:
@@ -62,8 +64,9 @@ export function networkAllowlistSummary(hosts: readonly string[]): string {
   if (hosts.some((host) => host.endsWith("github.com") || host.endsWith("githubusercontent.com"))) {
     families.push("GitHub");
   }
-  const named = families.length > 0 ? families.join(", ") : `${hosts.length} hosts`;
-  return `HTTPS only, to ${named} (${hosts.length} hosts). Everything else stays blocked.`;
+  const count = `${hosts.length} ${hosts.length === 1 ? "host" : "hosts"}`;
+  const named = families.length > 0 ? `${families.join(", ")} (${count})` : count;
+  return `HTTPS only, to ${named}. Everything else stays blocked. Code in the sandbox can also send data to these hosts.`;
 }
 
 /** Human label for the sandbox backend. The Windows backend has two profiles: the

@@ -228,6 +228,12 @@ def _optional_snapshot_value(snapshot: object, name: str, default: Any) -> Any:
     return getattr(snapshot, name, default)
 
 
+def _network_policies_with_deny(policies: tuple[str, ...]) -> tuple[str, ...]:
+    # "deny" is the wire default and always enforceable, so it is offered even when a
+    # backend snapshot forgot it.
+    return ("deny", *(policy for policy in policies if policy != "deny"))
+
+
 def _string_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -263,8 +269,9 @@ def _shape_capability(snapshot: object) -> ToolIsolationCapability:
         available = bool(_snapshot_value(snapshot, "available")),
         qualified = bool(_snapshot_value(snapshot, "qualified")),
         limitations = tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
-        network_policies = _string_tuple(_optional_snapshot_value(snapshot, "network_policies", ("deny",)))
-        or ("deny",),
+        network_policies = _network_policies_with_deny(
+            _string_tuple(_optional_snapshot_value(snapshot, "network_policies", ("deny",)))
+        ),
         network_allowlist = _string_tuple(_optional_snapshot_value(snapshot, "network_allowlist", ())),
         limited_backend = (
             str(_optional_snapshot_value(snapshot, "limited_backend", None))

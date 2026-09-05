@@ -10059,7 +10059,8 @@ _NETWORK_ALLOWLIST_NOTE = (
     " admits only these hosts: {hosts}. Connections to any other host, to an IP address,"
     " or over plain http:// are refused; refused hosts are listed at the end of the"
     " tool output. pip, git, curl, requests and huggingface_hub pick up the proxy"
-    " from the standard HTTPS_PROXY environment variables automatically."
+    " from the standard HTTPS_PROXY environment variables automatically. The proxy"
+    " carries traffic in both directions, so these hosts can also receive data."
 )
 
 

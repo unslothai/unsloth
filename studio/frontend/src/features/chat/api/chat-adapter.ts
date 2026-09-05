@@ -154,7 +154,10 @@ import {
 import { selectCodeToolNames } from "./code-tool-placement";
 import { ragScopeContextLength } from "./rag-context-length";
 import { isLimitedGrantCurrent } from "../tool-isolation";
-import { effectiveToolNetworkPolicy } from "../utils/tool-network-policy";
+import {
+  effectiveToolNetworkPolicy,
+  queuedToolNetworkPolicy,
+} from "../utils/tool-network-policy";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -4763,7 +4766,12 @@ export function createOpenAIStreamAdapter(
         const requestedGrant = runtime.limitedToolGrant;
         // The network decision travels with the send too; "allowlist" goes out only when the
         // capability seen at dispatch lists it (see effectiveToolNetworkPolicy).
-        const requestedNetworkPolicy = runtime.toolNetworkPolicy;
+        // The live store is read at dispatch: a Full or allowlist grant withdrawn while the
+        // send waited in the queue wins over the snapshot it was queued with.
+        const requestedNetworkPolicy = queuedToolNetworkPolicy(
+          runtime.toolNetworkPolicy,
+          useChatRuntimeStore.getState().toolNetworkPolicy,
+        );
         if (requestedMode === "full") {
           // Full access predates capability discovery and keeps its existing
           // explicit semantics. The backend still records the launch-time host

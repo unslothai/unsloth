@@ -59,6 +59,7 @@ _SYMLINK_CHAIN_LIMIT = 40
 _CLONE_NEWUSER = 0x10000000
 _LIMITATION_NESTED_USERNS_SECCOMP = "nested_userns_blocked_by_seccomp"
 _LIMITATION_IPV6_UNAVAILABLE = "ipv6_unavailable_on_host"
+_LIMITATION_NETWORK_ALLOWLIST_INVALID = "network_allowlist_invalid"
 _GENERIC_REMEDIATION = (
     "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
 )
@@ -1208,11 +1209,12 @@ def _network_allowlist_for_launch() -> NetworkAllowlist:
         ) from exc
 
 
-def _network_allowlist_hosts() -> tuple[str, ...]:
+def _network_allowlist_hosts() -> tuple[str, ...] | None:
+    """The configured hosts, or None when the environment override does not parse."""
     try:
         return NetworkAllowlist.from_env().hosts
     except AllowlistError:
-        return ()
+        return None
 
 
 def _nproc_limit() -> int:
@@ -2532,12 +2534,21 @@ def _capability_with_identity(
         remediation = capability.remediation
     else:
         remediation = _GENERIC_REMEDIATION
+    network_policies: tuple[str, ...] = ("deny",)
+    network_allowlist: tuple[str, ...] = ()
+    limitations = capability.limitations
     if available and network_allowlist_supported:
-        network_policies: tuple[str, ...] = ("deny", "allowlist")
-        network_allowlist = _network_allowlist_hosts()
-    else:
-        network_policies = ("deny",)
-        network_allowlist = ()
+        hosts = _network_allowlist_hosts()
+        if hosts:
+            network_policies = ("deny", "allowlist")
+            network_allowlist = hosts
+        else:
+            # A broken or empty UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST must not be
+            # advertised as a working allowlist: the launch would refuse every tool
+            # call while the toggle looked healthy. Display-only limitation, added
+            # after probe_generation was computed so Limited grants do not rotate.
+            if _LIMITATION_NETWORK_ALLOWLIST_INVALID not in limitations:
+                limitations = (*limitations, _LIMITATION_NETWORK_ALLOWLIST_INVALID)
     return replace(
         capability,
         available = available,
@@ -2548,6 +2559,7 @@ def _capability_with_identity(
         environment_fingerprint = fingerprint,
         remediation = remediation,
         retryable = capability.transient,
+        limitations = limitations,
         network_policies = network_policies,
         network_allowlist = network_allowlist,
     )

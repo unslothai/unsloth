@@ -2667,6 +2667,38 @@ def test_capability_advertises_allowlist_only_for_a_bridge_capable_backend(
     assert api_view.network_allowlist == ("other.example.org",)
 
 
+def test_broken_allowlist_env_is_not_advertised_as_a_working_allowlist(
+    monkeypatch, isolated_capability_cache
+):
+    backend = _RecordingBackend()
+    backend.supports_network_allowlist = True
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "pypi.org")
+    healthy = os_sandbox.capability_snapshot(force = True)
+    assert healthy.network_policies == ("deny", "allowlist")
+    assert "network_allowlist_invalid" not in healthy.limitations
+
+    for broken in ("http://pypi.org", "1.2.3.4", "localhost"):
+        monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, broken)
+        capability = os_sandbox.capability_snapshot(force = True)
+        assert capability.available is True
+        assert capability.network_policies == ("deny",), broken
+        assert capability.network_allowlist == ()
+        assert "network_allowlist_invalid" in capability.limitations
+        # Display-only: the grant generation does not rotate with the env.
+        assert capability.probe_generation == healthy.probe_generation
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not available"):
+            os_sandbox.prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-c", "pass"),
+                    workdir = os.getcwd(),
+                    env = {},
+                    requested_mode = "os_isolation_required",
+                    network_policy = "allowlist",
+                )
+            )
+
+
 def test_unavailable_capability_never_advertises_allowlist(monkeypatch, isolated_capability_cache):
     backend = _RecordingBackend(
         [os_sandbox.SandboxCapability("test-recording-backend", False, "no")]
@@ -2724,10 +2756,14 @@ def test_prepare_refuses_allowlist_when_the_env_override_is_invalid(
     backend = _RecordingBackend()
     backend.supports_network_allowlist = True
     monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
-    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "10.0.0.5")
+    # The snapshot was taken with a healthy list; the override breaks afterwards
+    # (an operator edits the environment of a running Studio) and the cached
+    # capability still advertises the allowlist. The launch re-parses and refuses.
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "mirror.example.org")
     capability = os_sandbox.capability_snapshot()
     assert capability.network_policies == ("deny", "allowlist")
-    assert capability.network_allowlist == ()
+    assert capability.network_allowlist == ("mirror.example.org",)
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "10.0.0.5")
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "network allowlist is invalid"):
         os_sandbox.prepare_tool_launch(
             os_sandbox.replace(_spec(tmp_path), network_policy = "allowlist")

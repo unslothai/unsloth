@@ -21,6 +21,19 @@ export function capabilityOffersNetworkAllowlist(
  * would reject or, worse, misread the field). Everything else collapses to "deny", which is also
  * what an omitted field means on the wire.
  */
+/**
+ * A queued send carries the policy chosen when it was queued, but opening the network is a
+ * grant, and a grant withdrawn while the message waited must not be honoured. The snapshot
+ * still guards the other direction: turning the allowlist on after queueing does not widen a
+ * send that was prepared without it.
+ */
+export function queuedToolNetworkPolicy(
+  snapshot: ToolNetworkPolicy,
+  live: ToolNetworkPolicy,
+): ToolNetworkPolicy {
+  return snapshot === "allowlist" && live === "allowlist" ? "allowlist" : "deny";
+}
+
 export function effectiveToolNetworkPolicy(
   requested: ToolNetworkPolicy,
   mode: ToolExecutionMode,
