@@ -3381,9 +3381,12 @@ class TestTheMandatoryPyarrowWheelIsOpened:
     def test_the_probe_and_the_staging_agree(self):
         """Different filters would let the probe clear one file and staging take another."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert text.count(
-            "(Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag) -and"
-        ) == 2, "the local probe and the local staging both filter on tags AND readability"
+        assert (
+            text.count(
+                "(Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag) -and"
+            )
+            == 2
+        ), "the local probe and the local staging both filter on tags AND readability"
         assert text.count("(Test-ZipArchiveReadable -Path $_.FullName)") == 2
 
     @requires_pwsh
@@ -3428,7 +3431,9 @@ class TestTheMandatoryPyarrowWheelIsOpened:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 180,
+            capture_output = True,
+            text = True,
+            timeout = 180,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why

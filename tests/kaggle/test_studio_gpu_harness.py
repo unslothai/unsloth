@@ -2670,6 +2670,9 @@ class TestASharedCardIsNotMeasuredByItsTotal:
     def test_unknown_co_tenancy_is_not_invented(self):
         """No listing at all is no evidence either way, so behaviour is unchanged."""
         failure, _ = self._verdict(
-            apps_before = None, apps_after = None, baseline = 1000.0, settled = 1600.0,
+            apps_before = None,
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
         )
         assert failure is None

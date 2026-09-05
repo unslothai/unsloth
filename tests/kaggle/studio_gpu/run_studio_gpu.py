@@ -197,10 +197,7 @@ def nvidia_used_mib() -> float | None:
     return total if seen else None
 
 
-def card_is_shared(
-    apps_before: dict[int, int] | None,
-    listed_before: set[int] | None,
-) -> bool:
+def card_is_shared(apps_before: dict[int, int] | None, listed_before: set[int] | None) -> bool:
     """Was another CUDA process already on the card when this run launched?
 
     The device-wide total is the fallback ruler whenever attribution fails, and it is only
