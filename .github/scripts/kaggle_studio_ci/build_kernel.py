@@ -53,18 +53,16 @@ from pathlib import Path
 DRIVER_SENTINEL = "KAGGLE_STUDIO_CI_DRIVER"
 PAYLOAD_SENTINEL = "KAGGLE_STUDIO_CI_PAYLOAD"
 
-# Shared with the notebook leg's launcher, which scrapes this prefix out of
-# the executed notebook and the kernel log. Keeping it identical is what lets
-# .github/scripts/kaggle_t4_ci/launch.py transport this payload's result
-# without a line of change.
+# Shared with the notebook leg's launcher, which scrapes this prefix out of the executed notebook and the kernel log.
+# Keeping it identical is what lets .github/scripts/kaggle_t4_ci/launch.py transport this payload's result without a
+# line of change.
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 
 PAYLOAD_NOTEBOOK = "studio_gpu.ipynb"
 OUTPUT_NOTEBOOK = "studio_gpu_output.ipynb"
 
-# Files the payload directory has to contain. Checked at build time so a
-# rename that breaks the kernel fails on the runner, in seconds, rather than
-# forty minutes into a GPU session.
+# Files the payload directory has to contain. Checked at build time so a rename that breaks the kernel fails on the
+# runner, in seconds, rather than forty minutes into a GPU session.
 PAYLOAD_FILES = (
     "run_studio_gpu.py",
     "gpu_assert.py",
@@ -73,10 +71,9 @@ PAYLOAD_FILES = (
 )
 
 
-# Runs under the Unsloth venv's interpreter and reports what is actually
-# importable there. Kept as a plain constant rather than spliced into a
-# generated f-string cell: the notebook leg lost a whole GPU session to a
-# cell that had been assembled out of nested quoting and did not parse.
+# Runs under the Unsloth venv's interpreter and reports what is actually importable there. Kept as a plain constant
+# rather than spliced into a generated f-string cell: the notebook leg lost a whole GPU session to a cell that had been
+# assembled out of nested quoting and did not parse.
 _PROBE_SCRIPT = """
 import importlib, json
 out = {"versions": {}, "missing": []}

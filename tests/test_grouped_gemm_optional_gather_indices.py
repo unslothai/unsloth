@@ -41,8 +41,7 @@ requires_cuda = pytest.mark.skipif(not CUDA, reason = "grouped GEMM needs a real
 NUM_EXPERTS = 2
 TOKENS_PER_EXPERT = 4
 TOTAL_TOKENS = NUM_EXPERTS * TOKENS_PER_EXPERT
-# The dX and dW kernels static_assert that N and K divide the autotuned block
-# sizes, and those go up to 256.
+# The dX and dW kernels static_assert that N and K divide the autotuned block sizes, and those go up to 256.
 N = K = 256
 
 
