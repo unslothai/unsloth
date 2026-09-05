@@ -2299,8 +2299,22 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
 
     Falls back to llama.cpp's own default when the load did not state one, because the
     unstated case is the common one and treating it as zero reserves nothing at all.
+
+    `requested_n_batch` FIRST, and it is the only name the llama.cpp backend actually
+    answers to: the loader stores the flag on `_requested_n_batch` and publishes it
+    through that property, so the four spellings this used to try all missed and a load
+    launched with `--batch-size 512` still reserved for 2048. Same failure mode as the
+    drafter accessor above, which is why the same rule applies -- read the public
+    accessor, keep the private one as a fallback, and only then guess.
     """
-    for attr in ("n_batch", "_n_batch", "batch_size", "_batch_size"):
+    for attr in (
+        "requested_n_batch",
+        "_requested_n_batch",
+        "n_batch",
+        "_n_batch",
+        "batch_size",
+        "_batch_size",
+    ):
         stated = getattr(llama_backend, attr, None)
         if stated is None:
             continue
