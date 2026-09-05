@@ -1769,8 +1769,9 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
-  // `effectiveRecommendedByGroup` is keyed by PRESENTATION group while the footprint pass
-  // buckets by the backend's dependency_key, so that pass asks through the variant itself.
+  // `effectiveRecommendedByGroup` is keyed by PRESENTATION group ("quantizations", "text-frames",
+  // "reference-media") while the footprint pass buckets by the backend's dependency_key
+  // ("flux.2-klein:<digest>"), so that pass asks through the variant itself.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
     for (const group of variantGroups) {
@@ -3729,7 +3730,9 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown. The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded). The gate keeps a
+  // supported diffusion GGUF listed here so picking one routes to Images or Video; only the
+  // never-loadable tag is dropped.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
