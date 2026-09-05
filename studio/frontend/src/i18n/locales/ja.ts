@@ -1458,6 +1458,23 @@ export const ja = {
       importingChats: "チャットをインポート中: 現在 {count} 件（{percent}%）...",
       importedChatCountPartial: "{count} 件の会話を最近のチャットにインポートしました。{failed} 件は保存できませんでした。",
       importFailed: "インポートに失敗しました。",
+      importFromCursor: "Cursor からインポート",
+      importFromCursorDescription:
+        "Cursor の会話をプロジェクトごとにまとめて Studio にコピーします。",
+      importingAction: "インポート中...",
+      importCursorNoChats: "Cursor の会話が見つかりませんでした。",
+      importedCursorOneChat: "Cursor から 1 件の会話をインポートしました。",
+      importedCursorChatCount:
+        "Cursor から {count} 件の会話をインポートしました。",
+      cursorUpToDate: "Cursor の会話はすでに最新です。",
+      importFromClaude: "Claude Code からインポート",
+      importFromClaudeDescription:
+        "Claude Code の会話をプロジェクトごとにグループ化して Studio にコピーします。",
+      importClaudeNoChats: "Claude Code の会話が見つかりません。",
+      importedClaudeOneChat: "Claude Code から 1 件の会話をインポートしました。",
+      importedClaudeChatCount:
+        "Claude Code から {count} 件の会話をインポートしました。",
+      claudeUpToDate: "Claude Code の会話はすでに最新です。",
       clearHistory: "チャット履歴を消去",
       clearHistoryDescription: "このデバイスからチャット履歴を削除します。",
       clearAction: "消去",

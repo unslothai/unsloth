@@ -1471,6 +1471,22 @@ export const ko = {
       importingChats: "채팅 가져오는 중: 현재 {count}개({percent}%)...",
       importedChatCountPartial: "{count}개의 대화를 최근 항목으로 가져왔습니다. {failed}개는 저장하지 못했습니다.",
       importFailed: "가져오기에 실패했습니다.",
+      importFromCursor: "Cursor에서 가져오기",
+      importFromCursorDescription:
+        "Cursor의 대화를 프로젝트별로 묶어 Studio로 복사합니다.",
+      importingAction: "가져오는 중...",
+      importCursorNoChats: "Cursor 대화를 찾을 수 없습니다.",
+      importedCursorOneChat: "Cursor에서 대화 1개를 가져왔습니다.",
+      importedCursorChatCount: "Cursor에서 대화 {count}개를 가져왔습니다.",
+      cursorUpToDate: "Cursor 대화가 이미 최신 상태입니다.",
+      importFromClaude: "Claude Code에서 가져오기",
+      importFromClaudeDescription:
+        "Claude Code 대화를 프로젝트별로 그룹화하여 Studio로 복사합니다.",
+      importClaudeNoChats: "Claude Code 대화를 찾을 수 없습니다.",
+      importedClaudeOneChat: "Claude Code에서 대화 1개를 가져왔습니다.",
+      importedClaudeChatCount:
+        "Claude Code에서 대화 {count}개를 가져왔습니다.",
+      claudeUpToDate: "Claude Code 대화가 이미 최신 상태입니다.",
       clearHistory: "채팅 기록 지우기",
       clearHistoryDescription: "이 기기에서 채팅 기록을 삭제합니다.",
       clearAction: "지우기",

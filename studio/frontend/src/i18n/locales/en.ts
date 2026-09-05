@@ -1466,6 +1466,22 @@ export const en = {
       importingChats: "Importing chats: {count} so far ({percent}%)...",
       importedChatCountPartial: "Imported {count} conversations to Recents; {failed} could not be saved.",
       importFailed: "Import failed.",
+      importFromCursor: "Import from Cursor",
+      importFromCursorDescription:
+        "Copy your Cursor conversations into Studio, grouped by the project they belong to.",
+      importingAction: "Importing...",
+      importCursorNoChats: "No Cursor conversations found.",
+      importedCursorOneChat: "Imported 1 conversation from Cursor.",
+      importedCursorChatCount: "Imported {count} conversations from Cursor.",
+      cursorUpToDate: "Cursor conversations are already up to date.",
+      importFromClaude: "Import from Claude Code",
+      importFromClaudeDescription:
+        "Copy your Claude Code conversations into Studio, grouped by the project they belong to.",
+      importClaudeNoChats: "No Claude Code conversations found.",
+      importedClaudeOneChat: "Imported 1 conversation from Claude Code.",
+      importedClaudeChatCount:
+        "Imported {count} conversations from Claude Code.",
+      claudeUpToDate: "Claude Code conversations are already up to date.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete chat history from this device.",
       clearAction: "Clear",

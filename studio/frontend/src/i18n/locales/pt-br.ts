@@ -1493,6 +1493,23 @@ export const ptBR = {
       importingChats: "Importando chats: {count} até agora ({percent}%)...",
       importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
+      importFromCursor: "Importar do Cursor",
+      importFromCursorDescription:
+        "Copie suas conversas do Cursor para o Studio, agrupadas por projeto.",
+      importingAction: "Importando...",
+      importCursorNoChats: "Nenhuma conversa do Cursor encontrada.",
+      importedCursorOneChat: "1 conversa importada do Cursor.",
+      importedCursorChatCount:
+        "{count} conversas importadas do Cursor.",
+      cursorUpToDate: "As conversas do Cursor já estão atualizadas.",
+      importFromClaude: "Importar do Claude Code",
+      importFromClaudeDescription:
+        "Copie suas conversas do Claude Code para o Studio, agrupadas por projeto.",
+      importClaudeNoChats: "Nenhuma conversa do Claude Code encontrada.",
+      importedClaudeOneChat: "1 conversa importada do Claude Code.",
+      importedClaudeChatCount:
+        "{count} conversas importadas do Claude Code.",
+      claudeUpToDate: "As conversas do Claude Code já estão atualizadas.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",
