@@ -4806,6 +4806,18 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"enable_thinking": True, "preserve_thinking": True},
             id = "preserve_thinking",
         ),
+        pytest.param(
+            "reasoning_effort",
+            {"chat_template_kwargs": {"reasoning_effort": "none"}},
+            {"reasoning_effort": "none"},
+            id = "nested_effort",
+        ),
+        pytest.param(
+            "enable_thinking",
+            {"chat_template_kwargs": {"preserve_thinking": True}},
+            {"preserve_thinking": True},
+            id = "nested_preserve_thinking",
+        ),
         # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
         pytest.param("enable_thinking", {}, None, id = "template_default"),
     ],

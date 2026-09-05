@@ -10224,6 +10224,45 @@ class TestResponsesChatTemplateKwargs:
         chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_nested_reasoning_controls_reach_llama_server(self, stream):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            chat_template_kwargs = {
+                "reasoning_effort": "none",
+                "preserve_thinking": True,
+            },
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = stream)
+        body = _build_openai_passthrough_body(
+            chat_req,
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(
+                reasoning_style = "reasoning_effort",
+                supports_preserve_thinking = True,
+            ),
+        )
+
+        assert chat_req.enable_thinking is False
+        assert body["chat_template_kwargs"] == {
+            "reasoning_effort": "none",
+            "preserve_thinking": True,
+        }
+
+    def test_native_responses_effort_wins_over_nested_effort(self):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            reasoning = {"effort": "high"},
+            chat_template_kwargs = {"reasoning_effort": "none"},
+        )
+
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+
+        assert chat_req.enable_thinking is True
+        assert chat_req.reasoning_effort == "high"
+
     def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
