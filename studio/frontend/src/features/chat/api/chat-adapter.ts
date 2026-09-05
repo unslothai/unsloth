@@ -114,6 +114,7 @@ import {
   createBoundaryScan,
   mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
@@ -6998,10 +6999,9 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
-                  const deltaArgs =
-                    typeof call.function?.arguments === "string"
-                      ? call.function.arguments
-                      : "";
+                  const deltaArgs = streamedToolCallArguments(
+                    call.function?.arguments,
+                  );
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
                   // resolve the backend id now to keep all three shapes on one card. Before resolving, since
                   // a provider claiming a minted spelling would merge two calls.
