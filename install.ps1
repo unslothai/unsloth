@@ -608,8 +608,15 @@ function Install-UnslothStudio {
             }
         } catch {}
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
+            # Opened, not just named. This wheel is MANDATORY -- the staging step writes an
+            # exact pyarrow== override from it -- so a truncated file here selected native
+            # mode and then failed the resolve, after x64 had already been given up. The
+            # optional-wheel mirror validates for a milder reason; this one decides the route.
             $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                Where-Object { Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
+                Where-Object {
+                    (Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag) -and
+                    (Test-ZipArchiveReadable -Path $_.FullName)
+                } | Select-Object -First 1
             if ($local) { return "wheelhouse" }
             return ""
         }
@@ -5044,8 +5051,13 @@ exit 0
             $tag = "cp" + ($WoaVenvMinor -replace '\.', '')
             $AbiTag = Get-WoaAbiTag -PythonMinor $WoaVenvMinor -FreeThreaded ([bool]$script:WoaVenvFreeThreaded)
             if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
+                # Same filter as the probe, or the two could pick different files: the probe
+                # would clear a readable wheel and staging would then take an unreadable one.
                 $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                    Where-Object { Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
+                    Where-Object {
+                        (Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag) -and
+                        (Test-ZipArchiveReadable -Path $_.FullName)
+                    } | Select-Object -First 1
                 if ($found) {
                     $_woaDest = Join-Path $WoaWheelDir $found.Name
                     if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {

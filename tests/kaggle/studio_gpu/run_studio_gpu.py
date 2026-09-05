@@ -197,6 +197,27 @@ def nvidia_used_mib() -> float | None:
     return total if seen else None
 
 
+def card_is_shared(
+    apps_before: dict[int, int] | None,
+    listed_before: set[int] | None,
+) -> bool:
+    """Was another CUDA process already on the card when this run launched?
+
+    The device-wide total is the fallback ruler whenever attribution fails, and it is only
+    a measurement of THIS process when this process owns the card. Under --studio-concurrent
+    it does not: a training leg shares it, and that leg both allocates and frees inside the
+    window -- one recorded run read the delta as -182.0 MiB while the server genuinely held
+    2.6 GB. Accepting a +200 MiB device rise there would pass a CPU-served run on memory
+    somebody else allocated.
+
+    Evidence, not configuration: the payload is not told whether it is the concurrent half,
+    but a pid on the card before launch says so. Absence of evidence is left alone -- an
+    ordinary single-payload run has an empty listing and keeps the fallback it needs, which
+    is the whole point of the fallback on parts that report [N/A] for everything.
+    """
+    return bool(apps_before) or bool(listed_before)
+
+
 def cli_run_gpu_failure(
     apps_before: dict[int, int] | None,
     apps_after: dict[int, int] | None,
@@ -234,6 +255,13 @@ def cli_run_gpu_failure(
     if apps_after is None:
         if baseline is None or settled is None:
             return "nvidia-smi did not answer, so GPU use is unmeasured", detail
+        if card_is_shared(apps_before, listed_before):
+            detail["card_shared_before_launch"] = True
+            return (
+                "nvidia-smi could not attribute any process, and another was already on "
+                "the card before the launch -- the device total is a shared counter, so "
+                "GPU use is unmeasured rather than proven"
+            ), detail
         if settled - baseline < 200.0:
             return (
                 f"device VRAM grew by {settled - baseline:.1f} MiB across the "
@@ -259,6 +287,14 @@ def cli_run_gpu_failure(
                     "nvidia-smi listed a new process but could not say how much "
                     "memory it holds, and gave no device total either, so GPU use "
                     "is unmeasured"
+                ), detail
+            if card_is_shared(apps_before, listed_before):
+                detail["card_shared_before_launch"] = True
+                return (
+                    f"nvidia-smi could not attribute the new process "
+                    f"{appeared_unattributed}, and another was already on the card "
+                    f"before the launch -- the device total is a shared counter, so "
+                    f"GPU use is unmeasured rather than proven"
                 ), detail
             if settled - baseline < 200.0:
                 return (

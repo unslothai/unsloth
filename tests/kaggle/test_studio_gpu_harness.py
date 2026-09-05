@@ -2498,13 +2498,14 @@ class TestAMixedListingIsNotProofOfCpu:
         return run_studio_gpu.cli_run_gpu_failure(**kwargs)
 
     def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
+        """On a card this run OWNS: nothing was there before, so the total is ours."""
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500},
+            apps_before = {},
+            apps_after = {},
             baseline = 1000.0,
             settled = 1600.0,
-            listed_before = {111},
-            listed_after = {111, 222},
+            listed_before = set(),
+            listed_after = {222},
         )
         assert failure is None, (
             "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
@@ -2514,12 +2515,12 @@ class TestAMixedListingIsNotProofOfCpu:
 
     def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500},
+            apps_before = {},
+            apps_after = {},
             baseline = 1000.0,
             settled = 1010.0,
-            listed_before = {111},
-            listed_after = {111, 222},
+            listed_before = set(),
+            listed_after = {222},
         )
         assert failure is not None and "served from the CPU" in failure
         assert "222" in failure, "the message names the process it could not attribute"
@@ -2589,3 +2590,86 @@ class TestTheListingNamesItsPids:
         assert body.count("nvidia_compute_apps_listing()") >= 3
         assert "apps_before = attributed_apps(_listing_before)" in body
         assert "apps_after = attributed_apps(_listing_after)" in body
+
+
+class TestASharedCardIsNotMeasuredByItsTotal:
+    """The device total only measures THIS process when THIS process owns the card.
+
+    Under --studio-concurrent a training leg shares it and both allocates and frees inside
+    the window: one recorded run read the delta as -182.0 MiB while the server genuinely
+    held 2.6 GB. Accepting a +200 MiB rise there would pass a CPU-served run on memory
+    somebody else allocated, so a fallback to the total is refused when anything was on the
+    card before the launch.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_co_tenant_blocks_the_no_enumeration_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_co_tenant_blocks_the_mixed_listing_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_listed_but_unattributed_co_tenant_counts(self):
+        """A co-tenant reporting [N/A] is still a co-tenant."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {999},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+
+    def test_an_empty_card_keeps_the_fallback(self):
+        """The fallback exists for parts that report [N/A] for everything; it stays."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = None,
+        )
+        assert failure is None
+
+    def test_attribution_still_wins_over_the_rule(self):
+        """A co-tenant does not sink a run whose own process WAS attributed."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600
+
+    def test_unknown_co_tenancy_is_not_invented(self):
+        """No listing at all is no evidence either way, so behaviour is unchanged."""
+        failure, _ = self._verdict(
+            apps_before = None, apps_after = None, baseline = 1000.0, settled = 1600.0,
+        )
+        assert failure is None

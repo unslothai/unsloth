@@ -3367,3 +3367,68 @@ class TestALocalWheelIsOpenedBeforeItCounts:
             "validating after the copy would still put a corrupt wheel in the cache, "
             "where the resolver reads it"
         )
+
+
+class TestTheMandatoryPyarrowWheelIsOpened:
+    """pyarrow decides the ROUTE, so a truncated one must not select native mode.
+
+    Staging writes an exact pyarrow== override from whichever file it picks, so a wheel that
+    only looks right took the native path and then failed the resolve, with x64 already
+    given up. The optional-wheel mirror validates for a milder reason: one feature stays
+    disabled. This one costs the whole install.
+    """
+
+    def test_the_probe_and_the_staging_agree(self):
+        """Different filters would let the probe clear one file and staging take another."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count(
+            "(Test-WoaPyarrowWheelUsable -Name $_.Name -PyTag $tag -AbiTag $AbiTag) -and"
+        ) == 2, "the local probe and the local staging both filter on tags AND readability"
+        assert text.count("(Test-ZipArchiveReadable -Path $_.FullName)") == 2
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "content, expected, why",
+        [
+            ("zip", "wheelhouse", "a readable archive selects the native path"),
+            ("truncated", "", "a truncated one does not, so the x64 path is kept"),
+            ("empty", "", "nor does an empty file"),
+        ],
+    )
+    def test_a_local_wheel_is_opened_before_native_is_chosen(
+        self, tmp_path, content, expected, why
+    ):
+        import zipfile
+
+        wheel = tmp_path / "pyarrow-24.0.0-cp313-cp313-win_arm64.whl"
+        if content == "zip":
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("pyarrow/__init__.py", "")
+        elif content == "truncated":
+            wheel.write_bytes(b"PK\x03\x04truncated")
+        else:
+            wheel.write_bytes(b"")
+
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                "function substep { param($m, $c) }",
+                "function Join-UrlPath { param($Base, $Path) return $Base }",
+                "function Test-WoaWheelhouseIsLocal { $true }",
+                "function Invoke-RestMethod { throw 'no network in this test' }",
+                f"$script:WoaWheelhouse = '{tmp_path}'",
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
+                _ps_function(INSTALL_PS1, "Test-ZipArchiveReadable"),
+                _ps_function(INSTALL_PS1, "Get-WoaPyarrowSource"),
+                "Write-Output ('[' + (Get-WoaPyarrowSource -PythonMinor '3.13') + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 180,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
