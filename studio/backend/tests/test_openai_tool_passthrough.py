@@ -64,6 +64,7 @@ from routes.inference import (
     _openai_compat_stream_stall_timeout,
     _openai_llama_admission_capacity,
     _openai_messages_for_gguf_chat,
+    _openai_messages_for_passthrough,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
@@ -3498,7 +3499,6 @@ class TestFriendlyErrorHttpx:
 from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
-    _openai_messages_for_passthrough,
 )
 
 
@@ -10557,3 +10557,140 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+class TestPassthroughImageNormalization:
+    @staticmethod
+    def _data_url(fmt: str) -> str:
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (0, 128, 255)).save(buf, format = fmt)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/{fmt.lower()};base64,{b64}"
+
+    def _req(self, url: str, **kwargs):
+        return ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                },
+            ],
+            **kwargs,
+        )
+
+    def test_webp_data_url_is_reencoded_to_png(self):
+        original = self._data_url("WEBP")
+        assert original.startswith("data:image/webp;base64,")
+
+        messages = _openai_messages_for_passthrough(self._req(original))
+
+        url = messages[0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        assert url != original
+
+    def test_body_builder_forwards_png_with_tools_enabled(self):
+        req = self._req(
+            self._data_url("WEBP"),
+            tools = [
+                {
+                    "type": "function",
+                    "function": {"name": "noop", "parameters": {"type": "object"}},
+                }
+            ],
+        )
+
+        body = _build_openai_passthrough_body(req)
+
+        url = body["messages"][0]["content"][1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+
+    def test_requested_detail_survives_the_conversion(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": self._data_url("WEBP"), "detail": "high"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        part = _openai_messages_for_passthrough(req)[0]["content"][0]["image_url"]
+        assert part["url"].startswith("data:image/png;base64,")
+        assert part["detail"] == "high"
+
+    def test_remote_url_is_forwarded_unchanged(self):
+        messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
+        assert messages[0]["content"][1]["image_url"]["url"] == "https://x.example/a.webp"
+
+    def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
+        # The safetensors/MLX client-tools path only gets here when the turn has no
+        # decodable image, and flattens image parts away straight after. A payloadless
+        # data URL was ignored with a warning before; it must not become a 400.
+        req = self._req("data:image/png;base64,")
+
+        messages = _openai_messages_for_passthrough(req, normalize_images = False)
+
+        assert messages[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,"
+
+    def test_the_local_template_call_site_opts_out_of_normalization(self):
+        # The guard that keeps the re-encode on llama-server bodies only. Reverting it
+        # brings the 400 above back to the safetensors/MLX client-tools path.
+        import inspect
+
+        import routes.inference as inference_mod
+
+        src = inspect.getsource(inference_mod)
+        _, _, after = src.partition("_flatten_content_parts_for_local_template(")
+        assert after, "the local-template call site moved"
+        assert "normalize_images = False" in after[:300]
+
+    def test_undecodable_data_url_raises_400(self):
+        with pytest.raises(HTTPException) as exc:
+            _openai_messages_for_passthrough(self._req("data:image/webp;base64,!!!nope!!!"))
+        assert exc.value.status_code == 400
+
+    def test_echoed_legacy_image_is_not_spliced_twice(self):
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format = "WEBP")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        req = ChatCompletionRequest(
+            model = "default",
+            image_base64 = b64,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/webp;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        messages = _openai_messages_for_passthrough(req)
+
+        parts = [p for p in messages[0]["content"] if p.get("type") == "image_url"]
+        assert len(parts) == 1
+        assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
