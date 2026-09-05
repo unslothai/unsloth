@@ -155,6 +155,25 @@ def test_no_mask_note_when_the_variable_is_unset(helper, monkeypatch):
     assert "CUDA_VISIBLE_DEVICES" not in str(excinfo.value)
 
 
+def test_undecodable_probe_output_does_not_escape_the_handler(helper, monkeypatch):
+    """The probe decodes with errors="replace", so bad bytes cannot raise UnicodeDecodeError."""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        stdout = b"NVIDIA GB\xc5\x31\n".decode("utf-8", kwargs.get("errors", "strict"))
+        return subprocess.CompletedProcess(argv, 0, stdout = stdout, stderr = "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        helper(NotImplementedError(_NO_ACCELERATOR))
+
+    assert seen["errors"] == "replace"
+    assert "NVIDIA GB" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

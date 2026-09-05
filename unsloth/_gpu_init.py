@@ -153,6 +153,9 @@ def _nvidia_smi_gpu_name():
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output = True,
             text = True,
+            # Decoding is the one probe failure that would otherwise escape the handler below
+            # and replace the original error with a UnicodeDecodeError.
+            errors = "replace",
             timeout = 5,
         )
     except (OSError, subprocess.SubprocessError):
