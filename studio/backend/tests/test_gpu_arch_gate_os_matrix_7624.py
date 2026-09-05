@@ -1961,11 +1961,12 @@ class TestUnifiedMemoryOptOut:
         monkeypatch,
         env_extra = None,
         model_bytes = 40 * GIB,  # outgrows the fake 32 GiB carve-out
+        backend = None,
     ):
         # A forced full offload (manual mode at the picker's maximum, above the
         # block count) is the launch that can only fit with managed pages; under
         # the fitter the file would spill instead and never ask for them.
-        backend = LlamaCppBackend()
+        backend = backend or LlamaCppBackend()
         backend._n_layers = 8
         return _run_auto_load(
             monkeypatch,
@@ -2098,6 +2099,42 @@ class TestUnifiedMemoryOptOut:
         self, tmp_path, monkeypatch, probe_env
     ):
         _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "4"])
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def _with_unloaded_mtp_blocks(self, excluded_bytes):
+        """A NextN GGUF with no draft engaged: the trailing blocks are counted in
+        the file size but never loaded."""
+        backend = LlamaCppBackend()
+        backend._nextn_predict_layers = 1
+        backend._tensor_spill_layout = lambda _path: (
+            None
+            if excluded_bytes is None
+            else types.SimpleNamespace(excluded_block_bytes = excluded_bytes)
+        )
+        return backend
+
+    def test_unloaded_mtp_blocks_are_not_priced(self, tmp_path, monkeypatch, probe_env):
+        """40 GiB file, 10 GiB of it trailing MTP blocks: the 30 GiB base fits."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(10 * GIB)
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_unloaded_mtp_blocks_still_leave_an_oversized_base(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(4 * GIB)
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_an_unreadable_tensor_table_cannot_price_the_blocks(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Unpriced is not "take it": the unsafe direction is the measured fault."""
+        _cmd, env = self._load(tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(None))[
+            0
+        ]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_the_disable_switch_beats_the_enable_switch(self, tmp_path, monkeypatch, probe_env):

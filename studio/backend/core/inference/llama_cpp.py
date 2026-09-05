@@ -19129,6 +19129,7 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                _mtp_will_engage = False  # set in the fit try; read by the unified-memory price
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -22905,11 +22906,29 @@ class LlamaCppBackend:
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 _unified_opt_in = self._unified_memory_opted_in(env)
+
                 # Price only what a forced full offload puts on the device. With the
                 # fitter or an explicit partial placement owning the layer count, the
                 # load fits by spilling, so the whole-file size would overstate the
                 # need and take managed pages for a launch the carve-out holds.
-                _unified_need = model_size if self._launch_forces_full_offload(cmd, env) else None
+                def _unified_need_now():
+                    """Bytes a forced full offload puts on the device, or None."""
+                    if model_size is None or not self._launch_forces_full_offload(cmd, env):
+                        return None
+                    need = int(model_size)
+                    # Trailing NextN/MTP blocks stay unloaded unless a draft engages
+                    # (offload_layout: an -ot naming them moves nothing), but
+                    # model_size counts them, and a base that fits its carve-out
+                    # must not take managed pages on their account. A table that
+                    # cannot be read cannot price them, so it does not take them.
+                    if not _mtp_will_engage and self._nextn_predict_layers:
+                        layout = self._tensor_spill_layout(model_path)
+                        if layout is None:
+                            return None
+                        need -= int(layout.excluded_block_bytes or 0)
+                    return need
+
+                _unified_need = _unified_need_now()
                 if _unified_opt_out:
                     # ggml tests presence, so passing a user's "0" through would
                     # ENABLE what they turned off (#8651). Only absence is off.
@@ -23079,9 +23098,7 @@ class LlamaCppBackend:
                         # The setting is process-wide, so recompute it after changing
                         # the selected devices. Ownership protects inherited values.
                         _survivors_gain_unified = self._unified_memory_for_launch(
-                            _survivors,
-                            model_size if self._launch_forces_full_offload(cmd, env) else None,
-                            opted_in = _unified_opt_in,
+                            _survivors, _unified_need_now(), opted_in = _unified_opt_in
                         )
                         if _unified_env_applied and not _survivors_gain_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
@@ -23926,9 +23943,7 @@ class LlamaCppBackend:
                         # determine whether managed allocations help.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
                         _retry_unified_helps = self._unified_memory_for_launch(
-                            _remaining,
-                            model_size if self._launch_forces_full_offload(cmd, env) else None,
-                            opted_in = _unified_opt_in,
+                            _remaining, _unified_need_now(), opted_in = _unified_opt_in
                         )
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU
