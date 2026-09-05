@@ -22703,6 +22703,29 @@ async def produce_openai_chat_completions(
                             request = request,
                             cancel_event = cancel_event,
                         )
+                        if not _gguf_preempt_policy_hold.bound:
+                            # Arm HERE, with the lease in hand, for a chat that waited.
+                            #
+                            # The arm beside the reservation above calls `lease_nowait()`
+                            # and returns None when the lease has not been granted, so a
+                            # chat that queued bound None and never armed at all, even
+                            # once it was decoding. The plain path was given this second
+                            # arm for exactly that reason; the tool path was not, and its
+                            # comment claimed otherwise. Measured with four simultaneous
+                            # tool-enabled API chats at -c 8192: two `armed` lines, two
+                            # chats decoding outside the ledger, three of four dead with
+                            # `Context size has been exceeded`. Staggered arrivals, as from
+                            # four browser tabs, happened to be granted at once and hid it.
+                            _gguf_preempt_policy_hold.bind(
+                                _openai_llama_preemption_arm(
+                                    request = request,
+                                    llama_backend = llama_backend,
+                                    reservation = reservation,
+                                    gen_id = completion_id,
+                                    signal = _gguf_preempt_signal,
+                                    loop = _preempt_loop,
+                                )
+                            )
                         iterator = gguf_tool_stream()
                         stream_started = True
                         try:
@@ -23392,10 +23415,11 @@ async def produce_openai_chat_completions(
                     # None and never armed at all, even once they were decoding. Measured
                     # at -c 16384 with four chats: `armed 1`, one line, for four chats.
                     #
-                    # This is also where the tool path arms, and for the same reason. By
-                    # this point the wait has returned, the lease is held, and the
-                    # generator has not been iterated, which is what DeferredPreemptionPolicy
-                    # exists to allow: it was handed to `gguf_generate` unbound above.
+                    # The tool path has the same second arm inside
+                    # `admitted_gguf_tool_stream`, for the same reason. By this point the
+                    # wait has returned, the lease is held, and the generator has not been
+                    # iterated, which is what DeferredPreemptionPolicy exists to allow: it
+                    # was handed to `gguf_generate` unbound above.
                     _plain_preempt_policy.bind(
                         _openai_llama_preemption_arm(
                             request = request,

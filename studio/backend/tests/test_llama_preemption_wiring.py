@@ -275,9 +275,16 @@ class TestTheRouteActuallyArmsIt:
             "preempt_policy = _gguf_preempt_policy_hold," in source
         ), "the tool loop is not handed the policy"
         assert "_openai_llama_preemption_arm(" in source
+        # Two binds: one beside the reservation for a chat granted at once, and one after
+        # the admission wait for a chat that queued, which the first bind left as None.
+        # Measured before the second existed: four simultaneous tool-enabled chats at
+        # -c 8192, two armed, three dead of `Context size has been exceeded`.
         assert (
-            source.count("_gguf_preempt_policy_hold.bind(") == 1
-        ), "the policy is never bound, so it stays inert forever"
+            source.count("_gguf_preempt_policy_hold.bind(") == 2
+        ), "the policy must be bound beside the reservation and again after the wait"
+        assert "if not _gguf_preempt_policy_hold.bound:" in source, (
+            "the second bind must not replace an arm the first already made"
+        )
 
 
 class TestSpeculativeDraftsAreReserved:
