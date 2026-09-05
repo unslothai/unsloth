@@ -91,9 +91,7 @@ def _run(
         UNSLOTH_STUDIO_READY_WAIT = "2",
     )
     e.update(env or {})
-    return subprocess.run(
-        ["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60
-    )
+    return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
 
 
 @behavioural
@@ -112,7 +110,10 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "password: s3cret pass" in res.stdout, res.stdout
     assert "60 minutes" in res.stdout, "the change-it-or-shut-down window is not explained"
     assert "Unsloth container ready" in res.stdout
-    assert "Studio      http://localhost:8000   username: unsloth   password: s3cret pass" in res.stdout
+    assert (
+        "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
+        in res.stdout
+    )
 
 
 @behavioural
@@ -125,7 +126,9 @@ def test_the_summary_carries_the_jupyter_note_and_port(tmp_path: Path):
             "UNSLOTH_JUPYTER_NOTE": "generated password: abc123",
         },
     )
-    assert "JupyterLab  http://localhost:9999   generated password: abc123" in res.stdout, res.stdout
+    assert (
+        "JupyterLab  http://localhost:9999   generated password: abc123" in res.stdout
+    ), res.stdout
     assert res.stdout.rstrip().endswith("=" * 72)
 
 
@@ -153,7 +156,9 @@ def test_a_disabled_timeout_drops_the_shutdown_note(tmp_path: Path, value: str):
     auth.mkdir()
     (auth / ".bootstrap_password").write_bytes(b"abc\n")
     res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
-    assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(res.stdout)
+    assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(
+        res.stdout
+    )
     assert "change it on first sign-in" not in res.stdout
 
 
@@ -173,7 +178,12 @@ def test_a_malformed_timeout_keeps_the_note_like_the_backend_does(tmp_path: Path
 @behavioural
 @pytest.mark.parametrize(
     ("value", "text"),
-    [("+0900", "15 minutes"), ("30", "30 seconds"), ("90", "1 minute 30 seconds"), ("61", "1 minute 1 second")],
+    [
+        ("+0900", "15 minutes"),
+        ("30", "30 seconds"),
+        ("90", "1 minute 30 seconds"),
+        ("61", "1 minute 1 second"),
+    ],
 )
 def test_the_timeout_is_reported_like_the_backend_formats_it(tmp_path: Path, value: str, text: str):
     auth = tmp_path / "auth"
@@ -187,7 +197,10 @@ def test_the_timeout_is_reported_like_the_backend_formats_it(tmp_path: Path, val
 def test_an_initial_password_is_never_echoed(tmp_path: Path):
     res = _run(
         tmp_path,
-        env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "initial", "UNSLOTH_STUDIO_PASSWORD": "hunter22hunter"},
+        env = {
+            "UNSLOTH_STUDIO_PASSWORD_STATE": "initial",
+            "UNSLOTH_STUDIO_PASSWORD": "hunter22hunter",
+        },
     )
     assert res.returncode == 0
     assert "hunter22hunter" not in res.stdout
@@ -206,7 +219,12 @@ def test_a_stored_password_is_reported_at_once(tmp_path: Path):
 # --- unsloth-studio-run: the initial password is applied only while none is stored
 
 
-def _run_wrapper(home: Path, *, args: list[str] = (), env: dict | None = None) -> subprocess.CompletedProcess:
+def _run_wrapper(
+    home: Path,
+    *,
+    args: list[str] = (),
+    env: dict | None = None,
+) -> subprocess.CompletedProcess:
     bin_dir = home / "bin"
     # what supervisord would spawn: prints what the CLI would have been handed
     _stub(bin_dir, "unsloth", 'printf "%s|%s\\n" "${UNSLOTH_STUDIO_PASSWORD:-<unset>}" "$*"\n')
@@ -225,7 +243,9 @@ def _run_wrapper(home: Path, *, args: list[str] = (), env: dict | None = None) -
     ("db", "stored"),
     [("none", False), ("empty", False), ("seeded", False), ("changed", True)],
 )
-def test_stored_means_an_admin_row_whose_password_was_changed(tmp_path: Path, db: str, stored: bool):
+def test_stored_means_an_admin_row_whose_password_was_changed(
+    tmp_path: Path, db: str, stored: bool
+):
     """A bare auth.db from an interrupted first launch, or a seeded row nobody
     changed, still accepts an initial password; only must_change_password=0 is
     "stored"."""
@@ -283,7 +303,11 @@ def _launcher_banner_block() -> str:
 
 def _banner(tmp_path: Path, *, env_password: str | None, stored: bool) -> dict:
     bin_dir = tmp_path / "stub-bin"
-    _stub(bin_dir, "unsloth-studio-run", f'[[ "$1" == --stored ]] && exit {0 if stored else 1}\nexit 0\n')
+    _stub(
+        bin_dir,
+        "unsloth-studio-run",
+        f'[[ "$1" == --stored ]] && exit {0 if stored else 1}\nexit 0\n',
+    )
     initial = tmp_path / "run" / "initial"
     script = (
         "set -euo pipefail\n"
@@ -355,8 +379,12 @@ def test_the_image_wires_the_scripts_in():
         ("studio_run.sh", "unsloth-studio-run"),
     ):
         assert f"COPY {script} /usr/local/bin/{target}" in dockerfile
-        assert f"/usr/local/bin/{target}" in dockerfile.split("RUN chmod +x", 1)[1].split("\n\n", 1)[0]
+        assert (
+            f"/usr/local/bin/{target}" in dockerfile.split("RUN chmod +x", 1)[1].split("\n\n", 1)[0]
+        )
         assert f"!{script}" in allow, f"COPY {script} has no source in the build context"
     launch = LAUNCH.read_text(encoding = "utf-8")
-    assert "first-boot password below" not in launch, "the banner promises what Studio no longer prints"
+    assert (
+        "first-boot password below" not in launch
+    ), "the banner promises what Studio no longer prints"
     assert "unset UNSLOTH_STUDIO_PASSWORD" in launch
