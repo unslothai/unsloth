@@ -2011,6 +2011,12 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     idle_tokens = 0
     idle = []
     for slot in slots:
+        # A slot llama-server has parked (server-side preemption, `is_preempted`) reports
+        # its logical sequence but holds no cells: the sequence is in host RAM until it is
+        # restored. Counting it made a nearly empty pool read as over the ceiling and
+        # erased idle slots for room that was never short.
+        if slot.get("is_preempted"):
+            continue
         # WHICH field this came from decides whether the decoded tokens still have to be
         # added, so the two cannot be collapsed into one `or` chain. Measured live over 128
         # processing samples (outputs/slot_probe.jsonl): `n_prompt_tokens - n_decoded` is
