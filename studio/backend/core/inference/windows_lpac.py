@@ -33,7 +33,17 @@ from .os_sandbox import (
 
 _PROFILE_PREFIX = "unsloth.studio."
 _PROFILE_ID = "windows-lpac-preview-v1"
+_APPCONTAINER_PROFILE_ID = "windows-appcontainer-preview-v1"
+_PROFILE_LPAC = "lpac"
+_PROFILE_APPCONTAINER = "appcontainer"
 _PROBE_TOKEN = "UNSLOTH_WINDOWS_LPAC_PROBE_OK"
+_ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
+_ALL_RESTRICTED_APPLICATION_PACKAGES_SID = "S-1-15-2-2"
+_LIMITATION_AMBIENT_READ = "all_application_packages_ambient_read"
+_LIMITATION_IPV6 = "ipv6_unavailable_on_host"
+_STATUS_ACCESS_DENIED = -1073741790
+_STATUS_DLL_NOT_FOUND = -1073741515
+_ERROR_ACCESS_DENIED = 5
 _SCAN_ENTRY_LIMIT = 100_000
 _RUNTIME_SCAN_ENTRY_LIMIT = 1_000_000
 
@@ -49,8 +59,14 @@ _SUB_CONTAINERS_AND_OBJECTS_INHERIT = 3
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
 _GENERIC_EXECUTE = 0x20000000
+_GENERIC_ALL = 0x10000000
 _DELETE = 0x00010000
 _FILE_TRAVERSE = 0x00000020
+_FILE_GENERIC_READ = 0x00120089
+_FILE_GENERIC_EXECUTE = 0x001200A0
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_ACCESS_DENIED_ACE_TYPE = 1
+_INHERIT_ONLY_ACE = 0x08
 
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
@@ -228,6 +244,10 @@ def _hresult_error(prefix: str, value: int) -> OSError:
     return OSError(unsigned, f"{prefix} failed with HRESULT 0x{unsigned:08x}")
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _api() -> _WinApi:
     global _API
     if _API is not None:
@@ -264,6 +284,10 @@ def _api() -> _WinApi:
     advapi32.GetLengthSid.restype = wintypes.DWORD
     advapi32.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
     advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.EqualSid.restype = wintypes.BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
     advapi32.GetNamedSecurityInfoW.argtypes = [
         wintypes.LPWSTR,
         wintypes.DWORD,
@@ -500,6 +524,120 @@ def _acl_contains_sid(acl: ctypes.c_void_p, sid: ctypes.c_void_p) -> bool:
         if sid_bytes in ctypes.string_at(entry, size):
             return True
     return False
+
+
+@contextmanager
+def _well_known_sid(text: str):
+    """A SID allocated from its string form, freed on exit."""
+    api = _api()
+    sid = ctypes.c_void_p()
+    if not api.advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)) or not sid:
+        raise _winerror(f"ConvertStringSidToSidW({text})")
+    try:
+        yield sid
+    finally:
+        api.kernel32.LocalFree(sid)
+
+
+def _ambient_sid_text(profile: str) -> str:
+    """The group every token of this container kind carries implicitly.
+
+    A less-privileged AppContainer opts out of ALL APPLICATION PACKAGES and only
+    honours ALL RESTRICTED APPLICATION PACKAGES; a plain AppContainer is the reverse.
+    """
+    if profile == _PROFILE_APPCONTAINER:
+        return _ALL_APPLICATION_PACKAGES_SID
+    return _ALL_RESTRICTED_APPLICATION_PACKAGES_SID
+
+
+def _ace_mask_covers(mask: int, required: int) -> bool:
+    effective = mask
+    if mask & _GENERIC_ALL:
+        return True
+    if mask & _GENERIC_READ:
+        effective |= _FILE_GENERIC_READ
+    if mask & _GENERIC_EXECUTE:
+        effective |= _FILE_GENERIC_EXECUTE
+    return (effective & required) == required
+
+
+def _acl_grants(acl: ctypes.c_void_p, sids: tuple[ctypes.c_void_p, ...], required: int) -> bool:
+    """Structural walk: do the allow ACEs for any of ``sids`` cover ``required``?
+
+    Deny ACEs for one of the SIDs win, inherit-only ACEs do not apply to the
+    object itself, and rights accumulate across allow ACEs the way the access
+    check does. Anything unrecognised counts as not granted.
+    """
+    if not acl:
+        return False
+    api = _api()
+    header = ctypes.cast(acl, ctypes.POINTER(_ACL)).contents
+    allowed = 0
+    for index in range(header.count):
+        entry = ctypes.c_void_p()
+        if not api.advapi32.GetAce(acl, index, ctypes.byref(entry)):
+            raise _winerror("GetAce(LPAC access check)")
+        ace_header = ctypes.cast(entry, ctypes.POINTER(_ACE_HEADER)).contents
+        if ace_header.kind not in (_ACCESS_ALLOWED_ACE_TYPE, _ACCESS_DENIED_ACE_TYPE):
+            continue
+        if ace_header.flags & _INHERIT_ONLY_ACE:
+            continue
+        base = entry.value or 0
+        # ACCESS_ALLOWED_ACE / ACCESS_DENIED_ACE: header (4 bytes), Mask (4 bytes), SidStart.
+        mask = ctypes.cast(base + ctypes.sizeof(_ACE_HEADER), ctypes.POINTER(ctypes.c_uint32)).contents.value
+        ace_sid = ctypes.c_void_p(base + ctypes.sizeof(_ACE_HEADER) + 4)
+        if not any(api.advapi32.EqualSid(ace_sid, sid) for sid in sids):
+            continue
+        if ace_header.kind == _ACCESS_DENIED_ACE_TYPE:
+            if mask & required or mask & (_GENERIC_ALL | _GENERIC_READ | _GENERIC_EXECUTE):
+                return False
+            continue
+        allowed |= mask
+        if _ace_mask_covers(allowed, required):
+            return True
+    return _ace_mask_covers(allowed, required)
+
+
+def _existing_access(path: str, sids: tuple[ctypes.c_void_p, ...], required: int) -> bool:
+    """True only when the current DACL provably already grants ``required``.
+
+    Any failure to read or walk the DACL means "not verified", so the caller
+    proceeds to grant exactly as before.
+    """
+    api = _api()
+    old_acl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    result = api.advapi32.GetNamedSecurityInfoW(
+        path,
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(old_acl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if result != 0:
+        return False
+    try:
+        return _acl_grants(old_acl, sids, required)
+    except OSError:
+        return False
+    finally:
+        if descriptor:
+            api.kernel32.LocalFree(descriptor)
+
+
+def _machine_wide(path: str) -> bool:
+    """Trees Windows owns and already ACLs for application packages."""
+    roots = []
+    for name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot"):
+        value = os.environ.get(name)
+        if value and os.path.isabs(value):
+            roots.append(os.path.realpath(value))
+    if not roots:
+        roots = [r"C:\Program Files", r"C:\Windows"]
+    return any(_is_within(path, root) for root in roots)
 
 
 def _set_sid_acl(
@@ -837,6 +975,8 @@ class _InvocationIdentity:
     owner_pid: int
     owner_created: int
     cleaned: bool = False
+    profile: str = _PROFILE_LPAC
+    unverified_access: tuple[str, ...] = ()
 
     def cleanup(self) -> None:
         if self.cleaned:
@@ -1109,6 +1249,13 @@ def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
 def _spawn_lpac(
     prepared: PreparedSandboxLaunch, popen_kwargs: dict[str, Any], identity: _InvocationIdentity
 ) -> WindowsLpacProcess:
+    """Create the child inside ``identity``'s container.
+
+    ``identity.profile`` decides whether the ALL_APPLICATION_PACKAGES opt-out
+    attribute is applied (less-privileged AppContainer) or omitted (plain
+    AppContainer). Both carry zero capabilities; the profile is chosen once, by
+    the live probe, and a user payload is never re-run under the weaker one.
+    """
     if (
         popen_kwargs.get("stdout") != subprocess.PIPE
         or popen_kwargs.get("stderr") != subprocess.STDOUT
@@ -1135,36 +1282,44 @@ def _spawn_lpac(
         child_stdout = wintypes.HANDLE(msvcrt.get_osfhandle(write_fd))
         handles = (wintypes.HANDLE * 2)(child_stdin, child_stdout)
 
+        less_privileged = identity.profile != _PROFILE_APPCONTAINER
+        attribute_count = 3 if less_privileged else 2
         size = ctypes.c_size_t()
-        api.kernel32.InitializeProcThreadAttributeList(None, 3, 0, ctypes.byref(size))
+        api.kernel32.InitializeProcThreadAttributeList(None, attribute_count, 0, ctypes.byref(size))
         if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
             raise _winerror("InitializeProcThreadAttributeList(size)")
         attribute_buffer = ctypes.create_string_buffer(size.value)
         attribute_list = ctypes.cast(attribute_buffer, ctypes.c_void_p)
         if not api.kernel32.InitializeProcThreadAttributeList(
-            attribute_list, 3, 0, ctypes.byref(size)
+            attribute_list, attribute_count, 0, ctypes.byref(size)
         ):
             raise _winerror("InitializeProcThreadAttributeList")
         attributes_initialized = True
         capabilities = _SECURITY_CAPABILITIES(identity.sid, None, 0, 0)
         policy = wintypes.DWORD(_PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
-        for key, value, value_size in (
+        attributes = [
             (
                 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
                 ctypes.byref(capabilities),
                 ctypes.sizeof(capabilities),
             ),
-            (
-                _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
-                ctypes.byref(policy),
-                ctypes.sizeof(policy),
-            ),
+        ]
+        if less_privileged:
+            attributes.append(
+                (
+                    _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                    ctypes.byref(policy),
+                    ctypes.sizeof(policy),
+                )
+            )
+        attributes.append(
             (
                 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                 ctypes.byref(handles),
                 ctypes.sizeof(handles),
-            ),
-        ):
+            )
+        )
+        for key, value, value_size in attributes:
             if not api.kernel32.UpdateProcThreadAttribute(
                 attribute_list,
                 0,
@@ -1271,6 +1426,9 @@ def _safe_environment(
         posix_bin = os.path.join(os.path.dirname(executable_dir), "usr", "bin")
         if os.path.isdir(posix_bin):
             path_entries.insert(1, posix_bin)
+    git_dir = _trusted_git_directory()
+    if git_dir and git_dir not in path_entries:
+        path_entries.append(git_dir)
     safe.update(
         {
             "APPDATA": identity.private_temp,
@@ -1285,14 +1443,45 @@ def _safe_environment(
     return safe
 
 
+def _trusted_git_directory() -> str:
+    """The trusted Git-for-Windows directory the host-side PATH builder keeps (#7317)."""
+    try:
+        from .tools import _resolve_trusted_windows_git
+    except Exception:  # noqa: BLE001 - optional convenience, never a launch failure
+        return ""
+    try:
+        directory, _extension = _resolve_trusted_windows_git()
+    except Exception:  # noqa: BLE001
+        return ""
+    return directory if directory and os.path.isdir(directory) else ""
+
+
+class _ProbeEndpoints(list):
+    """Host endpoints the probe must not reach, plus host-side limitations."""
+
+    limitations: tuple[str, ...] = ()
+
+
 @contextmanager
 def _probe_network_endpoints():
-    """Prove host endpoints work, then reject any traffic from the LPAC probe."""
+    """Prove host endpoints work, then reject any traffic from the LPAC probe.
+
+    IPv4 loopback is mandatory. IPv6 is probed only when the host can bind
+    ``::1``; a host without IPv6 records ``ipv6_unavailable_on_host`` instead of
+    reporting the sandbox unavailable.
+    """
     with ExitStack() as stack:
         servers = []
-        endpoints = []
+        endpoints = _ProbeEndpoints()
         control = secrets.token_bytes(32)
         for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            if family == socket.AF_INET6:
+                try:
+                    with socket.socket(family, socket.SOCK_STREAM) as check:
+                        check.bind((host, 0))
+                except OSError:
+                    endpoints.limitations = (_LIMITATION_IPV6,)
+                    continue
             for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
                 server = stack.enter_context(socket.socket(family, kind))
                 server.settimeout(1)
@@ -1358,7 +1547,14 @@ for family, kind, address in {endpoints!r}:
 """
 
 
-def _probe_payload(workdir: str, external: str, expected_sid: str, endpoints: list[tuple]) -> str:
+def _probe_payload(
+    workdir: str,
+    external: str,
+    expected_sid: str,
+    endpoints: list[tuple],
+    *,
+    less_privileged: bool = True,
+) -> str:
     return f"""import ctypes, os, socket, sys
 from ctypes import wintypes
 k = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -1370,7 +1566,7 @@ def token_dword(kind):
     assert a.GetTokenInformation(token, kind, ctypes.byref(value), size, ctypes.byref(size))
     return value.value
 assert token_dword(29) == 1
-assert token_dword(46) == 1
+assert token_dword(46) == {1 if less_privileged else 0}
 needed = wintypes.DWORD()
 a.GetTokenInformation(token, 25, None, 0, ctypes.byref(needed))
 integrity = ctypes.create_string_buffer(needed.value)
@@ -1449,75 +1645,61 @@ class WindowsLpacBackend:
             "symbols": symbols,
         }
 
+    def __init__(self) -> None:
+        self._profile = _PROFILE_LPAC
+        self._last_probe_limitations: tuple[str, ...] = ()
+
+    @property
+    def active_profile(self) -> str:
+        """``lpac`` or ``appcontainer``: the container kind the last probe qualified."""
+        return self._profile
+
+    def active_profile_id(self) -> str:
+        return _APPCONTAINER_PROFILE_ID if self._profile == _PROFILE_APPCONTAINER else _PROFILE_ID
+
     def probe(self) -> SandboxCapability:
-        if os.name != "nt":
+        if not _is_windows():
             return SandboxCapability(self.identity, False, "LPAC requires Windows", available = False)
+        # Every probe starts from the strongest profile; a previous fallback never sticks
+        # once the environment fingerprint moved. ``profile_id`` shadows the class default
+        # on the instance so callers reading ``backend.profile_id`` see the active kind.
+        self._profile = _PROFILE_LPAC
+        self.profile_id = _PROFILE_ID
         try:
             _api()
             self.reconcile_stale_manifests()
-            with (
-                tempfile.TemporaryDirectory(prefix = "unsloth-lpac-probe-") as base,
-                _probe_network_endpoints() as endpoints,
-            ):
-                workdir = os.path.join(base, "work")
-                os.mkdir(workdir)
-                Path(workdir, "probe-read").write_text("readable", encoding = "utf-8")
-                external = os.path.join(base, "host-secret")
-                Path(external).write_text("secret", encoding = "utf-8")
-                prepared = self.prepare(
-                    ToolLaunchPlan(
-                        argv = (sys.executable, "-I", "-S", "-c", ""),
-                        workdir = workdir,
-                        env = {"PYTHONIOENCODING": "utf-8"},
-                    )
+            outcome = self._probe_profile(_PROFILE_LPAC)
+            if outcome is None:
+                return SandboxCapability(
+                    self.identity,
+                    True,
+                    "zero-capability LPAC live enforcement probe passed",
+                    available = True,
+                    protection_state = "preview",
+                    profile_id = _PROFILE_ID,
+                    limitations = self._last_probe_limitations,
                 )
-                try:
-                    identity = getattr(prepared.spawn_callback, "_lpac_identity", None)
-                    if identity is None:
-                        raise SandboxUnavailableError("LPAC launch identity was lost")
-                    prepared.argv = (
-                        sys.executable,
-                        "-I",
-                        "-S",
-                        "-c",
-                        _probe_payload(workdir, external, identity.sid_string, endpoints),
+            returncode, reason = outcome
+            if returncode in (_STATUS_ACCESS_DENIED, _STATUS_DLL_NOT_FOUND):
+                fallback = self._probe_profile(_PROFILE_APPCONTAINER)
+                if fallback is None:
+                    self._profile = _PROFILE_APPCONTAINER
+                    self.profile_id = _APPCONTAINER_PROFILE_ID
+                    return SandboxCapability(
+                        self.identity,
+                        True,
+                        "zero-capability LPAC could not start the selected interpreter "
+                        f"({returncode}); the zero-capability AppContainer fallback passed its live "
+                        "enforcement probe. Files shared with all application packages (Program "
+                        "Files, Windows) are readable inside it; the user profile, the network and "
+                        "every path outside the workdir stay denied",
+                        available = True,
+                        protection_state = "preview",
+                        profile_id = _APPCONTAINER_PROFILE_ID,
+                        limitations = (_LIMITATION_AMBIENT_READ, *self._last_probe_limitations),
                     )
-                    process = prepared.spawn_callback(
-                        prepared,
-                        {
-                            "stdout": subprocess.PIPE,
-                            "stderr": subprocess.STDOUT,
-                            "stdin": subprocess.DEVNULL,
-                            "text": True,
-                            "encoding": "utf-8",
-                            "errors": "replace",
-                            "cwd": prepared.workdir,
-                            "env": prepared.env,
-                            "close_fds": True,
-                            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        },
-                    )
-                    process.wait(timeout = 8)
-                    output = process.stdout.read()
-                    if process.returncode != 0 or _PROBE_TOKEN not in output:
-                        if process.returncode == -1073741790:
-                            detail = (
-                                "the selected interpreter could not initialize under zero-capability "
-                                "LPAC (STATUS_ACCESS_DENIED); this runtime is incompatible with the "
-                                "current profile, and capabilities were not widened"
-                            )
-                        else:
-                            detail = output[-400:]
-                        return SandboxCapability(
-                            self.identity,
-                            False,
-                            f"the LPAC live probe failed ({process.returncode}): {detail}",
-                            available = False,
-                        )
-                finally:
-                    prepared.cleanup()
-                    if prepared.cleanup_diagnostics:
-                        raise SandboxUnavailableError("LPAC probe cleanup failed")
+                reason = f"{reason}; the AppContainer fallback probe also failed: {fallback[1]}"
+            return SandboxCapability(self.identity, False, reason, available = False)
         except Exception as exc:  # noqa: BLE001 - capability failure blocks Required mode
             return SandboxCapability(
                 self.identity,
@@ -1525,29 +1707,133 @@ class WindowsLpacBackend:
                 f"the LPAC live probe could not run: {exc}",
                 available = False,
             )
-        return SandboxCapability(
-            self.identity,
-            True,
-            "zero-capability LPAC live enforcement probe passed",
-            available = True,
-            protection_state = "preview",
-            profile_id = self.profile_id,
-        )
+
+    def _probe_profile(self, profile: str) -> tuple[int | None, str] | None:
+        """Run the live enforcement probe under ``profile``.
+
+        Returns ``None`` on success, else ``(returncode, reason)``. Infrastructure
+        failures raise and are reported by the caller.
+        """
+        less_privileged = profile != _PROFILE_APPCONTAINER
+        label = "LPAC" if less_privileged else "AppContainer"
+        with (
+            tempfile.TemporaryDirectory(prefix = "unsloth-lpac-probe-") as base,
+            _probe_network_endpoints() as endpoints,
+        ):
+            self._last_probe_limitations = tuple(getattr(endpoints, "limitations", ()))
+            workdir = os.path.join(base, "work")
+            os.mkdir(workdir)
+            Path(workdir, "probe-read").write_text("readable", encoding = "utf-8")
+            external = os.path.join(base, "host-secret")
+            Path(external).write_text("secret", encoding = "utf-8")
+            prepared = self._prepare(
+                ToolLaunchPlan(
+                    argv = (sys.executable, "-I", "-S", "-c", ""),
+                    workdir = workdir,
+                    env = {"PYTHONIOENCODING": "utf-8"},
+                ),
+                profile,
+            )
+            try:
+                identity = getattr(prepared.spawn_callback, "_lpac_identity", None)
+                if identity is None:
+                    raise SandboxUnavailableError("LPAC launch identity was lost")
+                prepared.argv = (
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    _probe_payload(
+                        workdir,
+                        external,
+                        identity.sid_string,
+                        list(endpoints),
+                        less_privileged = less_privileged,
+                    ),
+                )
+                process = prepared.spawn_callback(
+                    prepared,
+                    {
+                        "stdout": subprocess.PIPE,
+                        "stderr": subprocess.STDOUT,
+                        "stdin": subprocess.DEVNULL,
+                        "text": True,
+                        "encoding": "utf-8",
+                        "errors": "replace",
+                        "cwd": prepared.workdir,
+                        "env": prepared.env,
+                        "close_fds": True,
+                        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    },
+                )
+                process.wait(timeout = 8)
+                output = process.stdout.read()
+                if process.returncode != 0 or _PROBE_TOKEN not in output:
+                    if process.returncode == _STATUS_ACCESS_DENIED:
+                        detail = (
+                            "the selected interpreter could not initialize under zero-capability "
+                            f"{label} (STATUS_ACCESS_DENIED); capabilities were not widened"
+                        )
+                    elif process.returncode == _STATUS_DLL_NOT_FOUND:
+                        detail = (
+                            "the selected interpreter could not load its runtime libraries under "
+                            f"zero-capability {label} (STATUS_DLL_NOT_FOUND)"
+                        )
+                    else:
+                        detail = output[-400:]
+                    if identity.unverified_access:
+                        detail += (
+                            "; access to these paths could not be granted and was left to the "
+                            "existing ACLs: " + ", ".join(identity.unverified_access)
+                        )
+                    return (
+                        process.returncode,
+                        f"the {label} live probe failed ({process.returncode}): {detail}",
+                    )
+            finally:
+                prepared.cleanup()
+                if prepared.cleanup_diagnostics:
+                    raise SandboxUnavailableError(f"{label} probe cleanup failed")
+        return None
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
+        return self._prepare(spec, self._profile)
+
+    def _prepare(self, spec: ToolLaunchPlan, profile: str) -> PreparedSandboxLaunch:
         workdir = _validate_workdir(spec.workdir)
         argv = _canonical_inner_argv(spec.argv, spec.env)
         runtime_roots = _runtime_roots(workdir, argv)
         acl_runtime_roots = tuple(path for path in runtime_roots if _needs_explicit_acl(path))
         _validate_runtime_trees(acl_runtime_roots)
         identity = _create_identity((*acl_runtime_roots, workdir))
+        identity.profile = profile
         try:
-            for root in acl_runtime_roots:
-                _grant_read_execute(root, identity.sid)
-            _grant_modify(workdir, identity.sid)
-            _grant_modify(identity.private_temp, identity.sid)
-            for root in identity.traverse_roots:
-                _grant_traverse(root, identity.sid)
+            unverified: list[str] = []
+            with _well_known_sid(_ambient_sid_text(profile)) as ambient:
+                sids = (identity.sid, ambient)
+                for root in acl_runtime_roots:
+                    if _existing_access(root, sids, _FILE_GENERIC_READ | _FILE_GENERIC_EXECUTE):
+                        continue
+                    try:
+                        _grant_read_execute(root, identity.sid)
+                    except OSError as exc:
+                        if exc.errno == _ERROR_ACCESS_DENIED and _machine_wide(root):
+                            unverified.append(root)
+                            continue
+                        raise
+                _grant_modify(workdir, identity.sid)
+                _grant_modify(identity.private_temp, identity.sid)
+                for root in identity.traverse_roots:
+                    if _existing_access(root, sids, _FILE_TRAVERSE):
+                        continue
+                    try:
+                        _grant_traverse(root, identity.sid)
+                    except OSError as exc:
+                        if exc.errno == _ERROR_ACCESS_DENIED:
+                            unverified.append(root)
+                            continue
+                        raise
+            identity.unverified_access = tuple(unverified)
 
             def spawn(prepared: PreparedSandboxLaunch, kwargs: dict[str, Any]) -> object:
                 return _spawn_lpac(prepared, kwargs, identity)
