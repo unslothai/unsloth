@@ -19,6 +19,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -46,6 +47,48 @@ _TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
 )
+
+
+_GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+
+def _skip_gguf_value(f, vtype: int) -> None:
+    if vtype == 8:
+        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+    elif vtype == 9:
+        elem_type, count = struct.unpack("<IQ", f.read(12))
+        if elem_type in _GGUF_SCALAR_WIDTHS:
+            f.seek(_GGUF_SCALAR_WIDTHS[elem_type] * count, 1)
+        else:
+            for _ in range(count):
+                _skip_gguf_value(f, elem_type)
+    else:
+        f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
+
+
+def _gguf_context_length(path: str) -> int | None:
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            f.read(4)
+            _, kv_count = struct.unpack("<QQ", f.read(16))
+            arch = None
+            lengths: dict[str, int] = {}
+            for _ in range(kv_count):
+                key = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                vtype = struct.unpack("<I", f.read(4))[0]
+                if key == "general.architecture" and vtype == 8:
+                    arch = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
+                elif key.endswith(".context_length") and vtype in (4, 10):
+                    lengths[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
+                else:
+                    _skip_gguf_value(f, vtype)
+                if arch is not None and f"{arch}.context_length" in lengths:
+                    return lengths[f"{arch}.context_length"] or None
+    except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
+        return None
+    return None
 
 
 def _resolve_entrypoint(binary: str) -> str:
@@ -109,6 +152,7 @@ class LlamaServerBackend:
         # dim() takes the same _serve_lock the request path does; reentrant because dim() -> encode() ->
         # _ensure_ready() re-enters on one thread.
         self._dim: int | None = None
+        self._max_tokens: int | None = None
         # One subprocess serves one GGUF, so readiness and the request must be indivisible: a swap between
         # them lands A's POST on B's server.
         self._serve_lock = threading.RLock()
@@ -539,6 +583,7 @@ class LlamaServerBackend:
         self._model_path = path
         self._model_repo = desired
         self._dim = None
+        self._max_tokens = None
         return self._model_path
 
     # A listing, not a transfer: a working hub answers well inside a second.
@@ -673,6 +718,13 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
+        # Deliberately no -b/-ub. Embedding is non-causal, so llama.cpp refuses a prompt
+        # longer than the physical batch rather than splitting it -- but raising the batch
+        # allocates n_vocab * n_ubatch * 4 up front (~938 MiB at 8192 with a 30k vocab),
+        # and this backend treats 1024 MiB free as enough to offload every layer. Buying
+        # long inputs that way costs a failed GPU start and a slow CPU retry. `max_tokens`
+        # reads the batch the server actually runs at and advertises no more, so an
+        # over-long input gets a clear 400 instead of a 502 from inside llama-server.
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -1036,6 +1088,75 @@ class LlamaServerBackend:
             width = int(vec.shape[1])
             self._dim = width
             return width
+
+    def _server_props(self) -> dict | None:
+        """``/props``, or None. Advisory only -- it refines a limit that already has a
+        value from the GGUF, so no failure here may reach the caller. That includes a
+        malformed base URL, which is what an un-started server has.
+        """
+        try:
+            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+        except Exception:  # noqa: BLE001 - see docstring
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _positive(data: dict | None, key: str) -> int | None:
+        """*key* from /props, whether the build reports it at the top level or under
+        ``default_generation_settings``."""
+        for scope in (data, (data or {}).get("default_generation_settings")):
+            if isinstance(scope, dict):
+                value = scope.get(key)
+                if isinstance(value, int) and value > 0:
+                    return value
+        return None
+
+    def _server_context(self) -> int | None:
+        return self._positive(self._server_props(), "n_ctx")
+
+    def _server_batch(self) -> int | None:
+        """The physical batch this server actually runs at.
+
+        A non-causal (embedding) prompt longer than it is refused outright, so it bounds
+        what may be advertised no matter how large the model's context is.
+        """
+        props = self._server_props()
+        for key in ("n_ubatch", "n_batch"):
+            found = self._positive(props, key)
+            if found:
+                return found
+        return None
+
+    def max_tokens(self, *, model_name = None) -> int | None:
+        with self._operation(), self._serve_lock:
+            self._ensure_ready(model_name)
+            if self._max_tokens is None and self._model_path:
+                limit = _gguf_context_length(self._model_path)
+                running = self._server_context()
+                if limit and running:
+                    limit = min(limit, running)
+                elif running:
+                    limit = running
+                # Never advertise more than one batch: past it llama.cpp returns a 500
+                # the caller sees as a 502, instead of the 400 this limit exists to give.
+                batch = self._server_batch()
+                if batch:
+                    limit = min(limit, batch) if limit else batch
+                if limit:
+                    data = self._post(
+                        "/tokenize",
+                        {"content": "", "add_special": True},
+                        model_name = model_name,
+                    )
+                    answer = max(1, limit - len(data.get("tokens", [])))
+                    if running is None or batch is None:
+                        # /props did not answer, so the header context is a guess: this
+                        # server may run a smaller one. Answer with it, but do not freeze
+                        # it, or a limit that lets an over-long input reach a 502 would
+                        # outlive the readback that would have corrected it.
+                        return answer
+                    self._max_tokens = answer
+            return self._max_tokens
 
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path.

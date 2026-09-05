@@ -540,6 +540,22 @@ def _st_dim(model_name: str | None = None) -> int:
         return _get(model_name).get_sentence_embedding_dimension()
 
 
+def _st_max_tokens(model_name: str | None = None) -> int | None:
+    with _compute_lock:
+        model = _get(model_name)
+        limit = getattr(model, "max_seq_length", None)
+        if not limit:
+            return None
+        tokenizer = getattr(model, "tokenizer", None)
+        specials = getattr(tokenizer, "num_special_tokens_to_add", None)
+        reserved = int(specials()) if callable(specials) else 0
+        prompts = getattr(model, "prompts", None) or {}
+        prompt = prompts.get(getattr(model, "default_prompt_name", None))
+        if prompt and tokenizer is not None:
+            reserved += len(tokenizer.encode(prompt, add_special_tokens = False))
+        return max(1, int(limit) - reserved)
+
+
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Token counter using the model's tokenizer, under the compute lock (the same
     fast tokenizer backs encode and isn't thread-safe), with rayon enabled for the
@@ -601,6 +617,9 @@ class _SentenceTransformersBackend:
 
     def dim(self, *, model_name = None):
         return _st_dim(model_name)
+
+    def max_tokens(self, *, model_name = None):
+        return _st_max_tokens(model_name)
 
     def warm(self, *, model_name = None):
         _get(model_name)
@@ -1141,6 +1160,10 @@ def encode(
 def dim(model_name: str | None = None) -> int:
     """Embedding dimension for the (loaded) model."""
     return _get_backend(model_name).dim(model_name = model_name)
+
+
+def max_tokens(model_name: str | None = None) -> int | None:
+    return _get_backend(model_name).max_tokens(model_name = model_name)
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
