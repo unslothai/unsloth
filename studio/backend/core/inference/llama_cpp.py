@@ -29196,6 +29196,10 @@ class LlamaCppBackend:
         # fresh turn with thinking OFF, which is the one thing that guarantees the next turn
         # produces something visible.
         _length_continuations = 0
+        # One `context_truncated` per request from the continuation declines below. The
+        # event is not idempotent on the client (`mergeContextTruncation` SUMS the
+        # counters), and both declines can be reached on the same turn.
+        _continuation_refusal_announced = False
         _effective_enable_thinking = enable_thinking
         # Dropped alongside it, because for the `reasoning_effort` style an explicit
         # effort WINS over enable_thinking: `_request_reasoning_kwargs` returns the
@@ -29324,6 +29328,44 @@ class LlamaCppBackend:
             return _tokens + _reply_floor(self._effective_context_length) <= (
                 self._effective_context_length
             )
+
+        def _continuation_refusal_event() -> "Optional[dict]":
+            """The `context_truncated` the client needs when a continuation cannot be served.
+
+            Both declines below end the turn with `finish_reason` "length" and a partial
+            answer, which is exactly the shape the client resumes on its own. Its guard
+            (`shouldAutoContinue`) refuses on `fits` false or on its own character-based
+            estimate of the partial, and a code-heavy answer under-counts badly: observed
+            on a 8192-token window, the client auto-continued a turn this loop had just
+            declined for want of room, the preflight rejected the retry, and the user got
+            "Response interrupted" plus a red error box instead of the bar naming Context
+            Length. This loop already KNOWS -- it priced the retry and tried evicting for
+            it -- so say so on the channel the client already honours.
+
+            Deliberately only the two keys the decision rests on plus the window it was
+            taken against. The diagnosis fields (`irreducible_tokens`,
+            `latest_turn_tokens`) are a FIT's measurements of a prompt this path never
+            fitted, and inventing them here would let the client name a turn as the
+            culprit off numbers describing a different request.
+
+            None when there is no window to report, which is also the case where
+            `_loop_continuation_fits` never refuses.
+            """
+            window = self._effective_context_length or 0
+            if not window:
+                return None
+            return {
+                "type": "context_truncated",
+                "fits": False,
+                # The prompt WAS sent; nothing was evicted out of it. Non-zero here would
+                # raise the "This conversation was compacted" toast for an eviction that
+                # never happened, and the client sums it across the turn.
+                "dropped_messages": 0,
+                "context_length": window,
+                # Same formula the preflight's fit reports, so the client's own
+                # `prompt_target` comparison stays on one scale.
+                "prompt_target": prompt_budget(window, max_tokens),
+            }
 
         def _loop_budget_left(spent_this_attempt: int) -> "Optional[int]":
             """What remains of a cap the CALLER set, or None when they set none.
@@ -30587,6 +30629,16 @@ class LlamaCppBackend:
                                         if _cap_left_c == 0
                                         else "the retry prompt would not be served",
                                     )
+                                    # Only the window case. A spent output cap belongs to
+                                    # THIS request, and the client's next one carries its
+                                    # own, so its continuation is servable and telling it
+                                    # the context does not fit would hide a Continue that
+                                    # works.
+                                    if _cap_left_c != 0 and not _continuation_refusal_announced:
+                                        _refusal_c = _continuation_refusal_event()
+                                        if _refusal_c is not None:
+                                            _continuation_refusal_announced = True
+                                            yield _refusal_c
                                     _length_continuations -= 1
                                 else:
                                     conversation[:] = _cand_c
@@ -30692,6 +30744,16 @@ class LlamaCppBackend:
                                 # never the constraint, and this reaches the client as
                                 # ordinary content, so nothing downstream can correct it.
                                 _reasoning_cap_spent = _cap_left_l == 0
+                                # Same signal, same reason, and the same exclusion for a
+                                # cap the caller set: this turn is about to end at the
+                                # window with nothing but a note, and a client that
+                                # resumes it walks into the refusal the preflight has
+                                # already promised.
+                                if not _reasoning_cap_spent and not _continuation_refusal_announced:
+                                    _refusal_l = _continuation_refusal_event()
+                                    if _refusal_l is not None:
+                                        _continuation_refusal_announced = True
+                                        yield _refusal_l
                                 _length_continuations -= 1
                                 _effective_enable_thinking = enable_thinking
                                 _effective_reasoning_effort = reasoning_effort
@@ -32921,6 +32983,16 @@ class LlamaCppBackend:
                                 "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
                             }
                         else:
+                            # The final pass's own twin of the in-loop decline: the turn
+                            # ends at `length` holding a partial, which is precisely what
+                            # the client resumes by itself. Cap-spent excluded for the
+                            # same reason -- that cap is this request's, not the next
+                            # one's.
+                            if _next_cap != 0 and not _continuation_refusal_announced:
+                                _refusal_f = _continuation_refusal_event()
+                                if _refusal_f is not None:
+                                    _continuation_refusal_announced = True
+                                    yield _refusal_f
                             _meta = _build_metadata_event(
                                 _metadata_usage, _metadata_timings, _metadata_finish_reason
                             )
@@ -33043,6 +33115,11 @@ class LlamaCppBackend:
                                     "text": _CONTINUE_AFTER_LENGTH_STATUS,
                                 }
                             else:
+                                if _next_cap_r != 0 and not _continuation_refusal_announced:
+                                    _refusal_r = _continuation_refusal_event()
+                                    if _refusal_r is not None:
+                                        _continuation_refusal_announced = True
+                                        yield _refusal_r
                                 yield {"type": "status", "text": ""}
                                 # Content events on this stream are CUMULATIVE, so an
                                 # explanation sent on its own replaces whatever is on
