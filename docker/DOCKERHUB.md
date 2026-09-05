@@ -30,7 +30,7 @@ docker run -d --gpus all --ipc=host \
   unsloth/unsloth
 ```
 
-Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in `docker logs <container>`.
+`docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
 
 The `docker/run.sh` helper in the repository sets these flags for you:
 
