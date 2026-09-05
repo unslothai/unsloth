@@ -211,9 +211,9 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
             _shutdown(loop)
 
         assert resumed is False
-        assert timeout * 0.8 < elapsed < 5.0, (
-            f"a stall must still end near the timeout, took {elapsed}s"
-        )
+        assert (
+            timeout * 0.8 < elapsed < 5.0
+        ), f"a stall must still end near the timeout, took {elapsed}s"
 
 
 class TestTheBackstopOutlastsARealAnswer:
@@ -228,6 +228,6 @@ class TestTheBackstopOutlastsARealAnswer:
         """
 
         bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE
-        assert bound >= 2 * (8192 / 2.3), (
-            f"the backstop is {bound}s, shorter than two answers at the rate measured"
-        )
+        assert bound >= 2 * (
+            8192 / 2.3
+        ), f"the backstop is {bound}s, shorter than two answers at the rate measured"
