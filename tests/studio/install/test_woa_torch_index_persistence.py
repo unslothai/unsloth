@@ -2869,9 +2869,7 @@ class TestAFindLinksPathWithASpaceSurvivesThePurge:
             ),
         ],
     )
-    def test_the_purge_reads_each_variable_its_own_way(
-        self, tmp_path, var, value, expected, why
-    ):
+    def test_the_purge_reads_each_variable_its_own_way(self, tmp_path, var, value, expected, why):
         owned = str(tmp_path / "woa")
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         start = text.index('$_woaOwnedPrefix = Join-Path $StudioHome "woa"')
@@ -2887,7 +2885,9 @@ class TestAFindLinksPathWithASpaceSurvivesThePurge:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1][1:-1]
@@ -2905,9 +2905,9 @@ class TestThePipFallbackKeepsTheIndexArguments:
 
     def test_the_arguments_are_not_gated_on_uv(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "$WinArm64IndexArgs = if ($WinArm64Venv) {" in text, (
-            "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
-        )
+        assert (
+            "$WinArm64IndexArgs = if ($WinArm64Venv) {" in text
+        ), "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -2935,13 +2935,15 @@ class TestThePipFallbackKeepsTheIndexArguments:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1][1:-1]
-        assert "--extra-index-url https://pypi.org/simple" in got, (
-            f"pip cannot resolve the trio's shared dependencies without it: {got!r}"
-        )
+        assert (
+            "--extra-index-url https://pypi.org/simple" in got
+        ), f"pip cannot resolve the trio's shared dependencies without it: {got!r}"
         assert "--index-strategy" not in got, "a uv-only flag would make pip print usage"
         assert "--prerelease" not in got, "likewise the uv spelling"
         assert ("--pre" in got) is expect_pre, got
@@ -2968,7 +2970,9 @@ class TestTheWoaIndexOutlivesTheManifest:
         """The marker is a fallback, not a replacement: the manifest is rewritten each run."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir" in text
-        assert "if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }" in text
+        assert (
+            "if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }" in text
+        )
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3000,7 +3004,9 @@ class TestTheWoaIndexOutlivesTheManifest:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1][1:-1]
@@ -3024,7 +3030,9 @@ class TestTheWoaIndexOutlivesTheManifest:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "[]"
@@ -3042,7 +3050,9 @@ class TestTheWoaIndexOutlivesTheManifest:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         got = done.stdout.strip().splitlines()[-1][1:-1]
@@ -3075,12 +3085,12 @@ class TestTheWoaIndexOutlivesTheManifest:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         marker = tmp_path / "woa" / "torch-index.txt"
         written = marker.read_text(encoding = "utf-8") if marker.exists() else ""
-        assert "s3cret" not in written, (
-            f"the marker file holds a credential: {written!r}"
-        )
+        assert "s3cret" not in written, f"the marker file holds a credential: {written!r}"
         assert written == "", "nothing unpersistable should be written at all"
