@@ -684,7 +684,7 @@ def timed_action(cid: str, sid: str, ms: float) -> dict:
 
 
 def resumed_payload(tmp_path: Path, name: str, retry_session: str) -> Path:
-    """One arm completed, its partner died, and `--resume` re-ran the dead arm.
+    """One arm completed, its partner died, and only the dead arm was re-run: a PARTIAL resume.
 
     `retry_session` is the session the retry was recorded under. The real `--resume` mints a new
     one; passing the original back is the control that shows the refusal keys on the session and
@@ -723,10 +723,14 @@ def resumed_payload(tmp_path: Path, name: str, retry_session: str) -> Path:
 
 
 def test_an_arm_resumed_into_a_new_session_is_not_paired_with_the_old_one(tmp_path):
-    # `--resume` skips the arm that completed and re-runs the dead one under a NEW session id in the
-    # SAME shard directory; keyed on the repetition alone the two pair and the whole 8% session drift
-    # is charged to the re-run arm. `scoring/ab.py` refuses exactly this comparison, and the sweep's
-    # own pairing has to refuse it too.
+    # A LEGACY PARTIAL-RESUME PAYLOAD: one arm completed under the first session id and only its
+    # dead partner re-run under a NEW one, in the SAME shard directory. Today's `--resume` does not
+    # write this shape, since `__main__._resume_set` passes the completed set through
+    # `ab.skippable_cells`, which returns an EMPTY skip set while any A/B work remains, so both arms
+    # are re-run in the new session. It reaches the sweep from an older writer or an externally
+    # produced payload. Keyed on the repetition alone the two rows pair and the whole 8% session
+    # drift is charged to the re-run arm. `scoring/ab.py` refuses exactly this comparison, and the
+    # sweep's own pairing has to refuse it too.
     path = resumed_payload(tmp_path, "resumed", "s2")
     assert F.cell_metrics(F.read_rows(path))["r100K.treatment.rep0"] == {
         "message_menu.open_close_ms": 108.0

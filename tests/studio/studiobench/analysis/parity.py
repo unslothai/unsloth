@@ -401,7 +401,8 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     # produces. NOT_COMPARABLE AND NOT MATCH: the probe reads ONE aggregate digest, so a genuine CSS
     # difference elsewhere is inside the same number.
     # Over up to `STYLE_CAP` elements.
-    # `streaming` and `queued_idle` are read off the run state, not the composer.
+    # `streaming` and `queued_idle` are a second reading of the same composer subtree and not an
+    # independent signal; see `_run_state_disagrees` for what that does and does not cover.
     if (bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")) and (
         generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
     ):
@@ -450,10 +451,15 @@ def _run_state_disagrees(base: dict, treat: dict) -> bool:
     """Do the arms disagree about the run state, read OFF the run state rather than the composer?
 
     `generation_disagrees` reads `composer_control`, which is the composer. Using it alone to
-    excuse a composer difference proves the premise with the conclusion, so this is the second,
-    independent half: `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be
-    dispatched, both taken from the thread's own run state and neither derivable from which button
-    was drawn.
+    excuse a composer difference proves the premise with the conclusion, so this is a second read:
+    `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be dispatched.
+
+    NOT INDEPENDENT OF THE COMPOSER, and the comment on the caller says what that costs.
+    `dom.isRunning()` is `Boolean(stopButton() || queueButton())` and `scene/parity.js` derives
+    `queued_idle` from that value, `stopQueuedButton()` and the prompt queue surface, so all of it
+    comes from the same run-state slot the token names. It separates a control dropped or renamed
+    out of `RUN_STATE_CONTROLS`, which leaves both flags equal, from a genuine Stop-against-Send
+    pair; it cannot separate the latter from a treatment that renders the wrong control.
 
     Captures older than these fields report neither, and two `False`s then read as agreement --
     which is the conservative direction here, since it makes the pair a reported difference rather
@@ -659,15 +665,20 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # generating, so the bias is symmetric and cancels. WITHHELD RATHER THAN IGNORED: if a message
     # or overlay also moved this never runs.
     #
-    # AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the suppression argues in a circle:
+    # AND THE RUN STATE HAS TO CORROBORATE, or the suppression argues in a circle:
     # `generation_disagrees` reads `composer_control`, the token naming which control was rendered,
     # so the composer would be excusing itself. A treatment that DROPS the Send button, renames it
     # or selects the wrong control reaches this branch with every message and overlay agreeing, and
     # a refusal here is a green run (`report` files NOT COMPARABLE under `blind` and exits on
-    # `stable_bad or one_sided`). `_run_state_disagrees` reads `streaming` (`isRunning()`) and
-    # `queued_idle` off the thread's run state, which the composer cannot manufacture: Stop against
-    # Send differs in `streaming`, Queue against Send differs in `queued_idle`, and arms agreeing on
-    # both while rendering different controls have no run-state explanation.
+    # `stable_bad or one_sided`). `_run_state_disagrees` reads `streaming` and `queued_idle`, and
+    # THAT IS A SECOND READING OF THE SAME SUBTREE RATHER THAN AN INDEPENDENT ONE: `dom.isRunning()`
+    # is `Boolean(stopButton() || queueButton())`, and `scene/parity.js` builds `queued_idle` from
+    # that value, `stopQueuedButton()` and the prompt queue surface. WHAT THE SECOND READING BUYS,
+    # from reading the two predicates: a control DROPPED or RENAMED out of `RUN_STATE_CONTROLS`
+    # moves the token while leaving both flags equal, so this branch does not fire. WHAT IT DOES
+    # NOT RULE OUT: a treatment that renders the WRONG run-state control, since Stop on a settled
+    # thread moves `composer_control` and `streaming` together and is refused here as NOT
+    # COMPARABLE. That case needs a run-state signal read outside the composer subtree.
     if (
         generation_disagrees(base, treat)
         and _run_state_disagrees(base, treat)
