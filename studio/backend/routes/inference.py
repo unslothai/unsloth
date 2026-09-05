@@ -2420,7 +2420,31 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     max(0, int(occupancy.get("resident") or 0) - freed),
                     max(0, int(occupancy.get("idle_tokens") or 0) - freed),
                 )
+                # Every idle slot went, including those of holders parked on a tool
+                # prompt or running their tools; their charges must go with them.
+                controller.note_cells_reclaimed()
                 _gguf_slots_seen["occupancy"] = None
+
+    _gguf_live_state = {"state": ParticipantState.DECODING}
+
+    def _gguf_note_state(state: Optional[str]) -> str:
+        """Tell the preemptor where this chat is: decoding, on an approval, in a tool.
+
+        Nothing reported these before, so a chat stopped on an approval prompt stayed
+        DECODING in the ledger and its charge kept counting after its idle slot had been
+        erased for a waiting chat. Cheap and idempotent, so it is safe to call per chunk.
+        None only asks; the current state comes back either way.
+        """
+        if state is None or _gguf_live_state["state"] == state:
+            return _gguf_live_state["state"]
+        _gguf_live_state["state"] = state
+        try:
+            get_preemption_controller(
+                str(getattr(llama_backend, "base_url", "llama-server"))
+            ).note_state(completion_id, state)
+        except Exception:
+            logger.debug("could not report the tool-loop state", exc_info = True)
+        return state
 
     def _gguf_observe_tokens(generated: int) -> None:
         """Live n_i, straight from the token stream.
@@ -2453,12 +2477,13 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     )
                     if freed:
                         _llama_preemption_log("reclaimed-idle", freed = freed, gen_id = completion_id)
+                        controller.note_cells_reclaimed()
                         # Re-read rather than assume the erase was enough.
                         _gguf_slots_seen["at"] = 0.0
         except Exception:
             pass
 
-    return _gguf_refresh_residency, _gguf_observe_tokens
+    return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
 def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
@@ -2650,12 +2675,14 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         )
         if freed:
             _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
-            get_preemption_controller(
+            _controller = get_preemption_controller(
                 str(getattr(llama_backend, "base_url", "llama-server"))
-            ).note_resident(
+            )
+            _controller.note_resident(
                 max(0, int(occupancy.get("resident") or 0) - freed),
                 max(0, int(occupancy.get("idle_tokens") or 0) - freed),
             )
+            _controller.note_cells_reclaimed()
     except Exception:
         pass
 
@@ -22129,7 +22156,7 @@ async def produce_openai_chat_completions(
 
             # One implementation, shared with the plain chat surfaces. See
             # _openai_llama_residency_observer for why it is not defined here any more.
-            _gguf_refresh_residency, _gguf_observe_tokens = _openai_llama_residency_observer(
+            _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state = _openai_llama_residency_observer(
                 llama_backend = llama_backend,
                 completion_id = completion_id,
             )
@@ -22447,6 +22474,9 @@ async def produce_openai_chat_completions(
                             event["type"] == "tool_start" and event.get("awaiting_confirmation")
                         ):
                             await _park_admission(False)
+                            if _gguf_note_state(None) == ParticipantState.PARKED_ON_TOOL:
+                                # Answered: the tool runs next, and decoding follows.
+                                _gguf_note_state(ParticipantState.TOOLS_RUNNING)
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -22493,6 +22523,11 @@ async def produce_openai_chat_completions(
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
                                 approval_flush_pending = bool(event.get("awaiting_confirmation"))
+                                _gguf_note_state(
+                                    ParticipantState.PARKED_ON_TOOL
+                                    if event.get("awaiting_confirmation")
+                                    else ParticipantState.TOOLS_RUNNING
+                                )
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -22534,6 +22569,7 @@ async def produce_openai_chat_completions(
                         # "content" type -- cumulative text. Sanitize the full
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
+                        _gguf_note_state(ParticipantState.DECODING)
                         raw_cumulative = event.get("text", "")
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
@@ -23054,7 +23090,7 @@ async def produce_openai_chat_completions(
         # evicted, because `observe()` is the only thing that plans an eviction and
         # `on_tokens` is the only thing that calls it. Same implementation the tool loop
         # uses, not a second copy.
-        _plain_refresh_residency, _plain_observe_tokens = _openai_llama_residency_observer(
+        _plain_refresh_residency, _plain_observe_tokens, _plain_note_state = _openai_llama_residency_observer(
             llama_backend = llama_backend,
             completion_id = completion_id,
         )
@@ -30106,7 +30142,7 @@ async def anthropic_messages(
         _anthropic_preempt_loop = asyncio.get_running_loop()
     except RuntimeError:
         _anthropic_preempt_loop = None
-    _anthropic_refresh_residency, _anthropic_observe_tokens = _openai_llama_residency_observer(
+    _anthropic_refresh_residency, _anthropic_observe_tokens, _anthropic_note_state = _openai_llama_residency_observer(
         llama_backend = llama_backend,
         completion_id = message_id,
     )

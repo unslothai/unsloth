@@ -526,6 +526,13 @@ class Participant:
     # once in on_preempted to report how long the victim went on holding its cells after
     # the decision, which is the quantity the buffer is sized against.
     preempt_chosen_at: float = 0.0
+    # True once an idle-slot reclaim erased this holder's cells while it was parked on a
+    # tool prompt or running its tools. Its charge then describes cells that are gone,
+    # and counting them is what kept two waiting chats out of an EMPTY cache for three
+    # minutes on 2026-09-05: the leader sat on a tool approval, its slot was erased for
+    # the waiters, and the ledger still said it held 3847 of 6136. Cleared when the
+    # holder decodes again, because llama-server prefills its prompt back in first.
+    cells_reclaimed: bool = False
 
     @property
     def promoted(self) -> bool:
@@ -533,7 +540,7 @@ class Participant:
 
     @property
     def holds_kv(self) -> bool:
-        return self.state in _HOLDS_KV
+        return self.state in _HOLDS_KV and not self.cells_reclaimed
 
     @property
     def preemptable(self) -> bool:
@@ -551,6 +558,7 @@ class PreemptionSnapshot:
     parked: int
     winner: Optional[str]
     slots: int = 1
+    tools_running: int = 0
 
 
 class PreemptionController:
@@ -843,6 +851,7 @@ class PreemptionController:
                 participant.tokens = participant.base_tokens + max(0, int(generated or 0))
                 # A token came back, so the prompt behind it is prefilled and resident.
                 participant.measured = True
+                participant.cells_reclaimed = False
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
@@ -905,6 +914,80 @@ class PreemptionController:
                 # later growth is measured from here rather than from admission.
                 participant.base_tokens = participant.tokens
                 participant.measured = True
+                participant.cells_reclaimed = False
+
+    # The three states a tool-loop chat moves between while it is alive. PAUSED,
+    # PREEMPTING, QUEUED and the raw surfaces are owned by other transitions.
+    _LIVE_STATES = frozenset(
+        {
+            ParticipantState.DECODING,
+            ParticipantState.PARKED_ON_TOOL,
+            ParticipantState.TOOLS_RUNNING,
+        }
+    )
+
+    def note_state(self, gen_id: str, state: str) -> bool:
+        """Where a live tool-loop chat is: decoding, stopped on an approval, or in a tool.
+
+        PARKED_ON_TOOL and TOOLS_RUNNING were defined with this controller and never set
+        by anyone, so a chat waiting on an approval prompt stayed DECODING in the ledger:
+        eligible to be crowned the winner nobody benefits from, invisible to the resume
+        wait's stall detector (`snapshot().parked` was always 0), and counted as holding
+        cells an idle-slot reclaim had already erased. Only the live states move here;
+        a chat that has been asked to stop keeps that state until its own transition.
+
+        True when the state changed.
+        """
+        if state not in self._LIVE_STATES:
+            return False
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None or participant.state not in self._LIVE_STATES:
+                return False
+            if participant.state == state:
+                return False
+            participant.state = state
+            if state == ParticipantState.DECODING:
+                # Back at the model: llama-server prefills the prompt in again before
+                # the first new token, so the cells are real once more.
+                participant.cells_reclaimed = False
+            if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
+                # A winner that stopped decoding is not winning anything; let the
+                # epoch pass to somebody who is.
+                self._epoch_winner = None
+            return True
+
+    def note_cells_reclaimed(self) -> int:
+        """An idle-slot reclaim just erased every idle slot. Tell the ledger.
+
+        A holder parked on an approval or running its tools has an idle slot by
+        definition, so the erase took its cells. From here its charge would only keep
+        waiters out of room that exists, so it stops counting, and the admission lease
+        it holds hands its commitment back the same way `recost_waiting` does; the next
+        round's re-costing takes it again, waiting its turn if it must. Returns how many
+        holders this applied to.
+        """
+        released = []
+        with self._lock:
+            for participant in self._participants.values():
+                if participant.state not in (
+                    ParticipantState.PARKED_ON_TOOL,
+                    ParticipantState.TOOLS_RUNNING,
+                ):
+                    continue
+                if participant.cells_reclaimed:
+                    continue
+                participant.cells_reclaimed = True
+                released.append(participant)
+        for participant in released:
+            lease = participant.lease
+            yield_parked = getattr(lease, "yield_parked_commitment", None)
+            if callable(yield_parked):
+                try:
+                    yield_parked()
+                except Exception:  # pragma: no cover - bookkeeping must not fail a run
+                    _log.debug("could not yield a parked commitment", exc_info = True)
+        return len(released)
 
     def note_replayed(self, gen_id: str, tokens: int) -> None:
         """Tokens a paused attempt decoded that the NEXT attempt sends back as prompt.
@@ -1187,6 +1270,7 @@ class PreemptionController:
                 parked = states.count(ParticipantState.PARKED_ON_TOOL),
                 winner = self._epoch_winner,
                 slots = max(1, self._slots or 1),
+                tools_running = states.count(ParticipantState.TOOLS_RUNNING),
             )
 
 
@@ -1398,7 +1482,8 @@ class ControllerPreemptionPolicy:
             # after 90s while another chat sat in a tool call. An outstanding external
             # call is work in progress, so it keeps the deadline alive; a tool that never
             # returns is caught by `hard_deadline` instead of by this.
-            if self._controller.snapshot().parked > 0:
+            _snap = self._controller.snapshot()
+            if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
                 deadline = now + timeout
             if current != last:
                 # ANY change resets it. The earlier version reset only when `committed`

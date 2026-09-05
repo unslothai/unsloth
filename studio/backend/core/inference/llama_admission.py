@@ -376,6 +376,32 @@ class LlamaAdmissionLease:
             self._slot = None
         return True
 
+    def yield_parked_commitment(self) -> int:
+        """Hand this lease's KV commitment back while its cells are gone.
+
+        `park()` keeps `_tokens` on purpose: a run stopped on an approval prompt still
+        holds its cells, and re-charging on resume would make it wait behind everyone.
+        That stops being true the moment the preemptor erases its idle slot for a waiting
+        chat; from then on the commitment describes nothing, and holding it kept two chats
+        out of an empty cache for three minutes (2026-09-05). Same accounting as the
+        first half of `recost_waiting`: the figure goes to zero and the pool is told. The
+        next round's `recost_waiting` charges the real size again, waiting its turn.
+
+        Returns the tokens handed back, 0 when there was nothing to hand back.
+        """
+        queue = self._queue
+        with self._release_lock:
+            if queue is None or self._released or self._tokens <= 0:
+                return 0
+            held, self._tokens = self._tokens, 0
+        queue.yield_commitment(held)
+        # `yield_commitment` counts the caller as reparking until it reclaims, which holds
+        # the wait line shut against new arrivals. Right for a round about to ask again;
+        # wrong here, where nothing asks until the tool comes back. `abandon_repark(0)`
+        # drops the count and re-runs the grant without re-committing anything.
+        queue.abandon_repark(0)
+        return held
+
     def _drop_budget(self) -> None:
         """Give the executor budget back now the prompt wait is over.
 
