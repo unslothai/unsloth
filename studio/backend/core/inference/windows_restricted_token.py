@@ -36,18 +36,22 @@ nothing behind that the next start does not reconcile.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
-from typing import Any
+import time
+from typing import Any, Callable, Iterator
 
 from loggers import get_logger
 
@@ -103,11 +107,43 @@ _CREATE_NO_WINDOW = 0x08000000
 _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_NOT_SUPPORTED = 50
 _ERROR_INVALID_PARAMETER = 87
+# LookupAccountSidW could not name the SID, which is what a launch SID must be.
+_ERROR_NONE_MAPPED = 1332
 _MAX_SIBLING_SCAN = 100_000
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+# TerminateJobObject and KILL_ON_JOB_CLOSE only start the kill, so the private
+# temp and the workdir ACE are released only once the job has actually drained.
+_JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+_JOB_DRAIN_SECONDS = 5.0
+_JOB_DRAIN_FIRST_POLL_SECONDS = 0.005
+_JOB_DRAIN_MAX_POLL_SECONDS = 0.1
+# A handle the kernel has not finished closing turns a removal into a sharing
+# violation, so removal is retried before it counts as a leak.
+_TEMP_REMOVAL_ATTEMPTS = 6
+_TEMP_REMOVAL_BACKOFF_SECONDS = 0.05
+# An interrupted manifest write leaves "<manifest>.json.tmp"; it is litter once
+# its writer is gone, and always once it is this old.
+_ORPHAN_TEMPORARY_MANIFEST_SECONDS = 300.0
 
 
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    """Declared here because ``windows_lpac._api()`` never needed to query a job."""
+
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
+    ]
 
 
 class _TOKEN_GROUPS_HEADER(ctypes.Structure):
@@ -120,6 +156,30 @@ class _TOKEN_DEFAULT_DACL(ctypes.Structure):
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _last_error() -> int:
+    """``GetLastError``, behind a seam the off-Windows behavioural tests drive."""
+    return ctypes.get_last_error()
+
+
+def _limited_wording(text: str) -> str:
+    """Restate a shared AppContainer validation message for the Limited path it ran in."""
+    return re.sub(r"\bLPAC\b", "Limited mode", text)
+
+
+@contextmanager
+def _limited_mode_wording() -> Iterator[None]:
+    """Report helpers shared with the AppContainer backend as Limited mode failures."""
+    try:
+        yield
+    except SandboxUnavailableError as exc:
+        message = _limited_wording(str(exc))
+        if message == str(exc):
+            raise
+        raise SandboxUnavailableError(
+            message, transient = getattr(exc, "transient", False)
+        ) from exc
 
 
 def _random_domain_sid_text() -> str:
@@ -161,7 +221,12 @@ def _temp_root() -> str:
 
 
 def _validated_private_temp(private_temp: str) -> str:
-    """The private temp of one launch, refused unless it is a plain child of the temp root."""
+    """The private temp of one launch, refused unless it is a plain child of the temp root.
+
+    This is the only bound on the one destructive operation performed on manifest
+    input, so it stays a pure path check: a 24 hex character direct child of the
+    launcher's own temp root.
+    """
     spelled = os.path.abspath(private_temp)
     root = _temp_root()
     name = os.path.basename(spelled)
@@ -171,21 +236,210 @@ def _validated_private_temp(private_temp: str) -> str:
         or not all(character in "0123456789abcdef" for character in name.lower())
     ):
         raise SandboxUnavailableError("a Limited mode private temp path is outside its root")
-    if os.path.lexists(spelled) and getattr(os.lstat(spelled), "st_file_attributes", 0) & 0x400:
-        raise SandboxUnavailableError("the Limited mode private temp is a reparse point")
-    if os.path.isdir(spelled):
-        entries = 0
-        for base, dirs, names in os.walk(spelled, followlinks = False):
-            for entry in [*dirs, *names]:
-                entries += 1
-                if entries > _MAX_SIBLING_SCAN:
-                    raise SandboxUnavailableError("the Limited mode private temp is too large")
-                path = os.path.join(base, entry)
-                if getattr(os.lstat(path), "st_file_attributes", 0) & 0x400:
-                    raise SandboxUnavailableError(
-                        f"the Limited mode private temp contains a reparse point: {path}"
-                    )
     return spelled
+
+
+def _is_reparse_point(path: str) -> bool:
+    """Whether a path is a junction or a symlink, tested without following it."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _remove_reparse_point(path: str) -> None:
+    """Remove the link itself.
+
+    A sandboxed child needs no privilege to create a directory junction, so one
+    planted in its private temp must not be able to block cleanup forever.
+    ``os.rmdir`` is ``RemoveDirectoryW``, which deletes the reparse point and
+    never follows it; a file symlink needs ``os.unlink`` instead.
+    """
+    try:
+        os.rmdir(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+
+
+def _prune_reparse_points(root: str) -> None:
+    """Delete every reparse point under a private temp, never recursing into one."""
+    entries = 0
+    pending = [root]
+    while pending:
+        base = pending.pop()
+        try:
+            with os.scandir(base) as scan:
+                children = list(scan)
+        except FileNotFoundError:
+            continue
+        for child in children:
+            entries += 1
+            if entries > _MAX_SIBLING_SCAN:
+                raise SandboxUnavailableError("the Limited mode private temp is too large")
+            if _is_reparse_point(child.path):
+                _remove_reparse_point(child.path)
+                continue
+            try:
+                is_directory = child.is_dir(follow_symlinks = False)
+            except OSError:
+                is_directory = False
+            if is_directory:
+                pending.append(child.path)
+
+
+def _force_removable(function: Callable[[str], Any], path: str, exc: BaseException) -> None:
+    """Clear FILE_ATTRIBUTE_READONLY (or drop a reparse point) and retry one removal."""
+    if isinstance(exc, FileNotFoundError):
+        return
+    if _is_reparse_point(path):
+        _remove_reparse_point(path)
+        return
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def _rmtree_onerror(function: Callable[[str], Any], path: str, info: tuple[Any, ...]) -> None:
+    """The pre-3.12 ``onerror`` shape, which reports ``sys.exc_info`` instead."""
+    _force_removable(function, path, info[1])
+
+
+def _rmtree_error_handler() -> dict[str, Any]:
+    """``onexc`` where it exists (3.12+), ``onerror`` on the older interpreters."""
+    if sys.version_info >= (3, 12):
+        return {"onexc": _force_removable}
+    return {"onerror": _rmtree_onerror}
+
+
+def _remove_private_temp(private_temp: str) -> None:
+    """Remove one launch's private temp, retrying past handles the kernel is still closing."""
+    target = _validated_private_temp(private_temp)
+    if _is_reparse_point(target):
+        _remove_reparse_point(target)
+        return
+    handler = _rmtree_error_handler()
+    for attempt in range(_TEMP_REMOVAL_ATTEMPTS):
+        try:
+            _prune_reparse_points(target)
+            shutil.rmtree(target, **handler)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == _TEMP_REMOVAL_ATTEMPTS - 1:
+                raise
+            time.sleep(_TEMP_REMOVAL_BACKOFF_SECONDS * (attempt + 1))
+
+
+def _job_query_function(api: Any) -> Any:
+    """``QueryInformationJobObject``, declared on first use, or ``None`` when absent."""
+    query = getattr(getattr(api, "kernel32", None), "QueryInformationJobObject", None)
+    if query is None:
+        return None
+    if getattr(query, "argtypes", None) is None:
+        try:
+            query.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            query.restype = wintypes.BOOL
+        except (AttributeError, TypeError):
+            pass
+    return query
+
+
+def _job_active_processes(api: Any, handle: Any) -> int | None:
+    """How many processes the job still holds, or ``None`` when that cannot be read."""
+    query = _job_query_function(api)
+    if query is None:
+        return None
+    info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    returned = wintypes.DWORD()
+    if not query(
+        handle,
+        _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(returned),
+    ):
+        return None
+    return int(info.ActiveProcesses)
+
+
+def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool:
+    """Wait, bounded, until the job holds no process.
+
+    ``TerminateJobObject`` and ``KILL_ON_JOB_CLOSE`` only initiate termination.
+    Revoking the workdir ACE and removing the private temp before the children
+    are actually gone races the kernel closing their handles.
+    """
+    handle = getattr(job, "_handle", None)
+    if not handle:
+        return True
+    api = _lpac._api()
+    deadline = time.monotonic() + timeout
+    delay = _JOB_DRAIN_FIRST_POLL_SECONDS
+    while True:
+        active = _job_active_processes(api, handle)
+        if active == 0:
+            return True
+        if active is None:
+            logger.warning("Could not observe the Limited job draining; removal retries instead")
+            return False
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "The Limited job still held %d process(es) after %.1f s", active, timeout
+            )
+            return False
+        time.sleep(delay)
+        delay = min(delay * 2, _JOB_DRAIN_MAX_POLL_SECONDS)
+
+
+def _close_after_drain(process: Any, job: Any) -> None:
+    """Kill the job, wait for it to drain, then release the process and job handles."""
+    job.terminate()
+    _wait_for_job_drain(job)
+    process.close()
+
+
+@dataclass
+class _LaunchResources:
+    """The token and Job Object built by ``prepare`` so their failures fall back.
+
+    Both are owned by the prepared launch until a process takes them over; the
+    cleanup callback closes whatever is left.
+    """
+
+    token: Any = None
+    job: Any = None
+
+    def take_token(self) -> Any:
+        token, self.token = self.token, None
+        return token
+
+    def take_job(self) -> Any:
+        job, self.job = self.job, None
+        return job
+
+    def close(self) -> None:
+        token, self.token = self.token, None
+        job, self.job = self.job, None
+        if token:
+            _lpac._api().kernel32.CloseHandle(token)
+        if job is not None:
+            job.terminate()
+            _wait_for_job_drain(job)
+            job.close()
 
 
 @dataclass
@@ -205,30 +459,39 @@ class _LaunchIdentity:
     def cleanup(self) -> None:
         if self.cleaned:
             return
-        errors: list[str] = []
-        for path in reversed(self.granted_roots):
+        if not self.sid:
+            # A previous attempt failed and freed its allocation. The SID text is
+            # the record, so a retry converts it again rather than reusing memory
+            # that is already back with the allocator.
+            self.sid = _sid_from_text(self.sid_string)
+        try:
+            errors: list[str] = []
+            for path in reversed(self.granted_roots):
+                try:
+                    _lpac._revoke_sid(path, self.sid)
+                except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
+                    errors.append(f"ACL {path}: {exc}")
             try:
-                _lpac._revoke_sid(path, self.sid)
-            except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
-                errors.append(f"ACL {path}: {exc}")
-        try:
-            shutil.rmtree(_validated_private_temp(self.private_temp), ignore_errors = False)
-        except FileNotFoundError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"temp {self.private_temp}: {exc}")
-        if errors:
-            raise OSError("; ".join(errors))
-        try:
-            os.unlink(self.manifest_path)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise OSError(f"manifest: {exc}") from exc
-        if self.sid:
-            _lpac._api().kernel32.LocalFree(self.sid)
-        self.sid = ctypes.c_void_p()
-        self.cleaned = True
+                _remove_private_temp(self.private_temp)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"temp {self.private_temp}: {exc}")
+            if errors:
+                raise OSError("; ".join(errors))
+            try:
+                os.unlink(self.manifest_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise OSError(f"manifest: {exc}") from exc
+            self.cleaned = True
+        finally:
+            # Freed on every exit, not only the successful one: the failing paths
+            # are the ones that repeat.
+            if self.sid:
+                _lpac._api().kernel32.LocalFree(self.sid)
+            self.sid = ctypes.c_void_p()
 
 
 def _write_manifest(identity: _LaunchIdentity) -> None:
@@ -277,6 +540,13 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         or not isinstance(payload.get("owner_created"), int)
     ):
         return None
+    # The reconciler revokes an ACE on every granted root, so a planted manifest
+    # must not be able to name one. _create_identity grants exactly two roots.
+    if len(roots) != 2 or {os.path.normcase(path) for path in roots} != {
+        os.path.normcase(workdir),
+        os.path.normcase(private_temp),
+    }:
+        return None
     return payload
 
 
@@ -286,6 +556,86 @@ def _sid_from_text(text: str) -> ctypes.c_void_p:
     if not api.advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)) or not sid:
         raise _lpac._winerror(f"ConvertStringSidToSidW({text})")
     return sid
+
+
+def _sid_names_a_principal(api: Any, sid: ctypes.c_void_p) -> bool:
+    """Whether ``LookupAccountSidW`` resolves the SID to a real account.
+
+    A launch SID is a random, never-assigned ``S-1-5-21`` value, which is also
+    the exact shape of a local or domain account SID. Only a SID that names
+    nobody may drive an ACL revoke out of a manifest this process did not write.
+    """
+    lookup = getattr(getattr(api, "advapi32", None), "LookupAccountSidW", None)
+    if lookup is None:
+        raise SandboxUnavailableError(
+            "the Limited launcher cannot check whether a manifest SID names an account"
+        )
+    if getattr(lookup, "argtypes", None) is None:
+        try:
+            lookup.argtypes = [
+                wintypes.LPCWSTR,
+                ctypes.c_void_p,
+                wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD),
+                wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD),
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            lookup.restype = wintypes.BOOL
+        except (AttributeError, TypeError):
+            pass
+    name_length = wintypes.DWORD(0)
+    domain_length = wintypes.DWORD(0)
+    use = ctypes.c_int(0)
+    if lookup(
+        None,
+        sid,
+        None,
+        ctypes.byref(name_length),
+        None,
+        ctypes.byref(domain_length),
+        ctypes.byref(use),
+    ):
+        return True
+    error = _last_error()
+    if error == _ERROR_NONE_MAPPED:
+        return False
+    if error == _ERROR_INSUFFICIENT_BUFFER:
+        # The name did not fit the zero-length buffers, so the SID resolved.
+        return True
+    raise _lpac._winerror("LookupAccountSidW(manifest SID)", error)
+
+
+def _temporary_manifest_is_orphaned(temporary: Path) -> bool:
+    """Whether an interrupted ``<manifest>.json.tmp`` can no longer become a manifest."""
+    try:
+        age = time.time() - temporary.stat().st_mtime
+    except OSError:
+        return False
+    if age > _ORPHAN_TEMPORARY_MANIFEST_SECONDS:
+        return True
+    try:
+        payload = json.loads(temporary.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False  # a partial write, possibly still in progress
+    if not isinstance(payload, dict):
+        return False
+    owner = (payload.get("owner_pid"), payload.get("owner_created"))
+    if not isinstance(owner[0], int) or not isinstance(owner[1], int):
+        return False
+    return _lpac._process_identity(owner[0]) != owner
+
+
+def _remove_orphan_temporary_manifests(root: str) -> None:
+    """Delete the ``.json.tmp`` files a crash between ``open`` and ``os.replace`` leaves."""
+    for temporary in Path(root).glob(_MANIFEST_PREFIX + "*.json.tmp"):
+        try:
+            if _temporary_manifest_is_orphaned(temporary):
+                temporary.unlink()
+        except OSError:
+            logger.warning(
+                "Could not remove the orphaned Limited manifest %s", temporary, exc_info = True
+            )
 
 
 def _create_identity(workdir: str) -> _LaunchIdentity:
@@ -300,6 +650,8 @@ def _create_identity(workdir: str) -> _LaunchIdentity:
         private_temp = os.path.join(_temp_root(), secrets.token_hex(12))
         os.makedirs(private_temp, mode = 0o700)
         _validated_private_temp(private_temp)
+        if _is_reparse_point(private_temp):
+            raise SandboxUnavailableError("the Limited mode private temp is a reparse point")
         manifest_path = os.path.join(_manifest_root(), _MANIFEST_PREFIX + sid_text + ".json")
         owner = _lpac._process_identity()
         if owner is None:
@@ -341,7 +693,7 @@ def _create_identity(workdir: str) -> _LaunchIdentity:
 def _token_information(api: Any, token: wintypes.HANDLE, kind: int) -> ctypes.Array[Any]:
     size = wintypes.DWORD()
     api.advapi32.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
-    if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
+    if _last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
         raise _lpac._winerror(f"GetTokenInformation({kind}, size)")
     buffer = ctypes.create_string_buffer(size.value)
     if not api.advapi32.GetTokenInformation(token, kind, buffer, size.value, ctypes.byref(size)):
@@ -350,11 +702,12 @@ def _token_information(api: Any, token: wintypes.HANDLE, kind: int) -> ctypes.Ar
 
 
 def _token_group_sids(api: Any, token: wintypes.HANDLE, kind: int) -> list[str]:
-    """The SID strings of a ``TOKEN_GROUPS`` token class (logon SID, restricted SIDs)."""
-    try:
-        buffer = _token_information(api, token, kind)
-    except OSError:
-        return []
+    """The SID strings of a ``TOKEN_GROUPS`` token class (logon SID, restricted SIDs).
+
+    A failure is raised, never swallowed: a missing logon SID would silently
+    weaken the restricting set instead of declining the launch.
+    """
+    buffer = _token_information(api, token, kind)
     count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD))[0]
     base = ctypes.addressof(buffer) + _TOKEN_GROUPS_HEADER.Groups.offset
     stride = ctypes.sizeof(_SID_AND_ATTRIBUTES)
@@ -417,7 +770,14 @@ def _create_restricted_token(identity: _LaunchIdentity) -> wintypes.HANDLE:
     restricted = wintypes.HANDLE()
     owned: list[ctypes.c_void_p] = []
     try:
+        # The window station and desktop DACLs are written around the logon SID,
+        # so a write-restricted child without it dies during initialisation.
+        # Declining here falls back to the process guard instead.
         logon_sids = _token_group_sids(api, source, _TOKEN_LOGON_SID)
+        if not logon_sids:
+            raise SandboxUnavailableError(
+                "the Limited launcher could not read the logon SID of Studio's token"
+            )
         restrict_texts = [identity.sid_string, *logon_sids[:1], _EVERYONE_SID]
         restrict = (_SID_AND_ATTRIBUTES * len(restrict_texts))()
         for index, text in enumerate(restrict_texts):
@@ -430,7 +790,12 @@ def _create_restricted_token(identity: _LaunchIdentity) -> wintypes.HANDLE:
         # where the LUA filtering is a no-op.
         disable = (_SID_AND_ATTRIBUTES * 1)()
         disable_count = 0
-        if _ADMINISTRATORS_SID in _token_group_sids(api, source, _TOKEN_GROUPS):
+        try:
+            groups = _token_group_sids(api, source, _TOKEN_GROUPS)
+        except OSError:  # LUA_TOKEN already covers this gap, so it stays a swallow
+            logger.warning("Could not read Studio's token groups", exc_info = True)
+            groups = []
+        if _ADMINISTRATORS_SID in groups:
             administrators = _sid_from_text(_ADMINISTRATORS_SID)
             owned.append(administrators)
             disable[0].Sid = administrators.value
@@ -474,8 +839,14 @@ def _spawn_restricted(
     prepared: PreparedSandboxLaunch,
     popen_kwargs: dict[str, Any],
     identity: _LaunchIdentity,
+    resources: _LaunchResources,
 ) -> _lpac.WindowsLpacProcess:
-    """Create the child under the write-restricted token, inside its resource-limited job."""
+    """Create the child under the token and job ``prepare`` already built.
+
+    Only the process creation, its job attachment and the resume happen here.
+    Everything that can fail for a reason the caller should fall back from was
+    done in ``prepare``.
+    """
     if (
         popen_kwargs.get("stdout") != subprocess.PIPE
         or popen_kwargs.get("stderr") != subprocess.STDOUT
@@ -497,21 +868,23 @@ def _spawn_restricted(
     )
     if flags & _lpac._CREATE_BREAKAWAY_FROM_JOB:
         raise SandboxUnavailableError("Limited processes may not break away from their Job Object")
+    token = resources.token
+    # The job exists before the process so the child is never outside it, not
+    # even suspended: JOB_LIST attaches at creation, the fallback assigns
+    # before ResumeThread.
+    job = resources.job
+    if not token or job is None:
+        raise SandboxUnavailableError("the Limited launch already released its token and job")
     read_fd, write_fd = os.pipe()
     stdin_fd = -1
-    token = wintypes.HANDLE()
+    token_consumed = False
     process_info = _lpac._PROCESS_INFORMATION()
     attribute_buffer: ctypes.Array[Any] | None = None
     attribute_list: ctypes.c_void_p | None = None
     attributes_initialized = False
-    job: _lpac._WindowsJob | None = None
     stdout = None
     try:
         stdin_fd = os.open(os.devnull, os.O_RDONLY)
-        # The job exists before the process so the child is never outside it,
-        # not even suspended: JOB_LIST attaches at creation, the fallback
-        # assigns before ResumeThread.
-        job = _lpac._job_object_with_limits()
         os.set_inheritable(read_fd, False)
         os.set_inheritable(write_fd, True)
         os.set_inheritable(stdin_fd, True)
@@ -522,7 +895,7 @@ def _spawn_restricted(
 
         size = ctypes.c_size_t()
         api.kernel32.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
-        if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
+        if _last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
             raise _lpac._winerror("InitializeProcThreadAttributeList(size)")
         attribute_buffer = ctypes.create_string_buffer(size.value)
         attribute_list = ctypes.cast(attribute_buffer, ctypes.c_void_p)
@@ -552,7 +925,7 @@ def _spawn_restricted(
                 None,
             )
         )
-        if not job_attached_at_creation and ctypes.get_last_error() not in (
+        if not job_attached_at_creation and _last_error() not in (
             _ERROR_NOT_SUPPORTED,
             _ERROR_INVALID_PARAMETER,
         ):
@@ -566,8 +939,8 @@ def _spawn_restricted(
         startup.StartupInfo.hStdError = child_stdout
         startup.lpAttributeList = attribute_list
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(prepared.argv))
-        environment = _lpac._environment_block(prepared.env)
-        token = _create_restricted_token(identity)
+        with _limited_mode_wording():
+            environment = _lpac._environment_block(prepared.env)
         if not api.advapi32.CreateProcessAsUserW(
             token,
             prepared.argv[0],
@@ -582,6 +955,10 @@ def _spawn_restricted(
             ctypes.byref(process_info),
         ):
             raise _lpac._winerror("CreateProcessAsUserW(restricted token)")
+        # The child holds its own reference to the token now, so the launch owns
+        # this handle only until the finally below.
+        resources.take_token()
+        token_consumed = True
         os.close(write_fd)
         write_fd = -1
         os.close(stdin_fd)
@@ -607,13 +984,14 @@ def _spawn_restricted(
             stdout,
             job,
         )
-        prepared.cleanup_callbacks.append(process.close)
+        # The job is the process's from here; anything left with the launch is
+        # released by _LaunchResources.close.
+        prepared.cleanup_callbacks.append(lambda: _close_after_drain(process, job))
+        resources.take_job()
         return process
     except Exception:
         if process_info.hProcess:
             api.kernel32.TerminateProcess(process_info.hProcess, 1)
-        if job is not None:
-            job.close()
         for handle in (process_info.hThread, process_info.hProcess):
             if handle:
                 api.kernel32.CloseHandle(handle)
@@ -621,7 +999,7 @@ def _spawn_restricted(
             stdout.close()
         raise
     finally:
-        if token:
+        if token_consumed and token:
             api.kernel32.CloseHandle(token)
         if attributes_initialized and attribute_list is not None:
             api.kernel32.DeleteProcThreadAttributeList(attribute_list)
@@ -879,17 +1257,32 @@ class WindowsRestrictedTokenBackend:
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if not _is_windows():
             raise SandboxUnavailableError("restricted tokens require Windows")
-        workdir = _lpac._validate_workdir(spec.workdir)
+        with _limited_mode_wording():
+            workdir = _lpac._validate_workdir(spec.workdir)
         for root in (_manifest_root(), _temp_root()):
             if _lpac._is_within(workdir, root) or _lpac._is_within(root, workdir):
                 raise SandboxUnavailableError(
                     "the Limited workdir overlaps the launcher's private ownership state"
                 )
-        argv = _lpac._canonical_inner_argv(spec.argv, spec.env)
+        with _limited_mode_wording():
+            argv = _lpac._canonical_inner_argv(spec.argv, spec.env)
         identity = _create_identity(workdir)
+        resources = _LaunchResources()
         try:
+            # The token, its default DACL and the job are built here, not in the
+            # spawn callback: prepare is the boundary os_sandbox falls back from,
+            # so a failure past it would surface as a failed tool call instead of
+            # a Limited call running under the process guard.
+            try:
+                resources.token = _create_restricted_token(identity)
+                resources.job = _lpac._job_object_with_limits()
+            except OSError as exc:
+                raise SandboxUnavailableError(
+                    f"the Limited launcher could not build its restricted token and job: {exc}"
+                ) from exc
+
             def spawn(prepared: PreparedSandboxLaunch, kwargs: dict[str, Any]) -> object:
-                return _spawn_restricted(prepared, kwargs, identity)
+                return _spawn_restricted(prepared, kwargs, identity, resources)
 
             setattr(spawn, "_launch_identity", identity)
             return PreparedSandboxLaunch(
@@ -902,15 +1295,22 @@ class WindowsRestrictedTokenBackend:
                 close_fds = spec.close_fds,
                 terminate_descendants = spec.terminate_descendants,
                 spawn_callback = spawn,
-                cleanup_callbacks = [identity.cleanup],
+                cleanup_callbacks = [identity.cleanup, resources.close],
             )
         except BaseException:
-            identity.cleanup()
+            for release in (resources.close, identity.cleanup):
+                try:
+                    release()
+                except Exception:  # noqa: BLE001 - the manifest keeps the record
+                    logger.warning(
+                        "Could not release a declined Limited launch", exc_info = True
+                    )
             raise
 
     def reconcile_stale_manifests(self) -> None:
         """Revoke grants and remove private temps whose owning Studio process is gone."""
         root = _manifest_root()
+        _remove_orphan_temporary_manifests(root)
         for manifest in Path(root).glob(_MANIFEST_PREFIX + "*.json"):
             payload = _parse_manifest(manifest)
             if payload is None:
@@ -922,8 +1322,22 @@ class WindowsRestrictedTokenBackend:
                 if _lpac._process_identity(owner[0]) == owner:
                     continue
                 _validated_private_temp(payload["private_temp"])
+                sid = _sid_from_text(payload["sid"])
+                try:
+                    names_a_principal = _sid_names_a_principal(_lpac._api(), sid)
+                except BaseException:
+                    _lpac._api().kernel32.LocalFree(sid)
+                    raise
+                if names_a_principal:
+                    _lpac._api().kernel32.LocalFree(sid)
+                    logger.warning(
+                        "Refusing to reconcile Limited launch manifest %s: its SID names an "
+                        "existing account",
+                        manifest,
+                    )
+                    continue
                 identity = _LaunchIdentity(
-                    _sid_from_text(payload["sid"]),
+                    sid,
                     payload["sid"],
                     payload["workdir"],
                     payload["private_temp"],

@@ -1051,7 +1051,13 @@ def test_environment_keeps_the_trusted_git_directory(monkeypatch, tmp_path):
 
 def test_spawn_attribute_count_follows_the_profile():
     source = Path(windows_lpac.__file__).read_text(encoding = "utf-8")
-    assert "attribute_count = 3 if less_privileged else 2" in source
+    # Security capabilities, the optional AAP opt-out, the handle list, plus the
+    # Job Object attached at creation.
+    assert "attribute_count = (3 if less_privileged else 2) + 1" in source
+    assert "_PROC_THREAD_ATTRIBUTE_JOB_LIST" in source[source.index("def _spawn_lpac") :]
+    spawn = source[source.index("def _spawn_lpac") :]
+    assert spawn.index("job = _job_object_with_limits()") < spawn.index("CreateProcessW(")
+    assert spawn.index("AssignProcessToJobObject") < spawn.index("ResumeThread(")
     assert 'less_privileged = identity.profile != _PROFILE_APPCONTAINER' in source
 
 
