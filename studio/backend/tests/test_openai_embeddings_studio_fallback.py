@@ -939,9 +939,7 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
-    model = _gguf(
-        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
-    )
+    model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)])
     cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = True)
     assert "-ub" not in cmd and "-b" not in cmd
 
@@ -1032,9 +1030,7 @@ def test_a_boolean_is_not_a_token_id():
     with pytest.raises(HTTPException):
         inference_route._embeddings_items({"input": [[1, True, 3]]}, tokens_ok = True)
     # A real token array is still one text.
-    assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok = True) == [
-        [1, 2, 3]
-    ]
+    assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok = True) == [[1, 2, 3]]
 
 
 def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
