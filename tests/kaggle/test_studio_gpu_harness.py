@@ -97,6 +97,7 @@ def test_an_all_unattributed_listing_reads_as_cannot_enumerate(monkeypatch):
 
     """So cli_run_gpu_failure takes its device-delta branch rather than concluding that
     no process appeared. Readable rows still come back as the usual dict."""
+
     class _P:
         def __init__(self, out):
             self.returncode = 0
