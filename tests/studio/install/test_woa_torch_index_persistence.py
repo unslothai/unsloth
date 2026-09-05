@@ -3743,7 +3743,9 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
             f"{block.count('Test-ZipArchiveReadable')}"
         )
         probe = text[
-            text.index("function Get-WoaPyarrowSource") : text.index("function Test-WoaNvidiaPresent")
+            text.index("function Get-WoaPyarrowSource") : text.index(
+                "function Test-WoaNvidiaPresent"
+            )
         ]
         assert probe.count("Test-ZipArchiveReadable") == 2, (
             "the probe opens the supplied wheel and the local wheelhouse candidate before "
@@ -3818,11 +3820,13 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 180,
+            capture_output = True,
+            text = True,
+            timeout = 180,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expect_native, why
         staged = list(wheel_dir.glob("*.whl"))
-        assert bool(staged) is readable, (
-            f"a rejected wheel must not stay in the managed directory: {staged}"
-        )
+        assert (
+            bool(staged) is readable
+        ), f"a rejected wheel must not stay in the managed directory: {staged}"
