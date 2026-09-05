@@ -250,6 +250,10 @@ function ToolIsolationMenuSection({
     capability?.limited_backend ?? null,
   );
   const showLimitedFacts = presentation.state === "limited" || unavailable;
+  // A host whose Limited tier is more than the software safeguards (the Windows
+  // write-restricted token) says so even while OS isolation works, so the cost of
+  // choosing Limited can be read before isolation breaks or Limited is active.
+  const showLimitedTier = showLimitedFacts || limitedBackend !== null;
 
   return (
     <>
@@ -302,7 +306,7 @@ function ToolIsolationMenuSection({
                 </dd>
               </>
             ) : null}
-            {showLimitedFacts && limitedBackend ? (
+            {showLimitedTier && limitedBackend ? (
               <>
                 <dt>Limited backend</dt>
                 <dd className="truncate text-right text-foreground/80">
@@ -330,7 +334,7 @@ function ToolIsolationMenuSection({
             {capability.remediation}
           </p>
         ) : null}
-        {showLimitedFacts
+        {showLimitedTier
           ? capability?.limited_limitations.map((limitation) => (
               <p
                 key={`limited-${limitation}`}
@@ -441,7 +445,7 @@ export function LimitedModeConfirmDialog({
         {error ? (
           <p className="text-center text-xs text-destructive">{error}</p>
         ) : null}
-        <AlertDialogFooter>
+        <AlertDialogFooter className="sm:items-center">
           <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className="!h-auto !whitespace-normal !py-2 text-center"
