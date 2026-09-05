@@ -126,6 +126,9 @@ class ToolLaunchPlan:
     timeout_seconds: int | None = None
     close_fds: bool = True
     terminate_descendants: bool = True
+    # Set by the trusted tool owner, not inferred from a shell command or model args.
+    # None preserves older direct backend callers until they adopt an explicit kind.
+    execution_kind: Literal["python", "terminal"] | None = None
 
 
 # Compatibility for focused tests and callers written against the first narrow

@@ -16383,6 +16383,7 @@ def _python_exec(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
+                execution_kind = "python",
             )
         )
         launch_argv = prepared_launch.argv
@@ -16620,6 +16621,7 @@ def _bash_exec(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
+                execution_kind = "terminal",
             )
         )
         launch_argv = prepared_launch.argv

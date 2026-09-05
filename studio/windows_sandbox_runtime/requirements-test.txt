@@ -1,0 +1,2 @@
+# Static parser used by runtime discovery. Keep in sync with dependencies.PEFILE_VERSION.
+pefile==2024.8.26
