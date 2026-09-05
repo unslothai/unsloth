@@ -558,7 +558,9 @@ function Install-UnslothStudio {
         $dir = [System.IO.Path]::GetDirectoryName($full)
         $entries = @()
         foreach ($line in $lines) {
-            if ($line -match '^\s*(#|$)') { continue }
+            # Comments and blanks come across as ordinary entries: a merge that folds one
+            # file into another should carry it faithfully, and every name-computing caller
+            # already reads a comment as nameless.
             if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
                 $nested = $Matches[1].Trim('"', "'")
                 if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
@@ -6535,32 +6537,25 @@ exit 0
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
         # --overrides replaces any UV_OVERRIDE env file, so fold caller files in, minus their trio.
-        $ovDirs = @()
+        #
+        # REBASED as they are folded, rather than trusting the merge to land in the directory
+        # they came from. uv resolves an override's relative references against the file that
+        # contains them, and UV_OVERRIDE normally names two files here since a non-conflicting
+        # caller file is kept where it sits -- so "one shared directory" is not the common case,
+        # and the merge fell to %TEMP% where every relative reference pointed at nothing.
+        # Get-WoaRequirementEntries follows nested -r for the same reason: an include cannot come
+        # along as a relative line either.
         if ($env:UV_OVERRIDE) {
             foreach ($ovFile in ($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })) {
-                if (Test-Path -LiteralPath $ovFile -PathType Leaf) {
-                    $ovFull = (Convert-Path -LiteralPath $ovFile)
-                    # ReadAllLines, not Get-Content: PS 5.1 decodes a BOM-less file with the ANSI
-                    # code page, turning a non-ASCII path into mojibake the UTF-8 write preserves.
-                    $lines += @([System.IO.File]::ReadAllLines($ovFull) | Where-Object {
-                        $_ -notmatch '^\s*torch(vision|audio)?([\s<>=!~;@[]|$)'
-                    })
-                    $ovDirs += (Split-Path -Parent $ovFull)
+                if (-not (Test-Path -LiteralPath $ovFile -PathType Leaf)) { continue }
+                foreach ($ovEntry in (Get-WoaRequirementEntries -Path $ovFile)) {
+                    if ($ovEntry.Line -match '^\s*torch(vision|audio)?([\s<>=!~;@[]|$)') { continue }
+                    $lines += (Resolve-WoaOverrideLine -Line $ovEntry.Line -BaseDir $ovEntry.BaseDir)
                 }
             }
         }
-        # uv resolves an override's relative references against THAT file's dir, so write the
-        # merge beside the caller's override; %TEMP% when there is none, several dirs, or read-only.
-        $f = $null
-        $ovDirs = @($ovDirs | Sort-Object -Unique)
-        if ($ovDirs.Count -eq 1) {
-            try {
-                $candidate = Join-Path $ovDirs[0] ("unsloth-torch-overrides-" + [guid]::NewGuid().ToString("N") + ".txt")
-                New-Item -ItemType File -Path $candidate -ErrorAction Stop | Out-Null
-                $f = $candidate
-            } catch { $f = $null }
-        }
-        if (-not $f) { $f = [System.IO.Path]::GetTempFileName() }
+        # Every reference is absolute now, so where this lands no longer changes its meaning.
+        $f = [System.IO.Path]::GetTempFileName()
         # Track it the moment it exists: WriteAllText can throw and the outer cleanup would have
         # no path to remove, leaving a partial copy, authenticated URLs included, on disk.
         $script:TorchOverridesFile = $f

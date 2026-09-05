@@ -5301,6 +5301,21 @@ def run(
     return result
 
 
+def _woa_overrides_are_load_bearing() -> bool:
+    """Is this a native win_arm64 resolve whose correctness depends on UV_OVERRIDE?
+
+    install.ps1 writes those overrides to lift the released torch cap -- no win_arm64 CUDA
+    wheel satisfies it -- and to drop the packages with no win_arm64 build. pip has no
+    override mechanism at all: constraints only narrow a requirement, they cannot replace
+    one, so there is nothing to translate them into. Falling back to pip on this stack does
+    not recover, it silently resolves the wrong thing.
+
+    Both halves are required, so this is False for every other host and for an ARM64 run
+    that never configured overrides in the first place.
+    """
+    return bool(os.environ.get("UV_OVERRIDE", "").strip()) and _is_win_arm64_interpreter()
+
+
 def _report_failed_command(label: str, result: subprocess.CompletedProcess[bytes]) -> None:
     """Print a failed command's redacted output and exit with its code."""
     _step("error", f"{label} failed (exit code {result.returncode})", _red)
@@ -7147,9 +7162,33 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            if _woa_overrides_are_load_bearing():
+                _step("error", f"{label} failed and pip cannot stand in for it", _red)
+                _safe_print(_red(
+                    "   The Windows on ARM stack resolves through UV_OVERRIDE, which pip has no "
+                    "equivalent for: overrides REPLACE a requirement, and pip constraints can "
+                    "only narrow one."
+                ))
+                _safe_print(_red(
+                    "   Falling back here would honour the released torch cap, which no "
+                    "win_arm64 CUDA wheel satisfies, and pull back the packages that have no "
+                    "win_arm64 build at all -- downgrading a working CUDA torch or failing "
+                    "later, with nothing to say why."
+                ))
+                _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
+                _report_failed_command(label, result)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
+
+        elif _woa_overrides_are_load_bearing():
+            # Same reasoning as above, reached when uv was never available at all.
+            _step("error", f"{label} needs uv on the Windows on ARM stack", _red)
+            _safe_print(_red(
+                "   The native ARM64 resolve depends on UV_OVERRIDE, which pip cannot express. "
+                "Install uv and re-run, or re-run install.ps1."
+            ))
+            sys.exit(1)
 
         pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         pip_label = f"{label} (pip)" if USE_UV else label

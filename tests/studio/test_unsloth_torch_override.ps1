@@ -97,7 +97,9 @@ Remove-Item -LiteralPath $leakFile -Force -ErrorAction SilentlyContinue
 Write-Host "the inherited-override filter drops the torch trio in any casing"
 # PowerShell's -notmatch is case-insensitive, so a caller override `Torch<2.11` is dropped.
 $filterPattern = $null
-if ($fnText -match '\$_ -notmatch ''([^'']+)''') { $filterPattern = $Matches[1] }
+# The merge now folds entry by entry, so the trio filter reads `-match ... { continue }`
+# rather than a `-notmatch` in a pipeline. Same pattern, opposite polarity.
+if ($fnText -match '\$ovEntry\.Line -match ''([^'']+)''') { $filterPattern = $Matches[1] }
 Check "filter pattern extracted from the helper" ($null -ne $filterPattern)
 $inherited = @(
     "# comment survives",

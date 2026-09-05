@@ -3094,3 +3094,125 @@ class TestTheWoaIndexOutlivesTheManifest:
         written = marker.read_text(encoding = "utf-8") if marker.exists() else ""
         assert "s3cret" not in written, f"the marker file holds a credential: {written!r}"
         assert written == "", "nothing unpersistable should be written at all"
+
+
+class TestTheTorchMergeRebasesWhatItFolds:
+    """Two override files is the NORMAL case on the native path, not an edge one.
+
+    A non-conflicting caller file is deliberately kept where it sits, so UV_OVERRIDE names it
+    alongside the generated one. The merge used to write itself into the caller's directory to
+    keep relative references working, which only helped when there was exactly ONE directory --
+    with two it fell to %TEMP% and every relative reference resolved against nothing.
+    """
+
+    @staticmethod
+    def _merge(tmp_path, override_files):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        fake_py = tmp_path / "fakepython"
+        fake_py.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'torch==2.11.0+cu130\\ntorchvision==0.26.0+cu130\\n'\n",
+            encoding = "ascii",
+        )
+        fake_py.chmod(0o755)
+        script = "\n".join(
+            [
+                "$SkipTorch = $false",
+                _ps_function(INSTALL_PS1, "Get-WoaRequirementEntries"),
+                _ps_function(INSTALL_PS1, "Resolve-WoaOverrideLine"),
+                _ps_function(INSTALL_PS1, "New-UnslothTorchOverridesFile"),
+                "$env:UV_OVERRIDE = '{}'".format(" ".join(str(f) for f in override_files)),
+                f"$m = New-UnslothTorchOverridesFile -PythonExe '{fake_py}'",
+                "Write-Output ('<<<' + [System.IO.File]::ReadAllText($m) + '>>>')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 180,
+        )
+        assert done.returncode == 0, done.stderr
+        out = done.stdout
+        return out[out.index("<<<") + 3 : out.rindex(">>>")]
+
+    @requires_pwsh
+    def test_two_override_directories_still_rebase(self, tmp_path):
+        first = tmp_path / "managed"
+        second = tmp_path / "corp"
+        for directory in (first, second):
+            directory.mkdir()
+        (first / "nested.txt").write_text("idna==3.6\n", encoding = "utf-8")
+        (first / "a.txt").write_text("-r nested.txt\nrich>=13\n", encoding = "utf-8")
+        (second / "b.txt").write_text("./local.whl\nplainpkg==2.0\n", encoding = "utf-8")
+
+        merged = self._merge(tmp_path, [first / "a.txt", second / "b.txt"])
+        assert "idna==3.6" in merged, "the include one directory down was not followed"
+        assert "-r " not in merged, "a relative include survived as a relative line"
+        assert str(second / "local.whl") in merged.replace("/", os.sep), (
+            f"the bare relative wheel path was not rebased onto its own directory: {merged!r}"
+        )
+        assert "rich>=13" in merged and "plainpkg==2.0" in merged
+
+    @requires_pwsh
+    def test_the_frozen_trio_still_wins(self, tmp_path):
+        """Rebasing must not disturb what the merge is FOR: pinning the installed trio."""
+        caller = tmp_path / "corp"
+        caller.mkdir()
+        (caller / "a.txt").write_text("torch==1.0\ntorchvision==0.1\nrich>=13\n", encoding = "utf-8")
+        merged = self._merge(tmp_path, [caller / "a.txt"])
+        assert merged.lstrip().startswith("torch==2.11.0+cu130")
+        assert "torch==1.0" not in merged and "torchvision==0.1" not in merged
+        assert "rich>=13" in merged
+
+
+class TestThePipFallbackIsRefusedOnTheNativeStack:
+    """pip has no override mechanism, so falling back to it does not recover here.
+
+    The WoA overrides lift the released torch cap -- no win_arm64 CUDA wheel satisfies it --
+    and drop the packages with no win_arm64 build at all. Constraints cannot stand in: they
+    narrow a requirement, they cannot replace one. Running pip anyway downgrades a working
+    CUDA torch or fails later with nothing to say why, so it is refused with a reason.
+    """
+
+    @pytest.fixture
+    def ips(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_ips_pip_fallback", STACK_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.mark.parametrize(
+        "arm64, override, expected, why",
+        [
+            (True, "C:/s/woa/overrides.txt", True, "the native stack, with overrides in force"),
+            (True, "", False, "an ARM64 run that configured none is not this case"),
+            (False, "C:/s/woa/overrides.txt", False, "x64 keeps the fallback it always had"),
+            (False, "", False, "and so does every other host"),
+            (True, "   ", False, "a blank value is not an override file"),
+        ],
+    )
+    def test_when_the_refusal_applies(self, ips, monkeypatch, arm64, override, expected, why):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: arm64)
+        if override:
+            monkeypatch.setenv("UV_OVERRIDE", override)
+        else:
+            monkeypatch.delenv("UV_OVERRIDE", raising = False)
+        assert ips._woa_overrides_are_load_bearing() is expected, why
+
+    def test_both_fallback_paths_are_covered(self):
+        """uv failing and uv never being available reach pip by different routes."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert source.count("_woa_overrides_are_load_bearing()") == 3, (
+            "one definition and both fallback sites; a route that skips the check would "
+            "silently resolve the wrong stack"
+        )
+        after_uv_failed = source.index("if _woa_overrides_are_load_bearing():")
+        pip_build = source.index("pip_cmd = _build_pip_cmd(args)")
+        assert after_uv_failed < pip_build, "the check has to precede the pip command"
+
+    def test_the_message_names_the_remedy(self):
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert "Install uv and re-run" in source, (
+            "a refusal with no way forward is worse than the silent fallback it replaces"
+        )

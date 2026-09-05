@@ -3906,7 +3906,9 @@ function Get-RequirementEntries {
     $dir = [System.IO.Path]::GetDirectoryName($full)
     $entries = @()
     foreach ($line in $lines) {
-        if ($line -match '^\s*(#|$)') { continue }
+        # Comments and blanks come across as ordinary entries: a merge that folds one
+        # file into another should carry it faithfully, and every name-computing caller
+        # already reads a comment as nameless.
         if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
             $nested = $Matches[1].Trim('"', "'")
             if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
