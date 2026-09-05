@@ -289,11 +289,6 @@ def _argument_fragment(value: Any) -> Any:
     "announced, no arguments field". Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``.
     """
     if isinstance(value, (dict, list)):
-        if not value:
-            # An empty one is the "arguments started, nothing in them yet" opening that conforming
-            # servers spell "". As "{}" it would be a finished document, closing the slot so the
-            # rest of the call forks into a second one.
-            return ""
         try:
             return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
         except (TypeError, ValueError, RecursionError):

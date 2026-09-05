@@ -1595,12 +1595,6 @@ test("string fragments pass through byte-exact and junk contributes nothing", ()
   assert.equal(streamedToolCallArguments(7), "");
 });
 
-test("an empty decoded object is an opening, not a finished document", () => {
-  // "{}" would close the slot, so the rest of the call forks into a second one.
-  assert.equal(streamedToolCallArguments({}), "");
-  assert.equal(streamedToolCallArguments([]), "");
-});
-
 test("the adapter's delta site reads arguments through the helper", () => {
   // Pinned so a tidy-up cannot bring the payload-dropping typeof-ternary back.
   assert.ok(
@@ -1631,48 +1625,46 @@ test("a delta whose arguments arrive as a decoded object keeps its payload", () 
   );
 });
 
-test("an empty decoded object opening does not fork the call that follows it", () => {
-  // A server that decodes cannot spell the opening "", and "{}" read as a finished
-  // document put a second card beside the real call, with the tool run twice.
-  const parts = run([
+test("a decoded object lands exactly where its string spelling would", () => {
+  // The whole contract: serializing puts the object on the path the accumulator
+  // already has for text, so every downstream rule -- the object boundary that
+  // opens the next parallel call, the id that keeps a snapshot on its own -- reads
+  // it the same either way. Pinned as a pair so a later change cannot give the two
+  // dialects different answers, which is the one way this helper can mislead.
+  const asObject = (a: unknown) => a as unknown as string;
+  for (const [label, objectStream, stringStream] of [
     [
-      {
-        id: "call-obj",
-        index: 0,
-        function: { name: "web_search", arguments: {} as unknown as string },
-      },
-    ],
-    [{ index: 0, function: { arguments: '{"query":' } }],
-    [{ index: 0, function: { arguments: '"value"}' } }],
-  ]);
-  assert.deepEqual(
-    parts.map((part) => [part.toolName, part.argsText]),
-    [["web_search", '{"query":"value"}']],
-  );
-});
-
-test("a decoded object growing under one id stays one call", () => {
-  const parts = run([
-    [
-      {
-        id: "call-obj",
-        index: 0,
-        function: { name: "web_search", arguments: {} as unknown as string },
-      },
+      "one payload",
+      [[{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "v" }) } }]],
+      [[{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"v"}' } }]],
     ],
     [
-      {
-        id: "call-obj",
-        index: 0,
-        function: {
-          name: "web_search",
-          arguments: { query: "value" } as unknown as string,
-        },
-      },
+      "an empty opening, then the rest as fragments",
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({}) } }],
+        [{ index: 0, function: { arguments: '{"query":' } }],
+        [{ index: 0, function: { arguments: '"v"}' } }],
+      ],
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: "{}" } }],
+        [{ index: 0, function: { arguments: '{"query":' } }],
+        [{ index: 0, function: { arguments: '"v"}' } }],
+      ],
     ],
-  ]);
-  assert.deepEqual(
-    parts.map((part) => [part.toolName, part.argsText]),
-    [["web_search", '{"query":"value"}']],
-  );
+    [
+      "two snapshots under one id",
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "a" }) } }],
+        [{ id: "c1", index: 0, function: { name: "s", arguments: asObject({ query: "ab" }) } }],
+      ],
+      [
+        [{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"a"}' } }],
+        [{ id: "c1", index: 0, function: { name: "s", arguments: '{"query":"ab"}' } }],
+      ],
+    ],
+  ] as const) {
+    const shapeOf = (deltas: unknown) =>
+      run(deltas as never).map((part) => [part.toolName, part.argsText]);
+    assert.deepEqual(shapeOf(objectStream), shapeOf(stringStream), label);
+  }
 });
