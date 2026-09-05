@@ -5714,7 +5714,6 @@ def _wheelhouse_best_version(name: str, floor: str) -> "str | None":
         return None
     try:
         from packaging.version import Version
-
         return max(usable, key = Version)
     except Exception:
         return sorted(usable)[-1]

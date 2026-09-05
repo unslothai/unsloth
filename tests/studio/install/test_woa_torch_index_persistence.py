@@ -3992,7 +3992,7 @@ class TestTheProbedCudaWheelIsWhatGetsInstalled:
     @staticmethod
     def _block() -> str:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        start = text.index("if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq \"win-arm64\") {")
+        start = text.index('if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {')
         return text[start : text.index("# Release preservation cannot run here", start)]
 
     def test_the_trio_is_pinned_to_the_probed_versions(self):
@@ -4073,9 +4073,7 @@ class TestTheProbedCudaWheelIsWhatGetsInstalled:
             ),
         ],
     )
-    def test_what_the_specs_come_out_as(
-        self, torch_v, vision_v, audio_v, has_audio, expected, why
-    ):
+    def test_what_the_specs_come_out_as(self, torch_v, vision_v, audio_v, has_audio, expected, why):
         script = "\n".join(
             [
                 "function substep { param($m, $c) }",

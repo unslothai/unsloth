@@ -749,12 +749,16 @@ class TestAHostedOptionalIsActuallyInstalled:
             assert rows, f"{name} is no longer excluded on ARM64; the explicit install is stale"
 
     @staticmethod
-    def _calls(ips, monkeypatch, hosted, install_ok = True, **stubs):
+    def _calls(
+        ips,
+        monkeypatch,
+        hosted,
+        install_ok = True,
+        **stubs,
+    ):
         """Run the step with `hosted` standing in for the wheelhouse listing."""
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
-        monkeypatch.setattr(
-            ips, "_wheelhouse_best_version", lambda name, floor: hosted.get(name)
-        )
+        monkeypatch.setattr(ips, "_wheelhouse_best_version", lambda name, floor: hosted.get(name))
         monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: name in hosted)
         monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
         calls = []
@@ -809,9 +813,9 @@ class TestAHostedOptionalIsActuallyInstalled:
             (tmp_path / _wheel("xformers", tag, tag, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
         ips._find_links_wheel_versions.cache_clear()
-        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100", (
-            "sorted as text 0.0.23 would win"
-        )
+        assert (
+            ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100"
+        ), "sorted as text 0.0.23 would win"
 
     def test_an_xformers_built_for_another_torch_is_removed(self, ips, monkeypatch):
         """Its extension links against one exact pair; beside any other the ops vanish
