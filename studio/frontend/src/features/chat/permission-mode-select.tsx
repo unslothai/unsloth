@@ -365,7 +365,7 @@ export function LimitedModeConfirmDialog({
                 .catch(() => undefined);
             }}
           >
-            {loading ? "Enabling…" : "Use Limited mode for this session"}
+            {loading ? "Enabling…" : "Use Limited mode"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
