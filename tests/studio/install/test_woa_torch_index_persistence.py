@@ -274,14 +274,19 @@ class TestResolverEnvironmentRestore:
         assert not got["warned"], "and it says nothing about a platform it is not on"
 
     @requires_pwsh
-    def test_a_caller_that_already_set_them_wins(self, tmp_path: pathlib.Path):
-        """install.ps1 sets these moments earlier in this same process. Never clobber it."""
-        self._stage(tmp_path)
+    def test_a_caller_that_already_set_them_keeps_their_file(self, tmp_path: pathlib.Path):
+        """
+        The caller's own override file is never dropped. It is no longer the WHOLE answer
+        though: the win_arm64 drop list is added beside it, because standing down entirely
+        sent the dependency pass at a Brotli sdist. Disjoint files, so both are passed.
+        """
+        overrides = self._stage(tmp_path)
         got = self._invoke(
             tmp_path,
             preset = "$env:UV_OVERRIDE = 'C:\\caller\\ov.txt'",
         )
-        assert got["ov"] == "C:\\caller\\ov.txt"
+        assert "C:\\caller\\ov.txt" in got["ov"], "the caller's file survives"
+        assert str(overrides) in got["ov"], "and ours is there too"
 
     @requires_pwsh
     @pytest.mark.parametrize("held", ["UV_FIND_LINKS", "PIP_FIND_LINKS"])
@@ -1305,10 +1310,11 @@ class TestTheProbeAsksForTheInterpretersAbi:
             in text
         )
         # Both re-probes know which interpreter was chosen, so both must answer for it.
-        assert (
-            text.count("-FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)")
-            == 2
-        )
+        # The flag is read into a variable first, so the guard can compare it as well as
+        # the minor -- a same-minor free-threaded build has to re-probe too.
+        assert text.count("Test-PythonFreeThreaded -PythonExe $DetectedPython.Path") == 2
+        assert "-FreeThreaded $WoaDetectedFreeThreaded" in text
+        assert "-FreeThreaded $_woaNewFreeThreaded" in text
 
     def test_the_staging_scan_uses_the_venv_abi(self):
         """
@@ -1364,3 +1370,162 @@ class TestTheProbeAsksForTheInterpretersAbi:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected
+
+
+class TestTheAbiReprobeFiresOnAMatchingMinor:
+    """The hole left by keying the re-probe on the minor alone.
+
+    The first probe runs before an interpreter exists, so it has to assume a GIL build.
+    A free-threaded 3.13t selected for a 3.13 request then matched on minor, skipped the
+    only call that passes -FreeThreaded, and left the cp313 answer standing -- so native
+    mode was enabled on wheels the resulting cp313t venv cannot install.
+    """
+
+    def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$WoaProbedFreeThreaded = $false" in text
+        assert "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in text, (
+            "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
+        )
+
+    def test_the_second_reprobe_compares_it_too(self):
+        """After Install-PythonFromPythonOrg the ABI can change without the minor doing so."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "($_woaNewFreeThreaded -ne $WoaProbedFreeThreaded)" in text
+
+    def test_the_detection_is_scoped_to_this_host(self):
+        """A subprocess per run on every Windows x64 host would buy nothing."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        block = text[text.index("$WoaDetectedFreeThreaded = $false"):][:600]
+        assert '(Get-HostMachineArch) -eq "arm64"' in block
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "probed_minor, probed_ft, minor, ft, should_reprobe, why",
+        [
+            ("3.13", False, "3.13", False, False, "nothing changed"),
+            ("3.13", False, "3.12", False, True, "a different minor, as before"),
+            ("3.13", False, "3.13", True, True, "THE BUG: same minor, free-threaded"),
+            ("3.13", True, "3.13", False, True, "and back again, after a GIL install"),
+        ],
+    )
+    def test_the_guard_decides_correctly(
+        self, probed_minor, probed_ft, minor, ft, should_reprobe, why
+    ):
+        script = "\n".join([
+            f"$WoaProbedMinor = '{probed_minor}'",
+            f"$WoaProbedFreeThreaded = ${str(probed_ft).lower()}",
+            f"$DetectedPython = @{{ Version = '{minor}' }}",
+            f"$WoaDetectedFreeThreaded = ${str(ft).lower()}",
+            "if ($DetectedPython -and (",
+            "        ($DetectedPython.Version -ne $WoaProbedMinor) -or",
+            "        ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {",
+            "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        got = done.stdout.strip().splitlines()[-1]
+        assert (got == "REPROBE") is should_reprobe, why
+
+
+class TestAnExplicitPinOutranksThePersistedIndex:
+    """The recovery is a memory of what install.ps1 chose, not a decision.
+
+    Letting it win meant a user who set UNSLOTH_TORCH_INDEX_URL or
+    UNSLOTH_TORCH_INDEX_FAMILY to move to another CUDA mirror was silently still served
+    by the previously recorded NVIDIA channel.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "pinned, woa, install_url, expected, why",
+        [
+            ("", "https://pypi.nvidia.com/nvtorch_oot", "https://d.pytorch.org/whl/cu130",
+             "https://pypi.nvidia.com/nvtorch_oot", "unpinned fresh shell: the recovery"),
+            ("https://mirror.test/cu129", "https://pypi.nvidia.com/nvtorch_oot",
+             "https://mirror.test/cu129", "https://mirror.test/cu129", "an explicit pin wins"),
+            ("", "", "https://d.pytorch.org/whl/cu130", "https://d.pytorch.org/whl/cu130",
+             "no recovery, no pin: unchanged"),
+        ],
+    )
+    def test_the_pin_wins(self, pinned, woa, install_url, expected, why):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$_cudaIndexUrl = if ($PinnedTorchIndexUrl)")
+        end = text.index("else { $TorchInstallIndexUrl }", start) + len("else { $TorchInstallIndexUrl }")
+        script = "\n".join([
+            f"$PinnedTorchIndexUrl = '{pinned}'",
+            f"$WinArm64TorchIndexUrl = '{woa}'",
+            f"$TorchInstallIndexUrl = '{install_url}'",
+            text[start:end].strip(),
+            "Write-Output $_cudaIndexUrl",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
+
+
+class TestTheRestoreMergesRatherThanStandsDown:
+    """A caller override must not cost the win_arm64 drop list.
+
+    studio.txt installs ddgs, whose HTTP stack asks for httpx[brotli], and Brotli has no
+    win_arm64 wheel -- so skipping the generated file because UV_OVERRIDE happened to be
+    set sent the update at an sdist it cannot build.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "line, expected_name",
+        [
+            ('Brotli ; platform_machine == "AMD64"', "brotli"),
+            ("brotli_cffi>=1.0", "brotli-cffi"),
+            ("torch>=2.4", "torch"),
+            ("pyarrow==21.0.0", "pyarrow"),
+            ("# a comment", ""),
+            ("", ""),
+            ("-r other.txt", ""),
+        ],
+    )
+    def test_requirement_names_are_canonical(self, line: str, expected_name: str):
+        """PEP 503 normalisation, so Brotli and brotli_cffi compare as one name."""
+        script = "\n".join([
+            _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Get-RequirementName"),
+            f"Write-Output \"[$(Get-RequirementName -Line '{line}')]\"",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == f"[{expected_name}]"
+
+    def test_disjoint_files_are_both_passed_and_conflicts_are_merged(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        block = text[text.index("$_woaOursNames = Get-RequirementNames"):][:2600]
+        assert '$env:UV_OVERRIDE = "$safeOverrides $($env:UV_OVERRIDE)"' in block, (
+            "disjoint files need no rewriting, which keeps each file's relative "
+            "references resolving against its own directory"
+        )
+        assert "overrides.merged.txt" in block, "only an actual conflict is merged"
+        assert "(Get-RequirementName -Line $_woaOvLine) -in $_woaOursNames" not in block
+
+    def test_the_caller_no_longer_suppresses_the_drop_list(self):
+        """The regression: the whole restore used to sit under `if (-not $env:UV_OVERRIDE)`."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        body = _function_source(text, "Restore-WoaResolverEnvironment")
+        # The drop list is read whatever the caller set; only the LAST step -- assigning
+        # ours alone versus combining -- is allowed to look at UV_OVERRIDE.
+        overrides_at = body.index("$safeOverrides = Get-UvSafePath $overrides")
+        head = body[:overrides_at]
+        assert head.count("$env:UV_OVERRIDE") <= 1, (
+            "reaching the drop list must not depend on the caller having set nothing; "
+            f"head still tests it: {head[-300:]}"
+        )
+        assert "elseif (-not $env:UV_OVERRIDE) {" in body, (
+            "the no-caller case still assigns ours alone"
+        )

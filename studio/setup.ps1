@@ -3814,6 +3814,32 @@ function Get-UvSafePath {
     return $Path
 }
 
+# The canonical distribution name a requirements line declares, or "" for a comment, a
+# blank line or an option line. PEP 503 normalisation, so brotli / Brotli / brotli_cffi
+# compare as one name.
+function Get-RequirementName {
+    param([string]$Line)
+    if (-not $Line -or $Line -match '^\s*(#|-|$)') { return "" }
+    $name = (($Line -split '[\s<>=!~;@\[]', 2)[0]).Trim()
+    if (-not $name) { return "" }
+    return ($name -replace '[-_.]+', '-').ToLowerInvariant()
+}
+
+# Every canonical name declared by an overrides/requirements file. Missing or unreadable
+# reads as empty, which makes the caller treat it as declaring nothing rather than throw.
+function Get-RequirementNames {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $names = @()
+    try {
+        foreach ($line in [System.IO.File]::ReadAllLines((Convert-Path -LiteralPath $Path))) {
+            $name = Get-RequirementName -Line $line
+            if ($name) { $names += $name }
+        }
+    } catch { return @() }
+    return @($names | Sort-Object -Unique)
+}
+
 # Windows on ARM: the resolver configuration install.ps1 generated, put back for a run that
 # did not come from install.ps1.
 #
@@ -3835,20 +3861,67 @@ function Restore-WoaResolverEnvironment {
     $woaDir = Join-Path $StudioHome "woa"
     $overrides = Join-Path $woaDir "overrides.txt"
     $wheels = Join-Path $woaDir "wheels"
-    if (-not $env:UV_OVERRIDE) {
-        if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
-            # A native venv whose overrides file was deleted. Guessing the contents would
-            # be worse than saying so: the drops depend on what the wheelhouse held.
+    if (-not (Test-Path -LiteralPath $overrides -PathType Leaf)) {
+        # A native venv whose overrides file was deleted. Guessing the contents would
+        # be worse than saying so: the drops depend on what the wheelhouse held.
+        if (-not $env:UV_OVERRIDE) {
             substep "windows on arm: $overrides is missing, so the win_arm64 requirement" "Yellow"
             substep "overrides cannot be restored. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+        }
+    } else {
+        $safeOverrides = Get-UvSafePath $overrides
+        if ($safeOverrides -match '\s') {
+            substep "windows on arm: $overrides contains a space and has no 8.3 short name," "Yellow"
+            substep "which uv cannot read. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+        } elseif (-not $env:UV_OVERRIDE) {
+            $env:UV_OVERRIDE = $safeOverrides
+            substep "windows on arm: restored requirement overrides from $overrides"
         } else {
-            $safeOverrides = Get-UvSafePath $overrides
-            if ($safeOverrides -match '\s') {
-                substep "windows on arm: $overrides contains a space and has no 8.3 short name," "Yellow"
-                substep "which uv cannot read. Re-run install.ps1 if this pass fails to resolve." "Yellow"
+            # A caller override is not a reason to go without the drop list. Skipping it
+            # sent the dependency pass back at the win_arm64 sdists the file exists to
+            # suppress -- ddgs pulls httpx[brotli], and Brotli has no win_arm64 wheel --
+            # so a shell that happened to have UV_OVERRIDE set failed the update.
+            #
+            # uv COMBINES override files rather than letting a later one win, and errors
+            # when two declare the same package without distinguishing markers. So both
+            # files are handed over when they declare disjoint packages, which needs no
+            # rewriting and keeps each file's own relative references intact; only an
+            # actual conflict is merged, and there ours wins because it names the packages
+            # this platform cannot build.
+            $_woaOursNames = Get-RequirementNames -Path $overrides
+            $_woaCallerFiles = @($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })
+            $_woaConflict = $false
+            foreach ($_woaFile in $_woaCallerFiles) {
+                foreach ($_woaName in (Get-RequirementNames -Path $_woaFile)) {
+                    if ($_woaOursNames -contains $_woaName) { $_woaConflict = $true; break }
+                }
+                if ($_woaConflict) { break }
+            }
+            if (-not $_woaConflict) {
+                $env:UV_OVERRIDE = "$safeOverrides $($env:UV_OVERRIDE)"
+                substep "windows on arm: added the win_arm64 requirement overrides alongside yours"
             } else {
-                $env:UV_OVERRIDE = $safeOverrides
-                substep "windows on arm: restored requirement overrides from $overrides"
+                $_woaMerged = Join-Path $woaDir "overrides.merged.txt"
+                $_woaLines = @([System.IO.File]::ReadAllLines($overrides))
+                foreach ($_woaFile in $_woaCallerFiles) {
+                    if (-not (Test-Path -LiteralPath $_woaFile -PathType Leaf)) { continue }
+                    foreach ($_woaLine in [System.IO.File]::ReadAllLines((Convert-Path -LiteralPath $_woaFile))) {
+                        if ($_woaLine -match '^\s*(#|$)') { continue }
+                        if ((Get-RequirementName -Line $_woaLine) -in $_woaOursNames) { continue }
+                        $_woaLines += $_woaLine
+                    }
+                }
+                try {
+                    [System.IO.File]::WriteAllLines($_woaMerged, [string[]]$_woaLines, (New-Object System.Text.UTF8Encoding($false)))
+                    $_woaSafeMerged = Get-UvSafePath $_woaMerged
+                    if ($_woaSafeMerged -match '\s') { throw "merged override path is unreadable by uv" }
+                    $env:UV_OVERRIDE = $_woaSafeMerged
+                    substep "windows on arm: merged your requirement overrides with the win_arm64 drop list"
+                    substep "  (this platform's entries win where both name the same package)"
+                } catch {
+                    substep "windows on arm: could not merge requirement overrides ($($_.Exception.Message))." "Yellow"
+                    substep "  keeping yours; the dependency pass may reach a win_arm64 sdist." "Yellow"
+                }
             }
         }
     }
@@ -5377,7 +5450,15 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         }
         # The win_arm64 CUDA wheels live on the index install.ps1 probed, not on the
         # driver-derived family; everywhere else this is empty and the URL is unchanged.
-        $_cudaIndexUrl = if ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl } else { $TorchInstallIndexUrl }
+        # An explicit pin outranks the persisted one. UNSLOTH_TORCH_INDEX_URL and
+        # UNSLOTH_TORCH_INDEX_FAMILY both land in $PinnedTorchIndexUrl, and the recovered
+        # WoA index is only a memory of what install.ps1 chose -- letting it win meant a
+        # user switching to another CUDA mirror was silently still served by the old
+        # channel. The recovery is for the unpinned fresh-shell case, which is the case it
+        # was added for.
+        $_cudaIndexUrl = if ($PinnedTorchIndexUrl) { $TorchInstallIndexUrl }
+                         elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
+                         else { $TorchInstallIndexUrl }
         $_effectiveTorchIndexUrl = $_cudaIndexUrl
         if ($script:UnslothVerbose) {
             Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host

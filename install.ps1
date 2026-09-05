@@ -3963,11 +3963,25 @@ exit 0
     # Ask again for the minor that was chosen; a changed answer also flips the arch
     # preference inside Find-CompatiblePython, so the interpreter is chosen again under it.
     $WoaProbedMinor = $PythonVersion
-    if ($DetectedPython -and $DetectedPython.Version -ne $PythonVersion) {
+    # The first probe ran before an interpreter existed, so it had to assume a GIL build.
+    # Re-probe when the ABI differs as well as when the minor does: a free-threaded 3.13t
+    # selected for a 3.13 request matches on minor, so keying only on that left the cp313
+    # answer standing and the venv was then built from an interpreter that installs cp313t.
+    $WoaProbedFreeThreaded = $false
+    $WoaDetectedFreeThreaded = $false
+    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64") {
+        # Only on this host: everywhere else the answer cannot matter and the probe would
+        # be a subprocess spent to learn nothing.
+        $WoaDetectedFreeThreaded = Test-PythonFreeThreaded -PythonExe $DetectedPython.Path
+    }
+    if ($DetectedPython -and (
+            ($DetectedPython.Version -ne $WoaProbedMinor) -or
+            ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {
         $WoaNativeBeforeReprobe = $script:WoaNativeCudaTorch
         $WoaProbedMinor = $DetectedPython.Version
+        $WoaProbedFreeThreaded = $WoaDetectedFreeThreaded
         Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
-            -FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)
+            -FreeThreaded $WoaDetectedFreeThreaded
         if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
             # $null only if every candidate vanished between the two passes; keep the
             # interpreter already in hand rather than continuing without one.
@@ -3996,10 +4010,13 @@ exit 0
             # while python.org hands back a fresh 3.13. Ask again for the interpreter that
             # will actually own the venv, so the index and the pyarrow source are both
             # confirmed for it rather than for a minor that is no longer in play.
-            if ($DetectedPython.Version -ne $WoaProbedMinor) {
+            $_woaNewFreeThreaded = Test-PythonFreeThreaded -PythonExe $DetectedPython.Path
+            if (($DetectedPython.Version -ne $WoaProbedMinor) -or
+                ($_woaNewFreeThreaded -ne $WoaProbedFreeThreaded)) {
                 $WoaProbedMinor = $DetectedPython.Version
+                $WoaProbedFreeThreaded = $_woaNewFreeThreaded
                 Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
-                    -FreeThreaded (Test-PythonFreeThreaded -PythonExe $DetectedPython.Path)
+                    -FreeThreaded $_woaNewFreeThreaded
                 if (-not $script:WoaNativeCudaTorch) {
                     substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
                 }
