@@ -35,8 +35,12 @@ def _fresh_queues():
 
 
 def _two_leases(queue, *, leader: int, waiter: int, budget: int):
-    a = queue.reserve(capacity = 4, config = LlamaAdmissionConfig(), tokens = leader, budget = budget).lease_nowait()
-    b = queue.reserve(capacity = 4, config = LlamaAdmissionConfig(), tokens = waiter, budget = budget).lease_nowait()
+    a = queue.reserve(
+        capacity = 4, config = LlamaAdmissionConfig(), tokens = leader, budget = budget
+    ).lease_nowait()
+    b = queue.reserve(
+        capacity = 4, config = LlamaAdmissionConfig(), tokens = waiter, budget = budget
+    ).lease_nowait()
     assert a is not None and b is not None
     return a, b
 

@@ -729,14 +729,19 @@ class LlamaAdmissionLease:
         last_progress = self._read_progress(progress)
         _log.info(
             "llama admission recost-wait: gen_id=%s want=%s held=%s committed=%s",
-            gen_id, want, held, last_committed,
+            gen_id,
+            want,
+            held,
+            last_committed,
         )
         try:
             while True:
                 if queue.try_reclaim_commitment(want):
                     _log.info(
                         "llama admission recost-granted: gen_id=%s want=%s after=%.1fs",
-                        gen_id, want, time.monotonic() - started,
+                        gen_id,
+                        want,
+                        time.monotonic() - started,
                     )
                     with self._release_lock:
                         if self._released:
@@ -767,8 +772,13 @@ class LlamaAdmissionLease:
                         _log.warning(
                             "llama admission recost-gave-up: gen_id=%s want=%s held=%s after=%.1fs "
                             "(%s); continuing at the old figure",
-                            gen_id, want, held, now - started,
-                            "no progress" if now >= deadline else "still unserved after a moving pool",
+                            gen_id,
+                            want,
+                            held,
+                            now - started,
+                            "no progress"
+                            if now >= deadline
+                            else "still unserved after a moving pool",
                         )
                         return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)

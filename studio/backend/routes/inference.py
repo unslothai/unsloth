@@ -2874,7 +2874,8 @@ def _openai_llama_admission_recost(
             cancel_event = cancel_event,
             allow_yield = _openai_llama_admission_can_yield(llama_backend),
             progress = _progress,
-            gen_id = getattr(reservation, "completion_id", None) or getattr(reservation, "gen_id", None),
+            gen_id = getattr(reservation, "completion_id", None)
+            or getattr(reservation, "gen_id", None),
         )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
