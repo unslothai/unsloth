@@ -216,6 +216,100 @@ def requested_device_map(device_map):
     return device_map
 
 
+# ── DGX Spark: a multi-device device_map cannot span two Sparks ──────────────
+# Two cabled Sparks are two hosts with one GB10 each, so `torch.cuda.device_count()`
+# is 1 on both. A multi-device map ("balanced", "auto", ...) therefore has nothing to
+# split across and silently collapses onto cuda:0 -- the user asked for model
+# splitting and got none, with no message. Say so, and name the mechanism that does
+# work (FSDP under torchrun shards parameters across ranks; llama.cpp RPC splits a
+# GGUF for inference).
+#
+# Everything here is behind a gate that costs a non-Spark host two string compares
+# and no I/O, and the whole notice is skipped unless the user actually asked for a
+# multi-device map on a single-GPU box.
+_MULTI_DEVICE_MAPS = frozenset(
+    {"balanced", "balanced_low_0", "auto", "unsloth", "unsloth_balanced"}
+)
+_SPARK_NOTICE_SHOWN = [False]
+
+
+def _is_dgx_spark():
+    """True only on a DGX Spark. Two comparisons before any file is touched."""
+    import platform
+
+    if platform.system() != "Linux" or platform.machine() not in ("aarch64", "arm64"):
+        return False
+    import re as _re
+
+    for path in ("/etc/dgx-release", "/sys/class/dmi/id/product_name"):
+        try:
+            with open(path, "r", errors = "replace") as handle:
+                if _re.search(r"dgx[_ -]*spark", handle.read(4096), _re.IGNORECASE):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _spark_peer_cabled():
+    """A cabled ConnectX rail: IB port ACTIVE and its netdev carrying. sysfs only."""
+    import glob
+
+    for port in glob.glob("/sys/class/infiniband/*/ports/1"):
+        try:
+            with open(port + "/state") as handle:
+                if "ACTIVE" not in handle.read().upper():
+                    continue
+            with open(port + "/gid_attrs/ndevs/0") as handle:
+                netdev = handle.read().strip()
+            if not netdev:
+                continue
+            with open("/sys/class/net/%s/carrier" % netdev) as handle:
+                if handle.read().strip() == "1":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def notify_device_map_cannot_span_sparks(device_map):
+    """Explain, once, that a multi-device map does nothing on a single-GPU Spark."""
+    try:
+        _notify_device_map_cannot_span_sparks(device_map)
+    except Exception:
+        # This is a cosmetic notice sitting on the model-load path of every platform we
+        # support. Nothing it can discover is worth failing a load that would otherwise
+        # have succeeded, so it fails silent rather than propagating. The cheap gates
+        # below are still checked first, so the try costs nothing on the common path.
+        pass
+
+
+def _notify_device_map_cannot_span_sparks(device_map):
+    if _SPARK_NOTICE_SHOWN[0]:
+        return
+    if not isinstance(device_map, str) or device_map not in _MULTI_DEVICE_MAPS:
+        return
+    if is_distributed():
+        return  # the distributed path already prints its own, accurate, message
+    try:
+        if torch.cuda.device_count() != 1:
+            return
+    except Exception:
+        return
+    if not _is_dgx_spark() or not _spark_peer_cabled():
+        return
+    _SPARK_NOTICE_SHOWN[0] = True
+    print(
+        'Unsloth: `device_map="%s"` cannot span two DGX Sparks. They are separate hosts\n'
+        "         with one GB10 each, so this process sees 1 GPU and the whole model stays\n"
+        "         on cuda:0. To use both Sparks:\n"
+        "           training  : torchrun --nnodes=2 --nproc_per_node=1 ... (DDP, or FSDP to\n"
+        "                       shard parameters across the pair) -- see `unsloth spark train`\n"
+        "           inference : `unsloth spark serve --model <gguf>` (llama.cpp RPC splits\n"
+        "                       a model too large for one Spark across both)" % device_map
+    )
+
+
 def planner_quantization_kwargs(
     load_in_4bit = False,
     load_in_8bit = False,
