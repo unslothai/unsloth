@@ -35,6 +35,10 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BITSANDBYTES_OPTIMIZER = "adamw_8bit"
+PAGED_BITSANDBYTES_OPTIMIZER = "paged-adamw-8bit"
+ADAMW_BITSANDBYTES_OPTIMIZER = "adamw_bnb_8bit"
+XPU_SAFE_OPTIMIZER = "adamw_torch"
 
 
 async def _inline_to_thread(func, /, *args, **kwargs):
@@ -927,6 +931,57 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
 
+    def test_training_backend_swaps_default_8bit_optimizer_on_xpu(self):
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        for optimizer in (
+            DEFAULT_BITSANDBYTES_OPTIMIZER,
+            PAGED_BITSANDBYTES_OPTIMIZER,
+            ADAMW_BITSANDBYTES_OPTIMIZER,
+        ):
+            with self.subTest(optimizer = optimizer):
+                backend = TrainingBackend()
+                with (
+                    patch("core.training.training.get_device", return_value = DeviceType.XPU),
+                    patch(
+                        "core.training.training.prepare_gpu_selection",
+                        return_value = ([0], {"selection_mode": "auto"}),
+                    ) as mock_prepare_gpu_selection,
+                    patch(
+                        "core.training.training._CTX.Queue",
+                        side_effect = [dummy_queue, dummy_queue],
+                    ),
+                    patch(
+                        "core.training.training._CTX.Process", return_value = DummyProcess()
+                    ) as mock_process,
+                    patch("core.training.training.threading.Thread", return_value = DummyThread()),
+                ):
+                    backend.start_training(
+                        job_id = "test-job-xpu-optimizer",
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        optim = optimizer,
+                        gpu_ids = None,
+                    )
+
+                config = mock_process.call_args.kwargs["kwargs"]["config"]
+                self.assertEqual(config["device_backend"], DeviceType.XPU.value)
+                self.assertEqual(config["optim"], XPU_SAFE_OPTIMIZER)
+                self.assertEqual(
+                    mock_prepare_gpu_selection.call_args.kwargs["optimizer"],
+                    XPU_SAFE_OPTIMIZER,
+                )
+
     def test_training_backend_preserves_uuid_parent_visibility_in_auto_mode(self):
         backend = TrainingBackend()
 
@@ -1646,6 +1701,92 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
+
+    def test_training_route_uses_xpu_safe_optimizer_for_vram_coordination(self):
+        training_route = _load_route_module(
+            "training_route_module_for_xpu_optimizer_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            optim = DEFAULT_BITSANDBYTES_OPTIMIZER,
+            gpu_ids = None,
+        )
+        seen = {}
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                seen["backend_optimizer"] = kwargs["optim"]
+                kwargs["before_spawn"]()
+                return True
+
+        def _capture_training_vram_optimizer(**kwargs):
+            seen["vram_optimizer"] = kwargs["optimizer"]
+            return True, {"usable_gb": 24.0, "required_gb": 12.0}
+
+        def _run_can_keep(can_keep):
+            can_keep()
+            return []
+
+        with (
+            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(training_route, "_diffusion_training_active", return_value = False),
+            patch.object(training_route, "_diffusion_gpu_admission", return_value = nullcontext()),
+            patch.object(
+                training_route,
+                "_reject_untrainable_model_request",
+                return_value = SimpleNamespace(
+                    model_name = "unsloth/test",
+                    model_local_path = None,
+                    cached_model_pin = None,
+                ),
+            ),
+            patch.object(training_route, "load_model_defaults", return_value = {"training": {}}),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(_hw_module, "DEVICE", DeviceType.XPU),
+            patch("utils.hardware.ensure_hardware_detected", return_value = DeviceType.XPU),
+            patch(
+                "routes.training_vram.can_keep_chat_during_training",
+                side_effect = _capture_training_vram_optimizer,
+            ),
+            patch(
+                "routes.training_vram.coordinate_models_for_training",
+                side_effect = _run_can_keep,
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(
+                    current_checkpoint = None,
+                    is_export_active = lambda: False,
+                ),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = SimpleNamespace(is_loaded = False, unload = lambda: None),
+            ),
+            patch("core.inference.gpu_arbiter.release", lambda *_args, **_kwargs: None),
+            patch(
+                "core.inference.video.get_video_backend",
+                return_value = SimpleNamespace(
+                    status = lambda: {"loaded": False},
+                    unload = lambda: None,
+                ),
+            ),
+        ):
+            response = asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+        self.assertEqual(response.status, "queued")
+        self.assertEqual(seen["backend_optimizer"], XPU_SAFE_OPTIMIZER)
+        self.assertEqual(seen["vram_optimizer"], XPU_SAFE_OPTIMIZER)
 
     def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         training_route = _load_route_module(
