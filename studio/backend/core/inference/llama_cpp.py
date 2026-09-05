@@ -8732,8 +8732,10 @@ class LlamaCppBackend:
         b10715 and b10798 alike, while the same builds are clean on Windows and on
         Vulkan (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330). So the swap is
         taken only when the alternative is a load the carve-out cannot hold.
-        need_bytes is the GPU-resident weight size; None (not priced) fails closed,
-        as do missing data and mixed-device selections.
+        need_bytes is what a forced full offload puts on the device; the caller
+        passes None when the fitter or an explicit partial placement owns the
+        layer count, because a load that spills to the CPU fits without managed
+        pages. None fails closed, as do missing data and mixed-device selections.
         """
         try:
             pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
@@ -8746,7 +8748,7 @@ class LlamaCppBackend:
                 return False
             if need_bytes is None:
                 return False
-            return int(need_bytes) // (1024 * 1024) > int(pool_mib)
+            return int(need_bytes) > int(pool_mib) * 1024 * 1024
         except Exception:
             return False
 
@@ -8908,9 +8910,11 @@ class LlamaCppBackend:
         opted_in = False,
     ) -> bool:
         """The launch-time decision behind GGML_CUDA_ENABLE_UNIFIED_MEMORY: the opt-in
-        takes it on any selected APU, otherwise only when it pays and is needed
-        (_unified_memory_would_help). Never on a discrete card."""
-        if opted_in and LlamaCppBackend._amd_apu_wants_unified_memory(gpu_indices):
+        takes it when every selected device is a unified-memory APU, otherwise only
+        when it pays and is needed (_unified_memory_would_help). The setting is
+        process-wide and hurts discrete cards, so a mixed selection answers False
+        on both routes."""
+        if opted_in and LlamaCppBackend._rocm_selected_pool_mib(gpu_indices) is not None:
             return True
         return LlamaCppBackend._unified_memory_would_help(gpu_indices, need_bytes = need_bytes)
 
@@ -22855,6 +22859,11 @@ class LlamaCppBackend:
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 _unified_opt_in = self._unified_memory_opted_in(env)
+                # Price only what a forced full offload puts on the device. With the
+                # fitter or an explicit partial placement owning the layer count, the
+                # load fits by spilling, so the whole-file size would overstate the
+                # need and take managed pages for a launch the carve-out holds.
+                _unified_need = model_size if self._argv_offloads_every_layer(cmd, env) else None
                 if _unified_opt_out:
                     # ggml tests presence, so passing a user's "0" through would
                     # ENABLE what they turned off (#8651). Only absence is off.
@@ -22863,7 +22872,7 @@ class LlamaCppBackend:
                             "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
                         )
                 elif not is_vulkan_backend and self._unified_memory_for_launch(
-                    gpu_indices, model_size, opted_in = _unified_opt_in
+                    gpu_indices, _unified_need, opted_in = _unified_opt_in
                 ):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
@@ -23024,7 +23033,9 @@ class LlamaCppBackend:
                         # The setting is process-wide, so recompute it after changing
                         # the selected devices. Ownership protects inherited values.
                         _survivors_gain_unified = self._unified_memory_for_launch(
-                            _survivors, model_size, opted_in = _unified_opt_in
+                            _survivors,
+                            model_size if self._argv_offloads_every_layer(cmd, env) else None,
+                            opted_in = _unified_opt_in,
                         )
                         if _unified_env_applied and not _survivors_gain_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
@@ -23869,7 +23880,9 @@ class LlamaCppBackend:
                         # determine whether managed allocations help.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
                         _retry_unified_helps = self._unified_memory_for_launch(
-                            _remaining, model_size, opted_in = _unified_opt_in
+                            _remaining,
+                            model_size if self._argv_offloads_every_layer(cmd, env) else None,
+                            opted_in = _unified_opt_in,
                         )
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU

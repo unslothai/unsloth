@@ -525,6 +525,11 @@ class TestManagedMemoryIsTakenOnlyWhenTheWeightsOutgrowTheCarveOut:
         self._strix_halo(monkeypatch)
         assert LlamaCppBackend._unified_memory_would_help(need_bytes = 64 * _GIB) is False
 
+    def test_one_byte_over_does(self, monkeypatch):
+        """Bytes against bytes: flooring the need to MiB hid a sub-MiB overrun."""
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 64 * _GIB + 1) is True
+
     def test_unpriced_weights_fail_closed(self, monkeypatch):
         """None is "not priced yet", and a risk is not taken on a guess."""
         self._strix_halo(monkeypatch)
@@ -584,6 +589,20 @@ class TestTheEnableSwitch:
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
         )
         assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is False
+
+    def test_the_switch_refuses_a_mixed_selection(self, monkeypatch):
+        """Process-wide setting: one discrete card in the selection is a veto."""
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch_sized([("gfx1151", 64 * _GIB), ("gfx1100", 16 * _GIB)]),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
+        )
+        assert LlamaCppBackend._unified_memory_for_launch([0, 1], 45 * _GIB, opted_in = True) is False
+        assert LlamaCppBackend._unified_memory_for_launch(None, 45 * _GIB, opted_in = True) is False
+        assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is True
 
     def test_without_the_switch_the_priced_gate_decides(self, monkeypatch):
         self._strix_halo(monkeypatch)
