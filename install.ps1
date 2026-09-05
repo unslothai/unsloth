@@ -432,7 +432,11 @@ function Install-UnslothStudio {
         return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
     }
 
-    # PEP 440 to the depth these floors use: release, then .postN (0.0.22 against 0.0.22.post7).
+    # PEP 440 to the depth these floors use: release, then pre/dev, then .postN. A marker
+    # attached to the release sorts BELOW it (21.0.0rc1 does not satisfy >=21.0.0), which is
+    # the whole point here -- staging writes an exact == override from whatever it picks, so a
+    # candidate the constraint would reject has to lose before it is chosen. A larger release
+    # is unaffected: 24.0.0.dev260 clears a 21.0.0 floor, as a wheelhouse nightly should.
     # Unreadable compares as too old, which keeps the drop.
     function Test-WoaVersionAtLeast {
         param([string]$Version, [string]$Floor)
@@ -442,7 +446,9 @@ function Install-UnslothStudio {
             $release = $Matches[1] -split '\.' | ForEach-Object { [int]$_ }
             $post = 0
             if ($v -match '\.post(\d+)') { $post = [int]$Matches[1] }
-            return @{ Release = @($release); Post = $post }
+            # Only where it hangs off the release: ".post1.dev0" is a post-release still.
+            $pre = [bool]($v -match '(?i)^\s*v?\d+(\.\d+)*(a|b|rc|\.dev)\d')
+            return @{ Release = @($release); Post = $post; Pre = $pre }
         }
         $a = & $parse $Version
         $b = & $parse $Floor
@@ -453,6 +459,7 @@ function Install-UnslothStudio {
             $y = if ($i -lt $b.Release.Count) { $b.Release[$i] } else { 0 }
             if ($x -ne $y) { return ($x -gt $y) }
         }
+        if ($a.Pre -ne $b.Pre) { return $b.Pre }
         return ($a.Post -ge $b.Post)
     }
 

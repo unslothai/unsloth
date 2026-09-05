@@ -2712,3 +2712,86 @@ class TestAnOverrideConflictCanHideInAnInclude:
         assert text.count("$_woaOvEntries") == 3, "the conflict scan and the fold have diverged"
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile))" in setup
+
+
+class TestAFloorIsPep440AboutPrereleases:
+    """21.0.0rc1 does not satisfy >=21.0.0, and staging writes an exact == from what it picks.
+
+    Accepting a candidate the constraint would then reject is the failure this whole floor
+    exists to prevent, so the ordering has to place a pre-release below its own release. A
+    LARGER release is untouched: a wheelhouse nightly like the pyarrow 24.0.0.dev260 an
+    end-to-end GB10 run staged still clears a 21.0.0 floor, which is what makes hosting a
+    wheel the only step needed to enable a feature on that host.
+    """
+
+    CASES = [
+        ("24.0.0.dev260", "21.0.0", True, "a nightly of a later release clears the floor"),
+        ("22.0.0rc1", "21.0.0", True, "and so does an rc of a later release"),
+        ("21.0.0", "21.0.0", True, "the release itself clears its own floor"),
+        ("21.0.1", "21.0.0", True, "a later patch clears it"),
+        ("21.0.0rc1", "21.0.0", False, "an rc sorts below the release it is for"),
+        ("21.0.0.dev1", "21.0.0", False, "and so does a dev build"),
+        ("19.0.1", "21.0.0", False, "plainly below the floor"),
+        ("0.0.22.post7", "0.0.22.post7", True, "the xformers drop floor still holds"),
+        ("0.0.22", "0.0.22.post7", False, "a bare release is below its own post"),
+        ("0.0.23", "0.0.22.post7", True, "a later release outranks a post"),
+        ("nonsense", "21.0.0", False, "unreadable compares as too old, keeping the drop"),
+    ]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "version, floor, expected, why",
+        CASES,
+        ids = [f"{v}_vs_{f}" for v, f, _, _ in CASES],
+    )
+    def test_the_ordering(self, version, floor, expected, why):
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                f"Write-Output ([bool](Test-WoaVersionAtLeast -Version '{version}' -Floor '{floor}'))",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert (done.stdout.strip().splitlines()[-1] == "True") is expected, why
+
+    def test_the_table_agrees_with_packaging(self):
+        """The PowerShell cannot import packaging, so the expectations are checked against it
+        here instead of being asserted from memory. Skipped rather than guessed if absent.
+        """
+        specifiers = pytest.importorskip("packaging.specifiers")
+        for version, floor, expected, why in self.CASES:
+            try:
+                reference = specifiers.SpecifierSet(f">={floor}").contains(
+                    version, prereleases = True,
+                )
+            except Exception:
+                continue  # "nonsense" is not a version; the PowerShell rule stands alone
+            assert reference is expected, (
+                f"{version} >= {floor}: packaging says {reference}, the table says "
+                f"{expected} ({why})"
+            )
+
+    @requires_pwsh
+    def test_the_wheel_the_gb10_run_staged_is_still_accepted(self):
+        """Named explicitly: a floor that rejected it would break a verified install."""
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
+                "Write-Output ([bool](Test-WoaPyarrowWheelUsable "
+                "-Name 'pyarrow-24.0.0.dev260-cp313-cp313-win_arm64.whl' "
+                "-PyTag 'cp313' -AbiTag 'cp313'))",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "True"
