@@ -412,16 +412,21 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
+        # One marker that holds on every host and one that holds on none, so the answer
+        # does not depend on the box running the tests: `sys_platform != 'win32'` here
+        # would pass on Linux CI and fail on every Windows machine this file is about.
         req.write_text(
             "# comment\n"
             "-r other.txt\n"
-            "Hf_Transfer == 0.1.9 ; sys_platform != 'win32'\n"
+            "Hf_Transfer == 0.1.9 ; python_version >= '3'\n"
+            "elsewhere == 1.0 ; sys_platform == 'nonesuch'\n"
             "httpx[brotli]>=0.27\n"
             "local @ file:///x\n",
             encoding = "utf-8",
         )
         pins = ips._requirement_pins(req)
-        assert pins["hf_transfer"] == ["== 0.1.9"], "its marker holds on this host"
+        assert pins["hf_transfer"] == ["== 0.1.9"], "its marker holds on every host"
+        assert "elsewhere" not in pins, "an inactive marker drops the row"
         assert pins["httpx"] == [">=0.27"]
         assert "local" not in pins, "a direct URL has no version to compare"
         assert "-r" not in pins
