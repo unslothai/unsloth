@@ -5550,14 +5550,39 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
     return True
 
 
-def _requirement_pins(req: "Path | None") -> "dict[str, str]":
-    """Canonical name -> version specifier for the direct lines of a requirements file.
+def _marker_is_active(marker: str) -> "bool | None":
+    """Does ``marker`` hold for THIS interpreter? None when it cannot be decided.
 
-    Only what is written there: markers, extras and comments are dropped, and a line
-    without a specifier maps to "". Unreadable means no pins, which leaves the name-only
-    behaviour untouched.
+    packaging is what pip and uv evaluate markers with, so borrowing it keeps the answer
+    identical to the resolver's; pip vendors a copy, which is the fallback for a venv
+    where packaging is not installed in its own right. Neither available means the
+    caller keeps every clause instead of picking one.
     """
-    pins: "dict[str, str]" = {}
+    if not marker:
+        return True
+    for module_name in ("packaging.markers", "pip._vendor.packaging.markers"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        try:
+            return bool(module.Marker(marker).evaluate())
+        except Exception:
+            return None
+    return None
+
+
+def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
+    """Canonical name -> the version specifiers a requirements file states for it.
+
+    A name can appear more than once, split by marker -- extras.txt carries
+    ``MeCab==0.996.13`` and ``MeCab==0.996.5`` on complementary markers -- so keeping one
+    specifier per name let the row for another platform overwrite the row that actually
+    applies. Markers are evaluated for this interpreter and inactive rows dropped;
+    when they cannot be evaluated every clause is kept, and the caller takes any of them
+    as satisfied, which is no stricter than the name-only check that came before.
+    """
+    pins: "dict[str, list[str]]" = {}
     if req is None:
         return pins
     try:
@@ -5565,13 +5590,17 @@ def _requirement_pins(req: "Path | None") -> "dict[str, str]":
     except OSError:
         return pins
     for line in text.splitlines():
-        line = line.split("#", 1)[0].split(";", 1)[0].strip()
+        line = line.split("#", 1)[0].strip()
         if not line or line.startswith("-") or "@" in line:
             continue
+        line, _, marker = line.partition(";")
+        if _marker_is_active(marker.strip()) is False:
+            continue
+        line = line.strip()
         match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(.*)$", line)
         if not match:
             continue
-        pins[_canonical_dist_name(match.group(1))] = match.group(2).strip()
+        pins.setdefault(_canonical_dist_name(match.group(1)), []).append(match.group(2).strip())
     return pins
 
 
@@ -5609,11 +5638,11 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
         versions = available.get(canonical)
         if not versions:
             return False
-        pin = pins.get(canonical)
-        if not pin:
+        clauses = [clause for clause in pins.get(canonical, []) if clause]
+        if not clauses:
             # No direct line to satisfy -- a transitive blocker, or an unpinned entry.
             return True
-        verdicts = [_version_satisfies(v, pin) for v in versions]
+        verdicts = [_version_satisfies(v, c) for v in versions for c in clauses]
         if any(verdict is True for verdict in verdicts):
             return True
         # All False is a definite miss; a None anywhere means this pin is beyond the

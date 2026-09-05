@@ -406,7 +406,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
     def test_the_comparison_itself(self, ips, version, specifier, expected):
         assert ips._version_satisfies(version, specifier) is expected
 
-    def test_pins_are_read_canonically_and_markers_dropped(self, ips, tmp_path):
+    def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
         req.write_text(
             "# comment\n"
@@ -417,7 +417,94 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             encoding = "utf-8",
         )
         pins = ips._requirement_pins(req)
-        assert pins["hf_transfer"] == "== 0.1.9"
-        assert pins["httpx"] == ">=0.27"
+        assert pins["hf_transfer"] == ["== 0.1.9"], "its marker holds on this host"
+        assert pins["httpx"] == [">=0.27"]
         assert "local" not in pins, "a direct URL has no version to compare"
         assert "-r" not in pins
+
+
+class TestDuplicateRequirementRowsAreSplitByMarker:
+    """extras.txt states MeCab twice, once per marker.
+
+    Collapsing them to one specifier let the row for another platform decide: the
+    inactive macOS 3.14 `MeCab==0.996.5` overwrote the active `MeCab==0.996.13`, so a
+    wheelhouse holding the right wheel was read as insufficient and one holding only the
+    wrong wheel cleared the skip.
+    """
+
+    def test_the_shipped_file_really_has_the_duplicate(self):
+        text = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
+            encoding = "utf-8",
+        )
+        rows = [line for line in text.splitlines() if line.lower().startswith("mecab")]
+        assert len(rows) == 2, "the case this fix exists for"
+
+    def test_only_the_active_row_is_kept(self, ips, tmp_path):
+        req = tmp_path / "extras.txt"
+        req.write_text(
+            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
+            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
+            encoding = "utf-8",
+        )
+        pins = ips._requirement_pins(req)
+        # This test host is Linux, so the first row is the active one.
+        assert pins["mecab"] == ["==0.996.13"]
+
+    def test_an_inactive_row_cannot_unskip(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        wheels = tmp_path / "wheels"
+        wheels.mkdir()
+        (wheels / _wheel("mecab", tag, tag, version = "0.996.5")).write_bytes(b"")
+        req = tmp_path / "extras.txt"
+        req.write_text(
+            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
+            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
+            encoding = "utf-8",
+        )
+        monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "mecab" in ips._windows_arm64_skip_packages(req), (
+                "the hosted 0.996.5 satisfies only the row that does not apply here"
+            )
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_the_active_row_still_unskips(self, ips, tmp_path, monkeypatch):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        wheels = tmp_path / "wheels"
+        wheels.mkdir()
+        (wheels / _wheel("mecab", tag, tag, version = "0.996.13")).write_bytes(b"")
+        req = tmp_path / "extras.txt"
+        req.write_text(
+            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
+            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
+            encoding = "utf-8",
+        )
+        monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "mecab" not in ips._windows_arm64_skip_packages(req)
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_markers_are_evaluated_with_packaging(self, ips):
+        assert ips._marker_is_active("") is True
+        assert ips._marker_is_active('sys_platform == "%s"' % sys.platform) is True
+        assert ips._marker_is_active('sys_platform == "nonesuch"') is False
+        assert ips._marker_is_active("this is not a marker") is None
+
+    def test_without_packaging_every_clause_is_kept(self, ips, tmp_path, monkeypatch):
+        """The fallback is no stricter than the name-only check that came before."""
+        monkeypatch.setattr(ips, "_marker_is_active", lambda marker: None)
+        req = tmp_path / "extras.txt"
+        req.write_text(
+            'MeCab==0.996.13; sys_platform != "darwin"\n'
+            'MeCab==0.996.5; sys_platform == "darwin"\n',
+            encoding = "utf-8",
+        )
+        assert ips._requirement_pins(req)["mecab"] == ["==0.996.13", "==0.996.5"]

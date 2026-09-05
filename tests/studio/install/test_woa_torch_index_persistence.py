@@ -884,6 +884,7 @@ class TestTheCudaWheelProbeIsNotFooled:
                 "function Join-UrlPath { param([string]$Base,[string]$Path)",
                 "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
                 _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
                 f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '{minor}' -Project '{project}'",
                 'Write-Output "[$v]"',
@@ -1181,6 +1182,7 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "function Test-WoaWheelhouseIsLocal { $false }",
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 "$script:WoaWheelhouse = 'https://example.test/wheels'",
+                _function_source(text, "Test-WoaWheelTags"),
                 _function_source(text, "Get-WoaPyarrowSource"),
                 f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
                 "Write-Output \"[$(Get-WoaPyarrowSource -PythonMinor '3.13')]\"",
@@ -1288,6 +1290,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 "function Join-UrlPath { param([string]$Base,[string]$Path)",
                 "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
                 _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
                 f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '3.13' -AbiTag '{abi}'",
                 'Write-Output "[$v]"',
@@ -1710,3 +1713,175 @@ class TestAStaleTorchaudioIsRemoved:
         assert (
             text.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed
         ), "removing audio before knowing torch installed would strip a working venv"
+
+
+class TestTheWheelTagsAreMatchedAsFields:
+    """`*cp313-cp313*` also matches cp313-cp313t.
+
+    On an ordinary GIL 3.13 that let a free-threaded wheel select the native path, and the
+    staging block then picked the same wheel -- uv rejected it only after the installer had
+    already committed to the ARM64 venv and given up the working x64 stack.
+    """
+
+    def test_no_substring_match_is_left(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$tag-$AbiTag*" not in text, "every probe goes through the field parser"
+        assert text.count("Test-WoaWheelTags") >= 7, (
+            "the pyarrow probe (supplied wheel, PyPI, local wheelhouse, remote index), "
+            "the CUDA wheel scan, and both staging sites"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "name, py, abi, expected, why",
+        [
+            ("pyarrow-21.0.0-cp313-cp313t-win_arm64.whl", "cp313", "cp313", False,
+             "the regression: a free-threaded wheel on a GIL interpreter"),
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", "cp313", "cp313", True, "its own"),
+            ("pyarrow-21.0.0-cp313-cp313t-win_arm64.whl", "cp313", "cp313t", True,
+             "and the free-threaded interpreter still finds its own"),
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", "cp313", "cp313t", False,
+             "which is not the GIL one"),
+            ("pyarrow-21.0.0-cp311-cp311-win_arm64.whl", "cp313", "cp313", False,
+             "another minor"),
+            ("torch-2.14.0+cu134-cp312.cp313-cp312.cp313-win_arm64.whl", "cp313", "cp313",
+             True, "a dot-separated tag set is expanded, as PEP 425 says"),
+            ("pyarrow-21.0.0-1-cp313-cp313-win_arm64.whl", "cp313", "cp313", True,
+             "an optional build tag does not shift the last three fields"),
+            ("garbage.whl", "cp313", "cp313", False, "unparseable is not installable"),
+        ],
+    )
+    def test_the_matcher(self, name, py, abi, expected, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            _function_source(text, "Test-WoaWheelTags"),
+            f"Write-Output (Test-WoaWheelTags -Name '{name}' -PyTag '{py}' -AbiTag '{abi}')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == str(expected), why
+
+
+class TestThePurgeNeedsAPathBoundary:
+    """<StudioHome>\\woa-mirror is a caller's own wheel source, not ours."""
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "value, expected, why",
+        [
+            ("{home}/woa-mirror", "{home}/woa-mirror", "a sibling directory survives"),
+            ("{home}/woa-custom.txt", "{home}/woa-custom.txt", "and a sibling file"),
+            ("{home}/woa", "", "the prefix itself is ours"),
+            ("{home}/woa/wheels", "", "and anything under it"),
+            ("{home}/woa/wheels,{home}/woa-mirror", "{home}/woa-mirror",
+             "ours goes, the sibling stays"),
+        ],
+    )
+    def test_only_the_prefix_or_its_descendants_are_owned(self, value, expected, why):
+        home = "/home/u/AppData/Local/unsloth"
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index('$_woaOwnedPrefix = Join-Path $StudioHome "woa"')
+        end = text.index("if ($script:WoaNativeCudaTorch) {", start)
+        script = "\n".join([
+            f"$StudioHome = '{home}'",
+            "function Get-UvSafePath { param([string]$p) return $p }",
+            f"$env:UV_FIND_LINKS = '{value.format(home = home)}'",
+            text[start:end],
+            "Write-Output ('[' + $env:UV_FIND_LINKS + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        want = f"[{expected.format(home = home)}]"
+        assert done.stdout.strip().splitlines()[-1] == want, why
+
+
+class TestAHostedDropCandidateMustMeetItsFloor:
+    """The override drop list recorded names only.
+
+    Without the override the RELEASED unsloth metadata applies, so a hosted
+    xformers-0.0.22 against `xformers>=0.0.22.post7` clears the drop and then fails the
+    resolve on a win_arm64 build that does not exist.
+    """
+
+    def test_versions_are_recorded_and_the_floor_is_consulted(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$WoaWheelNames[$_woaWheelKey] += $parts[1]" in text, "versions are kept"
+        assert '$WoaDropFloors = @{ "xformers" = "0.0.22.post7" }' in text
+        assert "Test-WoaVersionAtLeast -Version $_woaHostedVer -Floor $_woaFloor" in text
+
+    def test_the_floor_still_matches_the_metadata(self):
+        """The one duplicated constant, pinned to its source so it cannot drift."""
+        pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+        assert 'xformers>=0.0.22.post7 ; (sys_platform == \'win32\')' in pyproject, (
+            "if this floor moves, $WoaDropFloors in install.ps1 moves with it"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "have, floor, expected, why",
+        [
+            ("0.0.22", "0.0.22.post7", "False", "the regression: post7 outranks the release"),
+            ("0.0.22.post7", "0.0.22.post7", "True", "the floor itself"),
+            ("0.0.22.post8", "0.0.22.post7", "True", "above it"),
+            ("0.0.23", "0.0.22.post7", "True", "a later release"),
+            ("0.0.30", "0.0.22.post7", "True", "compared numerically, not as text"),
+            ("0.0.21", "0.0.22.post7", "False", "an earlier release"),
+            ("0.0.23+cu134", "0.0.22.post7", "True", "a local tag is not part of the order"),
+            ("garbage", "0.0.22.post7", "False", "unreadable keeps the drop"),
+        ],
+    )
+    def test_the_comparison(self, have, floor, expected, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join([
+            _function_source(text, "Test-WoaVersionAtLeast"),
+            f"Write-Output (Test-WoaVersionAtLeast -Version '{have}' -Floor '{floor}')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "hosted, dropped, why",
+        [
+            ("'0.0.22'", True, "the regression: below the released floor, the drop stays"),
+            ("'0.0.22.post7'", False, "at the floor, the wheelhouse wheel is usable"),
+            ("'0.0.23'", False, "above it"),
+            ("'0.0.22','0.0.23'", False, "one satisfying version among several is enough"),
+            ("", True, "nothing hosted at all"),
+        ],
+    )
+    def test_the_loop_keeps_the_drop(self, hosted, dropped, why):
+        """Executed, not just read: the version has to reach the decision."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("        foreach ($candidate in $WoaDropCandidates) {")
+        end = text.index('$WoaOverrideLines += "$candidate ; platform_machine', start)
+        end = text.index("}", text.index("\n", end)) + 1
+        wheel_names = "@{}" if not hosted else "@{ 'xformers' = @(%s) }" % hosted
+        script = "\n".join([
+            _function_source(text, "Test-WoaVersionAtLeast"),
+            "function substep { param($m, $c) }",
+            "$WoaDropCandidates = @('xformers')",
+            '$WoaDropFloors = @{ "xformers" = "0.0.22.post7" }',
+            f"$WoaWheelNames = {wheel_names}",
+            "$WoaOverrideLines = @()",
+            "$WoaReported = @{}",
+            text[start:end],
+            "Write-Output ('[' + ($WoaOverrideLines -join '|') + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        line = done.stdout.strip().splitlines()[-1]
+        assert ("xformers" in line) is dropped, f"{why}: {line}"

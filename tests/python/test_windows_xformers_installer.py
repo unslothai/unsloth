@@ -244,6 +244,10 @@ def test_installer_never_installs_an_unpinned_xformers():
     # would be meaningless, and the name has to match the requirement line exactly.
     drop_list = re.search(r"\$WoaDropCandidates = @\(.*?\n\s*\)\n", source, re.DOTALL)
     drop_span = drop_list.span() if drop_list else (-1, -1)
+    # Same for the floors that decide whether a wheelhouse wheel makes a drop
+    # unnecessary: the key is a package NAME being looked up, not something installed.
+    floors = re.search(r"\$WoaDropFloors = @\{[^}]*\}", source, re.DOTALL)
+    floor_span = floors.span() if floors else (-1, -1)
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)
         # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to
@@ -251,6 +255,8 @@ def test_installer_never_installs_an_unpinned_xformers():
         if spec.endswith('.whl"'):
             continue
         if drop_span[0] <= match.start() < drop_span[1]:
+            continue
+        if floor_span[0] <= match.start() < floor_span[1]:
             continue
         assert spec == '"xformers==$_xfVersion"', f"unpinned xFormers spec in install.ps1: {spec}"
 

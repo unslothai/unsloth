@@ -460,6 +460,49 @@ function Install-UnslothStudio {
         return $script:WoaResolverPathsOk
     }
 
+    # Does a wheel FILENAME carry exactly these python and ABI tags? PEP 425 fields, not a
+    # substring: "*cp313-cp313*" also matches cp313-cp313t, so on an ordinary GIL 3.13 a
+    # free-threaded wheel listed ahead of its counterpart selected the native path and was
+    # then staged, and uv rejected it once the ARM64 venv had already been committed to.
+    # Each field may be a "."-separated set, expanded here the way the resolver expands it.
+    function Test-WoaWheelTags {
+        param([string]$Name, [string]$PyTag, [string]$AbiTag)
+        if (-not $Name) { return $false }
+        $stem = $Name -replace '(?i)\.whl$', ''
+        $fields = $stem -split '-'
+        if ($fields.Count -lt 5) { return $false }
+        $pyTags = $fields[$fields.Count - 3] -split '\.'
+        $abiTags = $fields[$fields.Count - 2] -split '\.'
+        return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
+    }
+
+    # Is $Version at least $Floor? PEP 440 to the depth these floors use: the numeric
+    # release, then the ".postN" that distinguishes 0.0.22 from 0.0.22.post7 -- the exact
+    # pair that decides whether a hosted xformers can stand in for the released
+    # requirement. Anything it cannot read compares as too old, which keeps the drop:
+    # losing an optional package beats failing the whole resolve.
+    function Test-WoaVersionAtLeast {
+        param([string]$Version, [string]$Floor)
+        $parse = {
+            param([string]$v)
+            if ($v -notmatch '^\s*v?(\d+(\.\d+)*)') { return $null }
+            $release = $Matches[1] -split '\.' | ForEach-Object { [int]$_ }
+            $post = 0
+            if ($v -match '\.post(\d+)') { $post = [int]$Matches[1] }
+            return @{ Release = @($release); Post = $post }
+        }
+        $a = & $parse $Version
+        $b = & $parse $Floor
+        if ($null -eq $a -or $null -eq $b) { return $false }
+        $width = [Math]::Max($a.Release.Count, $b.Release.Count)
+        for ($i = 0; $i -lt $width; $i++) {
+            $x = if ($i -lt $a.Release.Count) { $a.Release[$i] } else { 0 }
+            $y = if ($i -lt $b.Release.Count) { $b.Release[$i] } else { 0 }
+            if ($x -ne $y) { return ($x -gt $y) }
+        }
+        return ($a.Post -ge $b.Post)
+    }
+
     # Can this host get a pyarrow that imports? PyPI first (so a published win_arm64 wheel
     # ends this special case for good), then an explicitly supplied wheel, then the
     # wheelhouse. Returns "" when nothing is reachable, which keeps the native path
@@ -478,7 +521,7 @@ function Install-UnslothStudio {
             $_paWheel = $env:UNSLOTH_PYARROW_WHEEL
             if (Test-Path -LiteralPath $_paWheel -PathType Leaf) {
                 $_paName = Split-Path -Leaf $_paWheel
-                if (($_paName -like "pyarrow-*") -and ($_paName -like "*$tag-$AbiTag*") -and
+                if (($_paName -like "pyarrow-*") -and (Test-WoaWheelTags -Name $_paName -PyTag $tag -AbiTag $AbiTag) -and
                     ($_paName -like "*win_arm64.whl")) {
                     # Two bytes off a stream, not ReadAllBytes: a pyarrow wheel is tens of
                     # megabytes and none of it but the signature is being inspected.
@@ -501,19 +544,19 @@ function Install-UnslothStudio {
         try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                if ($match.Value -like "*$tag-$AbiTag*") { return "pypi" }
+                if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return "pypi" }
             }
         } catch {}
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -like "*$tag-$AbiTag*" } | Select-Object -First 1
+                Where-Object { Test-WoaWheelTags -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
             if ($local) { return "wheelhouse" }
             return ""
         }
         try {
             $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                if ($match.Value -like "*$tag-$AbiTag*") { return "wheelhouse" }
+                if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return "wheelhouse" }
             }
         } catch {}
         return ""
@@ -614,7 +657,7 @@ function Install-UnslothStudio {
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
             try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-            if ($name -notlike "*$tag-$AbiTag*") { continue }
+            if (-not (Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag)) { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
             # Order on the numeric release only: "2.15.0.dev20260819+cu134" and
@@ -4969,7 +5012,12 @@ exit 0
             if (-not $_woaEntry) { continue }
             $_woaOwned = $false
             foreach ($_woaPrefix in $_woaOwnedPrefixes) {
-                if ($_woaEntry.StartsWith($_woaPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                # The prefix itself or something UNDER it, never a sibling that merely
+                # starts with the same letters: <StudioHome>\woa-mirror is a caller's
+                # own wheel source, and treating it as ours deleted it.
+                if ($_woaEntry.Equals($_woaPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $_woaEntry.StartsWith("$_woaPrefix\", [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $_woaEntry.StartsWith("$_woaPrefix/", [System.StringComparison]::OrdinalIgnoreCase)) {
                     $_woaOwned = $true
                     break
                 }
@@ -5022,7 +5070,7 @@ exit 0
             $AbiTag = Get-WoaAbiTag -PythonMinor $WoaVenvMinor -FreeThreaded ([bool]$script:WoaVenvFreeThreaded)
             if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
                 $found = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "pyarrow-*win_arm64.whl" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -like "*$tag-$AbiTag*" } | Select-Object -First 1
+                    Where-Object { Test-WoaWheelTags -Name $_.Name -PyTag $tag -AbiTag $AbiTag } | Select-Object -First 1
                 if ($found) {
                     Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $WoaWheelDir $found.Name) -Force
                     $script:WoaPyarrowWheelName = $found.Name
@@ -5035,7 +5083,7 @@ exit 0
                 try {
                     $index = [string](Invoke-RestMethod -Uri (Join-UrlPath $script:WoaWheelhouse "index.txt") -UseBasicParsing -TimeoutSec 20)
                     foreach ($match in [regex]::Matches($index, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                        if ($match.Value -like "*$tag-$AbiTag*") { $wheelName = $match.Value; break }
+                        if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { $wheelName = $match.Value; break }
                     }
                 } catch {}
                 if ($wheelName) {
@@ -5160,7 +5208,12 @@ exit 0
                 }
             }
             if (-not $compatible) { continue }
-            $WoaWheelNames[($parts[0] -replace '[-_.]+', '-').ToLowerInvariant()] = $true
+            # The VERSION as well as the name: a hosted wheel only makes the drop
+            # unnecessary when the resolver can actually take it, and the released
+            # unsloth metadata this installer is paired with floors some of these.
+            $_woaWheelKey = ($parts[0] -replace '[-_.]+', '-').ToLowerInvariant()
+            if (-not $WoaWheelNames.ContainsKey($_woaWheelKey)) { $WoaWheelNames[$_woaWheelKey] = @() }
+            $WoaWheelNames[$_woaWheelKey] += $parts[1]
         }
         # Requirement overrides for the packages win_arm64 cannot resolve. These are
         # version-constraint replacements, not new requirements: a line marked
@@ -5178,6 +5231,15 @@ exit 0
         # torchaudio is dropped only when the CUDA index this run chose has no win_arm64
         # build of it. NVIDIA's GA channel does, so audio models work there.
         if (-not $script:WoaTorchAudio) { $WoaDropCandidates += "torchaudio" }
+        # Floors the RELEASED unsloth metadata this installer resolves against puts on a
+        # drop candidate. A hosted wheel BELOW one of these does not make the drop
+        # unnecessary: without the override the released requirement applies, uv rejects
+        # the hosted version, and the resolve falls to a win_arm64 build that does not
+        # exist. Only names with a floor need an entry; the rest are unversioned there
+        # (hf_transfer), excluded on this machine anyway (torchcodec), or arrive
+        # transitively with no constraint (brotli via httpx[brotli], torchaudio via the
+        # torch trio). Kept in step with pyproject.toml by a test.
+        $WoaDropFloors = @{ "xformers" = "0.0.22.post7" }
         $WoaOverrideLines = @(
             '# Generated by install.ps1 for Windows on ARM (win_arm64). See the WoA block there.'
         )
@@ -5186,7 +5248,21 @@ exit 0
         $WoaReported = @{}
         foreach ($candidate in $WoaDropCandidates) {
             $key = ($candidate -replace '[-_.]+', '-').ToLowerInvariant()
+            $_woaHosted = $false
             if ($WoaWheelNames.ContainsKey($key)) {
+                $_woaFloor = $WoaDropFloors[$key]
+                if (-not $_woaFloor) { $_woaHosted = $true }
+                else {
+                    foreach ($_woaHostedVer in $WoaWheelNames[$key]) {
+                        if (Test-WoaVersionAtLeast -Version $_woaHostedVer -Floor $_woaFloor) { $_woaHosted = $true; break }
+                    }
+                    if (-not $_woaHosted -and -not $WoaReported.ContainsKey($key)) {
+                        $WoaReported[$key] = $true
+                        substep "windows on arm: the wheelhouse $key is below the required $_woaFloor -- keeping the drop." "Yellow"
+                    }
+                }
+            }
+            if ($_woaHosted) {
                 if (-not $WoaReported.ContainsKey($key)) {
                     $WoaReported[$key] = $true
                     substep "windows on arm: keeping $key (the wheelhouse provides a win_arm64 wheel)."
