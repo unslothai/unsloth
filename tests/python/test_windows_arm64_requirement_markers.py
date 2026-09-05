@@ -310,7 +310,8 @@ def _skip_list_module():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "_ips_marker_skiplist", REPO_ROOT / "studio" / "install_python_stack.py",
+        "_ips_marker_skiplist",
+        REPO_ROOT / "studio" / "install_python_stack.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -354,7 +355,9 @@ def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
 
 
 @pytest.mark.parametrize(
-    "extra", WOA_INSTALLABLE_EXTRAS, ids = WOA_INSTALLABLE_EXTRAS,
+    "extra",
+    WOA_INSTALLABLE_EXTRAS,
+    ids = WOA_INSTALLABLE_EXTRAS,
 )
 def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
     """A negative ARM64 marker is a scalpel: every other platform keeps the row.
