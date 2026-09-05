@@ -677,3 +677,13 @@ def test_kv_estimate_reads_the_gguf_header_and_scales_with_cache_type(tmp_path):
     assert ss.estimate_kv_bytes(str(path), 0) is None
     assert ss.estimate_kv_bytes(str(tmp_path / "missing.gguf"), 1024) is None
     assert ss.kv_bytes_per_elem("q4_0") == 18 / 32 and ss.kv_bytes_per_elem(None) == 2.0
+
+
+def test_ssh_user_defers_to_the_cluster_module(cluster, monkeypatch):
+    """One rule for the login on both sides of the ssh: spark_cluster's."""
+    monkeypatch.setenv("USER", "alice")
+    cluster._ssh_user = lambda: "bob"
+    assert ss._ssh_user() == "bob"
+    assert ss.ssh_argv("192.168.200.13", "true")[-2] == "bob@192.168.200.13"
+    del cluster._ssh_user
+    assert ss._ssh_user() == "alice"

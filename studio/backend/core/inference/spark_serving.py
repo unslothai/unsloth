@@ -329,8 +329,16 @@ def estimate_kv_bytes(
 
 def _ssh_user() -> str:
     """This session's login, which is the peer's too (`unsloth spark provision` mirrors
-    the install as one account): the environment first, then the login database, so a
+    the install as one account). ``spark_cluster._ssh_user`` owns the rule and every
+    ssh site in the cluster module uses it; the copy below is only for a backend that
+    cannot load that module: the environment first, then the login database, so a
     service context that sets no USER still names the right account."""
+    shared = getattr(_cluster(), "_ssh_user", None)
+    if callable(shared):
+        try:
+            return str(shared())
+        except Exception:
+            pass
     for var in ("USER", "USERNAME", "LOGNAME"):
         value = os.environ.get(var)
         if value:
