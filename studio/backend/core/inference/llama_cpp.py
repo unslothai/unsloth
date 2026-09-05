@@ -50,6 +50,7 @@ from typing import (
 
 import httpx
 
+from core.inference.chat_template_helpers import build_dac_tts_prompt
 from core.inference.context_window import (
     _COMPACTION_HEADROOM_RATIO,
     clamp_compaction_headroom_ratio,
@@ -515,6 +516,7 @@ class GgufLoadIntent:
     hf_repo: Optional[str] = None
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
+    audio_codec_path: Optional[str] = None
     is_vision: bool = False
     # Load a vision GGUF as text-only: no projector on the GPU and none on the CPU
     # either. The projector's VRAM is left for the model, and image input is off
@@ -18194,7 +18196,12 @@ class LlamaCppBackend:
                     except Exception as exc:
                         logger.debug("Fast-path audio probe failed: %s", exc)
                         detected = None
-                    if not self._apply_detected_audio(detected):
+                    applied_audio = (
+                        self._apply_detected_audio(detected)
+                        if intent.audio_codec_path is None
+                        else self._apply_detected_audio(detected, intent.audio_codec_path)
+                    )
+                    if not applied_audio:
                         return False
                 if not self._healthy:
                     return False
@@ -24767,7 +24774,12 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.debug("Audio probe failed: %s", exc)
                 detected = None
-            if not self._apply_detected_audio(detected):
+            applied_audio = (
+                self._apply_detected_audio(detected)
+                if intent.audio_codec_path is None
+                else self._apply_detected_audio(detected, intent.audio_codec_path)
+            )
+            if not applied_audio:
                 return False
 
             if not self._healthy:
@@ -32513,7 +32525,11 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
-    def _apply_detected_audio(self, detected: Optional[str]) -> bool:
+    def _apply_detected_audio(
+        self,
+        detected: Optional[str],
+        audio_codec_path: Optional[str] = None,
+    ) -> bool:
         """Apply a probed audio codec under self._lock. Returns True to continue
         the load (codec inited OK, or nothing to init), False to abort (server
         unhealthy or codec init failed). Shared by the fast-path retry and the
@@ -32523,7 +32539,7 @@ class LlamaCppBackend:
                 if not self._healthy:
                     return False
                 try:
-                    self.init_audio_codec(detected)
+                    self.init_audio_codec(detected, audio_codec_path)
                     self._is_audio = True
                     self._audio_type = detected
                 except Exception as exc:
@@ -32599,7 +32615,7 @@ class LlamaCppBackend:
             False,
         ),
         "dac": (
-            "<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|><|global_features_start|>\n",
+            build_dac_tts_prompt("{text}"),
             ["<|im_end|>", "<|audio_end|>"],
             False,
         ),
@@ -32618,7 +32634,11 @@ class LlamaCppBackend:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def init_audio_codec(self, audio_type: str) -> None:
+    def init_audio_codec(
+        self,
+        audio_type: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""
         import torch
         from core.inference.audio_codecs import AudioCodecManager
@@ -32630,15 +32650,13 @@ class LlamaCppBackend:
         # load is classified as not holding, which is what lets the route skip
         # arbitration and survive training.
         device = "cuda" if torch.cuda.is_available() and not self.holds_no_vram else "cpu"
-        model_repo_path = None
+        model_repo_path = audio_codec_path
 
         # BiCodec needs a repo with BiCodec/ weights -- download canonical SparkTTS
-        if audio_type == "bicodec":
-            from huggingface_hub import snapshot_download
-            import os
-
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B")
-            model_repo_path = os.path.abspath(repo_path)
+        if audio_type == "bicodec" and model_repo_path is None:
+            from core.inference.audio_codecs import resolve_bicodec_repo_path
+            from utils.utils import hf_env_offline
+            model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")

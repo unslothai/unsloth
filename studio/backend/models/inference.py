@@ -4365,7 +4365,11 @@ class AudioSpeechRequest(BaseModel):
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
-        None, description = "Model id (informational; the loaded audio model is used)."
+        None,
+        description = (
+            "Model id. A downloaded text-to-speech model named here is loaded first when "
+            "model auto-switch is on; otherwise the loaded audio model is used."
+        ),
     )
     voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
     response_format: Optional[str] = Field(

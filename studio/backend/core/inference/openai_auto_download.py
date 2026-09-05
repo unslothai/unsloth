@@ -54,6 +54,11 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
+# Real speech GGUFs can publish no tokenizer sidecars. Their vocabulary lives near the
+# start of the selected weight, so a bounded range read can answer without staging the
+# multi-GB checkpoint first.
+_REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
+_REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
 
 @dataclass(frozen = True)
@@ -253,6 +258,28 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     except Exception as exc:
         return hf_error_status(exc) in (401, 403)
     return False
+
+
+def _probe_remote_gguf_audio_type(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], revision: Optional[str]
+) -> tuple[Optional[str], bool]:
+    """Read enough of one Hub GGUF to classify its vocabulary, without downloading it."""
+    try:
+        from core.inference.diffusion_compat import _read_gguf_header
+        from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix
+
+        prefix = _read_gguf_header(
+            repo_id,
+            gguf_filename,
+            _hub_token(hf_token),
+            revision = revision,
+            max_bytes = _REMOTE_GGUF_SPEECH_PROBE_BYTES,
+            timeout_seconds = _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S,
+        )
+        return classify_gguf_tts_audio_prefix(prefix) if prefix else (None, False)
+    except Exception as exc:
+        logger.debug("remote GGUF speech probe failed for %s/%s: %s", repo_id, gguf_filename, exc)
+        return None, False
 
 
 def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
@@ -496,6 +523,7 @@ async def maybe_auto_download(
     *,
     hf_token: Optional[str] = None,
     require_vision: bool = False,
+    require_speech: bool = False,
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
@@ -504,9 +532,9 @@ async def maybe_auto_download(
     Returns None when the request should carry on unchanged, or a refusal the
     caller must raise. Only called after the local resolver has already missed.
 
-    ``require_vision`` refuses a target with no mmproj companion rather than spend
-    gigabytes on weights that cannot answer the request; the local capability guard
-    only ever sees an already-downloaded model.
+    ``require_vision`` and ``require_speech`` refuse incapable targets before spending
+    gigabytes on weights; the local capability guard only ever sees an already-downloaded
+    model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
     opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
@@ -588,6 +616,7 @@ async def maybe_auto_download(
             hf_token,
             provisional,
             require_vision,
+            require_speech,
             subject = subject,
             via_api_key = via_api_key,
         )
@@ -604,6 +633,7 @@ async def _admit_and_start(
     hf_token: Optional[str],
     active: _Active,
     require_vision: bool = False,
+    require_speech: bool = False,
     *,
     subject: Optional[str] = None,
     via_api_key: bool = False,
@@ -736,6 +766,67 @@ async def _admit_and_start(
                 "downloaded."
             ),
         )
+
+    if require_speech:
+        from functools import partial
+        from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES
+        from utils.models.model_config import detect_audio_type_checked
+
+        audio_type, definitive = await _bounded_probe(
+            partial(
+                detect_audio_type_checked,
+                repo_id,
+                hf_token = _hub_token(hf_token),
+                revision = getattr(info, "sha", None),
+            ),
+            timeout = _CODE_PROBE_TIMEOUT_S,
+            default = (None, False),
+        )
+        if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
+            # The selected GGUF vocabulary is the capability source the eventual
+            # llama.cpp load will use. A supported JSON sidecar is only a fallback
+            # when that bounded weight probe is inconclusive; an unsupported sidecar
+            # can still reject early without touching the weight.
+            sidecar_audio_type = audio_type
+            main_files = sorted(getattr(plan, "main_filenames", ()) or ())
+            probed_audio_type, probed_definitive = await _bounded_probe(
+                partial(
+                    _probe_remote_gguf_audio_type,
+                    repo_id,
+                    main_files[0] if main_files else "",
+                    hf_token,
+                    getattr(info, "sha", None),
+                ),
+                timeout = _CODE_PROBE_TIMEOUT_S,
+                default = (None, False),
+            )
+            if probed_definitive:
+                audio_type, definitive = probed_audio_type, True
+            elif sidecar_audio_type in GGUF_TTS_AUDIO_TYPES:
+                audio_type, definitive = sidecar_audio_type, True
+            else:
+                audio_type, definitive = None, False
+        if not definitive:
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 503,
+                code = "model_lookup_failed",
+                message = (
+                    f"Could not verify that '{_public_label(repo_id, variant)}' supports "
+                    "text-to-speech. It was not downloaded; retry shortly."
+                ),
+                retry_after = _RETRY_AFTER_S,
+            )
+        if audio_type not in GGUF_TTS_AUDIO_TYPES:
+            _release(active)
+            return AutoDownloadRefusal(
+                status = 400,
+                code = "invalid_value",
+                message = (
+                    f"'{_public_label(repo_id, variant)}' is not a supported "
+                    "text-to-speech GGUF model. It was not downloaded."
+                ),
+            )
 
     need_bytes = _remaining_bytes(repo_id, plan, expected_bytes)
     fits, free = _enough_disk(need_bytes)

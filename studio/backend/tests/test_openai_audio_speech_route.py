@@ -8,8 +8,10 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -25,11 +27,23 @@ from utils.api_errors import install_api_error_handlers
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 
 
+class _SpeechBudgetRequest:
+    def __init__(self):
+        self.state = SimpleNamespace(skip_api_monitor = True)
+
+
+class _SpeechBudgetPayload:
+    """The few fields _generate_tts_wav reads before it reaches the switch."""
+
+    audio_instructions = None
+    audio_language = None
+
+
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
-        calls.append({"text": text, "payload": payload})
+    async def _fake_generate(text, payload, request, current_subject, **kwargs):
+        calls.append({"text": text, "payload": payload, **kwargs})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -197,6 +211,73 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
+def test_the_named_model_reaches_the_switch_hook(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    assert (
+        cli.post("/v1/audio/speech", json = {"input": "hi", "model": "org/B-GGUF"}).status_code == 200
+    )
+    assert calls[0]["requested_model"] == "org/B-GGUF"
+
+
+def test_an_omitted_model_only_restores_an_idle_evicted_model(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 200
+    assert calls[0]["requested_model"] == routes_module._RELOAD_ONLY_MODEL
+
+
+def test_the_switch_hook_requires_a_speech_target():
+    import inspect
+    source = inspect.getsource(routes_module._generate_tts_wav)
+    assert "require_speech = True" in source
+
+
+def test_a_named_target_is_not_budgeted_against_the_resident_model(monkeypatch):
+    """The pre-switch budget reads the loaded context, so it can only judge a request
+    that is not about to replace the loaded model. A 2K resident must not reject a
+    prompt the named 8K target would have taken."""
+    seen = []
+
+    async def _switch(model, *_a, **_kw):
+        seen.append(model)
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+
+    payload = _SpeechBudgetPayload()
+    with pytest.raises(RuntimeError, match = "reached the switch"):
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "a long line",
+                payload,
+                _SpeechBudgetRequest(),
+                "tester",
+                requested_model = "org/B-GGUF",
+            )
+        )
+    assert seen == ["org/B-GGUF"]
+
+
+def test_a_reload_only_request_is_still_budgeted_first(monkeypatch):
+    from fastapi import HTTPException
+
+    async def _switch(*_a, **_kw):
+        pytest.fail("budget must reject before any reload")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "a long line", _SpeechBudgetPayload(), _SpeechBudgetRequest(), "tester"
+            )
+        )
+    assert exc.value.status_code == 400
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -219,9 +300,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
         if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
     ]
     restore = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "_RELOAD_ONLY_MODEL, request, current_subject" in line
+        i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]
