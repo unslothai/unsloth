@@ -15,10 +15,8 @@ def _read_source() -> str:
 
 def test_grpo_logit_scaling_uses_model_config_helper():
     src = _read_source()
-    # Helper exists and unwraps DDP/Accelerate wrappers via `.module`.
     assert "def _unsloth_get_model_config(model):" in src
     assert 'getattr(model.module, "config", None)' in src
-    # Softcapping takes the model and tolerates a missing config.
     assert "logit_softcapping = _unsloth_get_final_logit_softcapping(model)" in src
     assert "if config is None:" in src.split("def _unsloth_get_final_logit_softcapping")[1]
     # Logit scale/divide read through the unwrapped config, not bare model.config.

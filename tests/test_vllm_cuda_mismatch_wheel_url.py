@@ -38,7 +38,6 @@ from unsloth.import_fixes import (
 
 
 # Real CUDA wheel assets per release (the ``+cpu`` and macOS assets are dropped).
-# Ground truth: the GitHub releases API, not Unsloth's own table.
 _RELEASE_ASSETS = {
     "0.11.0": (
         "vllm-0.11.0+cu129-cp38-abi3-manylinux1_x86_64.whl",
@@ -136,9 +135,9 @@ _RELEASE_ASSETS = {
     ),
 }
 
-# Which CUDA major each snapshot asset is built for. The "+cuXXX" local tag names it
-# outright; the unsuffixed default wheel is CUDA 13 from 0.20.0 on ("CUDA 13.0 default"
-# in the v0.20.0 release notes) and CUDA 12 before that.
+# Which CUDA major each snapshot asset is built for.
+# the unsuffixed default wheel is CUDA 13 from 0.20.0 on ("CUDA 13.0 default" in the v0.20.0 release notes) and CUDA 12
+# before that.
 _LOCAL_TAG_RE = re.compile(r"^vllm-[0-9.]+\+cu(\d\d)\d")
 
 _ARCHES = ("x86_64", "aarch64")

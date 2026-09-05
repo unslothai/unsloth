@@ -6,10 +6,8 @@ import { DashboardSquare01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isCustomProviderType } from "./external-providers";
 
-/**
- * Registry logos at `public/provider-logos/{provider_type}.{ext}`; key matches
- * `PROVIDER_REGISTRY` (lowercase). Extension varies per asset (svg preferred).
- */
+/** Registry logos at `public/provider-logos/{provider_type}.{ext}`; key matches `PROVIDER_REGISTRY`
+ *  (lowercase). Extension varies per asset, svg preferred. */
 const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   openai: "svg",
   mistral: "svg",

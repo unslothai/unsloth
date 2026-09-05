@@ -645,6 +645,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
+    # ── 4. Command loop - process commands until shutdown ──
     # ── 4. Command loop — process commands until shutdown ──
     logger.info("Export subprocess ready, entering command loop")
 
