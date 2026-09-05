@@ -1712,7 +1712,7 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # How long a swapped-out chat waits for cells before giving up and re-prefilling, and how
 # often it re-checks. The poll is coarse because a swap-in costs ~11 ms: a tighter loop
 # would only burn the executor thread the tool loop needs back.
-_KV_SWAP_MAX_WAIT_S = 900.0
+_KV_SWAP_MAX_WAIT_S = 300.0
 _KV_SWAP_POLL_S = 0.25
 # SSE comments the chat UI already renders as "Paused while another chat finishes".
 _OPENAI_KV_SWAP_SSE_PAUSED = ": preempt-paused\n\n"
@@ -22008,6 +22008,18 @@ async def produce_openai_chat_completions(
                 finally:
                     # A disconnect mid-approval must not leave a slot parked.
                     await _park_admission(False, wait = False)
+                    # Drop this chat from the KV ledger. Without it a finished chat stays
+                    # counted as resident for ever, the running total climbs past the
+                    # context with every request, and then EVERY chat is a victim at its
+                    # first round and no wait can ever be satisfied. That is exactly what
+                    # a 4-chat run did: resident 14134 against a 8192 pool, 120 pauses for
+                    # 4800 tokens, and not one successful resume.
+                    try:
+                        _kv_controller = peek_kv_swap_controller(llama_backend.base_url)
+                        if _kv_controller is not None:
+                            _kv_controller.finish(_kv_swap_chat_id)
+                    except Exception:
+                        pass
                     try:
                         if not stream_completed:
                             cancel_event.set()

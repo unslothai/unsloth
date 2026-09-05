@@ -334,10 +334,17 @@ class KvSwapController:
                 if chat.state != RUNNING or chat.slot is None:
                     continue
                 held = by_slot.get(chat.slot)
-                if held is None or held <= 0:
+                if held is None:
+                    continue
+                if held <= 0:
+                    # The server released the slot: whatever this chat was holding is
+                    # gone. Skipping here instead would leave a finished chat counted as
+                    # resident and push the running total past the context for ever.
+                    chat.prompt_tokens = 0
+                    chat.generated_tokens = 0
                     continue
                 # Keep the split between prompt and generated, but make the sum truthful.
-                drift = held - chat.size
+                drift = min(held, self.n_ctx) - chat.size
                 if drift:
                     chat.generated_tokens = max(0, chat.generated_tokens + drift)
 

@@ -210,7 +210,8 @@ def test_reconcile_trusts_the_server_over_the_stream():
 def test_reconcile_ignores_slots_it_does_not_own():
     controller = make_controller()
     controller.admit("a", prompt_tokens = 100, slot = 1)
-    controller.reconcile([{"id": 3, "n_prompt_tokens": 900}, {"id": 1, "n_prompt_tokens": 0}])
+    # Another chat's slot says 900; a readout that omits ours leaves ours alone.
+    controller.reconcile([{"id": 3, "n_prompt_tokens": 900}])
     assert controller.get("a").resident == 100
 
 
@@ -498,3 +499,31 @@ def test_can_resume_ignores_the_chats_own_residency():
     controller.admit("me", prompt_tokens = 400, slot = 0)
     assert controller.can_resume("me") is True
     assert controller.can_resume("ghost") is False
+
+
+def test_reconcile_clears_a_chat_whose_slot_the_server_released():
+    controller = make_controller()
+    controller.admit("a", prompt_tokens = 1000, slot = 1)
+    controller.update("a", generated_tokens = 2000)
+    assert controller.resident_total() == 3000
+    # The slot came back empty: the run ended and the cells went with it.
+    controller.reconcile([{"id": 1, "n_prompt_tokens": 0}])
+    assert controller.resident_total() == 0
+
+
+def test_reconcile_clamps_a_readout_larger_than_the_pool():
+    controller = make_controller(n_ctx = 8192)
+    controller.admit("a", prompt_tokens = 100, slot = 1)
+    controller.reconcile([{"id": 1, "n_prompt_tokens": 99999}])
+    assert controller.get("a").resident == 8192
+
+
+def test_finished_chats_do_not_hold_the_budget_down():
+    controller = make_controller(n_ctx = 8192)
+    for i, name in enumerate(["a", "b", "c", "d"]):
+        controller.admit(name, prompt_tokens = 3500, slot = i)
+    assert controller.resident_total() == 14000        # over the pool: the live symptom
+    for name in ["a", "b", "c"]:
+        controller.finish(name)
+    assert controller.resident_total() == 3500
+    assert controller.plan().victims == []
