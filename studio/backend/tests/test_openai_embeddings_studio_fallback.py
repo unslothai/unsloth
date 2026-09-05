@@ -1092,8 +1092,12 @@ def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(keepwarm, "get_last_unloaded_model", lambda: None)
     assert inference_route._stashed_gguf_embeds() is False
-    monkeypatch.setattr(keepwarm, "get_last_unloaded_model", lambda: ("org/E-GGUF", "Q8_0", "org/E-GGUF"))
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda ref, **_: ("/tmp/e.gguf", "Q8_0", "org/E-GGUF"))
+    monkeypatch.setattr(
+        keepwarm, "get_last_unloaded_model", lambda: ("org/E-GGUF", "Q8_0", "org/E-GGUF")
+    )
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda ref, **_: ("/tmp/e.gguf", "Q8_0", "org/E-GGUF")
+    )
 
     class _Probe:
         is_embedding_gguf = True
