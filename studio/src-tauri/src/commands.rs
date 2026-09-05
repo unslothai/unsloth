@@ -701,12 +701,35 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
     open_existing_dir_with(dir, |path| crate::process::open_detached(path))
 }
 
-/// Open the Unsloth directory in the system file manager.
+fn logs_dir(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".unsloth").join("studio")
+}
+
+fn resolved_logs_dir(path: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let Some(path) = path else {
+        let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+        return Ok(logs_dir(&home));
+    };
+    let source = std::path::PathBuf::from(path);
+    if !source.is_absolute() {
+        return Err("Log location must be an absolute path.".to_string());
+    }
+    Ok(if source.is_dir() {
+        source
+    } else {
+        source
+            .parent()
+            .ok_or("Log location has no parent directory.")?
+            .to_path_buf()
+    })
+}
+
+/// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
-pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn open_logs_dir(window: tauri::WebviewWindow, path: Option<String>) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    open_existing_dir(&home.join(".unsloth").join("studio"))
+    let directory = resolved_logs_dir(path.as_deref())?;
+    open_existing_dir(&directory)
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
@@ -1238,6 +1261,25 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Directory does not exist"));
     }
+
+    #[test]
+    fn resolved_log_file_opens_its_backend_selected_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("server.log");
+        fs::write(&log, "failure").unwrap();
+        assert_eq!(
+            super::resolved_logs_dir(log.to_str()),
+            Ok(dir.path().to_path_buf())
+        );
+        assert!(super::resolved_logs_dir(Some("relative/server.log")).is_err());
+    }
+
+    #[test]
+    fn logs_command_targets_the_studio_root_containing_every_log_family() {
+        let home = std::path::Path::new("home");
+        assert_eq!(super::logs_dir(home), home.join(".unsloth").join("studio"));
+    }
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
