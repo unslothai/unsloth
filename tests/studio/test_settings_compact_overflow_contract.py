@@ -48,12 +48,9 @@ def test_remote_access_card_can_shrink():
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    # The picker has already moved once, from the General tab to Documents & RAG, and
-    # pinning the filename turned that move into a red build even though both responsive
-    # classes came along untouched. Follow whichever settings surface renders the picker.
-    # Dropping the classes still fails; relocating them no longer does.
-    # The combobox became EmbeddingModelPicker; follow the component, since the
-    # contract is that the control stacks and fills the row under 360px.
+    # The picker has already moved once, from the General tab to Documents & RAG, and pinning the filename turned that
+    # move into a red build even though both responsive classes came along untouched.
+    # follow the component, since the contract is that the control stacks and fills the row under 360px.
     owners = [
         path
         for path in sorted(SETTINGS.rglob("*.tsx"))
