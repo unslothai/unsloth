@@ -343,7 +343,13 @@ class TestPythonStackWindowsArm64:
             # Unreadable registry falls back to the per-process signals, not to True.
             ("", {"PROCESSOR_ARCHITECTURE": "AMD64"}, False),
         ],
-        ids = ["native-arm64", "emulated-x64-on-arm64", "architew6432-set", "real-x64", "no-registry-x64"],
+        ids = [
+            "native-arm64",
+            "emulated-x64-on-arm64",
+            "architew6432-set",
+            "real-x64",
+            "no-registry-x64",
+        ],
     )
     def test_the_arch_probe_reads_the_machine_not_the_process(self, registry, env, expected):
         """PROCESSOR_ARCHITECTURE describes the PROCESS, so an emulated x64 Python on an

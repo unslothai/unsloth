@@ -2167,7 +2167,9 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
         assert (
             "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"
-        assert "_is_windows_arm64()" not in block, "the machine predicate would drop torchaudio from x64 venvs"
+        assert (
+            "_is_windows_arm64()" not in block
+        ), "the machine predicate would drop torchaudio from x64 venvs"
         assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
 
     def test_x64_windows_still_asks_for_all_three(self):

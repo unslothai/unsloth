@@ -75,7 +75,6 @@ def _machine_arch_from_registry() -> str:
         return ""
     try:
         import winreg
-
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
