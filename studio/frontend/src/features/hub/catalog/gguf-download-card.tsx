@@ -49,6 +49,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -75,6 +76,7 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { useInventoryVersion } from "../stores/inventory-events";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
@@ -141,6 +143,16 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 };
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
+// How long the pointer has to settle on the options button before its path is fetched.
+// Long enough that crossing a catalog costs nothing, short enough to be over before the
+// menu has finished opening.
+const HOVER_PREFETCH_MS = 150;
+// How long a resolved path is trusted. The cache exists so the copy has it in hand
+// before Safari's click expires, not to stand in for the cache on disk: a CLI download
+// or a delete moves the snapshot without touching inventoryVersion, and the pre-cache
+// behaviour rescanned on every copy. Long enough to cover opening a menu and choosing
+// from it, short enough that a menu left open does not answer from another era.
+const CACHED_PATH_TTL_MS = 30000;
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
@@ -307,9 +319,76 @@ export function QuantOptionsMenu({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
+  // One menu stays mounted while the run bar swaps repoId/quant under it, and while a
+  // re-download moves the snapshot the old path pointed at.
+  const cachedPathRef = useRef<{ key: string; path: string; at: number } | null>(null);
+  const freshPath = (key: string): string | null => {
+    const entry = cachedPathRef.current;
+    return entry?.key === key && Date.now() - entry.at < CACHED_PATH_TTL_MS
+      ? entry.path
+      : null;
+  };
+  const inventoryVersion = useInventoryVersion();
+  const pathKey = JSON.stringify([repoId, quant ?? null, inventoryVersion]);
+  const pathKeyRef = useRef(pathKey);
+  useEffect(() => {
+    pathKeyRef.current = pathKey;
+  }, [pathKey]);
+  // Every resolve goes through here so the pointer, the open and a cold copy share one
+  // request: each call costs the backend a full scan of the Hugging Face caches.
+  const inFlightRef = useRef<{ key: string; path: Promise<string> } | null>(null);
+  const resolveCachedPath = useCallback((): Promise<string> => {
+    const live = inFlightRef.current;
+    if (live?.key === pathKey) {
+      return live.path;
+    }
+    const path = getCachedModelPath(repoId, quant)
+      .then(({ path: resolved }) => {
+        // The request for a quant we switched off can land last; it must not evict.
+        if (pathKeyRef.current === pathKey) {
+          cachedPathRef.current = { key: pathKey, path: resolved, at: Date.now() };
+        }
+        return resolved;
+      })
+      .finally(() => {
+        if (inFlightRef.current?.key === pathKey) {
+          inFlightRef.current = null;
+        }
+      });
+    inFlightRef.current = { key: pathKey, path };
+    return path;
+  }, [repoId, quant, pathKey]);
+  const hoverTimerRef = useRef<number | null>(null);
+  const cancelPrefetch = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+  const prefetchCachedPath = useCallback(() => {
+    if (!downloaded || freshPath(pathKey) !== null) {
+      return;
+    }
+    void resolveCachedPath().catch(() => undefined);
+  }, [downloaded, pathKey, resolveCachedPath]);
+  const armPrefetch = useCallback(() => {
+    cancelPrefetch();
+    hoverTimerRef.current = window.setTimeout(prefetchCachedPath, HOVER_PREFETCH_MS);
+  }, [cancelPrefetch, prefetchCachedPath]);
+  useEffect(() => cancelPrefetch, [cancelPrefetch]);
+  // An inventory bump while the menu is open changes the key under it, and no pointer
+  // or open event is coming to notice: prefetchCachedPath's identity moves with the
+  // key, so this re-runs and the copy still finds a path waiting for it.
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (menuOpen) {
+      prefetchCachedPath();
+    }
+  }, [menuOpen, prefetchCachedPath]);
   const handleCopyPath = useCallback(async () => {
     try {
-      const { path } = await getCachedModelPath(repoId, quant);
+      // Safari drops the click's clipboard permission after any other await.
+      const path = freshPath(pathKey) ?? (await resolveCachedPath());
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -320,7 +399,7 @@ export function QuantOptionsMenu({
         err instanceof Error ? err.message : "Failed to resolve model path",
       );
     }
-  }, [repoId, quant]);
+  }, [pathKey, resolveCachedPath]);
   const handleCopyId = useCallback(async () => {
     const id = quant ? `${repoId}:${quant}` : repoId;
     if (await copyToClipboard(id)) {
@@ -331,11 +410,17 @@ export function QuantOptionsMenu({
   }, [repoId, quant]);
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
+          // The pointer crosses the trigger before the item, so start here, not on open --
+          // but only once it settles: each resolve is a full scan of the Hugging Face
+          // caches, and a pointer crossing a full catalog would start one per card.
+          onPointerEnter={armPrefetch}
+          onPointerLeave={cancelPrefetch}
+          onFocus={prefetchCachedPath}
           aria-label={`More options for ${label}`}
           className={cn(
             "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full",
