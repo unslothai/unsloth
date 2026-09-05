@@ -1952,8 +1952,15 @@ def detect_mtp_file(
         # Family first, for the same reason as DSpark: both a base-family and a
         # release-specific sidecar prefix-match, and only the longer one is
         # really this weight's drafter.
+        # A head that borrows the target's embeddings (-shared-) cannot be
+        # measured by llama-server's --fit, which loads the draft on its own;
+        # the fit then reserves nothing for it and the MTP context fails to
+        # allocate on a full card (unsloth#10322). Prefer the self-contained
+        # form whenever both are on disk, before size.
+        borrows = 1 if "-shared-" in name else 0
         return (
             _drafter_stem_rank(candidate.name, kind = "mtp"),
+            borrows,
             _drafter_total_size(candidate),
             precision,
             name,

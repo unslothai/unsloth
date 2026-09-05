@@ -1494,8 +1494,10 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
     """Offline reuse must name the file the online picker names.
 
     Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
-    the 7.77 GB slowest head while a fresh install downloaded the 2.79 GB shared
-    Q8_0 one.
+    the 7.77 GB slowest head while a fresh install downloaded the Q8_0 one. Both
+    pickers now take the self-contained Q8_0 over the borrowing shared-Q8_0:
+    llama-server's --fit cannot measure a head that needs its target to load,
+    so it reserved nothing for it and the MTP context OOMed (unsloth#10322).
     """
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1515,7 +1517,7 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
 
     found = backend._cached_repo_mtp_drafter("unsloth/Qwen3.8-Flash-Next-GGUF")
     assert found is not None
-    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", (
+    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf", (
         f"offline reuse picked {Path(found).name}; the online picker takes "
         f"{llama_cpp_module._pick_mtp(published)}"
     )
@@ -1538,6 +1540,21 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
     )
     backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
     assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+
+def test_local_scan_prefers_the_fit_measurable_head_over_the_smaller_shared_one(tmp_path):
+    """With both forms on disk the self-contained head wins even though it is
+    larger: --fit can measure it, and cannot measure the borrowing one."""
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf").write_bytes(b"x" * 64)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"x" * 128)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
 
 
 def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
