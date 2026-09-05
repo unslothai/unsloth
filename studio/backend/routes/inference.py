@@ -9777,7 +9777,7 @@ def _estimate_gguf_required_gb(
         # A host-memory drafter competes for RAM, not the training job's VRAM. Charging
         # it is the wrong resource, not a safe over-estimate, and 409s a load that takes
         # no drafter VRAM at all.
-        if _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ):
+        if _draft_pinned_to_cpu:
             _extras_bytes = 0
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:

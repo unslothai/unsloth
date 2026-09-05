@@ -667,6 +667,7 @@ def _drafter_gate(
     caps: dict,
     drafter = "/models/mtp-gemma.gguf",
     extra_args = None,
+    spec_canon = "auto",
 ):
     """Run load_model's real unpinnable-drafter statements and report what the launch
     would see: (resolved drafter, extra args, warnings)."""
@@ -698,6 +699,7 @@ def _drafter_gate(
     scope = {
         **vars(llama_cpp),
         "_paravirtual_cpu_forced": paravirtual,
+        "_spec_canon": spec_canon,
         "server_caps": caps,
         "launch_mtp_draft_path": drafter,
         "extra_args": list(extra_args) if extra_args else extra_args,
@@ -2056,3 +2058,27 @@ def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override(
         )
         == extras
     )
+
+
+def test_a_main_cpu_device_does_not_excuse_the_drop():
+    """A main ``--device none`` is not the separate drafter's placement, whichever
+    emitter runs: DSpark never copies it, and DFlash and MTP copy it only when they
+    emit a sidecar of their own. Believing it would leave the drafter on the device
+    whose output is corrupt, so only a draft-only pin exempts it."""
+    for mode in ("dspark", "dflash"):
+        drafter, _extras, warnings = _drafter_gate(
+            paravirtual = True,
+            caps = {},
+            extra_args = ["--device", "none"],
+            spec_canon = mode,
+        )
+        assert drafter is None, mode
+        assert any("draft-layer flag" in w for w in warnings), mode
+
+    kept, _extras, quiet = _drafter_gate(
+        paravirtual = True,
+        caps = {},
+        extra_args = ["--spec-draft-device", "none"],
+    )
+    assert kept == "/models/mtp-gemma.gguf"
+    assert not quiet

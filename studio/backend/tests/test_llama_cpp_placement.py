@@ -86,6 +86,16 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
+    backend._run_vulkan_probe = lambda *_a, **_kw: [
+        {
+            "index": index,
+            "free_mib": free,
+            "total_mib": total,
+            "is_igpu": False,
+            "name": f"Vulkan{index}",
+        }
+        for index, free, total in memory
+    ]
     backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
         (index, free) for index, free, _total in memory
