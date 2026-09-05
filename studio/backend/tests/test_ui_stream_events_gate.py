@@ -70,8 +70,7 @@ def test_background_generation_run_opts_into_control_frames():
     # Durable runs replay the producer's SSE lines (tool cards included) to the
     # Studio UI, so their synthetic request must carry the opt-in.
     from core.inference.chat_generation_runs import _background_request
-
-    req = _background_request(app=None, run_id="run-1", cancel_event=threading.Event())
+    req = _background_request(app = None, run_id = "run-1", cancel_event = threading.Event())
     assert _ui_stream_events_enabled(req) is True
 
 
