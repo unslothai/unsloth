@@ -358,11 +358,20 @@ class TestSpeculativeDraftsAreReserved:
 
         # batch_tokens is the launch's --batch-size, unstated here so it defaults to
         # llama.cpp's 2048; the drafter's cells are added ON TOP of it.
+        #
+        # `pending_prefill` is the 4096 this generation was just charged: arming
+        # registers a prompt that llama-server has not prefilled yet, which is one of the
+        # three moments the batch term applies. It used to apply permanently and this
+        # assertion did not have to say so.
         assert snapshot.buffer == preemption_buffer_tokens(
-            snapshot.budget, draft_tokens = 2, slots = 4, batch_tokens = 2048
+            snapshot.budget,
+            draft_tokens = 2,
+            slots = 4,
+            batch_tokens = 2048,
+            pending_prefill = 4096,
         ), f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
         assert snapshot.buffer > preemption_buffer_tokens(
-            snapshot.budget, slots = 4, batch_tokens = 2048
+            snapshot.budget, slots = 4, batch_tokens = 2048, pending_prefill = 4096
         ), "the drafter must cost something over the same launch without one"
 
     @pytest.mark.asyncio
@@ -395,8 +404,12 @@ class TestSpeculativeDraftsAreReserved:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         snapshot = get_preemption_controller("http://127.0.0.1:10/").snapshot()
+        # Same 4096 charge, so the same pending prefill; see the sibling test above.
         assert snapshot.buffer == preemption_buffer_tokens(
-            snapshot.budget, slots = snapshot.slots, batch_tokens = 2048
+            snapshot.budget,
+            slots = snapshot.slots,
+            batch_tokens = 2048,
+            pending_prefill = 4096,
         )
 
 
@@ -444,19 +457,34 @@ class TestTheBufferCanHoldOnePrefillChunk:
     """
 
     def test_the_buffer_covers_the_batch(self):
+        """While a prefill is pending. That qualifier is the 2026-09-05 change.
+
+        The term was permanent until then, which held a whole --batch-size back even
+        with every chat decoding and nothing to prefill: a quarter of an 8192 cache,
+        forever. The chunk still has to fit when one is actually submitted, which is
+        what this pins.
+        """
         from core.inference.llama_preemption import preemption_buffer_tokens
-        buffer = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
+        buffer = preemption_buffer_tokens(
+            16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000
+        )
         assert buffer >= 2048, (
             "a buffer smaller than one prefill chunk cannot prevent the decode failure "
             "that starts the shrinking-batch retry"
         )
+        idle = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
+        assert idle < 2048, "nothing is prefilling, so no chunk needs holding back"
 
     def test_drafts_are_added_on_top_of_the_batch(self):
         """They are cells the drafter puts in BEFORE acceptance, not part of the chunk."""
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        plain = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048)
-        drafted = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048, draft_tokens = 6)
+        plain = preemption_buffer_tokens(
+            16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000
+        )
+        drafted = preemption_buffer_tokens(
+            16384, slots = 4, batch_tokens = 2048, draft_tokens = 6, pending_prefill = 5000
+        )
         assert drafted == plain + 6 * 4
 
     def test_reaction_headroom_still_wins_when_it_is_larger(self):

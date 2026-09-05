@@ -2620,6 +2620,9 @@ def _openai_llama_preemption_arm(
         committed = snapshot.committed,
         budget = snapshot.budget,
         buffer = snapshot.buffer,
+        # The buffer carries a prefill batch only while something is prefilling, so the
+        # two have to be read together or a shrinking buffer looks like a regression.
+        prefilling = snapshot.prefilling,
         decoding = snapshot.decoding,
         paused = snapshot.paused,
         winner = snapshot.winner,

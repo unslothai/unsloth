@@ -90,6 +90,24 @@ DEFAULT_PREEMPT_BUFFER_RATIO = _float_env("UNSLOTH_LLAMA_PREEMPT_BUFFER_RATIO", 
 DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
+# Restores the PERMANENT batch term: the buffer then reserves one whole --batch-size at
+# all times, prefilling or not, which is what shipped between 2026-09-03 and 2026-09-05.
+# Kept as an escape hatch because the dynamic term is riskier in one specific way: it
+# depends on every prefill being ANNOUNCED to this module before its chunk is submitted,
+# and a surface added later that forgot to announce would quietly lose the reserve.
+# Setting this costs a quarter of an 8192 cache and cannot be wrong.
+STATIC_BATCH_ENV = "UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH"
+DEFAULT_PREEMPT_STATIC_BATCH = False
+
+# A pending prefill that never happens must not hold the buffer up forever. Every
+# announcement is cleared by the first token that comes back, by the pause that cancels
+# it, or by the participant leaving; this is the backstop for the path that does none of
+# those, such as a stream that dies between the resume grant and its request. Generously
+# long, because a real prefill of a whole window takes well under a second on anything
+# Studio loads and an expiry firing DURING one would drop the reserve at exactly the
+# moment it is needed.
+PENDING_PREFILL_TTL_S = 120.0
+
 # A resume is cheap (the prefix cache usually still holds the prompt) but not free, so a
 # pathological loop that pauses the same chat forever is bounded. Deliberately far above
 # _MAX_LENGTH_CONTINUATIONS: that one caps how often a model may be asked to finish its own
@@ -444,6 +462,7 @@ def preemption_buffer_tokens(
     draft_tokens: int = 0,
     slots: int = 1,
     batch_tokens: int = 0,
+    pending_prefill: int = 0,
 ) -> int:
     """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it.
 
@@ -463,6 +482,13 @@ def preemption_buffer_tokens(
     (upstream ggml-org/llama.cpp#24840, where the retry path shifts ``slot.i_batch`` by
     the offset but never ``slot.spec_i_batch``). Reserving the drafts keeps the cache off
     the retry path that exposes it.
+
+    **The batch term is charged only while a prefill is pending.** ``pending_prefill`` is
+    how many prompt tokens are announced but not yet in the cache, across every
+    participant; the reserve is ``min(batch_tokens, pending_prefill)``. Nothing prefills
+    while chats merely decode, so with every chat mid-answer the buffer is the reaction
+    headroom and the drafts alone. Set ``UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH=1`` to go back
+    to reserving a whole batch permanently.
     """
     if budget <= 0:
         return 0
@@ -487,8 +513,8 @@ def preemption_buffer_tokens(
     # And room for the batch llama.cpp is actually processing, which is the term all of
     # the above was missing. The cache does not fail when it is full of tokens, it fails
     # when the next BATCH does not fit: llama-server prefills in chunks of --batch-size
-    # (2048 by default), so a resumed chat replaying 5000 tokens asks for 2048 free cells
-    # at once, not one at a time.
+    # (2048 by default), so a resumed chat replaying 5000 tokens asks for a whole chunk of
+    # free cells at once, not one at a time.
     #
     # Measured 2026-09-03, and it is why the watermark kept looking innocent: across 1329
     # samples peak residency was 13540 against a 15592 ceiling, never once over, while
@@ -496,9 +522,32 @@ def preemption_buffer_tokens(
     # sub-batch errors. 16384 - 13540 leaves 2844 free, which one 2048 chunk fits and two
     # concurrent ones do not. A 792 token buffer cannot cover a 2048 token chunk.
     #
-    # max() rather than a sum: reaction headroom and batch headroom buy the same thing,
+    # ONLY WHILE SOMETHING IS PREFILLING, which is the correction made on 2026-09-05. The
+    # term was permanent, and permanence is what made it expensive: at -c 8192 with four
+    # slots, an n_batch of 2048 and two MTP drafts it held 2056 cells back forever, so a
+    # quarter of the cache was unusable even with every chat decoding one token at a time
+    # and nothing prefilling at all. Decoding does not submit a prompt chunk. Only three
+    # things do, and this module is told about all three: a freshly admitted prompt
+    # (`register`, still unmeasured), a granted resume replaying its partial
+    # (`try_grant_resume`), and a tool round whose prompt grew at the boundary
+    # (`note_tokens`). `pending_prefill` is the sum of what those have outstanding.
+    #
+    # Sized min(n_batch, pending) rather than n_batch flat, because a prompt shorter than
+    # a chunk only ever asks for its own length: `update_slots` fills the shared batch
+    # with `min(n_batch - batch.size(), remaining)` per slot and a partial chunk is the
+    # normal case, so a 300 token prompt needs 300 cells at once, not 2048. Summed across
+    # participants and THEN capped, which is how llama-server reserves for itself in the
+    # same situation (`res + std::min(res_pmt, n_batch)`): several slots prefilling at
+    # once share one batch, so together they can ask for a whole chunk but never more.
+    #
+    # max() against the reaction headroom rather than a sum: both buy the same thing,
     # space for the next step, so the larger of the two covers both.
-    reserve = max(reserve, max(0, int(batch_tokens or 0)))
+    n_batch = max(0, int(batch_tokens or 0))
+    if _bool_env(STATIC_BATCH_ENV, DEFAULT_PREEMPT_STATIC_BATCH):
+        batch_reserve = n_batch
+    else:
+        batch_reserve = min(n_batch, max(0, int(pending_prefill or 0)))
+    reserve = max(reserve, batch_reserve)
     # Drafts are additional. They are cells the drafter puts in BEFORE acceptance, on top
     # of whatever the batch needs, and admission never sees them.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
@@ -542,6 +591,39 @@ class Participant:
     # the waiters, and the ledger still said it held 3847 of 6136. Cleared when the
     # holder decodes again, because llama-server prefills its prompt back in first.
     cells_reclaimed: bool = False
+    # Prompt tokens this participant has announced but llama-server has not prefilled
+    # yet, and the monotonic() at which it said so. This is the ONLY thing that puts the
+    # batch term in the buffer, so it must be set before the request carrying that prompt
+    # is submitted and cleared as soon as the prompt is in: see `preemption_buffer_tokens`
+    # and `announce_prefill`. Distinct from `measured`, which answers "are this chat's
+    # cells inside the resident figure" for the whole charge; this answers "is a chunk
+    # about to be submitted", which is also true at a round boundary where `measured` is
+    # deliberately True because most of the prompt IS already resident.
+    pending_prefill: int = 0
+    pending_prefill_at: float = 0.0
+
+    def prefill_pending(self, now: float) -> int:
+        """Outstanding prefill worth reserving a batch for. Zero when there is none.
+
+        Zero for a holder whose cells are gone or which is not in the cache at all: a
+        paused chat submits nothing until it is granted a resume, and that grant is where
+        it announces again.
+        """
+        if self.pending_prefill <= 0 or not self.holds_kv:
+            return 0
+        if now - self.pending_prefill_at > PENDING_PREFILL_TTL_S:
+            return 0
+        return self.pending_prefill
+
+    def announce_prefill(self, tokens: int) -> None:
+        """A prompt chunk is about to be submitted for `tokens` tokens."""
+        self.pending_prefill = max(0, int(tokens or 0))
+        self.pending_prefill_at = time.monotonic()
+
+    def prefill_done(self) -> None:
+        """The prompt is in the cache (or will never be sent). Drop the reserve."""
+        self.pending_prefill = 0
+        self.pending_prefill_at = 0.0
 
     @property
     def promoted(self) -> bool:
@@ -568,6 +650,10 @@ class PreemptionSnapshot:
     winner: Optional[str]
     slots: int = 1
     tools_running: int = 0
+    # Prompt tokens announced but not yet prefilled. The buffer carries a batch term
+    # exactly while this is non-zero, so a log line that reports one without the other
+    # cannot be read back.
+    prefilling: int = 0
 
 
 class PreemptionController:
@@ -691,6 +777,13 @@ class PreemptionController:
                 state = state,
                 **({} if signal is None else {"preempt_event": signal}),
             )
+            # Its whole prompt is about to be prefilled: it was charged by admission and
+            # nothing of it is in the cache yet, which is the same fact `measured = False`
+            # records for the residency arithmetic. Announced HERE rather than by the
+            # caller so that the sweep `_openai_llama_preemption_arm` runs immediately
+            # afterwards already plans against the raised buffer, and so that a sweep
+            # fired by another chat's tokens in between sees it too.
+            participant.announce_prefill(participant.tokens)
             self._participants[gen_id] = participant
             return participant
 
@@ -730,7 +823,11 @@ class PreemptionController:
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return False
-            ceiling = max(0, self._budget - self._buffer_locked())
+            # Including this chat's own prefill. It is asking whether it could ever run
+            # beside anyone, and running means submitting its prompt, so the ceiling it
+            # is measured against has to be the one that exists while it does.
+            pending = self._pending_prefill_locked() + max(0, int(want or 0))
+            ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
             return int(want or 0) > ceiling
 
     def cannot_ever_fit(self, want: int) -> bool:
@@ -801,6 +898,10 @@ class PreemptionController:
                 participant.base_tokens = max(participant.base_tokens, need)
                 participant.measured = False
                 participant.state = ParticipantState.DECODING
+                # And it is about to replay all of it as prompt, in chunks. Announced
+                # under the same lock that booked the room, so no other participant can
+                # observe the booking without also observing the batch it needs.
+                participant.announce_prefill(need)
             return True
 
     def note_resume_failed(self, gen_id: str) -> None:
@@ -809,10 +910,16 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is not None and participant.state == ParticipantState.DECODING:
                 participant.state = ParticipantState.PAUSED
+                # Nothing is going to be submitted, so nothing needs a batch held for it.
+                participant.prefill_done()
 
     def _room_for_locked(self, gen_id: str, want: int) -> bool:
         """The arithmetic behind `room_for`, callable by a holder of the lock."""
-        ceiling = max(0, self._budget - self._buffer_locked())
+        # `want` REPLACES this generation's own announcement rather than adding to it:
+        # saying yes here is what causes the prefill, so its batch has to be reserved in
+        # the same answer, and a chat that already announced must not be charged twice.
+        pending = self._pending_prefill_locked(exclude = gen_id) + max(0, int(want or 0))
+        ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
         ledger_others = sum(
             p.tokens for gid, p in self._participants.items() if p.holds_kv and gid != gen_id
         )
@@ -861,6 +968,13 @@ class PreemptionController:
                 # A token came back, so the prompt behind it is prefilled and resident.
                 participant.measured = True
                 participant.cells_reclaimed = False
+                if int(generated or 0) > 0:
+                    # A generated token can only follow a finished prefill, so whatever
+                    # was announced is now in the cache and the batch term comes off.
+                    # Guarded on `generated`, because the round-boundary sweep calls this
+                    # with zero immediately after `note_tokens` announced the growth, and
+                    # clearing there would remove the reserve before the chunk was sent.
+                    participant.prefill_done()
                 # And the chat is decoding, whatever it was last reported as. The
                 # tool-loop route reports TOOLS_RUNNING at a tool start and DECODING at
                 # the next CONTENT chunk; a round that streams its next tool call sends
@@ -927,10 +1041,23 @@ class PreemptionController:
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
 
     def note_tokens(self, gen_id: str, tokens: int) -> None:
+        """What a round boundary says this run now holds.
+
+        Also the third and last place a prefill is announced. The conversation grows at a
+        round boundary, by a tool result or by a resumed partial, and the tokens it grew
+        by are prompt that llama-server has to put in before the next answer: everything
+        up to the previous figure is already resident and only the difference is
+        submitted. Announcing the difference rather than the whole prompt is what keeps
+        the reserve honest on a chat whose 6000 token history grew by 40.
+        """
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
+                previous = participant.tokens
                 participant.tokens = max(0, int(tokens or 0))
+                growth = participant.tokens - previous
+                if growth > 0:
+                    participant.announce_prefill(growth)
                 # Re-baselined: a round boundary restates the whole conversation, so
                 # later growth is measured from here rather than from admission.
                 participant.base_tokens = participant.tokens
@@ -971,6 +1098,11 @@ class PreemptionController:
             if state == ParticipantState.DECODING:
                 # Back at the model: llama-server prefills the prompt in again before
                 # the first new token, so the cells are real once more.
+                if participant.cells_reclaimed:
+                    # And that prefill is the WHOLE prompt, not a round's growth: an
+                    # idle-slot reclaim erased every cell this chat had, so there is no
+                    # prefix left to hit and the batch it needs must be reserved.
+                    participant.announce_prefill(participant.tokens)
                 participant.cells_reclaimed = False
             if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
                 # A winner that stopped decoding is not winning anything; let the
@@ -999,6 +1131,10 @@ class PreemptionController:
                 if participant.cells_reclaimed:
                     continue
                 participant.cells_reclaimed = True
+                # Whatever it was about to prefill went with the cells. It re-announces
+                # in `note_state` when it decodes again, which is when llama-server
+                # actually puts the prompt back.
+                participant.prefill_done()
                 released.append(participant)
         for participant in released:
             lease = participant.lease
@@ -1044,6 +1180,10 @@ class PreemptionController:
             if participant is None:
                 return
             participant.state = state
+            if state not in _HOLDS_KV:
+                # Paused, finished or queued: nothing of this chat is going to be
+                # submitted until it asks again, and asking is where it re-announces.
+                participant.prefill_done()
             if self._epoch_winner == gen_id and state != ParticipantState.DECODING:
                 self._epoch_winner = None
 
@@ -1088,12 +1228,36 @@ class PreemptionController:
                 frozenset(p.gen_id for p in self._participants.values() if p.holds_kv),
             )
 
-    def _buffer_locked(self) -> int:
+    def _pending_prefill_locked(self, *, exclude: Optional[str] = None) -> int:
+        """Prompt tokens announced but not yet in the cache, across every holder.
+
+        What puts the batch term in the buffer. `exclude` drops one participant from the
+        sum so a caller asking "would there be room for ME" can substitute its own figure
+        rather than count it twice.
+        """
+        now = time.monotonic()
+        return sum(
+            p.prefill_pending(now)
+            for gen_id, p in self._participants.items()
+            if exclude is None or gen_id != exclude
+        )
+
+    def _buffer_locked(self, *, pending: Optional[int] = None) -> int:
+        """Tokens held clear right now. `pending` overrides the live announcement sum.
+
+        Callers deciding whether to LET somebody prefill pass their own `want`, because
+        granting is what makes that prefill happen: answering at the idle buffer and then
+        raising it the moment the grant lands is how a chat is admitted into room that
+        stops existing in the same breath.
+        """
         return preemption_buffer_tokens(
             self._budget,
             draft_tokens = self._draft_tokens,
             slots = self._slots,
             batch_tokens = self._batch_tokens,
+            pending_prefill = (
+                self._pending_prefill_locked() if pending is None else max(0, int(pending))
+            ),
         )
 
     def _prune_locked(self) -> None:
@@ -1211,13 +1375,18 @@ class PreemptionController:
                 holders = [p for p in self._participants.values() if p.holds_kv]
                 _log.info(
                     "llama preemption ledger-drift: committed=%s resident=%s measured=%s "
-                    "pending=%s ledger=%s ceiling=%s want=%s holders=%s",
+                    "pending=%s ledger=%s ceiling=%s buffer=%s prefilling=%s want=%s "
+                    "holders=%s",
                     total,
                     self._resident,
                     sum(p.tokens for p in holders if p.measured),
                     sum(p.tokens for p in holders if not p.measured),
                     ledger,
                     ceiling,
+                    buffer,
+                    # The batch term's input, so a run can be read back afterwards and
+                    # the ceiling's movement attributed rather than guessed at.
+                    self._pending_prefill_locked(),
                     want,
                     len(holders),
                 )
@@ -1305,6 +1474,7 @@ class PreemptionController:
                 winner = self._epoch_winner,
                 slots = max(1, self._slots or 1),
                 tools_running = states.count(ParticipantState.TOOLS_RUNNING),
+                prefilling = self._pending_prefill_locked(),
             )
 
 
