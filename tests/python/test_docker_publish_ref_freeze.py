@@ -309,6 +309,33 @@ def _raw_index(children = ARCH_DIGESTS) -> str:
     return '{\\"manifests\\":[' + inner + "]}"
 
 
+# What a build leg really pushes with provenance and SBOM on: not an image manifest
+# but an OCI index per arch, holding the image manifest and its attestation. The
+# merge flattens those children into the published index, so the per-arch index
+# digest (the artifact file name) never appears there. The first publish runs on main
+# failed on exactly that shape against a correct manifest.
+PER_ARCH_CHILDREN = {
+    ARCH_DIGESTS[0]: ("a1" * 32, "a2" * 32),
+    ARCH_DIGESTS[1]: ("c1" * 32, "c2" * 32),
+}
+FLATTENED = tuple(h for pair in PER_ARCH_CHILDREN.values() for h in pair)
+
+
+def _raw_case(merged_children) -> str:
+    """A `case` over the ref for `inspect --raw`: per-arch index digests answer with
+    their own children, anything else is the merged index."""
+    arms = "".join(
+        f'    *@sha256:{h}) printf "{_raw_index(kids)}" ;;\n'
+        for h, kids in PER_ARCH_CHILDREN.items()
+    )
+    return (
+        '  --raw) case "$5" in\n'
+        + arms
+        + f'    *) printf "{_raw_index(merged_children)}" ;;\n'
+        + "  esac ;;\n"
+    )
+
+
 @pytest.fixture(scope = "module")
 def manifest_digest_step() -> str:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -392,12 +419,13 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
     tag resolves to a manifest that does not contain the per-arch digests this run
     pushed, the step has to fail rather than hand build-studio another run's base."""
     bin_dir = tmp_path / "bin"
-    # the tag now resolves to a manifest built from somebody else's arches
+    # the tag now resolves to a manifest built from somebody else's arches, while
+    # this run's own per-arch indexes still answer with their real children
     _docker_stub(
         bin_dir,
         'case "$4" in\n'
-        f'  --raw) printf "{_raw_index(("d" * 64, "e" * 64))}" ;;\n'
-        f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        + _raw_case(("d" * 64, "e" * 64))
+        + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
     out = tmp_path / "github_output"
@@ -427,3 +455,46 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
     assert "digest=" not in out.read_text(
         encoding = "utf-8"
     ), "a digest was exported despite the mismatch"
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
+def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
+    manifest_digest_step: str, tmp_path: Path
+):
+    """The real shape: each build leg pushed an index (image + attestation), and the
+    merged index carries those CHILDREN, never the per-arch index digests the
+    artifact files are named after. Runs 33935929946 and 33936467156 published a
+    correct :core and then failed here, which skipped the Studio build."""
+    bin_dir = tmp_path / "bin"
+    _docker_stub(
+        bin_dir,
+        'case "$4" in\n'
+        + _raw_case(FLATTENED)
+        + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        "esac\n",
+    )
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
+    )
+    assert res.returncode == 0, (
+        "the step rejected a merged index that holds every child of this run's "
+        "per-arch indexes, i.e. the manifest buildx actually produces:\n"
+        + res.stdout
+        + res.stderr
+    )
+    assert f"digest={THIS_RUN_DIGEST}" in out.read_text(encoding = "utf-8")
