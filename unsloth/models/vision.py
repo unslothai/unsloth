@@ -1206,7 +1206,9 @@ class FastBaseModel:
             and (_encoder_vision is not None or hasattr(auto_config, "vision_config"))
         )
         is_whisper = whisper_language is not None and whisper_task is not None
-        auto_processor = AutoProcessor if (is_vlm or is_seq2seq_vlm or is_whisper) else AutoTokenizer
+        auto_processor = (
+            AutoProcessor if (is_vlm or is_seq2seq_vlm or is_whisper) else AutoTokenizer
+        )
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
