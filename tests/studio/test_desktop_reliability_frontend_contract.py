@@ -585,6 +585,42 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
+# The collapsed navigation box is the one sized to the sidebar width; nothing else in
+# the titlebar carries that style, so it identifies the element without naming a class.
+_NAV_BOX = "style={{ width: titlebarNavigationWidth }}"
+
+
+def _open_tag(source: str, marker: str) -> str:
+    """The opening JSX tag of the element carrying ``marker``.
+
+    Brace depth is tracked because a `>` inside `{...}` is an operator or an arrow,
+    not the end of the tag.
+    """
+    at = source.index(marker)
+    start = source.rindex("<", 0, at)
+    depth = 0
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif char == ">" and depth == 0 and index > start:
+            return source[start : index + 1]
+    raise AssertionError(f"unterminated JSX tag for {marker!r}")
+
+
+def _has_left_inset(open_tag: str) -> bool:
+    """Whether the tag's classes give it a non-zero left padding.
+
+    Only quoted strings are read, so a class named in a comment inside the tag does
+    not count, and the value is left free: the inset has to exist, not measure 12px.
+    """
+    classes = " ".join(re.findall(r'"([^"]*)"', open_tag))
+    found = re.findall(r"\bpl-(\d+(?:\.\d+)?|\[[^\]]+\])", classes)
+    return any(value != "0" for value in found)
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = TITLEBAR.read_text(encoding = "utf-8")
     chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
@@ -605,7 +641,13 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    assert '"pl-3"' in titlebar
+    # The collapsed navigation starts at the window edge, so it needs a left inset or
+    # the back arrow sits against the frame. #7837 added one and pinned its exact 12px,
+    # which is the single value an alignment pass is most likely to move.
+    assert _has_left_inset(_open_tag(titlebar, _NAV_BOX)), (
+        "the titlebar navigation container lost its left inset, so the history arrows "
+        f"sit flush against the window edge: {_open_tag(titlebar, _NAV_BOX)}"
+    )
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
