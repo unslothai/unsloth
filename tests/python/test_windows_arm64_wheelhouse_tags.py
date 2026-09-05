@@ -466,9 +466,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
         ips._find_links_wheel_names.cache_clear()
         try:
-            assert "mecab" in ips._windows_arm64_skip_packages(req), (
-                "the hosted 0.996.5 satisfies only the row that does not apply here"
-            )
+            assert "mecab" in ips._windows_arm64_skip_packages(
+                req
+            ), "the hosted 0.996.5 satisfies only the row that does not apply here"
         finally:
             ips._find_links_wheel_names.cache_clear()
 
