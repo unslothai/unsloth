@@ -50,10 +50,6 @@ _TRANSPORT_ERRORS = (
 
 
 _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-# Ceiling for the embedding server's physical batch. It is allocated up front, so a
-# 32k-context embedder does not get a 32k batch it will never fill; inputs past this
-# are refused with a 400 that names the real limit.
-_MAX_EMBED_BATCH = 8192
 
 
 def _skip_gguf_value(f, vtype: int) -> None:
@@ -722,15 +718,13 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
-        # Embedding is non-causal, and llama.cpp aborts a non-causal prompt longer than the
-        # PHYSICAL batch ("input is too large to process. increase the physical batch size")
-        # rather than splitting it, so the default 512 would reject inputs well inside the
-        # model's context. Size the batch to the context that will actually be advertised.
-        # Capped: the batch is allocated up front, and a 32k-context embedder does not need
-        # a 32k batch to be useful.
-        batch = _gguf_context_length(model_path) or 0
-        batch = min(batch, _MAX_EMBED_BATCH) if batch > 0 else _MAX_EMBED_BATCH
-        cmd += ["-b", str(batch), "-ub", str(batch)]
+        # Deliberately no -b/-ub. Embedding is non-causal, so llama.cpp refuses a prompt
+        # longer than the physical batch rather than splitting it -- but raising the batch
+        # allocates n_vocab * n_ubatch * 4 up front (~938 MiB at 8192 with a 30k vocab),
+        # and this backend treats 1024 MiB free as enough to offload every layer. Buying
+        # long inputs that way costs a failed GPU start and a slow CPU retry. `max_tokens`
+        # reads the batch the server actually runs at and advertises no more, so an
+        # over-long input gets a clear 400 instead of a 502 from inside llama-server.
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -1154,7 +1148,14 @@ class LlamaServerBackend:
                         {"content": "", "add_special": True},
                         model_name = model_name,
                     )
-                    self._max_tokens = max(1, limit - len(data.get("tokens", [])))
+                    answer = max(1, limit - len(data.get("tokens", [])))
+                    if running is None:
+                        # /props did not answer, so the header context is a guess: this
+                        # server may run a smaller one. Answer with it, but do not freeze
+                        # it, or a limit that lets an over-long input reach a 502 would
+                        # outlive the readback that would have corrected it.
+                        return answer
+                    self._max_tokens = answer
             return self._max_tokens
 
     def warm(self, *, model_name = None) -> None:

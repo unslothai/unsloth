@@ -586,7 +586,9 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
     )
     monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
-    monkeypatch.setattr(backend, "_server_context", lambda: None)
+    # Larger than the header, so the GGUF is still what binds; confirmed, so it caches.
+    monkeypatch.setattr(backend, "_server_context", lambda: 4096)
+    monkeypatch.setattr(backend, "_server_batch", lambda: None)
     posts = []
 
     def post(
@@ -929,26 +931,41 @@ def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch
     assert backend.max_tokens() == 510
 
 
-def test_the_embed_server_is_launched_with_a_batch_that_fits_the_context(tmp_path):
-    from core.rag import embed_llama_server
-
-    backend = embed_llama_server.LlamaServerBackend()
-    model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 2048)])
-    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = False)
-    assert "-ub" in cmd and "-b" in cmd
-    assert cmd[cmd.index("-ub") + 1] == "2048"
-    assert cmd[cmd.index("-b") + 1] == "2048"
-
-
-def test_a_huge_context_does_not_allocate_a_huge_batch(tmp_path):
+def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
+    # The batch is allocated at startup as n_vocab * n_ubatch * 4 -- hundreds of MiB at
+    # a large ubatch -- and this backend offloads every layer with as little as 1024 MiB
+    # free, so raising it to buy long inputs costs a failed GPU start and a CPU retry.
+    # max_tokens bounds what is advertised instead.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
     model = _gguf(
-        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 32768)]
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
     )
-    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = False)
-    assert cmd[cmd.index("-ub") + 1] == str(embed_llama_server._MAX_EMBED_BATCH)
+    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = True)
+    assert "-ub" not in cmd and "-b" not in cmd
+
+
+def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
+    # A header context can exceed what the server actually runs at. Freezing it while
+    # /props is silent keeps a limit that lets an over-long input through to a 502, long
+    # after the readback that would have corrected it starts working.
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
+    )
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_server_batch", lambda: None)
+    monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
+    monkeypatch.setattr(backend, "_server_context", lambda: None)
+    assert backend.max_tokens() == 8190
+    assert backend._max_tokens is None
+    # Once /props answers, the smaller real context is what sticks.
+    monkeypatch.setattr(backend, "_server_context", lambda: 512)
+    assert backend.max_tokens() == 510
+    assert backend._max_tokens == 510
 
 
 def test_props_probe_never_raises_before_the_server_is_up():
@@ -1002,3 +1019,38 @@ def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_emb
         await asyncio.gather(*tasks)
 
     asyncio.run(run())
+
+
+def test_a_boolean_is_not_a_token_id():
+    # bool subclasses int, so `[true]` was read as a token array and could swap the
+    # resident GGUF for a body llama-server then rejects.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        inference_route._embeddings_items({"input": [True]}, tokens_ok = True)
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException):
+        inference_route._embeddings_items({"input": [[1, True, 3]]}, tokens_ok = True)
+    # A real token array is still one text.
+    assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok = True) == [
+        [1, 2, 3]
+    ]
+
+
+def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
+    # Before the first scan the index is empty, so resolve_local_gguf answers None for a
+    # model that IS downloaded. Reading that as "foreign" served the request from the
+    # Studio embedder -- a different embedding space under the requested name.
+    from core.inference import local_model_resolver as _resolver
+
+    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
+    monkeypatch.setattr(_resolver, "index_is_built", lambda: False)
+    monkeypatch.setattr(_resolver, "warm_index_soon", lambda: None)
+    assert inference_route._reference_is_decisive("org/my-local-model") is True
+    assert inference_route._reference_is_decisive("/models/local.gguf") is True
+    # A bare vendor alias is still not evidence, cold index or not.
+    assert inference_route._reference_is_decisive("text-embedding-3-small") is False
+
+    # Once the index is built, absence really is evidence.
+    monkeypatch.setattr(_resolver, "index_is_built", lambda: True)
+    assert inference_route._reference_is_decisive("org/not-here") is False

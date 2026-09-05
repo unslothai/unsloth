@@ -25750,11 +25750,13 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     value = body.get("input")
     if isinstance(value, str):
         items = [value]
+    # `type(...) is int`, not isinstance: bool subclasses int, so `[true]` would be read
+    # as a token array and could swap the resident GGUF for a body llama-server rejects.
     elif (
         tokens_ok
         and isinstance(value, list)
         and value
-        and all(isinstance(token, int) for token in value)
+        and all(type(token) is int for token in value)
     ):
         items = [value]
     elif isinstance(value, (list, tuple)):
@@ -25776,7 +25778,7 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
             tokens_ok
             and isinstance(item, list)
             and bool(item)
-            and all(isinstance(token, int) for token in item)
+            and all(type(token) is int for token in item)
         )
 
     if not all(_ok(item) for item in items):
@@ -25878,16 +25880,36 @@ def _reference_is_decisive(requested: str) -> bool:
     vendor id like `text-embedding-3-small` is neither, and must keep falling through
     rather than 404 -- that is what kept LiteLLM and OpenRouter style names working.
     """
-    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+    from core.inference.openai_auto_download import (
+        looks_like_gguf_hub_repo_id,
+        looks_like_quant,
+        split_model_ref,
+    )
 
-    _base, variant = split_model_ref(requested)
-    if looks_like_quant(variant):
+    base, variant = split_model_ref(requested)
+    # Shape alone, no index needed: an explicit quant label and a GGUF hub repo id are
+    # references no vendor alias carries.
+    if looks_like_quant(variant) or looks_like_gguf_hub_repo_id(base):
         return True
     try:
-        from core.inference.local_model_resolver import resolve_local_gguf
-        return resolve_local_gguf(requested, allow_scan = False) is not None
-    except Exception:  # noqa: BLE001 - a cold or broken index is not evidence
+        from core.inference.local_model_resolver import (
+            index_is_built,
+            resolve_local_gguf,
+            warm_index_soon,
+        )
+        from utils.paths import is_local_path
+
+        if resolve_local_gguf(requested, allow_scan = False) is not None:
+            return True
+        if not index_is_built():
+            # A cold index is missing evidence, not evidence of absence. Warm it so the
+            # next request is accurate; meanwhile a name shaped like something held here
+            # must not be waved through to a different embedding space.
+            warm_index_soon()
+            return is_local_path(requested) or "/" in requested
         return False
+    except Exception:  # noqa: BLE001 - a broken index cannot clear the name either
+        return True
 
 
 async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict, str]]:
