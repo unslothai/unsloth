@@ -12094,7 +12094,6 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
-        ctx_checkpoints: int = 0,
         flash_attn: bool = True,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
@@ -12111,8 +12110,11 @@ class LlamaCppBackend:
           n_parallel      -- --parallel slots: controls per-slot stream padding.
           kv_unified      -- --kv-unified: one shared stream vs one per slot.
           n_ubatch        -- --ubatch-size: SWA cache's processing headroom.
-          ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
           flash_attn      -- False pads variable-width V tensors to the model max.
+
+        ``--ctx-checkpoints`` is a host-RAM snapshot, not VRAM, so it is not
+        priced here. Charging it against the GPU budget would shrink context
+        for memory the GPU never holds (#8988).
 
         Returns 0 if metadata is insufficient.
         """
@@ -12217,7 +12219,6 @@ class LlamaCppBackend:
             if self._sliding_window_pattern is not None:
                 global_bytes = 0.0
                 swa_bytes = 0.0
-                checkpoint_extra_per_slot = 0.0
                 # Only layers that allocate their own KV; trailing shared layers
                 # reuse earlier caches.
                 for layer_idx in range(n_layers_kv):
@@ -12235,11 +12236,9 @@ class LlamaCppBackend:
                     layer_kv_bytes = layer_key_bytes + layer_value_bytes
                     if is_swa:
                         swa_bytes += swa_cells_total * layer_kv_bytes
-                        if ctx_checkpoints > 0 and not swa_full:
-                            checkpoint_extra_per_slot += ctx_checkpoints * swa * layer_kv_bytes
                     else:
                         global_bytes += total_cells * layer_kv_bytes
-                return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+                return int(global_bytes + swa_bytes)
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
             global_v_width = n_kv * val_len if padded_v_width is None else padded_v_width
@@ -12248,12 +12247,7 @@ class LlamaCppBackend:
             kv_per_token_swa = n_kv * key_len_swa * bpe_k + swa_v_width * bpe_v
             global_bytes = n_global * total_cells * kv_per_token
             swa_bytes = n_swa * swa_cells_total * kv_per_token_swa
-            checkpoint_extra_per_slot = (
-                ctx_checkpoints * n_swa * swa * kv_per_token_swa
-                if ctx_checkpoints > 0 and not swa_full
-                else 0.0
-            )
-            return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
+            return int(global_bytes + swa_bytes)
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
@@ -12787,7 +12781,6 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
-        ctx_checkpoints: int = 0,
         flash_attn: bool = True,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
@@ -12828,7 +12821,6 @@ class LlamaCppBackend:
             n_parallel = n_parallel,
             kv_unified = kv_unified,
             n_ubatch = n_ubatch,
-            ctx_checkpoints = ctx_checkpoints,
             flash_attn = flash_attn,
         )
 
