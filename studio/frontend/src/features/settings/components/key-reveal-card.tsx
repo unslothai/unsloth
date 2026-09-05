@@ -65,8 +65,7 @@ export function KeyRevealCard({
           onFocus={(event) => event.currentTarget.select()}
           className="h-auto min-h-9 flex-1 rounded-md border-0 bg-transparent px-2 py-1.5 font-mono text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
           data-reload-snapshot-sensitive
-          // Not "copy access token": that is the button next to it, and a field
-          // sharing the button's name tells a screen reader it copies too.
+          // Not the copy button's name: sharing it reads as a second copy control.
           aria-label={t("settings.apiKeys.newTokenCreated")}
         />
         <Button

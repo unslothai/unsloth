@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #9899: on plain HTTP the clipboard API is blocked, so a newly minted API token must
-// stay manually selectable instead of living inside a click-to-copy button.
+// #9899: plain HTTP has no clipboard API, so the token has to stay selectable.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
