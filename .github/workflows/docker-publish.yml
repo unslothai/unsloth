@@ -525,6 +525,51 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "studio manifest: ${TAG} @ ${DIGEST}"
 
+  # The Docker Hub page is not written by any push: it is repository metadata that
+  # only the Hub API changes, so without this it stays whatever was pasted in by
+  # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
+  # condition as the stable tags above. Verified by reading it back, and a token
+  # that cannot edit the description fails the job rather than warning.
+  hub-readme:
+    needs: merge-studio
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync docker/DOCKERHUB.md to the Docker Hub page
+        run: |
+          README=docker/DOCKERHUB.md
+          test -s "$README"
+          # Organization access tokens are exchanged at /v2/auth/token, not
+          # /v2/users/login/, which rejects organization accounts.
+          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\": \"${REGISTRY_USERNAME}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
+            exit 1
+          fi
+          BODY="$(python3 -c 'import json,sys; print(json.dumps({"full_description": open(sys.argv[1], encoding="utf-8").read()}))' "$README")"
+          CODE="$(curl -sS -o /tmp/hub_patch.json -w '%{http_code}' -X PATCH \
+            "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/" \
+            -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+            --data-binary "$BODY")"
+          echo "PATCH returned HTTP ${CODE}"
+          # Read it back rather than trusting the status code.
+          LIVE="$(curl -sS "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("full_description",""))')"
+          if [ "$LIVE" != "$(cat "$README")" ]; then
+            echo "::error::The Hub page does not match ${README} after PATCH ${CODE}. The token most likely lacks permission to edit the repository description."
+            head -c 400 /tmp/hub_patch.json; echo
+            exit 1
+          fi
+          echo "Hub page for ${IMAGE_NAME} now matches ${README}."
+
   smoke-test:
     needs: [merge, merge-studio]
     if: ${{ vars.HAS_GPU_RUNNER == 'true' }}
