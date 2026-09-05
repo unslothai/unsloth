@@ -446,9 +446,19 @@ function Install-UnslothStudio {
             $release = $Matches[1] -split '\.' | ForEach-Object { [int]$_ }
             $post = 0
             if ($v -match '\.post(\d+)') { $post = [int]$Matches[1] }
-            # Only where it hangs off the release: ".post1.dev0" is a post-release still.
-            $pre = [bool]($v -match '(?i)^\s*v?\d+(\.\d+)*(a|b|rc|\.dev)\d')
-            return @{ Release = @($release); Post = $post; Pre = $pre }
+            # a/b/rc only, and only where it hangs off the release, so ".post1rc1" is not read
+            # as a pre-release of the release itself.
+            $pre = [bool]($v -match '(?i)^\s*v?\d+(\.\d+)*(a|b|rc)\d')
+            # Separate from $pre, because PEP 440 hangs .devN off whatever precedes it: a
+            # development release sorts BELOW that segment, so 0.0.22.post7.dev0 is less than
+            # 0.0.22.post7 and does not satisfy a floor of it. Reading .dev as a pre-release of
+            # the RELEASE got the .post case backwards and cleared a wheel the resolver then
+            # rejected, sending the install to a win_arm64 build that does not exist.
+            # MaxValue for "no .dev", so an absent one outranks every stamp and the stamps
+            # still order among themselves: post7.dev1 is above post7.dev0, both below post7.
+            $dev = [int]::MaxValue
+            if ($v -match '(?i)\.dev(\d+)') { $dev = [int]$Matches[1] }
+            return @{ Release = @($release); Post = $post; Pre = $pre; Dev = $dev }
         }
         $a = & $parse $Version
         $b = & $parse $Floor
@@ -460,7 +470,9 @@ function Install-UnslothStudio {
             if ($x -ne $y) { return ($x -gt $y) }
         }
         if ($a.Pre -ne $b.Pre) { return $b.Pre }
-        return ($a.Post -ge $b.Post)
+        if ($a.Post -ne $b.Post) { return ($a.Post -gt $b.Post) }
+        if ($a.Dev -ne $b.Dev) { return ($a.Dev -gt $b.Dev) }
+        return $true
     }
 
     # UNSLOTH_WOA_WHEELHOUSE may BE the managed wheel directory (how an offline run reuses the
@@ -712,8 +724,32 @@ function Install-UnslothStudio {
     # PEP 503 encodes "+" as %2B in the href but usually not in the link text, so unescape before
     # matching. CUDA is established POSITIVELY, by requiring +cuNNN: PyPI's own win_arm64 torch
     # wheels carry no local version, so a "not +cpu" test sent hosts native on CPU-only torch.
+    # A companion wheel belongs to a torch BUILD, not just to a release line. NVIDIA's nightly
+    # channel publishes each project on its own schedule, so the newest torchvision can carry a
+    # different .dev stamp from the newest torch -- and nightly torchvision metadata pins its
+    # exact torch, so maximizing the two independently yields a pair that cannot resolve, after
+    # the installer has already committed to the ARM64 path. The stamp and the local +cuXXX tag
+    # are what identify the build; the release lines differ by design (torch 2.15 / vision 0.26).
+    function Test-WoaWheelPairsWithTorch {
+        param([string]$TorchVersion, [string]$OtherVersion)
+        if (-not $TorchVersion -or -not $OtherVersion) { return $false }
+        $stamp = {
+            param($v)
+            $m = [regex]::Match($v, '(?i)\.dev(\d+)')
+            if ($m.Success) { return $m.Groups[1].Value } else { return "" }
+        }
+        $local = {
+            param($v)
+            $parts = $v -split '\+', 2
+            if ($parts.Count -eq 2) { return $parts[1].ToLowerInvariant() } else { return "" }
+        }
+        if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
+        return ((& $local $TorchVersion) -eq (& $local $OtherVersion))
+    }
+
     function Get-WoaCudaWheelVersion {
-        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "")
+        param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "",
+              [string]$PairWith = "")
         if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $null }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
@@ -732,6 +768,8 @@ function Install-UnslothStudio {
             if (-not (Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag)) { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
+            # Only builds of the torch this run selected, when a caller asks for a pair.
+            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version)) { continue }
             # Numeric release only: a .dev suffix must not make a newer line look older.
             $release = ($version -split '\+', 2)[0]
             $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
@@ -837,7 +875,8 @@ function Install-UnslothStudio {
         # torchaudio 2.11.0+cu134, torchaudio 2.11 dropped the exact torch pin, and the specs below are
         # open-ended -- so a mismatched pair would install and then fail to load.
         $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
-        $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag
+        # Paired with the torch just selected, not merely the newest: see Test-WoaWheelPairsWithTorch.
+        $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
         $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
         # Kept for the install below, which pins what the probe SELECTED. Open-ended specs there
         # met --index-strategy unsafe-best-match, which uv documents as taking the best version
@@ -846,7 +885,13 @@ function Install-UnslothStudio {
         # branch exists for is quietly replaced by a CPU build that still imports.
         $script:WoaTorchWheelVersion = $_woaTorchVersion
         $script:WoaAudioWheelVersion = $_woaAudioVersion
-        $script:WoaVisionWheelVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag
+        $script:WoaVisionWheelVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
+        if (-not $script:WoaVisionWheelVersion) {
+            # No vision wheel from the same build. Pinning the newest one anyway would ask for a
+            # pair the index cannot satisfy, so fall back to the floor and let the resolver choose
+            # against the pinned torch: worse than a pin, but resolvable.
+            substep "windows on arm: no torchvision wheel matching torch $_woaTorchVersion; leaving torchvision unpinned." "Yellow"
+        }
         # Read off the wheel the probe actually selected, not the index URL. A mirror of NVIDIA's
         # prerelease channel need not spell "nightly", and without --prerelease=allow uv takes the
         # stable win_arm64 CPU torch from the PyPI extra index instead of the CUDA build this whole

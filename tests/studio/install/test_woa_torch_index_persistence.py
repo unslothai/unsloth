@@ -1803,6 +1803,19 @@ class TestAHostedDropCandidateMustMeetItsFloor:
             ("0.0.21", "0.0.22.post7", "False", "an earlier release"),
             ("0.0.23+cu134", "0.0.22.post7", "True", "a local tag is not part of the order"),
             ("garbage", "0.0.22.post7", "False", "unreadable keeps the drop"),
+            # PEP 440 hangs .devN off whatever precedes it, so a development release sorts
+            # BELOW that segment. Reading .dev as a pre-release of the RELEASE got the post
+            # case backwards: the wheel cleared the floor, the drop override was omitted, and
+            # the released requirement then rejected it with nothing left to install.
+            ("0.0.22.post7.dev0", "0.0.22.post7", "False", "a dev of post7 is below post7"),
+            ("0.0.22.post8.dev0", "0.0.22.post7", "True", "but still above post6 and post7"),
+            ("0.0.22.post7", "0.0.22.post7.dev0", "True", "and the release outranks its dev"),
+            ("0.0.23.dev0", "0.0.22.post7", "True", "a later release line wins outright"),
+            ("0.0.22.dev0", "0.0.22.post7", "False", "a dev of the release is below post7"),
+            ("0.0.22.post7.dev1", "0.0.22.post7.dev0", "True", "dev stamps still order"),
+            ("0.0.22.post7.dev0", "0.0.22.post7.dev1", "False", "and order in both directions"),
+            ("0.0.23rc1", "0.0.23", "False", "rc still sorts below its release"),
+            ("0.0.23", "0.0.23rc1", "True", "and the release above the rc"),
         ],
     )
     def test_the_comparison(self, have, floor, expected, why):
@@ -4097,3 +4110,156 @@ class TestTheProbedCudaWheelIsWhatGetsInstalled:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == expected, why
+
+
+class TestTheCompanionWheelsArePairedWithTorch:
+    """Newest-of-each is not a pair on a channel that publishes on separate schedules.
+
+    NVIDIA's nightly channel stamps each project independently, and nightly torchvision
+    metadata pins its exact torch. Maximizing the two separately and then pinning both
+    exactly can therefore name a pair no index can satisfy -- after the installer has
+    already committed to the ARM64 path, so there is nothing left to fall back to.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "torch_v, other_v, pairs, why",
+        [
+            ("2.15.0.dev20260101+cu134", "0.26.0.dev20260101+cu134", True, "same stamp and tag"),
+            ("2.15.0.dev20260101+cu134", "0.26.0.dev20260102+cu134", False, "staggered nightly"),
+            ("2.15.0.dev20260101+cu134", "0.26.0+cu134", False, "a release is not that build"),
+            ("2.14.0+cu134", "0.25.0+cu134", True, "GA: the local tag is the whole pairing"),
+            ("2.14.0+cu134", "0.25.0+cu130", False, "a different CUDA build"),
+            ("2.14.0+cu134", "", False, "nothing to pair with"),
+        ],
+    )
+    def test_what_counts_as_a_pair(self, torch_v, other_v, pairs, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaWheelPairsWithTorch"),
+                f"Write-Output (Test-WoaWheelPairsWithTorch -TorchVersion '{torch_v}'"
+                f" -OtherVersion '{other_v}')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert (done.stdout.strip().splitlines()[-1] == "True") is pairs, why
+
+    def test_both_companions_are_probed_as_a_pair(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        for project in ("torchvision", "torchaudio"):
+            line = [
+                l
+                for l in text.splitlines()
+                if f'-Project "{project}"' in l and "Get-WoaCudaWheelVersion" in l
+            ]
+            assert line, f"{project} is not probed"
+            assert all("-PairWith $_woaTorchVersion" in l for l in line), (
+                f"{project} is still maximized independently of torch"
+            )
+
+    def test_an_unpaired_companion_falls_back_rather_than_pinning(self):
+        """A pin the index cannot satisfy is worse than the floor it replaced."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "if (-not $script:WoaVisionWheelVersion) {" in text
+        assert 'else { "torchvision>=0.19" }' in text
+
+
+class TestTheRepairPathPinsTheSameWayTheInstallDoes:
+    """setup.ps1's forced repair carries the same flags, so it had the same defect.
+
+    Changing the index pin or repairing an unimportable torch enables --force-reinstall,
+    and those specs are resolved with unsafe-best-match against a public PyPI extra index:
+    the repair replaces the CUDA stack with CPU wheels the moment PyPI is one release ahead.
+    """
+
+    def test_the_repair_probes_the_effective_index(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {" in text
+        assert '$WinArm64TorchSpec = "torch==$_woaTorchV"' in text
+
+    def test_the_companions_are_paired_here_too(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        for project in ("torchvision", "torchaudio"):
+            assert f'-Project "{project}" -PairWith $_woaTorchV' in text
+
+    def test_an_unanswered_index_leaves_every_spec_alone(self):
+        """Best effort: no probe, no change, which is exactly today's behaviour."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index('$WinArm64TorchSpec = "torch>=2.4"')
+        block = text[start : text.index("$_tritonSpec = ", start)]
+        assert block.index('"torch>=2.4"') < block.index("Get-WoaCudaWheelVersionParity"), (
+            "the floor must be the default the probe overrides, not the other way round"
+        )
+        assert 'if ($_woaTorchV) {' in block, "an empty probe must not pin anything"
+
+    @pytest.mark.parametrize(
+        "install_fn, setup_fn",
+        [
+            ("Test-WoaWheelTags", "Test-WoaWheelTagsParity"),
+            ("Test-WoaWheelPairsWithTorch", "Test-WoaPairsWithTorchParity"),
+        ],
+    )
+    def test_the_parity_copies_have_not_drifted(self, install_fn, setup_fn):
+        """Two copies of a rule is two chances for one of them to be wrong."""
+        original = _ps_function(INSTALL_PS1, install_fn)
+        copy = _function_source(SETUP_PS1.read_text(encoding = "utf-8"), setup_fn)
+
+        def body(text: str) -> list:
+            lines = text.split("\n")[1:]
+            return [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+
+        assert body(original) == body(copy), f"{setup_fn} has drifted from {install_fn}"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "pair_with, expected, why",
+        [
+            ("", "0.26.0.dev20260102+cu134", "unpaired: the newest wheel on the index"),
+            (
+                "2.15.0.dev20260101+cu134",
+                "0.26.0.dev20260101+cu134",
+                "paired: the newest wheel from THIS torch build, not the newest overall",
+            ),
+            ("2.15.0.dev20251231+cu134", "", "no wheel from that build: nothing to pin"),
+        ],
+    )
+    def test_the_parity_probe_pairs_when_asked(self, pair_with, expected, why):
+        """The signatures differ, so the whole-body comparison above cannot cover this one:
+        dropping the filter here leaves setup.ps1 pinning an unpairable companion."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        listing = " ".join(
+            f'<a href="{name}">{name}</a>'
+            for name in (
+                "torchvision-0.26.0.dev20260101%2Bcu134-cp313-cp313-win_arm64.whl",
+                "torchvision-0.26.0.dev20260102%2Bcu134-cp313-cp313-win_arm64.whl",
+                # NEWER, and tagged for another interpreter: it must lose on the tag alone,
+                # so dropping the tag filter cannot pass by picking the same version anyway.
+                "torchvision-0.27.0.dev20260103%2Bcu134-cp312-cp312-win_arm64.whl",
+            )
+        )
+        script = "\n".join(
+            [
+                f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{listing}\n'@ }}",
+                _function_source(text, "Test-WoaWheelTagsParity"),
+                _function_source(text, "Test-WoaPairsWithTorchParity"),
+                _function_source(text, "Get-WoaCudaWheelVersionParity"),
+                "$v = Get-WoaCudaWheelVersionParity -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'"
+                f" -PyTag 'cp313' -AbiTag 'cp313' -Project 'torchvision' -PairWith '{pair_with}'",
+                "Write-Output ('[' + $v + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why

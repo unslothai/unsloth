@@ -5764,6 +5764,34 @@ def _install_wheelhouse_optionals() -> None:
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
+# Blockers the PUBLIC index already resolves, for particular interpreters only. The skip
+# list is decided from the local find-links alone, so a native CPython 3.14 ARM64 host
+# dropped librosa even though its whole chain is binary-resolvable there: llvmlite and numba
+# publish win_arm64 wheels, and cp314 is the only tag either of them publishes one for.
+# The version is recorded, not just the tag, so the blocker floors are checked against a real
+# number rather than waved through. {dist: {interpreter tag: version}}.
+WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
+    "llvmlite": {"cp314": "0.49.0"},
+    "numba": {"cp314": "0.67.0"},
+}
+
+
+def _public_index_win_arm64_versions(canonical: str) -> "set[str]":
+    """Versions the public index publishes a usable win_arm64 wheel of, for THIS build.
+
+    Empty off win_arm64, and empty for an interpreter the recorded wheel is not tagged for.
+    The tag is judged by _wheel_matches_interpreter rather than by comparing strings, so a
+    free-threaded build does not claim a wheel built for the GIL one.
+    """
+    if not _is_win_arm64_interpreter():
+        return set()
+    return {
+        version
+        for tag, version in WINDOWS_ARM64_PUBLIC_INDEX_WHEELS.get(canonical, {}).items()
+        if _wheel_matches_interpreter(f"{canonical}-{version}-{tag}-{tag}-win_arm64.whl")
+    }
+
+
 def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
     """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
     hosting a wheel is all it takes to re-enable one of these features here.
@@ -5774,13 +5802,17 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
     with the unbuildable sdist rather than the skip this list is here to keep.
     """
     available = _find_links_wheel_versions()
-    if not available:
+    if not available and not any(
+        _public_index_win_arm64_versions(name) for name in WINDOWS_ARM64_PUBLIC_INDEX_WHEELS
+    ):
         return set(WINDOWS_ARM64_SKIP_PACKAGES)
     pins = _requirement_pins(req)
 
     def hosted(name: str) -> bool:
         canonical = _canonical_dist_name(name)
-        versions = available.get(canonical)
+        # The wheelhouse plus what the public index already resolves for this interpreter:
+        # a blocker available there needs no local copy to stop blocking.
+        versions = set(available.get(canonical) or ()) | _public_index_win_arm64_versions(canonical)
         if not versions:
             return False
         clauses = [clause for clause in pins.get(canonical, []) if clause]

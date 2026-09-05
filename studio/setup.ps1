@@ -3805,6 +3805,71 @@ function Get-PersistedWoaTorchIndex {
 # Deliberately the SAME set the manifest persists, checked on write AND on read: only NVIDIA's
 # own channels, so a mirror pinned with a token in its userinfo is not written to disk, and a
 # hand-edited file cannot redirect a torch install.
+# Parity copies of install.ps1's index probe. The forced-repair path below installs the trio
+# with the same --index-strategy unsafe-best-match and public PyPI extra index, so open-ended
+# specs there had the defect the install path was just fixed for: uv takes the best version
+# from the combined candidate set, and a PyPI win_arm64 CPU release one ahead of the selected
+# CUDA channel replaces the CUDA stack during a repair. A repair can happen in a fresh shell
+# long after the install, so the answer is re-probed rather than remembered. Kept identical to
+# install.ps1 by a parity test.
+function Test-WoaWheelTagsParity {
+    param([string]$Name, [string]$PyTag, [string]$AbiTag)
+    if (-not $Name) { return $false }
+    $stem = $Name -replace '(?i)\.whl$', ''
+    $fields = $stem -split '-'
+    if ($fields.Count -lt 5) { return $false }
+    $pyTags = $fields[$fields.Count - 3] -split '\.'
+    $abiTags = $fields[$fields.Count - 2] -split '\.'
+    return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
+}
+
+function Test-WoaPairsWithTorchParity {
+    param([string]$TorchVersion, [string]$OtherVersion)
+    if (-not $TorchVersion -or -not $OtherVersion) { return $false }
+    $stamp = {
+        param($v)
+        $m = [regex]::Match($v, '(?i)\.dev(\d+)')
+        if ($m.Success) { return $m.Groups[1].Value } else { return "" }
+    }
+    $local = {
+        param($v)
+        $parts = $v -split '\+', 2
+        if ($parts.Count -eq 2) { return $parts[1].ToLowerInvariant() } else { return "" }
+    }
+    if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
+    return ((& $local $TorchVersion) -eq (& $local $OtherVersion))
+}
+
+function Get-WoaCudaWheelVersionParity {
+    param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
+          [string]$PairWith = "")
+    if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PyTag)) { return $null }
+    if (-not $AbiTag) { $AbiTag = $PyTag }
+    $base = ($IndexUrl -split '[?#]', 2)[0].TrimEnd('/')
+    $tail = if ($IndexUrl.IndexOfAny([char[]]('?', '#')) -ge 0) { $IndexUrl.Substring($IndexUrl.IndexOfAny([char[]]('?', '#'))) } else { "" }
+    try {
+        $body = [string](Invoke-RestMethod -Uri "$base/$Project/$tail" -UseBasicParsing -TimeoutSec 20)
+    } catch { return $null }
+    if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+    $best = $null
+    $bestKey = $null
+    foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
+        $name = $match.Value
+        try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
+        if (-not (Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag)) { continue }
+        if ($name -notmatch '\+cu[0-9]+') { continue }
+        $version = ($name -split '-')[1]
+        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version)) { continue }
+        $release = ($version -split '\+', 2)[0]
+        $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
+        $key = $null
+        try { $key = [version]$numeric } catch { continue }
+        if ($null -eq $bestKey -or $key -gt $bestKey) { $bestKey = $key; $best = $version }
+        elseif ($key -eq $bestKey -and $version -gt $best) { $best = $version }
+    }
+    return $best
+}
+
 function Get-WoaTorchIndexMarkerPath {
     return (Join-Path (Join-Path $StudioHome "woa") "torch-index.txt")
 }
@@ -5325,6 +5390,31 @@ elseif ($WinArm64Venv) { substep "windows on arm: this index publishes torchaudi
 $WinArm64TorchSpec = "torch>=2.4"
 $WinArm64VisionSpec = "torchvision>=0.19"
 $WinArm64AudioSpec = "torchaudio>=2.4"
+# Pinned to what this index actually publishes, for the reason above the parity probe: with
+# best-match and a public PyPI extra index, a floor is a request for whichever index has the
+# higher number, and PyPI's win_arm64 CPU wheels win as soon as they are one release ahead.
+# The probe is best effort; an index that does not answer leaves every spec as it was.
+if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
+    $_woaTags = ""
+    try {
+        $_woaTags = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import sys, sysconfig; t = 'cp%d%d' % sys.version_info[:2]; print(t + '|' + t + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''))" 2>$null | Out-String).Trim()
+    } catch { $_woaTags = "" }
+    if ($_woaTags -match '^(cp\d+)\|(cp\d+t?)$') {
+        $_woaPyTag = $Matches[1]; $_woaAbi = $Matches[2]
+        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
+        if ($_woaTorchV) {
+            $WinArm64TorchSpec = "torch==$_woaTorchV"
+            # Paired with that torch, never merely newest: a nightly channel publishes each
+            # project on its own schedule and nightly torchvision pins its exact torch, so two
+            # independently maximized pins can name a pair the index cannot satisfy.
+            $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
+            if ($_woaVisionV) { $WinArm64VisionSpec = "torchvision==$_woaVisionV" }
+            $_woaAudioV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchaudio" -PairWith $_woaTorchV
+            if ($_woaAudioV) { $WinArm64AudioSpec = "torchaudio==$_woaAudioV" }
+            substep "windows on arm: pinning the CUDA build this index publishes ($_woaTorchV)."
+        }
+    }
+}
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
 # The win_arm64 index publishes only torch/vision/audio, so PyPI has to stay reachable for their

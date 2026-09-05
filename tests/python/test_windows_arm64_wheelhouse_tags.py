@@ -885,3 +885,65 @@ class TestAHostedOptionalIsActuallyInstalled:
         (tmp_path / _wheel("torchcodec", tag, tag)).write_text("")
         ips._find_links_wheel_versions.cache_clear()
         assert ips._wheelhouse_hosts("torchcodec")
+
+
+class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
+    """The skip list was decided from the local wheelhouse alone.
+
+    llvmlite and numba publish win_arm64 wheels, and cp314 is the only tag either publishes
+    one for. So a native CPython 3.14 ARM64 host has librosa's whole chain resolvable from
+    the public index, and the filter dropped librosa anyway.
+    """
+
+    def test_the_recorded_versions_clear_the_blocker_floors(self, ips):
+        """A recorded version below the floor would unblock nothing but this table."""
+        for name, tags in ips.WINDOWS_ARM64_PUBLIC_INDEX_WHEELS.items():
+            floor = ips.WINDOWS_ARM64_BLOCKER_FLOORS.get(name)
+            if floor is None:
+                continue
+            for version in tags.values():
+                assert ips._version_satisfies(version, floor[0]) is not False, (
+                    f"{name} {version} does not satisfy {floor[0]}"
+                )
+
+    def test_nothing_is_claimed_off_win_arm64(self, ips, monkeypatch):
+        """Every other platform must see exactly the availability it saw before."""
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: False)
+        for name in ips.WINDOWS_ARM64_PUBLIC_INDEX_WHEELS:
+            assert ips._public_index_win_arm64_versions(name) == set()
+
+    def test_the_tag_has_to_match_this_interpreter(self, ips, monkeypatch):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        assert ips._public_index_win_arm64_versions("numba") == {"0.67.0"}
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: False)
+        assert ips._public_index_win_arm64_versions("numba") == set()
+
+    def test_a_matching_interpreter_unblocks_librosa(self, ips, tmp_path, monkeypatch):
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        assert "librosa" not in ips._windows_arm64_skip_packages()
+        # And still dropped where the wheels are not published for this build.
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: False)
+        ips._find_links_wheel_versions.cache_clear()
+        assert "librosa" in ips._windows_arm64_skip_packages()
+
+    def test_openai_whisper_still_needs_tiktoken(self, ips, tmp_path, monkeypatch):
+        """Its third blocker publishes no win_arm64 wheel, so unblocking two is not enough."""
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        assert "openai-whisper" in ips._windows_arm64_skip_packages()
+
+    def test_an_empty_wheelhouse_no_longer_short_circuits(self, ips, monkeypatch):
+        """The early return read "nothing hosted" as "skip everything", which threw the
+        public-index answer away before it was asked for."""
+        monkeypatch.delenv("UV_FIND_LINKS", raising = False)
+        ips._find_links_wheel_versions.cache_clear()
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "cp314" in name)
+        assert "librosa" not in ips._windows_arm64_skip_packages()
+        assert "mecab" in ips._windows_arm64_skip_packages(), "the rest still drop"
