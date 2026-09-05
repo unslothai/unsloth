@@ -384,9 +384,9 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
-            assert "tensorboard" in ips._windows_arm64_skip_packages(req), (
-                "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
-            )
+            assert "tensorboard" in ips._windows_arm64_skip_packages(
+                req
+            ), "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
         finally:
             ips._find_links_wheel_names.cache_clear()
 

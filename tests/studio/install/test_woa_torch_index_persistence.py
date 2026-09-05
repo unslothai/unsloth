@@ -3586,15 +3586,30 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
     @pytest.mark.parametrize(
         "pinned, chain, expected, why",
         [
-            ("", "https://pypi.nvidia.com/nvtorch_oot", "https://pypi.nvidia.com/nvtorch_oot",
-             "no pin: the WoA chain is what the run uses, so it is what is recorded"),
-            ("https://pypi.nvidia.com/nvtorch_oot_nightly", "https://pypi.nvidia.com/nvtorch_oot",
-             "https://pypi.nvidia.com/nvtorch_oot_nightly",
-             "a pin to another NVIDIA channel replaces the recorded one"),
-            ("https://download.pytorch.org/whl/cu130", "https://pypi.nvidia.com/nvtorch_oot", "",
-             "a pin to a recognised non-NVIDIA index clears it rather than leaving a lie"),
-            ("https://mirror.corp.test/simple", "https://pypi.nvidia.com/nvtorch_oot", "",
-             "and so does a private mirror"),
+            (
+                "",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "no pin: the WoA chain is what the run uses, so it is what is recorded",
+            ),
+            (
+                "https://pypi.nvidia.com/nvtorch_oot_nightly",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://pypi.nvidia.com/nvtorch_oot_nightly",
+                "a pin to another NVIDIA channel replaces the recorded one",
+            ),
+            (
+                "https://download.pytorch.org/whl/cu130",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "",
+                "a pin to a recognised non-NVIDIA index clears it rather than leaving a lie",
+            ),
+            (
+                "https://mirror.corp.test/simple",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "",
+                "and so does a private mirror",
+            ),
         ],
     )
     def test_what_ends_up_on_disk(self, tmp_path, pinned, chain, expected, why):
@@ -3618,14 +3633,16 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
 
 
 class TestThePypiPyarrowWheelIsPinnedToo:
-    """"PyPI has a compatible wheel" is not "the newest release is one".
+    """ "PyPI has a compatible wheel" is not "the newest release is one".
 
     The probe cleared the native route on a wheel it then forgot, and the override was
     emitted only for a staged file. With just pyarrow>=21.0.0 in force, uv takes the newest
@@ -3638,12 +3655,12 @@ class TestThePypiPyarrowWheelIsPinnedToo:
         start = text.index("function Get-WoaPyarrowSource")
         end = text.index("function Test-WoaNvidiaPresent", start)
         body = text[start:end]
-        assert '$script:WoaPyarrowWheelName = $match.Value' in body, (
-            "the PyPI branch returns without naming the wheel it cleared"
-        )
-        assert "$script:WoaPyarrowWheelName = $null" in body, (
-            "and it clears the name on entry, so a re-probe cannot inherit the first answer"
-        )
+        assert (
+            "$script:WoaPyarrowWheelName = $match.Value" in body
+        ), "the PyPI branch returns without naming the wheel it cleared"
+        assert (
+            "$script:WoaPyarrowWheelName = $null" in body
+        ), "and it clears the name on entry, so a re-probe cannot inherit the first answer"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -3686,7 +3703,9 @@ class TestThePypiPyarrowWheelIsPinnedToo:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 180,
+            capture_output = True,
+            text = True,
+            timeout = 180,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected_pin, why
