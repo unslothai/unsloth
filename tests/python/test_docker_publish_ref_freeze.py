@@ -453,14 +453,14 @@ def test_the_digest_export_accepts_an_attested_merge(manifest_digest_step: str, 
     _docker_stub(
         bin_dir,
         'case "$4" in\n'
-        '  --raw)\n'
+        "  --raw)\n"
         '    case "$5" in\n'
         + "".join(
             f'      *@sha256:{pushed}) printf "{_raw_index(children)}" ;;\n'
             for pushed, children in attested.items()
         )
         + f'      *) printf "{merged}" ;;\n'
-        '    esac ;;\n'
+        "    esac ;;\n"
         f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
@@ -525,5 +525,6 @@ def test_the_digest_export_fails_when_an_inspection_fails(
     )
     assert res.returncode != 0, (
         "a failed inspection was swallowed, so the guard silently checked nothing:\n"
-        + res.stdout + res.stderr
+        + res.stdout
+        + res.stderr
     )
