@@ -103,9 +103,8 @@ def _run_sync(
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
     # the secrets are GitHub expressions; the test decides whether they are "set"
-    script = (
-        step.replace("${{ secrets.DOCKERHUB_README_TOKEN }}", secret)
-        .replace("${{ secrets.DOCKERHUB_README_USERNAME }}", "readme-user" if secret else "")
+    script = step.replace("${{ secrets.DOCKERHUB_README_TOKEN }}", secret).replace(
+        "${{ secrets.DOCKERHUB_README_USERNAME }}", "readme-user" if secret else ""
     )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
