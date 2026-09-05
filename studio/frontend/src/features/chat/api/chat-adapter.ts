@@ -42,6 +42,12 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import { isMcpToolName } from "../utils/mcp-tool-name";
+import {
+  boundMcpImageEnvelopes,
+  mcpImagesEnvelope,
+  splitMcpImages,
+} from "./mcp-images";
 import {
   answerTextFromParts,
   extractSearchImages,
@@ -1126,6 +1132,10 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
+    // Shape alone, deliberately: the live parser builds this wrapper from any tool
+    // whose raw output ends in a valid envelope, and excluding those here dropped
+    // them into JSON.stringify below -- which replays the whole base64 array as
+    // ordinary prompt text. Provenance gates the ENVELOPE, a few lines down.
     isMcpImageToolResult(result) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
@@ -1136,6 +1146,12 @@ function serializeToolResultPart(
       ? stripSearchImageTokens(result.text)
       : result.text;
     content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
+    // Gated on the mcp__ id the backend stamps, not on shape alone: a client tool
+    // is free to answer {text, images:[{data, mimeType}]}, and appending the
+    // envelope would hand its bytes to the model as image input.
+    if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
+      content += mcpImagesEnvelope(result.images);
+    }
   } else {
     try {
       content = JSON.stringify(result);
@@ -1720,11 +1736,15 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const survivingMessages = pruneOutboundHistory(messages, true);
-  const outboundMessages = survivingMessages
-    .flatMap((message) => toOpenAIMessages(message, true))
-    .filter((message): message is NonNullable<typeof message> =>
-      Boolean(message),
-    );
+  // Bounded before it goes on the wire: the backend's cap runs after the body is
+  // parsed, so it cannot keep the request itself from growing without limit.
+  const outboundMessages = boundMcpImageEnvelopes(
+    survivingMessages
+      .flatMap((message) => toOpenAIMessages(message, true))
+      .filter((message): message is NonNullable<typeof message> =>
+        Boolean(message),
+      ),
+  );
 
   const { params, artifactsEnabled, supportsTools } =
     useChatRuntimeStore.getState();
@@ -4676,11 +4696,13 @@ export function createOpenAIStreamAdapter(
       );
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
-      const outboundMessages = survivingMessages
-        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
-        .filter((message): message is NonNullable<typeof message> =>
-          Boolean(message),
-        );
+      const outboundMessages = boundMcpImageEnvelopes(
+        survivingMessages
+          .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+          .filter((message): message is NonNullable<typeof message> =>
+            Boolean(message),
+          ),
+      );
       if (selectedImageEditReference) {
         const referenceMessage = toOpenAIImageEditReferenceMessage(
           selectedImageEditReference,
@@ -6658,8 +6680,6 @@ export function createOpenAIStreamAdapter(
                         : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
-                    const mcpImgMarker = "\n__MCP_IMAGES__:";
-                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
                       | {
@@ -6681,22 +6701,9 @@ export function createOpenAIStreamAdapter(
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     // A valid MCP image envelope wins; an invalid marker falls through so a sandbox __IMAGES__
                     // suffix still renders.
-                    let mcpImages: McpImageToolResult | null = null;
-                    if (mcpImgIdx !== -1) {
-                      try {
-                        const images = JSON.parse(
-                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
-                        );
-                        const candidate = {
-                          text: rawResult.slice(0, mcpImgIdx),
-                          images,
-                        };
-                        if (isMcpImageToolResult(candidate))
-                          mcpImages = candidate;
-                      } catch {
-                        // Not a valid envelope; fall through below.
-                      }
-                    }
+                    const mcpCandidate = splitMcpImages(rawResult);
+                    const mcpImages: McpImageToolResult | null =
+                      isMcpImageToolResult(mcpCandidate) ? mcpCandidate : null;
                     if (
                       toolCallParts[idx].toolName === "image_generation" &&
                       typeof imageB64 === "string" &&

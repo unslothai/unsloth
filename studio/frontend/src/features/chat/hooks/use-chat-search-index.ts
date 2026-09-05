@@ -13,6 +13,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   batchListChatMessages,
 } from "../api/chat-api";
+import { splitMcpImages } from "../api/mcp-images";
 import type { MessageRecord } from "../types";
 import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
 import {
@@ -51,38 +52,11 @@ const ROW_RELEASE_DELAY_MS = 300;
 // Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 
-// Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON image array the
-// backend appended, so tool text merely mentioning the marker stays searchable.
-function stripMcpImageSuffix(value: string): string {
-  const marker = "\n__MCP_IMAGES__:";
-  const idx = value.lastIndexOf(marker);
-  if (idx === -1) return value;
-  try {
-    const images: unknown = JSON.parse(value.slice(idx + marker.length));
-    if (
-      Array.isArray(images) &&
-      images.length > 0 &&
-      images.every(
-        (img) =>
-          typeof img === "object" &&
-          img !== null &&
-          typeof (img as Record<string, unknown>).data === "string" &&
-          typeof (img as Record<string, unknown>).mimeType === "string",
-      )
-    ) {
-      return value.slice(0, idx);
-    }
-  } catch {
-    // Not a valid envelope; leave the text intact.
-  }
-  return value;
-}
-
 // Readable text from tool args/results, dropping base64 image/audio blobs so they never
 // bloat the index.
 function searchableText(value: unknown, depth = 0): string {
   if (typeof value === "string") {
-    let text = stripMcpImageSuffix(value);
+    let text = splitMcpImages(value).text;
     const cut = text.indexOf("\n__IMAGES__:");
     if (cut !== -1) text = text.slice(0, cut);
     return text

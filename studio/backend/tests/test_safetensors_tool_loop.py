@@ -5329,3 +5329,337 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
             assert incremental == strip_tool_markup_streaming(
                 prefix, enabled_tool_names = names
             ), f"diverged at offset {i}"
+
+
+def test_mcp_images_reach_a_vision_model_through_the_sink(monkeypatch):
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    assert len(sink) == 1
+    assert base64.b64decode(sink[0])[:8] == b"\x89PNG\r\n\x1a\n"
+    second_turn = seen[1]
+    assert "__MCP_IMAGES__" not in json.dumps(second_turn)
+    assert second_turn[-1]["role"] == "user"
+    assert second_turn[-1]["content"][0] == {"type": "image"}
+
+
+def test_mcp_images_are_left_out_without_a_sink(monkeypatch):
+    import json
+
+    from core.inference import mcp_images
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert seen[1][-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in json.dumps(seen[1])
+
+
+def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
+    """A batch holding both an internal no-op and an image-returning call used to
+    append two role=user turns in a row, which a strict VLM template rejects."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    # One image-returning call plus one call to a tool that is not enabled: the
+    # second is suppressed as an internal no-op and lands as a deferred nudge
+    # after the batch's results, which is the turn the markers must join.
+    real = '{"name": "mcp__fs__read_media_file", "arguments": {}}'
+    bogus = '{"name": "mcp__fs__delete_everything", "arguments": {}}'
+    turns = [
+        f"<tool_call>{real}</tool_call><tool_call>{bogus}</tool_call>",
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    second_turn = seen[1]
+    roles = [message["role"] for message in second_turn]
+    # Guard: without a suppressed call there is no nudge and the test proves nothing.
+    assert any(
+        message["role"] == "user" and "not executed" in str(message.get("content"))
+        for message in second_turn
+    ), f"no deferred no-op nudge in {second_turn}"
+    assert not any(
+        roles[i] == "user" and roles[i + 1] == "user" for i in range(len(roles) - 1)
+    ), f"consecutive user turns: {roles}"
+    markers = [
+        part
+        for message in second_turn
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    ]
+    assert len(markers) == len(sink) == 1
+
+
+def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
+    """The sink is seeded with what the caller attached, and the MCP payloads land
+    around it. A cap that trims from the front deleted that picture and its marker,
+    so a model asked to compare against it was handed screenshots instead."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # Two DISTINCT calls: an identical repeat is suppressed as a no-op and the sink
+    # never reaches the cap, so the test would prove nothing.
+    turns = [_call(1), _call(2), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = [attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 3,
+            images_sink = sink,
+            caller_image_indexes = (0,),
+        )
+    )
+
+    assert attachment in sink, "the caller's attachment was trimmed away"
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), "the attachment is spared, but it still counts against the cap"
+    final = seen[-1]
+    assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel, or the processor miscounts"
+
+
+def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
+    """Only the caller's own attachment is spared. Sparing the whole seeded sink
+    exempted a resumed chat's replayed pictures too, so the prompt could carry a
+    second full allowance on top of them."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 10, 0)) for index in range(4)]
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    turns = [_call(1), _call(2), _call(3), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = list(replayed)
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [mcp_images.placeholder_turn(4, 4)],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 4,
+            images_sink = sink,
+            # No attachment on this request; every seeded pixel is replay.
+            caller_image_indexes = (),
+        )
+    )
+
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), f"replay was exempted from the cap: {len(sink)} images in the prompt"
+    assert replayed[0] not in sink, "the oldest replayed picture should have gone first"
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink)
+
+
+def test_the_protected_attachment_index_is_rebased_between_batches():
+    """The index names a position, and trimming earlier entries moves it. Reusing the
+    original across iterations protected the wrong payload and deleted the very
+    attachment the argument exists to keep."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 12, 0)) for index in range(7)]
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    turns = [_call(1), _call(2), _call(3), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    # Replay first, the caller's attachment last: index 7 on the way in.
+    sink = [*replayed, attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                mcp_images.placeholder_turn(7, 7),
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                },
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 4,
+            images_sink = sink,
+            caller_image_indexes = (7,),
+        )
+    )
+
+    assert attachment in sink, "the attachment was deleted by a stale protected index"
+    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel"
