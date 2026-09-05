@@ -3717,3 +3717,112 @@ class TestThePypiPyarrowWheelIsPinnedToo:
             "the script-level init, the per-probe reset, and one per source: pypi, the "
             "supplied UNSLOTH_PYARROW_WHEEL, the wheelhouse directory, the wheelhouse index"
         )
+
+
+class TestEveryPyarrowRouteOpensWhatItKeeps:
+    """Four ways in, and the last one was trusting a 200 response.
+
+    A mirror can serve a truncated body with a successful status, and Invoke-WebRequest
+    reports success for it. This wheel decides the route and the exact pyarrow== override is
+    written from it, so an unreadable download kept native mode and then failed uv on the
+    override -- after x64 had been given up.
+    """
+
+    def test_every_mandatory_route_validates(self):
+        """Staging opens the two files it chooses itself; the probe opens the other two.
+
+        Staging trusts the probe's answer for UNSLOTH_PYARROW_WHEEL, which is why that one
+        is checked there and not again here.
+        """
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index('if ($script:WoaPyarrowSource -eq "local") {')
+        end = text.index("$WoaExtraStaged = 0", start)
+        block = text[start:end]
+        assert block.count("Test-ZipArchiveReadable") == 2, (
+            "the wheelhouse directory selection and the download: "
+            f"{block.count('Test-ZipArchiveReadable')}"
+        )
+        probe = text[
+            text.index("function Get-WoaPyarrowSource") : text.index("function Test-WoaNvidiaPresent")
+        ]
+        assert probe.count("Test-ZipArchiveReadable") == 2, (
+            "the probe opens the supplied wheel and the local wheelhouse candidate before "
+            f"it clears the native route: {probe.count('Test-ZipArchiveReadable')}"
+        )
+
+    def test_a_bad_download_is_removed_not_left_in_the_cache(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $wheelName)")
+        block = text[start : start + 900]
+        assert "Remove-Item -LiteralPath $_woaPaDest" in block, (
+            "a corrupt wheel left in the managed directory is read by the resolver on "
+            "every later run, and by _find_links_wheel_versions as proof of availability"
+        )
+        assert block.index("Remove-Item") < block.index("throw"), "removed before it gives up"
+
+    def test_the_failure_falls_back_rather_than_continuing(self):
+        """It throws into the existing catch, which is what disables the native route."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $wheelName)")
+        block = text[start : start + 1400]
+        assert "$script:WoaNativeCudaTorch = $false" in block
+        assert block.index("throw") < block.index("$script:WoaNativeCudaTorch = $false")
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "readable, expect_native, why",
+        [
+            (True, "True", "a readable download keeps the native route"),
+            (False, "False", "a truncated one gives it up rather than failing later"),
+        ],
+    )
+    def test_the_branch_end_to_end(self, tmp_path, readable, expect_native, why):
+        """Executed, because a source-level assertion cannot tell a live branch from a dead
+        one, and because the point is what is left on disk afterwards.
+        """
+        import zipfile
+
+        served = tmp_path / "served.whl"
+        if readable:
+            with zipfile.ZipFile(served, "w") as archive:
+                archive.writestr("pyarrow/__init__.py", "")
+        else:
+            served.write_bytes(b"PK\x03\x04truncated")
+        wheel_dir = tmp_path / "wheels"
+        wheel_dir.mkdir()
+
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("                if ($wheelName) {")
+        end = text.index(
+            "                } else {\n                    $script:WoaNativeCudaTorch = $false",
+            start,
+        )
+        script = "\n".join(
+            [
+                "function substep { param($m, $c) }",
+                "function Join-UrlPath { param($Base, $Path) return $Path }",
+                "function Invoke-WebRequest {",
+                "  param([Parameter(ValueFromRemainingArguments=$true)]$a)",
+                f"  Copy-Item -LiteralPath '{served.as_posix()}' -Destination $a[$a.IndexOf('-OutFile') + 1] -Force }}",
+                _ps_function(INSTALL_PS1, "Test-ZipArchiveReadable"),
+                f"$WoaWheelDir = '{wheel_dir.as_posix()}'",
+                "$script:WoaWheelhouse = 'https://mirror.test/wheels'",
+                "$script:WoaNativeCudaTorch = $true",
+                "$script:WoaPyarrowWheelName = $null",
+                "$wheelName = 'pyarrow-24.0.0-cp313-cp313-win_arm64.whl'",
+                # The slice stops before the "} else {" that follows, so the brace closing
+                # `if ($wheelName) {` is not in it.
+                text[start:end] + "\n                }",
+                "Write-Output ('[' + [bool]$script:WoaNativeCudaTorch + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 180,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expect_native, why
+        staged = list(wheel_dir.glob("*.whl"))
+        assert bool(staged) is readable, (
+            f"a rejected wheel must not stay in the managed directory: {staged}"
+        )

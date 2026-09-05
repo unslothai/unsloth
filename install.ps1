@@ -5098,7 +5098,16 @@ exit 0
                 } catch {}
                 if ($wheelName) {
                     try {
-                        Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $wheelName) -OutFile (Join-Path $WoaWheelDir $wheelName) -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        $_woaPaDest = Join-Path $WoaWheelDir $wheelName
+                        Invoke-WebRequest -Uri (Join-UrlPath $script:WoaWheelhouse $wheelName) -OutFile $_woaPaDest -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                        # A completed download is not a readable archive: a mirror can serve a
+                        # truncated body with a 200. The optional wheels below already check;
+                        # this one decides the route, and an unreadable file kept native mode
+                        # and then failed uv on the exact pyarrow== override written from it.
+                        if (-not (Test-ZipArchiveReadable -Path $_woaPaDest)) {
+                            Remove-Item -LiteralPath $_woaPaDest -Force -ErrorAction SilentlyContinue
+                            throw "the downloaded wheel is not a readable archive"
+                        }
                         $script:WoaPyarrowWheelName = $wheelName
                         substep "windows on arm: downloaded pyarrow wheel $wheelName"
                     } catch {
