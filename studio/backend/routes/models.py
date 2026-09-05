@@ -1028,10 +1028,16 @@ class _CompatLocalInventorySources(NamedTuple):
     hf_default: Path
     lm_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
+    hermes_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
-    from utils.paths import hf_default_cache_dir, legacy_hf_cache_dir, lmstudio_model_dirs
+    from utils.paths import (
+        hermes_model_dirs,
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        lmstudio_model_dirs,
+    )
     from utils.hf_cache_settings import known_hf_hub_caches
     return _CompatLocalInventorySources(
         _resolve_hf_cache_dir(),
@@ -1039,6 +1045,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
         tuple(known_hf_hub_caches()),
+        tuple(hermes_model_dirs()),
     )
 
 
@@ -1048,14 +1055,15 @@ def collect_local_models(
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[_CompatLocalInventorySources] = None,
 ) -> List[LocalModelInfo]:
-    """Scan ``models_root``, the HF caches, LM Studio dirs, and user scan folders,
-    returning a deduplicated, hidden-filtered list of discovered local models.
+    """Scan ``models_root``, the HF caches, LM Studio and Hermes dirs, and user scan
+    folders, returning a deduplicated, hidden-filtered list of discovered local models.
 
     Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
     catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from hub.services.models.hermes import scan_hermes_dir
     from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
@@ -1121,6 +1129,12 @@ def collect_local_models(
 
     for lm_dir in lm_dirs:
         local_models += _scan_lmstudio_dir(lm_dir)
+
+    for hermes_dir in sources.hermes_dirs:
+        try:
+            local_models += scan_hermes_dir(hermes_dir)
+        except Exception as e:
+            logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
 
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
@@ -1362,7 +1376,7 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List local model candidates from the models dir, HF caches, and LM Studio dirs."""
+    """List local model candidates from the models dir, HF caches, LM Studio and Hermes dirs."""
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -1402,6 +1416,7 @@ async def list_local_models(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
             lmstudio_dirs = [str(d) for d in lm_dirs],
+            hermes_dirs = [str(d) for d in sources.hermes_dirs],
             models = models,
         )
     except Exception as e:

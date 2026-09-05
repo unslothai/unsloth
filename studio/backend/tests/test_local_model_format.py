@@ -176,6 +176,27 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
     }
 
 
+def test_compat_inventory_lists_hermes_downloads(tmp_path):
+    # /api/models/local and /v1/models are served by this scan, not the hub inventory, so
+    # the recipe picker, the chat auto-load and the OpenAI catalog see only what it returns.
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    hermes = tmp_path / ".hermes" / "models"
+    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(hermes / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(hermes_dirs = (hermes,))
+
+    rows = models_route.collect_local_models(
+        models_root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {("hermes", weight)}
+    assert rows[0].display_name == "Qwen3.8-27B-UD-Q4_K_M"
+
+
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     root = tmp_path / "ollama"
     digest = "sha256-model"

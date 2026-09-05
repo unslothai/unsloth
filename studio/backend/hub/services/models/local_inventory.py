@@ -734,15 +734,21 @@ async def _collect_models_from_default_sources(
     for hermes_dir in hermes_dirs:
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
+    hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
     for folder_path, discovered, row_path in custom_sources:
         try:
-            custom_models = await asyncio.to_thread(
-                _scan_custom_folder,
-                folder_path,
-                discovered = discovered,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
-            )
+            if _inventory_physical_identity(str(folder_path)) in hermes_identities:
+                # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
+                # a generic walk of it lists every download a second time under the same id.
+                custom_models = await asyncio.to_thread(scan_hermes_dir, folder_path)
+            else:
+                custom_models = await asyncio.to_thread(
+                    _scan_custom_folder,
+                    folder_path,
+                    discovered = discovered,
+                    variant_states = variant_states,
+                    active_hub_cache = hf_cache_dir,
+                )
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Only an OS failure is something the user can fix, so only that is shown.
@@ -820,7 +826,7 @@ def _scan_custom_folder(
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source in {"hf_cache", "ollama"}:
+    if model.source in {"hf_cache", "ollama", "hermes"}:
         return model
     return model.model_copy(
         update = {

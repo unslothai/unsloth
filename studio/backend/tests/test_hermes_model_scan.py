@@ -55,6 +55,14 @@ def test_a_complete_split_counts_once_by_its_first_part(tmp_path):
     assert rows[0].path.endswith("Big-Model-00001-of-00003.gguf")
 
 
+def test_a_split_download_is_sized_as_the_whole_set(tmp_path):
+    for index, size in ((1, 32), (2, 48), (3, 64)):
+        _gguf(tmp_path / f"Big-Model-0000{index}-of-00003.gguf", size = size)
+
+    rows = scan_hermes_dir(tmp_path)
+    assert [row.size_bytes for row in rows] == [144]
+
+
 def test_a_download_still_in_flight_is_not_offered(tmp_path):
     # Parts 1 and 2 of 3 on disk: loading this fails, so it must not be listed.
     _gguf(tmp_path / "Big-Model-00001-of-00003.gguf")

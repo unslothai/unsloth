@@ -21,7 +21,11 @@ from typing import List, Optional
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo
-from hub.services.models.common import _classify_local_path, _is_main_gguf_filename
+from hub.services.models.common import (
+    _classify_local_path,
+    _is_main_gguf_filename,
+    _sum_file_sizes,
+)
 
 logger = get_logger(__name__)
 
@@ -76,18 +80,27 @@ def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[Lo
     if not hermes_dir.exists() or not hermes_dir.is_dir():
         return []
 
+    from utils.models.model_config import colocated_split_shards
+
     rows: List[LocalModelInfo] = []
     for path in staged_gguf_files(hermes_dir):
         try:
             updated_at = path.stat().st_mtime
         except OSError:
             updated_at = None
-        rows += _classify_local_path(
+        classified = _classify_local_path(
             path,
             "hermes",
             display_name = staged_model_id(path),
             updated_at = updated_at,
         )
+        # The row points at part one and the classifier sizes the one file it was handed;
+        # the download is the whole set.
+        shards, _complete = colocated_split_shards(path)
+        if len(shards) > 1:
+            size_bytes = _sum_file_sizes(shards)
+            classified = [row.model_copy(update = {"size_bytes": size_bytes}) for row in classified]
+        rows += classified
         if limit is not None and len(rows) >= limit:
             break
     return rows

@@ -62,7 +62,7 @@ test("the chat picker allowlist admits Hermes rows", async () => {
     new URL("../src/features/chat/local-model-options.ts", import.meta.url),
     "utf8",
   );
-  const listed = (src: string) =>
+  const listed = (src: string): string[] =>
     [...src.matchAll(/new Set\(\[([^\]]*)\]\)/g)][0]?.[1].match(/"[a-z_]+"/g) ?? [];
   assert.deepEqual(listed(picker), listed(chat));
   assert.ok(listed(picker).includes('"hermes"'));
