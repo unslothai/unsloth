@@ -54,6 +54,8 @@ _SCAN_ENTRY_LIMIT = 100_000
 _RUNTIME_SCAN_ENTRY_LIMIT = 1_000_000
 
 _ERROR_INSUFFICIENT_BUFFER = 122
+_ERROR_NOT_SUPPORTED = 50
+_ERROR_INVALID_PARAMETER = 87
 _SE_FILE_OBJECT = 1
 _DACL_SECURITY_INFORMATION = 0x00000004
 _TRUSTEE_IS_SID = 0
@@ -1354,7 +1356,13 @@ def _spawn_lpac(
         handles = (wintypes.HANDLE * 2)(child_stdin, child_stdout)
 
         less_privileged = identity.profile != _PROFILE_APPCONTAINER
-        attribute_count = 3 if less_privileged else 2
+        # The Job Object is created first and attached at process creation through
+        # PROC_THREAD_ATTRIBUTE_JOB_LIST, so no window exists in which a child is
+        # alive (even suspended) without a kill-on-close owner. Hosts without the
+        # attribute fall back to AssignProcessToJobObject before the resume.
+        job = _job_object_with_limits()
+        job_handles = (wintypes.HANDLE * 1)(job._handle)
+        attribute_count = (3 if less_privileged else 2) + 1
         size = ctypes.c_size_t()
         api.kernel32.InitializeProcThreadAttributeList(None, attribute_count, 0, ctypes.byref(size))
         if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or not size.value:
@@ -1401,6 +1409,22 @@ def _spawn_lpac(
                 None,
             ):
                 raise _winerror(f"UpdateProcThreadAttribute({key:#x})")
+        job_attached_at_creation = bool(
+            api.kernel32.UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                ctypes.byref(job_handles),
+                ctypes.sizeof(job_handles),
+                None,
+                None,
+            )
+        )
+        if not job_attached_at_creation and ctypes.get_last_error() not in (
+            _ERROR_NOT_SUPPORTED,
+            _ERROR_INVALID_PARAMETER,
+        ):
+            raise _winerror("UpdateProcThreadAttribute(job list)")
 
         startup = _STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(startup)
@@ -1436,7 +1460,10 @@ def _spawn_lpac(
         write_fd = -1
         os.close(stdin_fd)
         stdin_fd = -1
-        job = _create_job(process_info.hProcess)
+        if not job_attached_at_creation and not api.kernel32.AssignProcessToJobObject(
+            job._handle, process_info.hProcess
+        ):
+            raise _winerror("AssignProcessToJobObject")
         if api.kernel32.ResumeThread(process_info.hThread) == 0xFFFFFFFF:
             raise _winerror("ResumeThread")
         stdout = os.fdopen(
