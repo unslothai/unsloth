@@ -342,12 +342,22 @@ jobs:
           # pushed, because baking another run's base image is silent otherwise.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # A build leg does not push a bare image manifest: with provenance and SBOM
+          # on, buildx pushes each arch as an OCI index (image + attestation) and
+          # `imagetools create` flattens THOSE children into the merged index, so the
+          # per-arch index digest itself never appears there. Comparing at the wrong
+          # level failed the first publish runs on main against a correct manifest.
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
+                      | jq -r '.manifests[]?.digest')"
+              [ -n "$want" ] || want="sha256:${d}"
+              for w in $want; do
+                  grep -qxF "$w" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which does not contain ${w} (from sha256:${d} this run pushed); another ref at this commit retagged it"
+                      missing=1
+                  }
+              done
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
@@ -497,16 +507,77 @@ jobs:
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # per-arch pushes are indexes (image + attestation) that the merge
+          # flattens, so compare their children, not the index digest; see the base merge
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
+                      | jq -r '.manifests[]?.digest')"
+              [ -n "$want" ] || want="sha256:${d}"
+              for w in $want; do
+                  grep -qxF "$w" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which does not contain ${w} (from sha256:${d} this run pushed); another ref at this commit retagged it"
+                      missing=1
+                  }
+              done
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "studio manifest: ${TAG} @ ${DIGEST}"
+
+  # The Docker Hub page is not written by any push: it is repository metadata that
+  # only the Hub API changes, so without this it stays whatever was pasted in by
+  # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
+  # condition as the stable tags above. Verified by reading it back, and a token
+  # that cannot edit the description fails the job rather than warning.
+  #
+  # Uses DOCKER_API_KEY on the namespace-scoped route. The legacy
+  # /v2/repositories/{owner}/{repo}/ path answers every organization access token
+  # with 403 "token issued from organization access token is not allowed" (run
+  # 33943728004), which is what failed this job on each publish before; the token
+  # also needs the repository edit permission.
+  hub-readme:
+    needs: merge-studio
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync docker/DOCKERHUB.md to the Docker Hub page
+        run: |
+          README=docker/DOCKERHUB.md
+          test -s "$README"
+          # The organization token is only accepted on the namespace-scoped routes.
+          # The legacy /v2/repositories/{owner}/{repo}/ path answers every
+          # organization token with 403 "token issued from organization access token
+          # is not allowed", whatever its scopes. The token needs the repository
+          # edit permission on ${IMAGE_NAME}.
+          HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
+          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
+            exit 1
+          fi
+          BODY="$(python3 -c 'import json,sys; print(json.dumps({"full_description": open(sys.argv[1], encoding="utf-8").read()}))' "$README")"
+          CODE="$(curl -sS -o /tmp/hub_patch.json -w '%{http_code}' -X PATCH "$HUB" \
+            -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+            --data-binary "$BODY")"
+          echo "PATCH returned HTTP ${CODE}"
+          # Read it back rather than trusting the status code.
+          LIVE="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "$HUB" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("full_description",""))')"
+          if [ "$LIVE" != "$(cat "$README")" ]; then
+            echo "::error::The Hub page does not match ${README} after PATCH ${CODE}. DOCKER_API_KEY most likely lacks the repository edit permission on ${IMAGE_NAME}."
+            head -c 400 /tmp/hub_patch.json; echo
+            exit 1
+          fi
+          echo "Hub page for ${IMAGE_NAME} now matches ${README}."
 
   smoke-test:
     needs: [merge, merge-studio]

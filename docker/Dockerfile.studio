@@ -2,12 +2,12 @@
 # Published as unsloth/unsloth:studio (and default :latest); layers Studio on the
 # lean core image and runs Studio:8000, JupyterLab:8888, sshd:22.
 #
-# Build (local):
-#   docker buildx build --build-arg BASE_IMAGE=unsloth-blackwell:test \
-#     -f docker/Dockerfile.studio -t unsloth-blackwell:studio docker/
+# Build (local, on top of the published base or one built from docker/Dockerfile):
+#   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth:core \
+#     -f docker/Dockerfile.studio -t unsloth/unsloth:studio docker/
 # Run:
 #   docker run --rm --gpus all -p 8000:8000 -p 8888:8888 \
-#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth-blackwell:studio
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth/unsloth:studio
 #
 # Studio on :8000 (first-boot admin password in the logs, persisted under
 # /opt/unsloth-studio/auth/); JupyterLab on :8888 (JUPYTER_PASSWORD env, else a
@@ -15,7 +15,7 @@
 # training is unavailable but Studio chat / Data Recipes / GGUF / Jupyter work.
 # CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
 
-ARG BASE_IMAGE=unsloth-blackwell:test
+ARG BASE_IMAGE=unsloth/unsloth:core
 
 # Builds the "Unsloth Dark" (Monokai) theme + Colab-style cell-nav keymap. Node
 # lives only in this throwaway stage; the final image copies just the prebuilt
