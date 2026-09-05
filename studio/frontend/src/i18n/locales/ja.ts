@@ -1613,7 +1613,15 @@ export const ja = {
       revokeAction: '"{name}" を失効',
       revoking: "失効中...",
       usageNoModel:
-        "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
+        "このサーバーには利用できるチャットモデルがないため、この例では存在しないモデルを指定しています。Hub からチャットモデルをダウンロードすると、例にそのモデルが表示されます。",
+      usageModelNotLoaded:
+        "{model} は読み込まれていません。この例を実行する前に、上の「リクエストごとにモデルを切り替え」をオンにするか、チャットで読み込んでください。",
+      usageModelNotLoadedKeyless:
+        "{model} は読み込まれていません。この例を実行する前に、API キーを作成してこのリクエストで使用するか、チャットでモデルを読み込んでください。",
+      exampleModel: "モデル",
+      exampleModelFollow: "読み込み済みのモデルに追従",
+      exampleQuant: "量子化",
+      modelLoaded: "読み込み済み",
     },
     about: {
       title: "情報",

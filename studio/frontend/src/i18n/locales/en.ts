@@ -1591,7 +1591,15 @@ export const en = {
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
       usageNoModel:
-        "Load or download a model to see runnable examples. This server has no model to name yet.",
+        "This server has no chat model available, so this example names one it does not have. Download a chat model from the Hub and the example will name it.",
+      usageModelNotLoaded:
+        "{model} is not loaded. Turn on \"Switch model by request\" above, or load it in Chat, before running this example.",
+      usageModelNotLoadedKeyless:
+        "{model} is not loaded. Create an API key and use it in this request, or load the model in Chat, before running this example.",
+      exampleModel: "Model",
+      exampleModelFollow: "Follow the loaded model",
+      exampleQuant: "Quantization",
+      modelLoaded: "Loaded",
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",

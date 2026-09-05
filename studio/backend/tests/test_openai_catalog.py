@@ -427,6 +427,31 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
+    # Every on-disk quant of the repo is listed too, the resident one first.
+    assert ids["publisher/Qwen3"]["quants"] == ["Q8_0", "Q4_K_M"]
+
+
+def test_catalog_lists_every_on_disk_quant_per_repo(monkeypatch):
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    async def _fake_catalog():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(
+        resolver,
+        "local_servable_model",
+        lambda info: (True, ("UD-Q4_K_XL", "Q8_0")) if info.is_gguf else (False, ()),
+    )
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # `quant` stays the pin a client appends by default; `quants` names the alternatives.
+    assert ids["org/Foo"]["quant"] == "UD-Q4_K_XL"
+    assert ids["org/Foo"]["quants"] == ["UD-Q4_K_XL", "Q8_0"]
+    assert "quants" not in ids["Mistral-7B"]
 
 
 def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
@@ -490,3 +515,232 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
+
+
+def _resident_repo_catalog(
+    monkeypatch,
+    *,
+    on_disk,
+    resident = "Q8_0",
+):
+    """A llama backend loaded straight from an HF repo, so the scan row for that repo
+    meets a row the loaded pass already published under the same public id."""
+
+    class _RepoLlama(_FakeLlama):
+        model_identifier = "org/Foo"
+        hf_variant = resident
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _RepoLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: True)
+
+    async def _fake_catalog():
+        return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, tuple(on_disk)))
+
+
+def test_the_resident_repo_row_gains_the_other_on_disk_quants(monkeypatch):
+    # The loaded pass publishes org/Foo first, so the scan row for the same repo hits
+    # the already-listed branch. Without it the resident model is the one model whose
+    # alternative quants a client cannot see.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16", "Q4_K_M"))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["loaded"] is True
+    # The quant actually serving stays first; it is what a bare id resolves to.
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]
+
+
+def test_copies_that_disagree_advertise_no_quants(monkeypatch):
+    # Two scan rows can share one public id (an HF-cache repo also reachable through a
+    # custom scan folder). collect_local_models orders rows by updated_at while
+    # local_servable_index walks roots in a fixed order, so neither row is reliably the
+    # one resolve_local_gguf reaches. Advertising either copy's quants would hand out a
+    # repo:quant that 404s, so the listing offers none and keeps the single `quant`.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("Q4_K_M",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # Empty, not absent: a client must be able to tell this from an older server that
+    # never sent the field, where the singular `quant` is still the one pin to offer.
+    assert ids["org/Foo"]["quants"] == []
+    # The resident pin still resolves on its own, so it survives.
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+
+
+def test_copies_that_agree_still_advertise_their_quants(monkeypatch):
+    # Two rows for one id that report the same files are not ambiguous: whichever the
+    # resolver reaches serves the same quants, so the picker still gets them.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("BF16",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+
+
+def test_a_resident_model_with_no_other_quant_advertises_no_list(monkeypatch):
+    # An empty scan is not evidence of alternatives; `quant` alone must survive.
+    _resident_repo_catalog(monkeypatch, on_disk = ())
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert "quants" not in ids["org/Foo"]
+
+
+def test_a_cold_resolver_index_still_advertises_the_scanned_quants(monkeypatch):
+    # On the first request after a start, _quant_reference_resolves only warms the
+    # index and answers False, so the loaded row carries no quant. The scan has just
+    # read the files, so the resident variant among them is proof the pin resolves;
+    # without this the quant picker is missing for a whole poll interval.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q8_0", "BF16"))
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["loaded"] is True
+    assert ids["org/Foo"]["quant"] == "Q8_0"
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+
+
+def test_a_resident_quant_the_scan_cannot_see_is_not_advertised(monkeypatch):
+    # The dead-pin guard still holds: if the loaded variant is not among the files the
+    # scan found, nothing proves the pin resolves, so neither key is published.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",), resident = "Q8_0")
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert "quant" not in ids["org/Foo"]
+    assert "quants" not in ids["org/Foo"]
+
+
+def test_case_variant_copies_that_disagree_advertise_no_quants(monkeypatch):
+    # local_servable_index lowercases every alias, so `Org/Foo` and `org/Foo` are one
+    # entry to the resolver while both rows stay listed here. They report different
+    # files, so neither may name quants for the other's copy.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("Q2_K",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _case_variants():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/lmstudio/Org/Foo", "Foo", model_id = "Org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _case_variants)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # Both rows are still listed, exactly as before this field existed.
+    assert {"org/Foo", "Org/Foo"} <= set(ids)
+    assert ids["org/Foo"]["quants"] == []
+    assert ids["Org/Foo"]["quants"] == []
+
+
+def test_a_quant_spelled_two_ways_is_listed_once(monkeypatch):
+    # A user-loaded `q4_k_m` and the scanned `Q4_K_M` name one file; the resolver
+    # matches variants case-insensitively, so the picker must not offer both.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q4_K_M", "BF16"), resident = "q4_k_m")
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["q4_k_m", "BF16"]
+
+
+def test_copies_that_agree_apart_from_spelling_are_not_ambiguous(monkeypatch):
+    # Two copies holding the same files under different label casing agree; treating
+    # that as a conflict would drop a quant list both copies can serve.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16",), ("bf16",)]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16"]
+
+
+def test_a_stale_hf_variant_does_not_label_a_non_llama_resident(monkeypatch):
+    # hf_variant can outlive an unload. A model resident on the orchestrator under the
+    # same advertised id must not be labelled with the quant llama loaded earlier, or
+    # the panel calls `<id>:<quant>` already loaded and the request is rejected.
+    class _UnloadedLlama(_FakeLlama):
+        model_identifier = "org/Foo"
+        hf_variant = "Q8_0"
+
+        def __init__(self):
+            self.is_loaded = False
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _UnloadedLlama())
+
+    class _ResidentUnsloth(_FakeUnsloth):
+        active_model_name = "org/Foo"
+
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _ResidentUnsloth())
+    monkeypatch.setattr(inf, "_quant_reference_resolves", lambda model_id, quant: False)
+
+    async def _fake_catalog():
+        return [_Info("models--org--Foo", "Foo", model_id = "org/Foo")]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q8_0", "BF16")))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    row = ids.get("org/Foo", {})
+    # The scan's quants may be offered, but never as "the loaded one is Q8_0".
+    assert row.get("quant") != "Q8_0" or row.get("loaded") is not True
+
+
+def test_a_standalone_gguf_beside_a_repo_keeps_the_repo_quant_list(monkeypatch):
+    # The ./models drop-in shape: an HF-cache repo directory holding several quants, plus
+    # a loose .gguf that resolves to the same public id. A standalone file reports no
+    # variants by design (it loads by its own path, with no quant sub-selection), so it
+    # is not a competing opinion about what is on disk -- treating it as one cost the
+    # repo its whole quant picker.
+    _resident_repo_catalog(monkeypatch, on_disk = ("Q4_K_M",))
+    quant_sets = [("Q4_K_M", "BF16"), ()]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _dir_and_file():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/data/models/Foo.gguf", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _dir_and_file)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "Q4_K_M", "BF16"]
+
+
+def test_copies_that_agree_out_of_order_are_not_ambiguous(monkeypatch):
+    # Ambiguity is about WHICH quants exist, not the order a scan walked them in. Two
+    # copies reporting the same labels in different order agree, and every pin is valid
+    # against either, so the picker must keep its alternatives.
+    _resident_repo_catalog(monkeypatch, on_disk = ("BF16",))
+    quant_sets = [("BF16", "Q4_K_M"), ("Q4_K_M", "BF16")]
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, quant_sets.pop(0)))
+
+    async def _two_rows():
+        return [
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
+            _Info("/scan/org/Foo", "Foo", model_id = "org/Foo"),
+        ]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _two_rows)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    # Display order comes from the scan that published first.
+    assert ids["org/Foo"]["quants"] == ["Q8_0", "BF16", "Q4_K_M"]

@@ -1635,7 +1635,15 @@ export const ko = {
       revokeAction: '"{name}" 폐기',
       revoking: "폐기 중...",
       usageNoModel:
-        "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
+        "이 서버에는 사용할 수 있는 채팅 모델이 없어 이 예제는 서버에 없는 모델을 지정합니다. Hub에서 채팅 모델을 내려받으면 예제가 그 모델을 지정합니다.",
+      usageModelNotLoaded:
+        "{model}이(가) 로드되지 않았습니다. 이 예제를 실행하기 전에 위의 \"요청에 따라 모델 전환\"을 켜거나 채팅에서 로드하세요.",
+      usageModelNotLoadedKeyless:
+        "{model}이(가) 로드되지 않았습니다. 이 예제를 실행하기 전에 API 키를 만들어 이 요청에 사용하거나 채팅에서 모델을 로드하세요.",
+      exampleModel: "모델",
+      exampleModelFollow: "로드된 모델 따르기",
+      exampleQuant: "양자화",
+      modelLoaded: "로드됨",
     },
     about: {
       title: "정보",
