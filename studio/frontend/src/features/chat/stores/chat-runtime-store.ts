@@ -116,6 +116,7 @@ import {
   type ToolExecutionMode,
   type ToolIsolationCapability,
 } from "../tool-isolation";
+import { protectedIsolationDefaults } from "../utils/tool-isolation-defaults";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
@@ -5134,10 +5135,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             artifactsEnabled: false,
             mcpEnabledForChat: false,
             webFetchToolsEnabled: false,
-            bypassPermissions: false,
-            permissionMode,
-            confirmToolCalls:
-              permissionMode === "ask" || permissionMode === "auto",
+            // Deep Research leaves Full and Limited behind as one transition: the wire
+            // mode, the grant and the bypass flag all return to the persisted level, or
+            // the next code-enabled send would go out as Full under an "Approve" pill.
+            ...protectedIsolationDefaults(permissionMode),
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
         : {
@@ -5842,14 +5843,15 @@ if (import.meta.hot) {
 }
 
 function clearToolIsolationGrantForAuthSession(): void {
+  // Full and Limited are decisions of the signed-in person, so both end with the auth
+  // session: a different account signing in on this tab starts at the persisted level.
   useChatRuntimeStore.setState((state) => ({
     toolIsolationUiSessionId: createToolIsolationUiSessionId(),
-    limitedToolGrant: null,
-    toolExecutionMode:
-      state.toolExecutionMode === "limited"
-        ? ("os_isolation_required" as ToolExecutionMode)
-        : state.toolExecutionMode,
+    ...protectedIsolationDefaults(
+      threadScopedOverride("permissionMode") ?? loadPermissionMode(),
+    ),
     toolIsolationError: null,
+    queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
   }));
 }
 

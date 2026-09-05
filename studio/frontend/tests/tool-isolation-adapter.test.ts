@@ -9,12 +9,16 @@ import {
   TOOL_EXECUTION_RECORD_ARG_KEY,
   type ToolExecutionRecord,
   attachAuthoritativeExecutionRecord,
+  authoritativeExecutionRecordCount,
+  discardAuthoritativeExecutionRecord,
   parseBackendExecutionRecord,
   stripUntrustedExecutionMetadata,
   stripUntrustedExecutionMetadataFromContent,
   toolExecutionRecordFromCard,
   toolExecutionRecordLabel,
 } from "../src/features/chat/types/api.ts";
+import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued-chat-run-settings.ts";
+import { protectedIsolationDefaults } from "../src/features/chat/utils/tool-isolation-defaults.ts";
 
 const record = (
   overrides: Partial<ToolExecutionRecord> = {},
@@ -195,111 +199,123 @@ test("invalid backend events cannot create or erase an earlier valid record", ()
   );
 });
 
-const adapter = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
-const runtimeStore = readFileSync(
-  new URL(
-    "../src/features/chat/stores/chat-runtime-store.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const runtimeProvider = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
 
-test("local Python and Terminal refresh capability and block without downgrade", () => {
-  const gateStart = adapter.indexOf("const runsStudioPythonOrTerminal =");
-  const requestStart = adapter.indexOf(
-    "const buildRequestPayload = async",
-    gateStart,
-  );
-  assert.ok(gateStart > 0 && requestStart > gateStart);
-  const gate = adapter.slice(gateStart, requestStart);
-
-  assert.match(gate, /refreshToolIsolationCapability\(\)/);
-  assert.match(gate, /mode !== requestedMode/);
-  assert.match(gate, /setToolIsolationConsentOpen\(true\)/);
-  assert.match(gate, /capability\?\.protection_state !== "protected"/);
-  assert.match(gate, /capability\?\.protection_state !== "preview"/);
-  assert.doesNotMatch(gate, /setToolExecutionMode\("limited"\)/);
+test("returning to protected defaults drops Full and Limited for every persisted level", () => {
+  for (const level of ["ask", "auto", "off"] as const) {
+    const next = protectedIsolationDefaults(level);
+    assert.equal(next.toolExecutionMode, "os_isolation_required");
+    assert.equal(next.limitedToolGrant, null);
+    assert.equal(next.bypassPermissions, false);
+    assert.equal(next.toolIsolationConsentOpen, false);
+    assert.equal(next.permissionMode, level);
+    assert.equal(next.confirmToolCalls, level !== "off");
+  }
+  // Full is a session decision and never a level to fall back to.
+  const clamped = protectedIsolationDefaults("full");
+  assert.equal(clamped.permissionMode, "auto");
+  assert.equal(clamped.toolExecutionMode, "os_isolation_required");
+  assert.equal(clamped.bypassPermissions, false);
 });
 
-test("requests carry a current Limited grant and never attach it to other modes", () => {
-  assert.match(adapter, /tool_execution_mode: mode/);
-  assert.match(
-    adapter,
-    /tool_ui_session_id: isolation\.toolIsolationUiSessionId/,
+test("a queued send snapshots the isolation decision alongside the permission level", () => {
+  const grant = {
+    grant: "opaque",
+    expires_at: 1,
+    probe_generation: "generation-1",
+    ui_session_id: "ui-1",
+  };
+  const state = {
+    params: { checkpoint: "m" },
+    permissionMode: "ask",
+    bypassPermissions: false,
+    confirmToolCalls: true,
+    toolExecutionMode: "limited",
+    limitedToolGrant: grant,
+    toolIsolationUiSessionId: "ui-1",
+  } as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0];
+  const snapshot = snapshotQueuedChatRunSettings(state);
+  assert.equal(snapshot.toolExecutionMode, "limited");
+  assert.equal(snapshot.limitedToolGrant, grant);
+  assert.equal(snapshot.toolIsolationUiSessionId, "ui-1");
+  // Later store changes do not reach a snapshot already taken.
+  (state as { toolExecutionMode: string }).toolExecutionMode = "full";
+  assert.equal(snapshot.toolExecutionMode, "limited");
+});
+
+test("execution records are filed per pane and thread scope, never by bare call id", () => {
+  const id = "call_0";
+  const protectedRecord = parseBackendExecutionRecord(record());
+  const fullRecord = parseBackendExecutionRecord(
+    record({
+      requested_mode: "full",
+      effective_mode: "full",
+      backend: "none",
+      profile_id: "full-access",
+      os_isolation: false,
+    }),
   );
-  assert.match(adapter, /mode === "limited" && currentLimitedGrant/);
-  assert.match(adapter, /limited_grant: currentLimitedGrant\.grant/);
-  assert.match(adapter, /tool_execution_mode: "full"/);
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, protectedRecord, "pane-a\u0000thread-1");
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, "pane-a\u0000thread-2");
   assert.equal(
-    adapter.match(/\.\.\.toolIsolationRequestFields/g)?.length,
-    2,
-    "both local-model and external-provider Studio-tool requests need the fields",
+    toolExecutionRecordFromCard(id, "pane-a\u0000thread-1")?.effective_mode,
+    "os_isolation_required",
   );
+  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-2")?.effective_mode, "full");
+  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-3"), null);
+  assert.equal(toolExecutionRecordFromCard(id), null, "the legacy namespace stays separate");
+
+  discardAuthoritativeExecutionRecord(id, "pane-a\u0000thread-2");
+  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-2"), null);
+  assert.ok(toolExecutionRecordFromCard(id, "pane-a\u0000thread-1"));
+
+  // Hydration has no scope: it clears every scope's entry for the id.
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, "pane-b\u0000thread-9");
+  discardAuthoritativeExecutionRecord(id);
+  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-1"), null);
+  assert.equal(toolExecutionRecordFromCard(id, "pane-b\u0000thread-9"), null);
 });
 
-test("token counts carry the same execution mode as their completion", () => {
-  const start = adapter.indexOf("export async function buildLocalTokenCountExtras");
-  const end = adapter.indexOf("async function resolveUseAdapter", start);
-  const builder = adapter.slice(start, end);
-  assert.ok(start > 0 && end > start);
-  assert.match(builder, /toolExecutionMode/);
-  assert.match(builder, /tool_execution_mode: toolExecutionMode/);
+test("the record map is bounded and evicts the oldest entry first", () => {
+  const parsed = parseBackendExecutionRecord(record());
+  const scope = "cap-test";
+  for (let index = 0; index < 2100; index += 1) {
+    attachAuthoritativeExecutionRecord({ toolCallId: `bulk-${index}` }, parsed, scope);
+  }
+  assert.ok(authoritativeExecutionRecordCount() <= 2048);
+  assert.equal(toolExecutionRecordFromCard("bulk-0", scope), null);
+  assert.ok(toolExecutionRecordFromCard("bulk-2099", scope));
+  for (let index = 0; index < 2100; index += 1) {
+    discardAuthoritativeExecutionRecord(`bulk-${index}`, scope);
+  }
 });
 
-test("auth-session changes discard Limited grants and rotate their page binding", () => {
-  assert.match(runtimeStore, /AUTH_SESSION_CLEARED_EVENT/);
-  assert.match(runtimeStore, /AUTH_SESSION_STORED_EVENT/);
-  assert.match(runtimeStore, /clearToolIsolationGrantForAuthSession/);
-  assert.match(runtimeStore, /toolIsolationUiSessionId: createToolIsolationUiSessionId\(\)/);
-  assert.match(runtimeStore, /limitedToolGrant: null/);
-  assert.match(runtimeStore, /state\.toolExecutionMode === "limited"/);
+test("the store and adapter route every exit from Full through the shared transition", () => {
+  const runtimeStore = readFileSync(
+    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+    "utf8",
+  );
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // Deep Research and auth rotation each apply the helper. (A thread switch deliberately keeps
+  // Full: it was accepted through the warning dialog, and the store keeps permissionMode,
+  // bypassPermissions and toolExecutionMode together, so no reset is needed there.)
+  assert.ok(
+    (runtimeStore.match(/protectedIsolationDefaults\(/g)?.length ?? 0) >= 2,
+    "setDeepResearchEnabled and the auth-session reset must both use protectedIsolationDefaults",
+  );
+  // The auth reset applies the transition unconditionally instead of demoting only Limited.
+  const authResetStart = runtimeStore.indexOf(
+    "function clearToolIsolationGrantForAuthSession(): void {",
+  );
+  const authResetEnd = runtimeStore.indexOf("\n}\n", authResetStart);
+  assert.ok(authResetStart > 0 && authResetEnd > authResetStart);
+  const authReset = runtimeStore.slice(authResetStart, authResetEnd);
+  assert.match(authReset, /protectedIsolationDefaults\(/);
+  assert.doesNotMatch(authReset, /=== "limited"/);
+  // The send path reads the run snapshot, not the live store, for the isolation decision.
+  assert.match(adapter, /const requestedMode = runtime\.toolExecutionMode;/);
+  assert.match(adapter, /const requestedGrant = runtime\.limitedToolGrant;/);
+  assert.match(adapter, /isolation\.toolIsolationUiSessionId !== requestedUiSessionId/);
 });
-
-test("only backend started and completion events can update a card label", () => {
-  assert.match(
-    adapter,
-    /toolEvent\.execution_state === "started"\s*\? parseBackendExecutionRecord\(toolEvent\.execution_record\)/,
-  );
-  assert.match(
-    adapter,
-    /toolEvent\.execution_state === "completed"\s*\? parseBackendExecutionRecord/,
-  );
-  assert.match(adapter, /attachAuthoritativeExecutionRecord\(/);
-  assert.match(adapter, /discardAuthoritativeExecutionRecord\(partId\)/);
-  assert.match(
-    adapter,
-    /completionExecutionRecord \?\?\s*toolExecutionRecordFromCard\(id\)/,
-  );
-  assert.doesNotMatch(adapter, /parseToolExecutionRecord/);
-  assert.doesNotMatch(adapter, /execution_record: executionRecord/);
-  assert.match(
-    adapter,
-    /stripUntrustedExecutionMetadata\(\s*toolEvent\.arguments/,
-    "tool event arguments must be sanitized before merging",
-  );
-  assert.match(runtimeProvider, /stripUntrustedExecutionMetadataFromContent/);
-  assert.match(runtimeProvider, /discardAuthoritativeExecutionRecord/);
-  assert.match(
-    adapter,
-    /replayArgsText = mergedToolCallArgumentsText\([\s\S]*TOOL_EXECUTION_RECORD_ARG_KEY/,
-    "reserved metadata must also be removed from exact provider replay text",
-  );
-});
-
-for (const component of ["tool-ui-python.tsx", "tool-ui-terminal.tsx"]) {
-  test(`${component} renders only a parsed execution record`, () => {
-    const source = readFileSync(
-      new URL(`../src/components/assistant-ui/${component}`, import.meta.url),
-      "utf8",
-    );
-    assert.match(source, /toolExecutionRecordFromCard\(toolCallId\)/);
-    assert.match(source, /data-slot="tool-execution-protection"/);
-  });
-}

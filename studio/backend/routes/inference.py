@@ -3089,6 +3089,7 @@ from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
     require_ui_session_for_local_commands,
+    UI_ONLY_ACTION_DETAIL,
 )
 from state import active_generations
 
@@ -15928,7 +15929,7 @@ def get_tool_isolation_capability(
     current_subject: str = Depends(get_current_subject),
     via_api_key: _ToolIsolationViaApiKey = False,
 ):
-    require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
     return _read_tool_isolation_capability(force = True)
 
 
@@ -15940,7 +15941,7 @@ def create_tool_isolation_limited_grant(
     current_subject: str = Depends(get_current_subject),
     via_api_key: _ToolIsolationViaApiKey = False,
 ):
-    require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
     snapshot = _read_tool_isolation_capability(force = True)
     if request.probe_generation != snapshot.probe_generation:
         raise HTTPException(

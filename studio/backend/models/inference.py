@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from collections import deque
@@ -1937,8 +1938,36 @@ def _normalize_permission_mode(value: Any) -> Any:
     return value
 
 
+_TOOL_EXECUTION_MODE_OMISSION_LOGGED = False
+
+
 def _normalize_tool_execution_mode(value: Any) -> Any:
     return "os_isolation_required" if value is None else value
+
+
+def _note_omitted_tool_execution_mode(request: Any) -> None:
+    """Say once per process that a tools-enabled request left the mode to the default.
+
+    A client written before OS isolation existed sends no tool_execution_mode, so
+    its Python and Terminal calls now require a qualified OS sandbox. That is the
+    intended default; the notice is for an operator reading logs after an old
+    script's tool calls started failing closed.
+    """
+    global _TOOL_EXECUTION_MODE_OMISSION_LOGGED
+    if _TOOL_EXECUTION_MODE_OMISSION_LOGGED:
+        return
+    if "tool_execution_mode" in request.model_fields_set:
+        return
+    if getattr(request, "tool_execution_mode", None) == "full":
+        return  # legacy bypass callers already chose the explicit opt-out
+    if not (getattr(request, "enable_tools", None) or getattr(request, "tools", None)):
+        return
+    _TOOL_EXECUTION_MODE_OMISSION_LOGGED = True
+    logging.getLogger(__name__).warning(
+        "A tools-enabled request omitted tool_execution_mode; defaulting to "
+        "os_isolation_required, so Python and Terminal need a qualified OS sandbox. "
+        "Clients that accept running without OS isolation must send permission_mode \"full\"."
+    )
 
 
 class ChatCompletionRequest(BaseModel):
@@ -2598,6 +2627,7 @@ class ChatCompletionRequest(BaseModel):
             # auto selection needs no stream) instead of an explicit-confirm forcing
             # stream=true. The mode still drives the loop's per-call gate.
             self.confirm_tool_calls = True
+        _note_omitted_tool_execution_mode(self)
         return self
 
 
@@ -2729,6 +2759,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             # pre-permission-mode way of asking for "ask", and the loop's retrieval
             # gate turns on that. No provider clause -- this endpoint is local only.
             self.permission_mode = "ask"
+        _note_omitted_tool_execution_mode(self)
         return self
 
 
@@ -3193,6 +3224,7 @@ class ResponsesRequest(BaseModel):
             self.permission_mode = "full"
             self.bypass_permissions = True
             self.tool_execution_mode = "full"
+        _note_omitted_tool_execution_mode(self)
         return self
 
 
@@ -3661,6 +3693,7 @@ class AnthropicMessagesRequest(BaseModel):
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
+        _note_omitted_tool_execution_mode(self)
         return self
 
 

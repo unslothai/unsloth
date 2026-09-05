@@ -80,6 +80,7 @@ export {
   toolThreadScope,
   useToolOutputFor,
   useUnresolvedToolPaneScope,
+  useToolExecutionRecordFor,
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";

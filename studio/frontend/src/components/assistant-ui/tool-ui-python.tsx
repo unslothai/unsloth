@@ -14,6 +14,7 @@ import {
   useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
+  useToolExecutionRecordFor,
   useToolPaneScope,
 } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
@@ -25,7 +26,6 @@ import { pythonToolImagePath } from "./python-tool-image-path";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { toolArgText } from "./tool-arg-text";
 import {
-  toolExecutionRecordFromCard,
   toolExecutionRecordLabel,
 } from "@/features/chat/types/api";
 import {
@@ -149,7 +149,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const code = toolArgText((args as { code?: unknown })?.code);
   const executionLabel = toolExecutionRecordLabel(
-    toolExecutionRecordFromCard(toolCallId),
+    useToolExecutionRecordFor(toolCallId),
   );
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";

@@ -16363,6 +16363,31 @@ def _created_file_sentinels(
     return out
 
 
+# One process-wide notice: API clients written before OS isolation existed send no
+# tool_execution_mode, and on a host without a qualified backend their tool calls now
+# fail closed. The request models record the omission; the launch path reports it once.
+_LEGACY_MODE_NOTICE_LOGGED = False
+_API_OPT_OUT_HINT = (
+    "API clients that accept running without OS isolation must say so explicitly with "
+    "permission_mode \"full\" (or bypass_permissions true); an omitted tool_execution_mode "
+    "means OS isolation is required."
+)
+
+
+def _tool_failure_message(exc: BaseException) -> str:
+    """The string a failed tool call hands back to the model."""
+    message = f"Execution error: {exc}"
+    if isinstance(exc, SandboxUnavailableError) and "OS_ISOLATION_UNAVAILABLE" in message:
+        global _LEGACY_MODE_NOTICE_LOGGED
+        if not _LEGACY_MODE_NOTICE_LOGGED:
+            _LEGACY_MODE_NOTICE_LOGGED = True
+            logger.warning(
+                "Python/Terminal tool refused: %s. %s", str(exc)[:300], _API_OPT_OUT_HINT
+            )
+        message = f"{message} {_API_OPT_OUT_HINT}"
+    return message
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16607,7 +16632,7 @@ def _python_exec(
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped
         # like the result would have been.
-        return _truncate(f"Execution error: {e}")
+        return _truncate(_tool_failure_message(e))
     finally:
         _call_finished(call_token)
         if _scratch_name:
@@ -16828,7 +16853,7 @@ def _bash_exec(
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped
         # like the result would have been.
-        return _truncate(f"Execution error: {e}")
+        return _truncate(_tool_failure_message(e))
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
