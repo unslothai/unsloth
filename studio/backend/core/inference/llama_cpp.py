@@ -8715,17 +8715,27 @@ class LlamaCppBackend:
             return None
 
     @staticmethod
-    def _unified_memory_would_help(gpu_indices = None) -> bool:
-        """Whether managed allocation is the larger pool for the selected APUs.
+    def _unified_memory_would_help(gpu_indices = None, need_bytes = None) -> bool:
+        """Whether managed allocation is worth taking for the selected APUs.
 
-        On HIP it draws host RAM instead of the selected APUs' carve-outs, so the
-        decision is a direct comparison of the two pools. Available host RAM against
-        the carve-out's TOTAL is deliberate: a carve-out another process is holding
-        is not credited back to the host side, because the two pools fail
-        differently. Over-asking the carve-out returns hipErrorOutOfMemory and the
+        Two conditions, both required. On HIP it draws host RAM instead of the
+        selected APUs' carve-outs, so it pays only when host RAM is the larger
+        pool: available host RAM against the carve-out's TOTAL, deliberately,
+        because a carve-out another process is holding is not credited back to the
+        host side. Over-asking the carve-out returns hipErrorOutOfMemory and the
         load fails cleanly, while over-asking host RAM is the OOM kill this gate
-        exists to stop, so both halves of the asymmetry lean toward the pool a miss
-        is recoverable in. Missing data and mixed-device selections fail closed.
+        exists to stop.
+
+        And the weights must not fit the carve-out on their own. Managed pages are
+        a measured correctness risk on Linux ROCm: Qwen3.8-Flash-Next faults in
+        k_set_rows on gfx1151 with the variable set and is clean without it, on
+        b10715 and b10798 alike, while the same builds are clean on Windows and on
+        Vulkan (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330). So the swap is
+        taken only when the alternative is a load the carve-out cannot hold.
+        need_bytes is what a forced full offload puts on the device; the caller
+        passes None when the fitter or an explicit partial placement owns the
+        layer count, because a load that spills to the CPU fits without managed
+        pages. None fails closed, as do missing data and mixed-device selections.
         """
         try:
             pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
@@ -8734,7 +8744,11 @@ class LlamaCppBackend:
             host_mib = LlamaCppBackend._available_system_memory_mib()
             if not host_mib:
                 return False
-            return int(host_mib) > int(pool_mib)
+            if int(host_mib) <= int(pool_mib):
+                return False
+            if need_bytes is None:
+                return False
+            return int(need_bytes) > int(pool_mib) * 1024 * 1024
         except Exception:
             return False
 
@@ -8876,6 +8890,33 @@ class LlamaCppBackend:
             return str(value).strip().lower() in LlamaCppBackend._UNIFIED_MEMORY_OFF
         except Exception:
             return False
+
+    @staticmethod
+    def _unified_memory_opted_in(env = None) -> bool:
+        """True when UNSLOTH_ENABLE_UNIFIED_MEMORY=1 asks for managed allocation on a
+        selected APU even though the weights fit its carve-out. Exact "1", like the
+        disable switch, which wins when both are set. Fails closed (False)."""
+        try:
+            source = os.environ if env is None else env
+            return str(source.get("UNSLOTH_ENABLE_UNIFIED_MEMORY", "")).strip() == "1"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _unified_memory_for_launch(
+        gpu_indices,
+        need_bytes,
+        *,
+        opted_in = False,
+    ) -> bool:
+        """The launch-time decision behind GGML_CUDA_ENABLE_UNIFIED_MEMORY: the opt-in
+        takes it when every selected device is a unified-memory APU, otherwise only
+        when it pays and is needed (_unified_memory_would_help). The setting is
+        process-wide and hurts discrete cards, so a mixed selection answers False
+        on both routes."""
+        if opted_in and LlamaCppBackend._rocm_selected_pool_mib(gpu_indices) is not None:
+            return True
+        return LlamaCppBackend._unified_memory_would_help(gpu_indices, need_bytes = need_bytes)
 
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
@@ -10319,6 +10360,52 @@ class LlamaCppBackend:
         # -1 means every layer; otherwise the count must exceed the block count.
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
+
+    def _launch_forces_full_offload(
+        self,
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether the child puts every layer on a GPU whatever the fitter says.
+
+        ``_argv_offloads_every_layer`` defers to an active fitter, which is right
+        for crediting VRAM: the fitter may lower llama.cpp's default ``-1``. It
+        cannot lower a count the user fixed (common/fit.cpp throws "n_gpu_layers
+        already set by user" and the caller downgrades it to a warning, see
+        ``_env_fixes_gpu_layers``), so a concrete count above the block count, or an
+        inherited LLAMA_ARG_N_GPU_LAYERS that says so, is a forced full offload even
+        under ``--fit on``. So is no count at all once the fitter is off: llama.cpp's
+        default is ``-1``, every layer, and nothing is left to lower it. An unknown
+        block count for a concrete count, or CPU placement, answers False.
+        """
+        args = [str(a) for a in argv or ()]
+        if self._argv_offloads_every_layer(args, env):
+            return True
+        if _device_selection_is_cpu(args, env):
+            return False
+        if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        if requested is None and env and _env_fixes_gpu_layers(env):
+            raw = str(env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
+            if raw == "all":
+                return True
+            try:
+                requested = int(raw)
+            except ValueError:
+                return False
+        if requested is None:
+            # No count anywhere: the default -1 stands, so only an active fitter
+            # can make this anything but a full offload.
+            return not fit_is_effectively_on(args, env)
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        # -1 is the default the fitter is free to lower; a concrete count stands.
+        return requested > n_layers
 
     @staticmethod
     def _rows_the_child_can_reach(detected_gpus, pinned_ids) -> list:
@@ -19042,6 +19129,7 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                _mtp_will_engage = False  # set in the fit try; read by the unified-memory price
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -22817,6 +22905,30 @@ class LlamaCppBackend:
                 # preserve inherited values.
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
+                _unified_opt_in = self._unified_memory_opted_in(env)
+
+                # Price only what a forced full offload puts on the device. With the
+                # fitter or an explicit partial placement owning the layer count, the
+                # load fits by spilling, so the whole-file size would overstate the
+                # need and take managed pages for a launch the carve-out holds.
+                def _unified_need_now():
+                    """Bytes a forced full offload puts on the device, or None."""
+                    if model_size is None or not self._launch_forces_full_offload(cmd, env):
+                        return None
+                    need = int(model_size)
+                    # Trailing NextN/MTP blocks stay unloaded unless a draft engages
+                    # (offload_layout: an -ot naming them moves nothing), but
+                    # model_size counts them, and a base that fits its carve-out
+                    # must not take managed pages on their account. A table that
+                    # cannot be read cannot price them, so it does not take them.
+                    if not _mtp_will_engage and self._nextn_predict_layers:
+                        layout = self._tensor_spill_layout(model_path)
+                        if layout is None:
+                            return None
+                        need -= int(layout.excluded_block_bytes or 0)
+                    return need
+
+                _unified_need = _unified_need_now()
                 if _unified_opt_out:
                     # ggml tests presence, so passing a user's "0" through would
                     # ENABLE what they turned off (#8651). Only absence is off.
@@ -22824,12 +22936,16 @@ class LlamaCppBackend:
                         logger.info(
                             "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
                         )
-                elif not is_vulkan_backend and self._unified_memory_would_help(gpu_indices):
+                elif not is_vulkan_backend and self._unified_memory_for_launch(
+                    gpu_indices, _unified_need, opted_in = _unified_opt_in
+                ):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info(
-                        "AMD unified-memory APU whose carve-out is smaller than host "
-                        "RAM: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                        "AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 (%s)",
+                        "UNSLOTH_ENABLE_UNIFIED_MEMORY=1"
+                        if _unified_opt_in
+                        else "the weights outgrow the carve-out and host RAM is the larger pool",
                     )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
@@ -22981,7 +23097,9 @@ class LlamaCppBackend:
                         self._clear_split_placement_env(env)
                         # The setting is process-wide, so recompute it after changing
                         # the selected devices. Ownership protects inherited values.
-                        _survivors_gain_unified = self._unified_memory_would_help(_survivors)
+                        _survivors_gain_unified = self._unified_memory_for_launch(
+                            _survivors, _unified_need_now(), opted_in = _unified_opt_in
+                        )
                         if _unified_env_applied and not _survivors_gain_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
@@ -22999,7 +23117,7 @@ class LlamaCppBackend:
                             _unified_env_applied = True
                             logger.info(
                                 "Arch gate narrowed the launch onto a unified-memory "
-                                "APU whose carve-out is smaller than host RAM; set "
+                                "APU the weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1."
                             )
                         self._emit_child_gpu_visibility(
@@ -23824,7 +23942,9 @@ class LlamaCppBackend:
                         # APU presence controls the RAM guard; relative pool sizes
                         # determine whether managed allocations help.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
-                        _retry_unified_helps = self._unified_memory_would_help(_remaining)
+                        _retry_unified_helps = self._unified_memory_for_launch(
+                            _remaining, _unified_need_now(), opted_in = _unified_opt_in
+                        )
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU
                         # whose shared-pool "free memory" outranked the dGPU, warns that
@@ -23901,8 +24021,8 @@ class LlamaCppBackend:
                             env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
                             _unified_env_applied = True
                             logger.info(
-                                "Arch-crash retry targets a unified-memory APU whose "
-                                "carve-out is smaller than host RAM; set "
+                                "Arch-crash retry targets a unified-memory APU the "
+                                "weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
                         self._emit_child_gpu_visibility(

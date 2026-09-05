@@ -1144,7 +1144,7 @@ class TestArchCrashRetryEnv:
         )
         return _fake_torch(
             [
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1151", free_mib = 40000, total_bytes = 8 * GIB, is_integrated = 1),
                 _device("gfx1030", free_mib = 12049),
             ],
             vendor = "amd",
@@ -1164,6 +1164,7 @@ class TestArchCrashRetryEnv:
             None,  # no marker: the proactive gate fails open, so the crash path runs
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
+            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out without moving the placement
         )
         # The APU is pinned first, so the crashed spawn carries the env and the
         # respawns are masked onto the discrete card. The unrelated --fit off retry
@@ -1715,6 +1716,7 @@ class TestGatedNarrowingDropsUnifiedMemory:
             ["gfx1151"],  # covers the APU, not the gfx1200 dGPU
             returncode = None,
             model_bytes = 400 * 1024**3,
+            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},  # the fitter owns the layers
         )
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
@@ -1911,7 +1913,7 @@ class TestArchCrashRetryOntoAnApu:
         return _fake_torch(
             [
                 _device("gfx1030", free_mib = 40000),
-                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+                _device("gfx1151", free_mib = 12000, total_bytes = 8 * GIB, is_integrated = 1),
             ],
             vendor = "amd",
         )
@@ -1925,6 +1927,7 @@ class TestArchCrashRetryOntoAnApu:
             None,  # no marker: the proactive gate fails open, so the crash path runs
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
+            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out without moving the placement
         )
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in launches[0][1]
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
@@ -1957,7 +1960,14 @@ class TestUnifiedMemoryOptOut:
         tmp_path,
         monkeypatch,
         env_extra = None,
+        model_bytes = 40 * GIB,  # outgrows the fake 32 GiB carve-out
+        backend = None,
     ):
+        # A forced full offload (manual mode at the picker's maximum, above the
+        # block count) is the launch that can only fit with managed pages; under
+        # the fitter the file would spill instead and never ask for them.
+        backend = backend or LlamaCppBackend()
+        backend._n_layers = 8
         return _run_auto_load(
             monkeypatch,
             tmp_path,
@@ -1965,12 +1975,175 @@ class TestUnifiedMemoryOptOut:
             None,
             returncode = None,
             env_extra = env_extra,
+            model_bytes = model_bytes,
+            backend = backend,
+            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
         )
 
-    def test_the_apu_still_gets_it_by_default(self, tmp_path, monkeypatch, probe_env):
-        """Baseline: #5301 added the variable for exactly this hardware."""
+    def test_a_forced_full_offload_that_outgrows_the_carve_out_gets_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Baseline: #5301 added the variable for exactly this hardware, for the
+        load its carve-out cannot hold any other way."""
         _cmd, env = self._load(tmp_path, monkeypatch)[0]
+        assert "--gpu-layers" in _cmd and _cmd[_cmd.index("--gpu-layers") + 1] == "9"
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_weights_that_fit_the_carve_out_keep_it_unset(self, tmp_path, monkeypatch, probe_env):
+        """Managed pages fault Qwen3.8-Flash-Next on Linux gfx1151 (b10715 and b10798,
+        clean with the variable unset), so a load the carve-out holds never takes them."""
+        _cmd, env = self._load(tmp_path, monkeypatch, model_bytes = 20 * GIB)[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_enable_switch_takes_it_for_a_fitting_model(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, model_bytes = 20 * GIB
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_manual_partial_placement_never_takes_it(self, tmp_path, monkeypatch, probe_env):
+        """The whole file outgrows the carve-out, but only one layer is going to
+        the device, so the launch fits without managed pages."""
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._strix_halo(monkeypatch),
+            None,
+            returncode = None,
+            model_bytes = 400 * GIB,
+            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 1},
+        )
+        _cmd, env = launches[0]
+        assert "--gpu-layers" in _cmd and _cmd[_cmd.index("--gpu-layers") + 1] == "1"
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_fitter_owning_the_layer_count_never_takes_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """A file the carve-out cannot hold spills under --fit on and fits that way."""
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._strix_halo(monkeypatch),
+            None,
+            returncode = None,
+            model_bytes = 400 * GIB,
+        )
+        _cmd, env = launches[0]
+        assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def _auto_mode_with(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        extra_args = None,
+        env_extra = None,
+    ):
+        """Auto mode keeps --fit on for an oversized file; a user-fixed layer
+        count is what decides whether the fitter can still spill it."""
+        backend = LlamaCppBackend()
+        backend._n_layers = 8
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._strix_halo(monkeypatch),
+            None,
+            returncode = None,
+            model_bytes = 40 * GIB,
+            backend = backend,
+            intent_kwargs = {"extra_args": list(extra_args or [])},
+            env_extra = env_extra,
+        )[0]
+
+    def test_a_user_count_above_the_block_count_stands_under_the_fitter(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """llama.cpp's fitter refuses to lower a count the user set, so this is
+        a forced full offload even with --fit on."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "9"])
+        assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_an_inherited_count_above_the_block_count_stands_too(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._auto_mode_with(
+            tmp_path, monkeypatch, env_extra = {"LLAMA_ARG_N_GPU_LAYERS": "9"}
+        )
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_user_minus_one_still_leaves_the_fitter_in_charge(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """-1 is llama.cpp's default, which the fitter may lower, so the file spills."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["-ngl", "-1"])
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_a_user_fit_off_with_no_count_is_a_full_offload(self, tmp_path, monkeypatch, probe_env):
+        """Auto mode emits no count on the fitting path; a trailing --fit off
+        leaves llama.cpp's default -1 with nothing to lower it."""
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--fit", "off"])
+        assert "--gpu-layers" not in _cmd and "-ngl" not in _cmd
+        assert _cmd[len(_cmd) - 1 - _cmd[::-1].index("--fit") + 1] == "off"
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_user_fit_off_with_a_partial_count_is_not(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._auto_mode_with(
+            tmp_path, monkeypatch, extra_args = ["--fit", "off", "--gpu-layers", "4"]
+        )
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_a_user_count_below_the_block_count_never_takes_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "4"])
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def _with_unloaded_mtp_blocks(self, excluded_bytes):
+        """A NextN GGUF with no draft engaged: the trailing blocks are counted in
+        the file size but never loaded."""
+        backend = LlamaCppBackend()
+        backend._nextn_predict_layers = 1
+        backend._tensor_spill_layout = lambda _path: (
+            None
+            if excluded_bytes is None
+            else types.SimpleNamespace(excluded_block_bytes = excluded_bytes)
+        )
+        return backend
+
+    def test_unloaded_mtp_blocks_are_not_priced(self, tmp_path, monkeypatch, probe_env):
+        """40 GiB file, 10 GiB of it trailing MTP blocks: the 30 GiB base fits."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(10 * GIB)
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_unloaded_mtp_blocks_still_leave_an_oversized_base(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(4 * GIB)
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_an_unreadable_tensor_table_cannot_price_the_blocks(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Unpriced is not "take it": the unsafe direction is the measured fault."""
+        _cmd, env = self._load(tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(None))[
+            0
+        ]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_the_disable_switch_beats_the_enable_switch(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(
+            tmp_path,
+            monkeypatch,
+            {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1", "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     @pytest.mark.parametrize("value", ["0", "", "false", "FALSE", "no", "off", " 0 "])
     def test_a_falsy_user_value_is_not_passed_through(
@@ -2954,9 +3127,21 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         monkeypatch,
         torch,
         env_extra = None,
+        model_bytes = 40 * GIB,  # outgrows every carve-out below
     ):
+        # Forced full offload, so the carve-out is the only thing that can decide.
+        backend = LlamaCppBackend()
+        backend._n_layers = 8
         return _run_auto_load(
-            monkeypatch, tmp_path, torch, None, returncode = None, env_extra = env_extra
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            env_extra = env_extra,
+            model_bytes = model_bytes,
+            backend = backend,
+            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
         )
 
     def test_a_small_carve_out_gets_it(self, tmp_path, monkeypatch, probe_env):
@@ -3001,6 +3186,26 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             vendor = "amd",
         )
 
+    def test_the_enable_switch_cannot_reach_a_mixed_selection(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        torch = self._apu_and_dgpu(monkeypatch, 40_000)
+        _cmd, env = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            intent_kwargs = {
+                "gpu_ids": (0, 1),
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 1,
+            },
+            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
+        )[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0,1", "CUDA_VISIBLE_DEVICES": "0,1"}
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
     def test_a_discrete_card_in_the_launch_keeps_it_off(self, tmp_path, monkeypatch, probe_env):
         torch = self._apu_and_dgpu(monkeypatch, 40_000)
         _cmd, env = _run_auto_load(
@@ -3029,6 +3234,9 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             ["gfx1151"],  # covers the APU, not the discrete gfx1100
             returncode = None,
             model_bytes = 400 * GIB,
+            # The fitter owns the layer count for a file this size, so the swap
+            # is asked for; the narrowing is what is under test.
+            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
         )
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
