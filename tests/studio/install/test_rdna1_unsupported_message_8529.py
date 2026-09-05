@@ -161,9 +161,13 @@ class TestUnsupportedNameLookup:
 # ── The Windows WMI path end to end ──────────────────────────────────────────
 
 
-def _wmi_detect(names):
+def _wmi_detect(names, arm64 = False):
     """Drive _detect_windows_gfx_arch over `names` with no hipinfo and no amd-smi,
-    which is the reporter's host: Adrenalin driver only. Returns (arch, stdout)."""
+    which is the reporter's host: Adrenalin driver only. Returns (arch, stdout).
+
+    `arm64` is the host the advice is being written for. Pinned here rather than read
+    from the box running the tests, because the machine predicate is right to answer
+    True on an ARM64 dev box and the reporter's box is x64."""
     ps_result = MagicMock()
     ps_result.returncode = 0
     amd = [n for n in names if re.search(r"AMD|Radeon", n, re.IGNORECASE)]
@@ -190,7 +194,8 @@ def _wmi_detect(names):
             with patch("shutil.which", return_value = None):
                 with patch("os.path.isfile", return_value = False):
                     with patch("subprocess.run", side_effect = _run):
-                        result = stack_mod._detect_windows_gfx_arch()
+                        with patch.object(stack_mod, "_is_windows_arm64", return_value = arm64):
+                            result = stack_mod._detect_windows_gfx_arch()
     return result, buf.getvalue()
 
 
@@ -308,8 +313,7 @@ class TestPythonStackWindowsArm64:
     ARM64 throw applies to it: setup.ps1 rejects the variable there."""
 
     def test_arm64_gets_a_source_build_note_instead_of_the_setter(self):
-        with patch.object(stack_mod, "_is_windows_arm64", return_value = True):
-            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"], arm64 = True)
         assert "gfx1010" in out, "the card is still named"
         assert (
             "UNSLOTH_LLAMA_CPP_BACKEND" not in out
@@ -318,29 +322,44 @@ class TestPythonStackWindowsArm64:
 
     def test_x64_still_gets_the_setter(self):
         """Positive control: the guard must not silence the advice everywhere."""
-        with patch.object(stack_mod, "_is_windows_arm64", return_value = False):
-            _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert "UNSLOTH_LLAMA_CPP_BACKEND" in out
 
     @pytest.mark.parametrize(
-        "env,expected",
+        "registry,env,expected",
         [
-            ({"PROCESSOR_ARCHITECTURE": "ARM64"}, True),
-            ({"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": "ARM64"}, True),
-            ({"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": ""}, False),
+            ("ARM64", {"PROCESSOR_ARCHITECTURE": "ARM64"}, True),
+            # What x64 emulation on an ARM64 box really looks like: the process copy says
+            # AMD64, ARCHITEW6432 is unset (a WOW64-only variable), platform.machine()
+            # follows the process. Only the machine-scope registry value tells the truth.
+            ("ARM64", {"PROCESSOR_ARCHITECTURE": "AMD64"}, True),
+            # ARCHITEW6432 still counts on the builds that do set it.
+            ("", {"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": "ARM64"}, True),
+            ("AMD64", {"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": ""}, False),
+            # Unreadable registry falls back to the per-process signals, not to True.
+            ("", {"PROCESSOR_ARCHITECTURE": "AMD64"}, False),
         ],
-        ids = ["native-arm64", "emulated-x64-on-arm64", "real-x64"],
+        ids = [
+            "native-arm64",
+            "emulated-x64-on-arm64",
+            "architew6432-set",
+            "real-x64",
+            "no-registry-x64",
+        ],
     )
-    def test_the_arch_probe_reads_the_machine_not_the_process(self, env, expected):
+    def test_the_arch_probe_reads_the_machine_not_the_process(self, registry, env, expected):
         """PROCESSOR_ARCHITECTURE describes the PROCESS, so an emulated x64 Python on an
-        ARM64 box reports AMD64; ARCHITEW6432 is ARM64 in exactly that case."""
+        ARM64 box reports AMD64 and so does platform.machine(). The machine-scope value in
+        the registry is the one signal emulation cannot misreport. Patched per case so the
+        answer is the same on an ARM64 host as on x64 CI."""
         with patch.object(stack_mod, "IS_WINDOWS", True):
-            with patch.object(stack_mod.platform, "machine", return_value = "AMD64"):
-                with patch.dict(os.environ, env, clear = False):
-                    for _k in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
-                        if _k not in env:
-                            os.environ.pop(_k, None)
-                    assert stack_mod._is_windows_arm64() is expected
+            with patch.object(stack_mod, "_machine_arch_from_registry", return_value = registry):
+                with patch.object(stack_mod.platform, "machine", return_value = "AMD64"):
+                    with patch.dict(os.environ, env, clear = False):
+                        for _k in ("PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"):
+                            if _k not in env:
+                                os.environ.pop(_k, None)
+                        assert stack_mod._is_windows_arm64() is expected
 
     def test_it_is_false_off_windows(self):
         with patch.object(stack_mod, "IS_WINDOWS", False):

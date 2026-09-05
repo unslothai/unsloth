@@ -596,3 +596,42 @@ class TestPinProvenanceMustBeABoolean:
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
+
+
+class TestSetupPs1WindowsOnArmCudaPreservation:
+    """The win_arm64 CUDA shortcut is for an INFERRED expectation, not a stated one.
+
+    It runs ahead of the pin branch that raises $script:PinChangedForceReinstall, and that
+    flag is the only thing that clears $SkipPythonDeps. So without the exemption an
+    explicit pin skipped the dependency pass, install_python_stack.py and every
+    --force-reinstall at once, and `studio update` kept the old CUDA build while reporting
+    success. Exempting only /cpu was not enough: a user moving the venv to their own
+    cu129 mirror is stating an instruction just as much, and the index selection further
+    down is written to let a pin outrank the persisted NVIDIA channel.
+    """
+
+    _GUARD = "if ((Test-WinArm64Venv) -and $installedTorchTag -and"
+
+    def _condition(self) -> str:
+        start = _SETUP_SRC.index(self._GUARD)
+        return _SETUP_SRC[start : _SETUP_SRC.index("{", start + len(self._GUARD))]
+
+    def test_any_explicit_pin_is_exempt(self):
+        condition = self._condition()
+        assert "-not $_pinnedIdx" in condition
+        assert (
+            "$_woaCpuPinned" not in condition
+        ), "a cu129 mirror pin is as much an instruction as a /cpu one"
+
+    def test_the_exemption_reads_a_variable_that_is_always_assigned(self):
+        # Not $_pinLeaf: that is assigned only inside `if ($_pinnedIdx)`, so reading it
+        # here would be fatal under a caller's Set-StrictMode. $_pinnedIdx itself is
+        # assigned unconditionally above.
+        block = _SETUP_SRC[: _SETUP_SRC.index(self._GUARD)]
+        assert "$_pinnedIdx = Get-PinnedTorchIndexUrl" in block
+        assert "$_pinLeaf" not in self._condition()
+
+    def test_it_still_sits_ahead_of_the_pin_branch(self):
+        shortcut = _line_of(_SETUP_SRC, self._GUARD)
+        pin_branch = _line_of(_SETUP_SRC, "Torch-index pin changed ($installedTorchTag)")
+        assert shortcut < pin_branch

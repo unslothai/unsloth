@@ -112,7 +112,10 @@ studio = [
     "pydantic==2.13.4",
     "packaging==26.3",
     "matplotlib==3.10.9",
-    "pandas==2.3.3",
+    # win_arm64 pandas wheels start at 3.0. The 3.11 floor is pandas 3's own
+    # requires-python; below it this host takes 2.3.3 and source-builds.
+    "pandas==2.3.3 ; sys_platform != 'win32' or platform_machine != 'ARM64' or python_version < '3.11'",
+    "pandas>=3.0,<4 ; sys_platform == 'win32' and platform_machine == 'ARM64' and python_version >= '3.11'",
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
     "pyjwt==2.13.0",
@@ -124,22 +127,32 @@ studio = [
     "diceware==1.0.1",
     "ddgs==9.14.4 ; python_version >= '3.10'",
     "ddgs==9.8.0 ; python_version < '3.10'",
-    "cryptography>=42.0.0",
+    "cryptography>=42.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    # Windows on ARM: 46.0.7 publishes no win_arm64 wheel and the sdist needs Rust.
+    "cryptography>=42.0.0,<=46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "boto3>=1.34.0",
     "httpx>=0.27.0",
     "fastmcp>=3.0.2",
     "gguf==0.19.0 ; python_version >= '3.10'",
     "gguf==0.18.0 ; python_version < '3.10'",
     "av>=12.0.0",
-    "sqlite-vec==0.1.9",
-    "pymupdf==1.27.2.3",
+    # No win_arm64 wheel and, unlike the rows above, no sdist either, so this one cannot be
+    # floored or built -- it is simply unresolvable there. Dropped rather than pinned: the RAG
+    # store already treats a missing sqlite_vec as "RAG unavailable" and the router still mounts.
+    "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel from 1.28 only.
+    "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "pymupdf>=1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
 ]
 
 triton = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
+    # triton-windows has win_arm64 wheels from 3.8.0.post28, so a floor keeps this row
+    # resolvable there rather than a marker.
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 
 huggingfacenotorch = [
@@ -156,7 +169,10 @@ huggingfacenotorch = [
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
-    "hf_transfer",
+    # A Rust extension with no win_arm64 wheel, so pip falls to a cargo build needing
+    # MSVC. huggingface_hub imports it only under HF_HUB_ENABLE_HF_TRANSFER=1, and
+    # hf_xet ships win_arm64 and covers fast downloads.
+    "hf_transfer ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # 0.39 is the floor the diffusion stack already assumes: Krea2Pipeline (the Krea 2
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
@@ -232,8 +248,11 @@ huggingface = [
 # handles instead.
 windows = [
     "unsloth[huggingface]",
+    # bitsandbytes ships a win_arm64 wheel from 0.50.1, so this row covers it.
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
-    "xformers>=0.0.22.post7 ; (sys_platform == 'win32')",
+    # No win_arm64 wheel and no sdist that builds without CUDA's Windows-ARM toolchain,
+    # so this row would fail the whole extra. Torch's SDPA is the fallback.
+    "xformers>=0.0.22.post7 ; (sys_platform == 'win32') and platform_machine != 'ARM64'",
 ]
 base = [
     "unsloth[huggingface]",

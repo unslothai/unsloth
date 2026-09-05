@@ -2,7 +2,9 @@
 flatbuffers==25.12.19
 # Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt);
 # librosa pulls it in too, but is skipped in no-torch mode.
-scikit-learn==1.7.1
+# scikit-learn publishes win_arm64 wheels from 1.8 only; 1.7.1 would source-build there.
+scikit-learn==1.7.1; sys_platform != "win32" or platform_machine != "ARM64"
+scikit-learn>=1.9.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # Additional extras
 jiwer==4.0.0                     # WER/CER metrics for vision OCR save-merge benchmarks
@@ -18,7 +20,9 @@ openai-whisper==20250625
 # av<16 because 16+ builds its macOS arm64 wheels against macosx_14_0 and so has
 # no installable wheel on macOS 13. Pinning past the cap makes that leg
 # unsatisfiable. Lift both together.
-av==15.1.0
+# See constraints.txt: win_arm64 av wheels start at 17.1.
+av==15.1.0; sys_platform != "win32" or platform_machine != "ARM64"
+av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"
 uroman==1.3.1.1                  # 4.0 MB - used for Outetts.
 # 19.9 MB - used for Outetts. No release ships a macOS cp314 wheel (0.996.12 added
 # cp314 for Linux and win_amd64 only), so a 3.14 macOS host has no binary candidate

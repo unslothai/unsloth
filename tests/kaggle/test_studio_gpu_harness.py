@@ -50,6 +50,7 @@ def _load(name: str, path: Path):
     return module
 
 
+run_studio_gpu = _load("studio_gpu_payload_main", PAYLOAD_DIR / "run_studio_gpu.py")
 build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
@@ -75,6 +76,40 @@ def test_compute_apps_skips_a_header_and_an_unreported_size():
 
 def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
     assert gpu_assert.parse_compute_apps("") == {}
+
+
+def test_listed_pids_are_counted_even_when_no_memory_is_attributed():
+    """Windows (WDDM) and unified-memory parts list every CUDA process with [N/A].
+    The GB10 lists a -ngl 0 server too, so this is neither "nothing on the card" nor
+    proof of offload: it is the signal to fall back to the device delta."""
+    text = "pid, used_gpu_memory\n1234, [N/A]\n5678, [N/A]\n"
+    assert gpu_assert.parse_compute_apps(text) == {}
+    assert gpu_assert.count_listed_pids(text) == 2
+
+
+def test_listed_pids_ignore_the_header_and_junk_rows():
+    assert gpu_assert.count_listed_pids("pid, used_gpu_memory\n[N/A], [N/A]\n\n") == 0
+    assert gpu_assert.count_listed_pids("") == 0
+    assert gpu_assert.count_listed_pids("1234, 2048\n5678, [N/A]\n") == 2
+
+
+def test_an_all_unattributed_listing_reads_as_cannot_enumerate(monkeypatch):
+    import run_studio_gpu  # the payload, on sys.path beside gpu_assert
+
+    """So cli_run_gpu_failure takes its device-delta branch rather than concluding that
+    no process appeared. Readable rows still come back as the usual dict."""
+
+    class _P:
+        def __init__(self, out):
+            self.returncode = 0
+            self.stdout = out
+
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, [N/A]\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() is None
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, 512\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() == {4242: 512}
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P(""))
+    assert run_studio_gpu.nvidia_compute_apps() == {}
 
 
 # ------------------------------------------------------------ llama.cpp log
@@ -2436,3 +2471,198 @@ def test_every_assertion_carries_its_own_wall_clock():
     # And an absolute position, so a reader can line the report up against the
     # driver's own interval for the payload.
     assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]
+
+
+class TestAMixedListingIsNotProofOfCpu:
+    """A readable row on one GPU keeps the mapping nonempty, hiding an [N/A] server.
+
+    The all-[N/A] guard fires only when NOTHING parsed. On a box with a TCC card whose
+    process reports a figure and a WDDM or unified-memory card where the newly launched
+    server reports [N/A], the mapping is nonempty, the guard stays quiet, and the server's
+    pid is simply missing -- so nothing "appeared" and the harness failed a run whose model
+    was on the card the whole time.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
+        """On a card this run OWNS: nothing was there before, so the total is ours."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None, (
+            "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
+            f"the offloaded server, not an absence: {detail}"
+        )
+        assert detail["compute_apps_unattributed"] == [222]
+
+    def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is not None and "served from the CPU" in failure
+        assert "222" in failure, "the message names the process it could not attribute"
+
+    def test_an_unattributed_pid_with_no_device_reading_is_unmeasured(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {111: 500},
+            baseline = None,
+            settled = None,
+            listed_before = set(),
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured" in failure
+
+    def test_an_attributed_new_process_is_unaffected(self):
+        """The ordinary path must not start deferring to the shared device counter."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None, "a co-tenant freeing memory must not sink an attributed pid"
+        assert detail["process_vram_mib"] == 2600
+
+    def test_a_pid_already_present_but_unattributed_is_not_new(self):
+        """Only a pid that APPEARED counts; a co-tenant showing [N/A] throughout is theirs."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = {111, 999},
+            listed_after = {111, 999},
+        )
+        assert "compute_apps_unattributed" not in detail
+        assert failure is not None and "no process appeared" in failure
+
+    def test_the_old_callers_still_work(self):
+        """The listed sets are optional, so a caller that has none keeps the old verdict."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = None,
+            settled = None,
+        )
+        assert failure is None
+
+
+class TestTheListingNamesItsPids:
+    def test_listed_pids_includes_unattributed_rows(self):
+        csv_text = "111, 500\n222, [N/A]\n"
+        assert gpu_assert.parse_compute_apps(csv_text) == {111: 500}
+        assert gpu_assert.listed_pids(csv_text) == {111, 222}
+
+    def test_listed_pids_ignores_headers_and_junk(self):
+        assert gpu_assert.listed_pids("pid, used_gpu_memory\n\nnotapid, 5\n333, 10\n") == {333}
+
+    def test_the_sample_is_taken_once(self):
+        """Two nvidia-smi calls would describe two different moments, so the attributed
+        mapping and the listed pids could disagree about which processes exist.
+        """
+        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+        assert body.count("nvidia_compute_apps_listing()") >= 3
+        assert "apps_before = attributed_apps(_listing_before)" in body
+        assert "apps_after = attributed_apps(_listing_after)" in body
+
+
+class TestASharedCardIsNotMeasuredByItsTotal:
+    """The device total only measures THIS process when THIS process owns the card.
+
+    Under --studio-concurrent a training leg shares it and both allocates and frees inside
+    the window: one recorded run read the delta as -182.0 MiB while the server genuinely
+    held 2.6 GB. Accepting a +200 MiB rise there would pass a CPU-served run on memory
+    somebody else allocated, so a fallback to the total is refused when anything was on the
+    card before the launch.
+    """
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_co_tenant_blocks_the_no_enumeration_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_co_tenant_blocks_the_mixed_listing_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_listed_but_unattributed_co_tenant_counts(self):
+        """A co-tenant reporting [N/A] is still a co-tenant."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {999},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+
+    def test_an_empty_card_keeps_the_fallback(self):
+        """The fallback exists for parts that report [N/A] for everything; it stays."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = None,
+        )
+        assert failure is None
+
+    def test_attribution_still_wins_over_the_rule(self):
+        """A co-tenant does not sink a run whose own process WAS attributed."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600
+
+    def test_unknown_co_tenancy_is_not_invented(self):
+        """No listing at all is no evidence either way, so behaviour is unchanged."""
+        failure, _ = self._verdict(
+            apps_before = None,
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+        )
+        assert failure is None

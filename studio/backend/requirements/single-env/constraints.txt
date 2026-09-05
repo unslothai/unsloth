@@ -8,7 +8,10 @@ huggingface-hub==0.36.2; python_version < "3.10"
 
 # Unsloth stack
 datasets==4.3.0
-pyarrow==23.0.1
+# No win_arm64 pyarrow at 23.x (apache/arrow#48539). install.ps1 stages one and takes
+# the native path only when it can, so a floor is all this needs.
+pyarrow==23.0.1; sys_platform != "win32" or platform_machine != "ARM64"
+pyarrow>=21.0.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # FastMCP compat
 fastmcp>=3.0.2
@@ -22,7 +25,9 @@ websockets>=15.0.1
 # later with-deps steps can't re-resolve it up.
 anyio<4.14.0
 
-pandas==2.3.3
+# pandas publishes win_arm64 wheels from 3.0 only; 2.3.x would source-build there.
+pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
+pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 
 # av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13 none
 # are installable and the resolver falls back to a source build, which needs FFmpeg
@@ -33,10 +38,17 @@ pandas==2.3.3
 # The remaining sdist-only macOS defaults are pure Python, hence allowlisted in
 # .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
 # other package that would compile.
-av<16
+av<16; sys_platform != "win32" or platform_machine != "ARM64"
+# The opposite case: av publishes win_arm64 wheels from 17.1 only (cp311-abi3), and the
+# macOS 13 reason for the cap above does not apply.
+av>=17.1.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
 # x86_64 macOS has no wheel and builds the sdist, needing Rust plus a working
 # linker. 48.0.1 is the newest release with a universal2 wheel. Lift when
 # cryptography ships an x86_64-capable macOS wheel again.
 cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"
+
+# 46.0.3 is the newest cryptography with a win_arm64 wheel, and its sdist needs Rust
+# plus MSVC. Raise the cap when upstream resumes publishing them.
+cryptography<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
