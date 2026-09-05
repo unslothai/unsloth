@@ -1642,6 +1642,8 @@ export const de = {
       newTokenCreated: "Neues Zugriffstoken erstellt",
       accessTokenCopied: "Zugriffstoken kopiert",
       copyAccessToken: "Zugriffstoken kopieren",
+      copyAccessTokenFailed:
+        "Automatisches Kopieren fehlgeschlagen. Token markieren und manuell kopieren.",
       copyNow: "Jetzt kopieren - es wird nicht erneut angezeigt.",
       usageExamples: "Nutzungsbeispiele",
       usageTools: "Tools",

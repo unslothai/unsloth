@@ -1588,6 +1588,8 @@ export const en = {
       newTokenCreated: "New access token created",
       accessTokenCopied: "Access token copied",
       copyAccessToken: "Copy access token",
+      copyAccessTokenFailed:
+        "Couldn't copy automatically. Select the token and copy manually.",
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
       usageNoModel:
