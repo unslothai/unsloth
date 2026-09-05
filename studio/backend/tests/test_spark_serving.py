@@ -312,7 +312,7 @@ def test_rpc_server_and_layer_split_arguments():
         "50053",
     ]
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
-    assert extra == ["--rpc", "192.168.200.13:50052", "--device", "CUDA0,RPC0", "-sm", "layer"]
+    assert extra == ["--rpc", "192.168.200.13:50052", "--device", "RPC0,CUDA0", "-sm", "layer"]
     assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
     # Pipeline groups ride on the same launch, with a slot count that gives every
     # group a slot; the --parallel here overrides the emitted one (last wins).
@@ -321,7 +321,7 @@ def test_rpc_server_and_layer_split_arguments():
         "--rpc",
         "192.168.200.13:50052",
         "--device",
-        "CUDA0,RPC0",
+        "RPC0,CUDA0",
         "-sm",
         "layer",
         "--pipeline-groups",
@@ -333,7 +333,7 @@ def test_rpc_server_and_layer_split_arguments():
         "--rpc",
         "p:1",
         "--device",
-        "CUDA0,RPC0",
+        "RPC0,CUDA0",
         "-sm",
         "layer",
     ]
@@ -446,7 +446,7 @@ def test_before_load_turns_a_too_large_model_into_a_layer_split(cluster, monkeyp
         "--rpc",
         "192.168.200.13:50052",
         "--device",
-        "CUDA0,RPC0",
+        "RPC0,CUDA0",
         "-sm",
         "layer",
     ]
@@ -863,7 +863,7 @@ def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
         "--rpc",
         "192.168.200.13:50052",
         "--device",
-        "CUDA0,RPC0",
+        "RPC0,CUDA0",
         "-sm",
         "layer",
         "--pipeline-groups",
@@ -897,7 +897,7 @@ def test_before_load_launches_as_before_without_the_flag(cluster, monkeypatch, t
         "--rpc",
         "192.168.200.13:50052",
         "--device",
-        "CUDA0,RPC0",
+        "RPC0,CUDA0",
         "-sm",
         "layer",
     ], "no --pipeline-groups and no --parallel override on a bundle without the flag"

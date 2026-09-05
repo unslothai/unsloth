@@ -15,7 +15,9 @@ this module decides between three layouts and runs whichever one the workload al
                decode at 8 users, 1.75x at 16, 1.91x at 32, with better per-user latency.
   layer_split  the model does not fit on one node: ``ggml-rpc-server`` on the peer and
                this node's llama-server launched with ``--rpc <peer>:<port> --device
-               CUDA0,RPC0 -sm layer``. Pipeline parallelism is enabled by llama.cpp
+               RPC0,CUDA0 -sm layer`` (RPC first so the output layer and the logits stay
+               on the local GPU; see ``layer_split_extra_args``). Pipeline parallelism is
+               enabled by llama.cpp
                itself when the RPC backend advertises async and events (b10796 does),
                so no flag is added for it. When the bundle's llama-server has
                ``--pipeline-groups`` (the unslothai/llama.cpp fork: N contexts from one
@@ -79,12 +81,11 @@ ENV_PIPELINE_GROUPS = "UNSLOTH_SPARK_PIPELINE_GROUPS"
 TOPOLOGIES = ("single", "replicas", "layer_split")
 RPC_PORT_DEFAULT = 50052
 PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt length
-# 0 = opt-in. The two-context prototype measured 1.27x to 1.50x (spark_cluster), but the
-# first llama-server implementation of the flag (unslothai/llama.cpp PR #187, draft) LOST to a
-# single context on the same split: 79.0 against 96.7 tok/s at 32 concurrent, 82.1 against
-# 107.6 at 64, because the two groups' decodes slow each other down on the shared RPC link.
-# Adding the flag by default would make a layer split slower on a bundle that has it, so the
-# default is off until the server mode matches the prototype; set the env to 2 to use it.
+# 0 = opt-in until unslothai/llama.cpp PR #187 is merged and in a bundle. With the device order
+# above (output layer local) the server mode now wins: two groups 130.4 and 131.3 tok/s in two
+# repeats against 99.7 and 98.1 for one context at 32 concurrent on the 27B split, both GPUs at
+# 76 to 79 percent. With the old CUDA0,RPC0 order it lost (75.5 against 94.9), so the order is
+# a precondition. Flip this to 2 when the flag ships in a bundle; set the env to 2 to use it now.
 PIPELINE_GROUPS_DEFAULT = 0
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
@@ -689,7 +690,15 @@ def layer_split_extra_args(
     the fork's ``--pipeline-groups N`` and, with ``slots``, a ``--parallel`` that
     overrides the emitted one (extras come last and llama.cpp is last-wins, and the
     backend reads the override back for its own slot accounting)."""
-    out = ["--rpc", f"{peer}:{port}", "--device", "CUDA0,RPC0", "-sm", "layer"]
+    # RPC device FIRST, local CUDA device LAST. llama.cpp assigns the output layer to the last
+    # device in the list, so this order keeps the last layers, the output projection and the
+    # logits on the local GPU: the wire carries only the hidden state (20 KB per row each way)
+    # instead of returning 1 MB per row of F32 logits every decode step, and the sampler reads
+    # logits from local memory. Measured on Qwen3.8-27B, 32 concurrent, one context: 99.7 tok/s
+    # against 94.9 with CUDA0,RPC0; with two pipeline groups 130.4 against 75.5, because with
+    # the output on the peer the logits return and the CPU sampling under the other group's GPU
+    # load serialise the groups. Memory per node is about the same either way.
+    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer"]
     if pipeline_groups and int(pipeline_groups) > 1:
         out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
         if slots is not None:
