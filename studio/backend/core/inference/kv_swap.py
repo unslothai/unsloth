@@ -559,3 +559,37 @@ def reset_kv_swap_controllers() -> None:
         _CONTROLLERS.clear()
     for controller in controllers:
         controller.sweep()
+
+
+def make_http_post(
+    base_url: str,
+    auth_headers: Optional[dict] = None,
+    timeout: float = 30.0,
+) -> Callable[..., object]:
+    """Build the ``http_post`` a controller uses to drive ``/slots/{id}?action=...``.
+
+    Kept out of :class:`KvSwapController` so the controller stays importable and testable
+    without httpx, and so the tests can drive it with a fake server.
+    """
+    import httpx  # noqa: WPS433 - deferred exactly as the rest of this backend does
+
+    def _post(*, slot: int, action: str, body: dict):
+        response = httpx.post(
+            f"{base_url}/slots/{int(slot)}",
+            params = {"action": action},
+            json = body or {},
+            headers = auth_headers,
+            timeout = timeout,
+            trust_env = False,
+        )
+        if response.status_code != 200:
+            raise KvSwapError(
+                f"slot {slot} {action} returned HTTP {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise KvSwapError(f"slot {slot} {action} returned a non-JSON body") from exc
+
+    return _post

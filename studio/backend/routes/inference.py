@@ -95,6 +95,10 @@ from core.inference.orchestrator import (
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
+from core.inference.kv_swap import (
+    KvSwapError,
+    peek_kv_swap_controller,
+)
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -1704,6 +1708,14 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# How long a swapped-out chat waits for cells before giving up and re-prefilling, and how
+# often it re-checks. The poll is coarse because a swap-in costs ~11 ms: a tighter loop
+# would only burn the executor thread the tool loop needs back.
+_KV_SWAP_MAX_WAIT_S = 300.0
+_KV_SWAP_POLL_S = 0.25
+# SSE comments the chat UI already renders as "Paused while another chat finishes".
+_OPENAI_KV_SWAP_SSE_PAUSED = ": preempt-paused\n\n"
+_OPENAI_KV_SWAP_SSE_RESUMED = ": preempt-resumed\n\n"
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
 # the process-wide slot, open forever.
@@ -21475,7 +21487,83 @@ async def produce_openai_chat_completions(
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
 
+            def _gguf_pinned_slot():
+                # The lease carries the slot admission handed out, which is the same slot
+                # llama-server will use once `id_slot` is in the payload. Read late: the
+                # generator is built before the reservation exists.
+                reservation = _gguf_admission_hold["reservation"]
+                if reservation is None:
+                    return None
+                lease = reservation.lease_nowait()
+                return None if lease is None else lease.slot
+
+            # Swap state for this chat, so the stream wrapper can tell the client it is
+            # waiting rather than stalled.
+            _kv_swap_state: dict = {"paused": False, "resumed": False, "swaps": 0}
+            _kv_swap_chat_id = f"{completion_id}"
+
+            def _kv_swap_round(conversation) -> None:
+                """Relieve KV pressure at a round boundary, before the next round starts.
+
+                A round boundary is the one place a checkpoint is free: the previous
+                request finished cleanly, so the caller holds exactly the cells the server
+                does plus the token it has not fed yet, which is what a resume needs to
+                land on restored cells instead of re-prefilling. Mid-round the KV runs
+                ahead of us and this is skipped entirely.
+
+                Never raises: a swap that cannot be taken leaves the run exactly as it was,
+                which is the old behaviour, not an error.
+                """
+                try:
+                    controller = llama_backend.kv_swap_controller()
+                    if controller is None:
+                        return
+                    slot = _gguf_pinned_slot()
+                    if slot is None:
+                        return
+                    controller.admit(_kv_swap_chat_id, slot = slot)
+                    try:
+                        controller.reconcile(llama_backend.read_slots_snapshot())
+                    except Exception:
+                        pass
+                    decision = controller.plan()
+                    if _kv_swap_chat_id not in decision.victims:
+                        controller.note_progress(_kv_swap_chat_id)
+                        return
+
+                    controller.swap_out(_kv_swap_chat_id)
+                    _kv_swap_state["paused"] = True
+                    _kv_swap_state["swaps"] += 1
+                    try:
+                        # Blocking, and deliberately so: this runs on the tool loop's
+                        # executor thread, exactly where recost_waiting already waits for
+                        # cache room. The event loop keeps serving the client, which is
+                        # what turns this into "waiting" in the UI instead of a stall.
+                        deadline = time.monotonic() + _KV_SWAP_MAX_WAIT_S
+                        while time.monotonic() < deadline:
+                            if cancel_event is not None and cancel_event.is_set():
+                                break
+                            if not controller.plan(incoming = 0).victims:
+                                break
+                            time.sleep(_KV_SWAP_POLL_S)
+                        controller.swap_in(_kv_swap_chat_id, slot)
+                    finally:
+                        # Cleared even on a failed restore: the fallback path re-prefills,
+                        # so the client is no longer waiting either way.
+                        _kv_swap_state["paused"] = False
+                        _kv_swap_state["resumed"] = True
+                except Exception as exc:
+                    # Fall back to plain admission: slower to resume, never an error.
+                    try:
+                        controller = peek_kv_swap_controller(llama_backend.base_url)
+                        if controller is not None:
+                            controller.fall_back(_kv_swap_chat_id)
+                    except Exception:
+                        pass
+                    logger.debug(f"KV swap skipped for {_kv_swap_chat_id}: {exc}")
+
             def _gguf_recost(conversation) -> None:
+                _kv_swap_round(conversation)
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -21557,6 +21645,7 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    id_slot = _gguf_pinned_slot,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -21703,7 +21792,16 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                # A swapped-out chat is waiting for cache room, not stalled.
+                                # The UI renders this as "Paused while another chat
+                                # finishes"; a bare keep-alive would look like a hang.
+                                if _kv_swap_state["paused"]:
+                                    yield _OPENAI_KV_SWAP_SSE_PAUSED
+                                else:
+                                    if _kv_swap_state["resumed"]:
+                                        _kv_swap_state["resumed"] = False
+                                        yield _OPENAI_KV_SWAP_SSE_RESUMED
+                                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                                 approval_flush_pending = False
                                 wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
