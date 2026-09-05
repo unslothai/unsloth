@@ -27,6 +27,17 @@ from typing import Any, BinaryIO, Callable, Literal, Protocol
 
 from loggers import get_logger
 
+from .network_proxy import (
+    ALLOWLIST_ENV as NETWORK_ALLOWLIST_ENV,
+    NO_PROXY_VALUE as _NO_PROXY_VALUE,
+    PROXY_ENV_KEYS as _PROXY_ENV_KEYS,
+    AllowlistError,
+    AllowlistProxy,
+    NetworkAllowlist,
+    NetworkAudit,
+    proxy_environment,
+)
+
 logger = get_logger(__name__)
 
 _SCAN_ENTRY_LIMIT = 100_000
@@ -152,6 +163,11 @@ class SandboxCapability:
     limited_profile_id: str = "limited-software-safeguards-v1"
     limited_limitations: tuple[str, ...] = ()
     limited_reason: str = ""
+    # Network policies the backend can enforce for an OS-isolated launch, and the
+    # hosts the "allowlist" policy would admit. "deny" is always present; a
+    # backend without a loopback bridge (Windows AppContainer) offers only that.
+    network_policies: tuple[str, ...] = ("deny",)
+    network_allowlist: tuple[str, ...] = ()
 
 
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
@@ -168,6 +184,11 @@ class ToolExecutionRecord:
     os_isolation: bool
     retained_safeguards: tuple[str, ...]
     limitations: tuple[str, ...] = ()
+    # "deny": no network path out of the sandbox. "allowlist": CONNECT tunnels to
+    # network_allowlist hosts through the per-launch loopback proxy.
+    # "unrestricted": the launch has the host's network (Limited and Full).
+    network_policy: str = "deny"
+    network_allowlist: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -180,6 +201,8 @@ class ToolExecutionRecord:
             "os_isolation": self.os_isolation,
             "retained_safeguards": list(self.retained_safeguards),
             "limitations": list(self.limitations),
+            "network_policy": self.network_policy,
+            "network_allowlist": list(self.network_allowlist),
         }
 
 
@@ -199,6 +222,12 @@ class ToolLaunchPlan:
     timeout_seconds: int | None = None
     close_fds: bool = True
     terminate_descendants: bool = True
+    # "deny" (default) or "allowlist". Only honored for os_isolation_required;
+    # Full has the host network anyway and Limited cannot enforce a proxy.
+    network_policy: str = "deny"
+
+
+NETWORK_POLICIES = ("deny", "allowlist")
 
 
 # Compatibility for focused tests and callers written against the first narrow
@@ -225,6 +254,9 @@ class PreparedSandboxLaunch:
     spawn_callback: Callable[["PreparedSandboxLaunch", dict[str, Any]], object] | None = None
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
+    # Set when the launch runs behind the allowlist proxy; tools.py reads the
+    # refused hosts from it for the result trailer.
+    network_audit: NetworkAudit | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -1067,6 +1099,121 @@ except (AttributeError, OSError, ValueError):
 os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 """
 
+# Runs inside the sandbox (before the exec above) when the launch carries the
+# allowlist policy. The loopback listener has to be created here, inside the
+# new network namespace, because a socket belongs to the namespace it was
+# created in; the descriptor is handed to the host over an inherited AF_UNIX
+# socketpair and the host's proxy accepts on it. The wrapper then waits for the
+# host to confirm ("K <token>") before it publishes the proxy URL and execs.
+_NETWORK_BRIDGE_ENV = "UNSLOTH_STUDIO_NET_CTRL_FD"
+_NETWORK_BRIDGE_TIMEOUT_SECONDS = 30.0
+_NETWORK_BRIDGE_BLOCK = """import socket
+_ctrl_fd = int(os.environ.pop({ctrl_env!r}))
+_ctrl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno = _ctrl_fd)
+_ctrl.settimeout({timeout!r})
+_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+_listener.bind(("127.0.0.1", 0))
+_listener.listen(64)
+socket.send_fds(_ctrl, [b"L"], [_listener.fileno()])
+_reply = b""
+while not _reply.endswith(b"\\n"):
+    _chunk = _ctrl.recv(512)
+    if not _chunk:
+        raise SystemExit("sandbox network bridge: the host closed the control channel")
+    _reply += _chunk
+    if len(_reply) > 4096:
+        raise SystemExit("sandbox network bridge: oversized reply")
+_fields = _reply.strip().split(b" ")
+if len(_fields) != 2 or _fields[0] != b"K":
+    raise SystemExit("sandbox network bridge: unexpected reply")
+_url = "http://sandbox:" + _fields[1].decode("ascii") + "@127.0.0.1:" + str(_listener.getsockname()[1])
+for _key in {proxy_keys!r}:
+    os.environ[_key] = _url
+os.environ["NO_PROXY"] = os.environ["no_proxy"] = {no_proxy!r}
+_listener.close()
+_ctrl.close()
+del _ctrl_fd, _ctrl, _listener, _reply, _chunk, _fields, _url, _key
+"""
+
+
+def _linux_wrapper_source(*, limit: int, network_bridge: bool) -> str:
+    wrapper = _NPROC_WRAPPER.format(limit = limit)
+    if not network_bridge:
+        return wrapper
+    block = _NETWORK_BRIDGE_BLOCK.format(
+        ctrl_env = _NETWORK_BRIDGE_ENV,
+        timeout = _NETWORK_BRIDGE_TIMEOUT_SECONDS,
+        proxy_keys = tuple(_PROXY_ENV_KEYS),
+        no_proxy = _NO_PROXY_VALUE,
+    )
+    marker = "os.execvpe("
+    assert wrapper.count(marker) == 1
+    return wrapper.replace(marker, block + marker)
+
+
+def _receive_bridge_listener(
+    host_end: socket.socket, timeout: float | None = None
+) -> socket.socket:
+    """Take the loopback listener the sandboxed wrapper created and vet it."""
+    host_end.settimeout(_NETWORK_BRIDGE_TIMEOUT_SECONDS if timeout is None else timeout)
+    try:
+        message, fds, _flags, _addr = socket.recv_fds(host_end, 16, 1)
+    except socket.timeout as exc:
+        raise SandboxUnavailableError(
+            "the sandboxed process did not hand over its network listener in time",
+            transient = True,
+        ) from exc
+    except OSError as exc:
+        raise SandboxUnavailableError(
+            f"the network bridge control channel failed: {exc}", transient = True
+        ) from exc
+    listener: socket.socket | None = None
+    try:
+        if not message and not fds:
+            raise SandboxUnavailableError(
+                "the sandboxed process exited before handing over its network listener",
+                transient = True,
+            )
+        if message != b"L" or len(fds) != 1:
+            raise SandboxUnavailableError("the network bridge sent an unexpected message")
+        listener = socket.socket(fileno = fds.pop())
+        if listener.family != socket.AF_INET or listener.type != socket.SOCK_STREAM:
+            raise SandboxUnavailableError("the network bridge listener is not a TCP socket")
+        address, port = listener.getsockname()[:2]
+        if address != "127.0.0.1" or not port:
+            raise SandboxUnavailableError(
+                f"the network bridge listener is bound to {address}:{port}, not loopback"
+            )
+        if listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) != 1:
+            raise SandboxUnavailableError("the network bridge listener is not listening")
+        return listener
+    except Exception:
+        if listener is not None:
+            listener.close()
+        raise
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _network_allowlist_for_launch() -> NetworkAllowlist:
+    try:
+        return NetworkAllowlist.from_env()
+    except AllowlistError as exc:
+        raise SandboxUnavailableError(
+            f"the network allowlist is invalid ({exc}); fix {NETWORK_ALLOWLIST_ENV} or disable network access"
+        ) from exc
+
+
+def _network_allowlist_hosts() -> tuple[str, ...]:
+    try:
+        return NetworkAllowlist.from_env().hosts
+    except AllowlistError:
+        return ()
+
 
 def _nproc_limit() -> int:
     try:
@@ -1128,6 +1275,7 @@ def _sanitize_linux_environment(env: dict[str, str], environment: str) -> dict[s
 
 
 class LinuxBubblewrapBackend:
+    supports_network_allowlist = True
     identity = "linux-bubblewrap"
     profile_id = "linux-bubblewrap-v2"
 
@@ -1300,7 +1448,21 @@ class LinuxBubblewrapBackend:
             argv.extend(("--ro-bind", path, path))
         argv.extend(("--bind", workdir, workdir, "--chdir", workdir))
         argv.extend(("--setenv", "HOME", workdir, "--setenv", "TMPDIR", "/tmp"))
-        wrapper = _NPROC_WRAPPER.format(limit = _nproc_limit())
+        network_bridge = spec.network_policy == "allowlist"
+        pass_fds: list[int] = [seccomp_filter.fileno()]
+        cleanup_callbacks: list[Callable[[], None]] = []
+        spawn_callback = None
+        network_audit = None
+        if network_bridge:
+            allowlist = _network_allowlist_for_launch()
+            proxy = AllowlistProxy(allowlist)
+            host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            cleanup_callbacks.extend((proxy.close, host_end.close, sandbox_end.close))
+            pass_fds.append(sandbox_end.fileno())
+            argv.extend(("--setenv", _NETWORK_BRIDGE_ENV, str(sandbox_end.fileno())))
+            spawn_callback = _bridged_spawn(proxy, host_end, sandbox_end)
+            network_audit = proxy.audit
+        wrapper = _linux_wrapper_source(limit = _nproc_limit(), network_bridge = network_bridge)
         argv.extend(
             (
                 "--",
@@ -1318,13 +1480,61 @@ class LinuxBubblewrapBackend:
             env = env,
             preexec_fn = spec.launcher_preexec_fn,
             backend = self.identity,
-            pass_fds = (seccomp_filter.fileno(),),
+            pass_fds = tuple(pass_fds),
             owned_files = [seccomp_filter],
             cleanup_paths = [identity_dir],
             timeout_seconds = spec.timeout_seconds,
             close_fds = spec.close_fds,
             terminate_descendants = spec.terminate_descendants,
+            spawn_callback = spawn_callback,
+            cleanup_callbacks = cleanup_callbacks,
+            network_audit = network_audit,
         )
+
+
+def _bridged_spawn(
+    proxy: AllowlistProxy, host_end: socket.socket, sandbox_end: socket.socket
+) -> Callable[[PreparedSandboxLaunch, dict[str, Any]], object]:
+    """Spawn, then complete the listener handshake before the tool runs.
+
+    The sandboxed wrapper blocks until the host confirms, so the tool's own code
+    never starts unless the proxy is accepting on a listener that lives inside
+    the sandbox's network namespace. Any failure kills the process and surfaces
+    as a transient SandboxUnavailableError instead of a tool that silently has
+    no network.
+    """
+
+    def spawn(prepared: PreparedSandboxLaunch, popen_kwargs: dict[str, Any]) -> object:
+        try:
+            proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+        finally:
+            # The child holds its own copy; the host's copy must go so a child
+            # that dies early is seen as EOF instead of a hang until timeout.
+            sandbox_end.close()
+        try:
+            listener = _receive_bridge_listener(host_end)
+            proxy.serve_listener(listener)
+            host_end.sendall(b"K " + proxy.credential.token.encode("ascii") + b"\n")
+        except BaseException as exc:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout = 5)
+            except Exception:  # noqa: BLE001 - best effort reap
+                pass
+            proxy.close()
+            if isinstance(exc, SandboxUnavailableError):
+                raise
+            raise SandboxUnavailableError(
+                f"the sandbox network bridge failed: {exc}", transient = True
+            ) from exc
+        finally:
+            host_end.close()
+        return proc
+
+    return spawn
 
 
 def _explain_linux_probe_failure(
@@ -1354,6 +1564,7 @@ def _explain_linux_probe_failure(
 
 
 class MacOSSeatbeltBackend:
+    supports_network_allowlist = True
     identity = "macos-seatbelt"
     profile_id = "macos-seatbelt-preview-v1"
     limitations = (
@@ -1415,13 +1626,24 @@ class MacOSSeatbeltBackend:
         private_tmp = tempfile.mkdtemp(
             prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
         )
+        proxy: AllowlistProxy | None = None
         try:
+            proxy_port = None
+            if spec.network_policy == "allowlist":
+                # Seatbelt has no network namespace, so the proxy listens on the
+                # host loopback and the profile admits exactly that port; every
+                # other outbound destination stays under (deny default).
+                proxy = AllowlistProxy(_network_allowlist_for_launch())
+                proxy_port = proxy.listen_loopback()
             profile = _macos_seatbelt_profile(
                 workdir = workdir,
                 private_tmp = private_tmp,
                 runtime_paths = runtime_paths,
+                proxy_port = proxy_port,
             )
             env = _sanitize_macos_environment(spec.env, workdir, private_tmp)
+            if proxy is not None:
+                env.update(proxy_environment(proxy.port, proxy.credential))
             return PreparedSandboxLaunch(
                 argv = (self._sandbox_exec, "-p", profile, "--", *spec.argv),
                 workdir = workdir,
@@ -1432,8 +1654,12 @@ class MacOSSeatbeltBackend:
                 timeout_seconds = spec.timeout_seconds,
                 close_fds = spec.close_fds,
                 terminate_descendants = spec.terminate_descendants,
+                cleanup_callbacks = [proxy.close] if proxy is not None else [],
+                network_audit = proxy.audit if proxy is not None else None,
             )
         except Exception:
+            if proxy is not None:
+                proxy.close()
             shutil.rmtree(private_tmp, ignore_errors = True)
             raise
 
@@ -1582,7 +1808,11 @@ def _sbpl_ancestor_filters(paths: tuple[str, ...]) -> list[str]:
 
 
 def _macos_seatbelt_profile(
-    *, workdir: str, private_tmp: str, runtime_paths: tuple[str, ...]
+    *,
+    workdir: str,
+    private_tmp: str,
+    runtime_paths: tuple[str, ...],
+    proxy_port: int | None = None,
 ) -> str:
     readable_paths = (*_MACOS_READ_ROOTS, *_MACOS_DEVICES, *runtime_paths, workdir, private_tmp)
     read_filters = [
@@ -1630,6 +1860,13 @@ def _macos_seatbelt_profile(
         "(allow system-socket (socket-domain AF_UNIX))",
         f"(allow network-bind (local unix-socket (subpath {temp_encoded})))",
         f"(allow network-outbound (remote unix-socket (subpath {temp_encoded})))",
+        *(
+            # Codex and Zed use the same rule for their loopback proxies; the
+            # profile stays (deny default) for every other remote endpoint.
+            [f'(allow network-outbound (remote ip "localhost:{int(proxy_port)}"))']
+            if proxy_port
+            else []
+        ),
         "(allow sysctl-read " + " ".join(sysctl_filters) + ")",
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup",
@@ -2261,7 +2498,11 @@ def _with_limited_capability(capability: SandboxCapability, *, force: bool) -> S
 
 
 def _capability_with_identity(
-    capability: SandboxCapability, *, environment: str, fingerprint: str
+    capability: SandboxCapability,
+    *,
+    environment: str,
+    fingerprint: str,
+    network_allowlist_supported: bool = False,
 ) -> SandboxCapability:
     available = capability.qualified if capability.available is None else capability.available
     protection_state = capability.protection_state if available else "unavailable"
@@ -2291,6 +2532,12 @@ def _capability_with_identity(
         remediation = capability.remediation
     else:
         remediation = _GENERIC_REMEDIATION
+    if available and network_allowlist_supported:
+        network_policies: tuple[str, ...] = ("deny", "allowlist")
+        network_allowlist = _network_allowlist_hosts()
+    else:
+        network_policies = ("deny",)
+        network_allowlist = ()
     return replace(
         capability,
         available = available,
@@ -2301,6 +2548,8 @@ def _capability_with_identity(
         environment_fingerprint = fingerprint,
         remediation = remediation,
         retryable = capability.transient,
+        network_policies = network_policies,
+        network_allowlist = network_allowlist,
     )
 
 
@@ -2338,6 +2587,9 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
             backend.probe(),
             environment = _environment_class(),
             fingerprint = current_fingerprint,
+            network_allowlist_supported = bool(
+                getattr(backend, "supports_network_allowlist", False)
+            ),
         )
         result = _with_limited_capability(result, force = force)
         if not result.transient:
@@ -2433,6 +2685,8 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise SandboxUnavailableError(
             "tool launches must close inherited descriptors and own descendant cleanup"
         )
+    if spec.network_policy not in NETWORK_POLICIES:
+        raise SandboxUnavailableError(f"unknown network policy: {spec.network_policy!r}")
     canonical = replace(spec, workdir = os.path.realpath(spec.workdir))
     backend = _platform_backend()
 
@@ -2461,6 +2715,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             probe_generation = identity.probe_generation,
             os_isolation = False,
             retained_safeguards = _FULL_SAFEGUARDS,
+            network_policy = "unrestricted",
         )
         return PreparedSandboxLaunch(
             argv = canonical.argv,
@@ -2477,6 +2732,12 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
     capability = capability_snapshot()
 
     if canonical.requested_mode == "limited":
+        if canonical.network_policy != "deny":
+            # Limited has no OS boundary, so a proxy would be advisory only; the
+            # request is refused rather than recorded as enforced.
+            raise SandboxUnavailableError(
+                "the network allowlist requires OS isolation; Limited mode cannot enforce it"
+            )
         if capability.available:
             raise SandboxUnavailableError(
                 "OS isolation is available; Limited mode is not authorized for this capability generation"
@@ -2543,6 +2804,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             os_isolation = False,
             retained_safeguards = _LIMITED_SAFEGUARDS,
             limitations = limitations,
+            network_policy = "unrestricted",
         )
         return PreparedSandboxLaunch(
             argv = canonical.argv,
@@ -2560,6 +2822,14 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise SandboxUnavailableError(
             f"OS_ISOLATION_UNAVAILABLE: {capability.reason}. {capability.remediation}"
         )
+    if canonical.network_policy == "allowlist" and "allowlist" not in capability.network_policies:
+        raise SandboxUnavailableError(
+            f"the network allowlist is not available with {capability.backend}; "
+            "run with network access off or use Full access"
+        )
+    allowlist_hosts = (
+        _network_allowlist_for_launch().hosts if canonical.network_policy == "allowlist" else ()
+    )
     try:
         # A backend with more than one profile (Windows LPAC or its AppContainer
         # fallback) prepares the profile the capability was recorded with, so a
@@ -2585,5 +2855,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         os_isolation = True,
         retained_safeguards = (*_LIMITED_SAFEGUARDS, "os_isolation"),
         limitations = capability.limitations,
+        network_policy = canonical.network_policy,
+        network_allowlist = allowlist_hosts,
     )
     return prepared

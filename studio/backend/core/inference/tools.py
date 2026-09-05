@@ -10054,30 +10054,77 @@ _LIMITED_TOOL_DESCRIPTION_PREFIX = (
 )
 
 
-def apply_os_isolated_tool_descriptions(tools: list[dict]) -> list[dict]:
-    """Name the shell that actually runs inside the Windows sandbox.
+_NETWORK_ALLOWLIST_NOTE = (
+    " Outbound network access is limited to HTTPS (port 443) through a local proxy that"
+    " admits only these hosts: {hosts}. Connections to any other host, to an IP address,"
+    " or over plain http:// are refused; refused hosts are listed at the end of the"
+    " tool output. pip, git, curl, requests and huggingface_hub pick up the proxy"
+    " from the standard HTTPS_PROXY environment variables automatically."
+)
 
-    The module-level terminal description promises Git bash whenever the host
-    has one, but an OS-isolated launch on Windows runs cmd (see _get_shell_cmd),
-    so a Required-mode turn on such a host gets the cmd note instead. Every
-    other platform, mode and tool is returned untouched, and a list without the
-    terminal tool is returned as-is.
+
+def _requested_network_policy(network_policy: str | None, full_access: bool) -> str:
+    """Map the caller's per-session choice to the launch plan's policy.
+
+    Full access has the host network and never carries an allowlist; anything
+    unknown is passed through unchanged so prepare_tool_launch refuses it
+    explicitly instead of a typo silently meaning "deny".
     """
-    if sys.platform != "win32" or not _windows_bash():
+    if full_access or not network_policy:
+        return "deny"
+    return str(network_policy)
+
+
+def _network_denied_trailer(prepared_launch) -> str:
+    """Name the hosts the sandbox network allowlist refused during this launch."""
+    audit = getattr(prepared_launch, "network_audit", None)
+    if audit is None:
+        return ""
+    try:
+        from core.inference.network_proxy import format_denied_trailer
+
+        return format_denied_trailer(audit)
+    except Exception:  # noqa: BLE001 - a reporting failure must not fail the tool
+        return ""
+
+
+def apply_os_isolated_tool_descriptions(
+    tools: list[dict], network_allowlist: tuple[str, ...] | list[str] | None = None
+) -> list[dict]:
+    """Describe what actually runs inside the OS sandbox this turn.
+
+    Two adjustments, both no-ops when they do not apply. On Windows with Git
+    bash installed, the terminal description promises bash but an OS-isolated
+    launch runs cmd (see _get_shell_cmd), so the cmd note replaces the bash
+    note. When the session enabled the network allowlist, the python and
+    terminal descriptions gain the list of reachable hosts so the model asks
+    for what the proxy admits instead of guessing why a download failed.
+    A list without either tool is returned as-is.
+    """
+    swap_shell = sys.platform == "win32" and bool(_windows_bash())
+    hosts = tuple(str(host) for host in (network_allowlist or ()) if str(host).strip())
+    if not swap_shell and not hosts:
         return tools
     out: list[dict] = []
     swapped = False
     for tool in tools:
         function = tool.get("function") if isinstance(tool, dict) else None
         name = function.get("name") if isinstance(function, dict) else None
-        if name != "terminal":
+        if name not in ("python", "terminal"):
             out.append(tool)
             continue
-        description = str(function.get("description", ""))
-        if _TERMINAL_BASH_NOTE in description:
-            description = description.replace(_TERMINAL_BASH_NOTE, _TERMINAL_CMD_NOTE)
-        else:
-            description = description + _TERMINAL_CMD_NOTE
+        original = str(function.get("description", ""))
+        description = original
+        if name == "terminal" and swap_shell:
+            if _TERMINAL_BASH_NOTE in description:
+                description = description.replace(_TERMINAL_BASH_NOTE, _TERMINAL_CMD_NOTE)
+            else:
+                description = description + _TERMINAL_CMD_NOTE
+        if hosts:
+            description = description + _NETWORK_ALLOWLIST_NOTE.format(hosts = ", ".join(hosts))
+        if description == original:
+            out.append(tool)
+            continue
         out.append({**tool, "function": {**function, "description": description}})
         swapped = True
     return out if swapped else tools
@@ -10563,6 +10610,7 @@ def execute_tool(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10736,6 +10784,7 @@ def execute_tool(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10752,6 +10801,7 @@ def execute_tool(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -16462,6 +16512,7 @@ def _python_exec(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -16555,6 +16606,7 @@ def _python_exec(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
+                network_policy = _requested_network_policy(network_policy, full_access),
             )
         )
         launch_argv = prepared_launch.argv
@@ -16650,6 +16702,7 @@ def _python_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended += _network_denied_trailer(prepared_launch)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16683,6 +16736,7 @@ def _python_exec(
             else "(no output)" + hint
         )
 
+        result += _network_denied_trailer(prepared_launch)
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
         # whatever the next new chat wrote there.
@@ -16725,6 +16779,7 @@ def _bash_exec(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
@@ -16806,6 +16861,7 @@ def _bash_exec(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
+                network_policy = _requested_network_policy(network_policy, full_access),
             )
         )
         launch_argv = prepared_launch.argv
@@ -16893,6 +16949,7 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            ended += _network_denied_trailer(prepared_launch)
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
@@ -16913,6 +16970,7 @@ def _bash_exec(
             if result.strip()
             else "(no output)" + hint
         )
+        result += _network_denied_trailer(prepared_launch)
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, None, call_token)
