@@ -549,3 +549,17 @@ class TestAParkIsNotAStall:
         assert backend._server_park_grace() is False
         monkeypatch.setattr(llama_stats, "scrape_llama_metrics", lambda *_a, **_k: None)
         assert backend._server_park_grace() is False
+
+
+class TestAParkedSlotHoldsNoCells:
+    def test_read_slot_occupancy_skips_parked_slots(self):
+        from core.inference.llama_preemption import read_slot_occupancy
+
+        slots = [
+            {"id": 0, "is_processing": True, "is_preempted": False, "n_prompt_tokens": 3000},
+            {"id": 1, "is_processing": True, "is_preempted": True, "n_prompt_tokens": 4000},
+            {"id": 2, "is_processing": False, "is_preempted": False, "n_prompt_tokens_cache": 500},
+        ]
+        occupancy = read_slot_occupancy(lambda: slots)
+        assert occupancy["resident"] == 3500, "the parked sequence lives in host RAM"
+        assert occupancy["idle_tokens"] == 500
