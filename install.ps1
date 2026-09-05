@@ -5153,7 +5153,16 @@ exit 0
                 $script:WoaNativeCudaTorch = $false
             } else {
                 try {
-                    Copy-Item -LiteralPath $srcWheel -Destination (Join-Path $WoaWheelDir $wheelName) -Force -ErrorAction Stop
+                    # The third of the three staging copies, and the same reason: pointing
+                    # UNSLOTH_PYARROW_WHEEL at the already-cached wheel under
+                    # $StudioHome\woa\wheels is a supported way to reuse it offline, and
+                    # Copy-Item refuses to overwrite an item with itself. Here the failure
+                    # was not fatal but disabled native mode after the ARM64 venv had been
+                    # chosen, leaving the run on a CUDA index with no win_arm64 torch.
+                    $_woaLocalDest = Join-Path $WoaWheelDir $wheelName
+                    if (-not (Test-WoaSamePath $srcWheel $_woaLocalDest)) {
+                        Copy-Item -LiteralPath $srcWheel -Destination $_woaLocalDest -Force -ErrorAction Stop
+                    }
                     $script:WoaPyarrowWheelName = $wheelName
                     substep "windows on arm: using the supplied pyarrow wheel $wheelName"
                 } catch {

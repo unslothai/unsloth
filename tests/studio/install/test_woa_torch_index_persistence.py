@@ -2298,14 +2298,29 @@ class TestAWheelhouseThatIsTheStagingDirectory:
     itself, and under $ErrorActionPreference = "Stop" that aborted the whole install.
     """
 
-    def test_both_staging_copies_are_guarded(self):
+    def test_every_staging_copy_is_guarded(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
             "if (-not (Test-WoaSamePath $found.FullName $_woaDest)) {" in text
-        ), "the pyarrow copy, which is not inside a try and so was fatal"
+        ), "the wheelhouse pyarrow copy, which is not inside a try and so was fatal"
         assert (
             "if (-not (Test-WoaSamePath $wheel.FullName $_woaExtraDest)) {" in text
-        ), "and the extra-wheel loop, which swallowed the error but miscounted"
+        ), "the extra-wheel loop, which swallowed the error but miscounted"
+        assert (
+            "if (-not (Test-WoaSamePath $srcWheel $_woaLocalDest)) {" in text
+        ), (
+            "and the supplied-wheel copy, where the failure was caught but disabled "
+            "native mode after the ARM64 venv had already been chosen"
+        )
+
+    def test_no_staging_copy_is_left_unguarded(self):
+        """Counted, so a fourth copy added later cannot quietly skip the guard."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("# Put the win_arm64 pyarrow wheel where uv and pip can both find it")
+        staging = text[start : text.index("$WoaOverrides = Join-Path $WoaDir", start)]
+        copies = staging.count("Copy-Item -LiteralPath")
+        guards = staging.count("Test-WoaSamePath")
+        assert copies == guards == 3, f"{copies} copies, {guards} guards"
 
     @requires_pwsh
     @pytest.mark.parametrize(
