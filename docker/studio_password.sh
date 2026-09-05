@@ -23,14 +23,15 @@ STATE="${UNSLOTH_STUDIO_PASSWORD_STATE:-}"
 
 # Same rules as studio/backend/auth/bootstrap_timeout.py: unset, blank or malformed
 # means the 3600 s default (a typo must not hide the note), 0 or negative disables.
-# Only the surrounding whitespace is stripped, as int() does: "- 5" is malformed.
+# Only the surrounding whitespace is stripped, as int() does: "- 5" is malformed,
+# "1_000" is 1000 (single underscores between digits).
 raw="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}"
 raw="${raw#"${raw%%[![:space:]]*}"}"
 raw="${raw%"${raw##*[![:space:]]}"}"
-if [[ "$raw" =~ ^-[0-9]+$ ]]; then
-    TIMEOUT=0
-elif [[ "$raw" =~ ^\+?[0-9]+$ ]]; then
-    TIMEOUT=$(( 10#${raw#+} ))
+if [[ "$raw" =~ ^[+-]?[0-9]+(_[0-9]+)*$ ]]; then
+    digits="${raw#[+-]}"
+    digits="${digits//_/}"
+    if [[ "$raw" == -* ]]; then TIMEOUT=0; else TIMEOUT=$(( 10#$digits )); fi
 else
     TIMEOUT=3600
 fi

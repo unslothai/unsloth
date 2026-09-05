@@ -50,17 +50,23 @@ def _clean_env(bin_dir: Path) -> dict:
     return e
 
 
-def _auth_db(home: Path, *, must_change: int | None) -> None:
-    """auth.db as the backend creates it; None = the file exists but no admin row."""
+def _auth_db(home: Path, *, must_change: int | None, legacy: bool = False) -> None:
+    """auth.db as the backend creates it; None = the file exists but no admin row;
+    legacy = the schema from before must_change_password existed."""
     auth = home / "auth"
     auth.mkdir(exist_ok = True)
     conn = sqlite3.connect(auth / "auth.db")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS auth_user (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, "
-        "password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, jwt_secret TEXT NOT NULL, "
-        "must_change_password INTEGER NOT NULL DEFAULT 0)"
+        "password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, jwt_secret TEXT NOT NULL"
+        + (")" if legacy else ", must_change_password INTEGER NOT NULL DEFAULT 0)")
     )
-    if must_change is not None:
+    if legacy:
+        conn.execute(
+            "INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret) "
+            "VALUES ('unsloth', 's', 'h', 'j')"
+        )
+    elif must_change is not None:
         conn.execute(
             "INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret, must_change_password) "
             "VALUES ('unsloth', 's', 'h', 'j', ?)",
@@ -183,6 +189,7 @@ def test_a_malformed_timeout_keeps_the_note_like_the_backend_does(tmp_path: Path
         ("30", "30 seconds"),
         ("90", "1 minute 30 seconds"),
         ("61", "1 minute 1 second"),
+        ("1_000", "16 minutes 40 seconds"),
     ],
 )
 def test_the_timeout_is_reported_like_the_backend_formats_it(tmp_path: Path, value: str, text: str):
@@ -241,7 +248,7 @@ def _run_wrapper(
 @behavioural
 @pytest.mark.parametrize(
     ("db", "stored"),
-    [("none", False), ("empty", False), ("seeded", False), ("changed", True)],
+    [("none", False), ("empty", False), ("seeded", False), ("changed", True), ("legacy", True)],
 )
 def test_stored_means_an_admin_row_whose_password_was_changed(
     tmp_path: Path, db: str, stored: bool
@@ -255,6 +262,9 @@ def test_stored_means_an_admin_row_whose_password_was_changed(
         _auth_db(tmp_path, must_change = 1)
     elif db == "changed":
         _auth_db(tmp_path, must_change = 0)
+    elif db == "legacy":
+        # the CLI migrates this row with default 0 and then rejects an initial password
+        _auth_db(tmp_path, must_change = None, legacy = True)
     res = _run_wrapper(tmp_path, args = ["--stored"])
     assert (res.returncode == 0) is stored, res.stderr
 
@@ -282,6 +292,15 @@ def test_a_respawn_while_the_seeded_password_is_still_active_retries_it(tmp_path
     _auth_db(tmp_path, must_change = 1)
     res = _run_wrapper(tmp_path)
     assert res.stdout.startswith("hunter22hunter|"), res.stdout + res.stderr
+
+
+@behavioural
+def test_the_staged_password_reaches_the_cli_byte_for_byte(tmp_path: Path):
+    """A secret injector may append a newline; the CLI, not the wrapper, decides what
+    to make of it."""
+    (tmp_path / "initial").write_text("hunter22\n", encoding = "utf-8")
+    res = _run_wrapper(tmp_path)
+    assert res.stdout == "hunter22\n|studio -H 0.0.0.0 -p 8000\n", repr(res.stdout)
 
 
 @behavioural
@@ -371,6 +390,9 @@ def test_the_image_wires_the_scripts_in():
     assert "autorestart=false" in block and "stdout_logfile=/dev/stdout" in block
     studio = conf.split("[program:studio]", 1)[1].split("[program:", 1)[0]
     assert "command=/usr/local/bin/unsloth-studio-run" in studio
+    # the bootstrap timeout ends Studio with exit 0; autorestart=true would bring it
+    # straight back with the same default credential and a fresh timer
+    assert "autorestart=unexpected" in studio and "exitcodes=0" in studio
     dockerfile = DOCKERFILE.read_text(encoding = "utf-8")
     # the Studio build uses context ./docker behind a deny-all .dockerignore
     allow = (DOCKER / ".dockerignore").read_text(encoding = "utf-8").splitlines()
