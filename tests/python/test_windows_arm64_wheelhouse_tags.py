@@ -202,8 +202,12 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
     """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel."""
 
     def _wheelhouse(self, tmp_path, *specs):
-        for name, py, abi, plat in specs:
-            (tmp_path / f"{name}-1.0.0-{py}-{abi}-{plat}.whl").write_bytes(b"")
+        # A spec may carry its own version, because a blocker with a stated floor is only
+        # hosted-and-usable at or above it.
+        for spec in specs:
+            name, py, abi, plat = spec[:4]
+            version = spec[4] if len(spec) > 4 else "1.0.0"
+            (tmp_path / f"{name}-{version}-{py}-{abi}-{plat}.whl").write_bytes(b"")
         return tmp_path
 
     def _skips(self, ips, tmp_path, monkeypatch, *specs):
@@ -233,9 +237,28 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
             tmp_path,
             monkeypatch,
             ("tensorboard", "py3", "none", "any"),
-            ("grpcio", tag, tag, _this_platform()),
+            # At tensorboard's own floor: it requires grpcio>=1.74.0, so an older hosted
+            # grpcio would be rejected by its metadata after the skip had been dropped.
+            ("grpcio", tag, tag, _this_platform(), "1.74.0"),
         )
         assert "tensorboard" not in skips
+
+    def test_a_blocker_below_the_floor_keeps_the_skip(self, ips, tmp_path, monkeypatch):
+        """tensorboard 2.21.0 requires grpcio>=1.74.0, and nothing else can serve it here.
+
+        Hosting 1.60.0 used to lift the skip on the name alone; the extras pass then failed
+        on tensorboard's own metadata instead of leaving one optional feature disabled.
+        """
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        skips = self._skips(
+            ips,
+            tmp_path,
+            monkeypatch,
+            ("tensorboard", "py3", "none", "any"),
+            ("grpcio", tag, tag, _this_platform(), "1.60.0"),
+        )
+        assert "tensorboard" in skips
 
     def test_librosa_needs_numba_as_well_as_llvmlite(self, ips, tmp_path, monkeypatch):
         major, minor = sys.version_info[:2]
@@ -348,19 +371,64 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         finally:
             ips._find_links_wheel_names.cache_clear()
 
-    def test_a_blocker_with_no_line_of_its_own_is_still_name_only(self, ips, wheelhouse):
-        """grpcio arrives transitively -- extras.txt has no grpcio line to satisfy."""
+    def test_a_blocker_with_no_line_of_its_own_is_checked_against_its_floor(self, ips, wheelhouse):
+        """grpcio arrives transitively, so extras.txt has no grpcio line to satisfy.
+
+        That absence used to mean any hosted version counted. It does not: the floor comes
+        from the optional package's own metadata, which is what rejects a too-old blocker
+        after the skip has been dropped.
+        """
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
         (wheelhouse / _wheel("grpcio", tag, tag, version = "1.60.0")).write_bytes(b"")
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
-            assert "tensorboard" not in ips._windows_arm64_skip_packages(
-                req
-            ), "its only blocker is hosted, and tensorboard itself is pure Python"
+            assert "tensorboard" in ips._windows_arm64_skip_packages(req), (
+                "grpcio 1.60.0 is below tensorboard's grpcio>=1.74.0"
+            )
         finally:
             ips._find_links_wheel_names.cache_clear()
+
+    def test_a_blocker_at_its_floor_lifts_the_skip(self, ips, wheelhouse):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (wheelhouse / _wheel("grpcio", tag, tag, version = "1.74.0")).write_bytes(b"")
+        req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "tensorboard" not in ips._windows_arm64_skip_packages(req)
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_a_blocker_with_no_floor_keeps_the_name_only_answer(self, ips, wheelhouse):
+        """llvmlite has no entry: nothing states a floor for it, so a guess is not made."""
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        for dist, version in (("llvmlite", "0.1.0"), ("numba", "0.62.0")):
+            (wheelhouse / _wheel(dist, tag, tag, version = version)).write_bytes(b"")
+        req = self._req(wheelhouse.parent, "librosa==0.11.0\n")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "librosa" not in ips._windows_arm64_skip_packages(req)
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_the_floors_name_the_pins_they_were_read_from(self, ips):
+        """A bump to extras.txt has to be a prompt to re-read the metadata.
+
+        The floors come from the optional packages' own requirements, which only that
+        version states. Recording the provenance turns a silent drift into a failure here.
+        """
+        extras = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
+            encoding = "utf-8"
+        )
+        for blocker, (specifier, package, version) in ips.WINDOWS_ARM64_BLOCKER_FLOORS.items():
+            assert re.search(rf"(?m)^{re.escape(package)}=={re.escape(version)}\b", extras), (
+                f"{blocker}'s floor {specifier} was read from {package}=={version}, which "
+                f"extras.txt no longer pins -- re-read that release's metadata"
+            )
+            assert ips._canonical_dist_name(blocker) == blocker, "keys are canonical"
 
     def test_no_requirements_file_keeps_the_old_answer(self, ips, wheelhouse):
         major, minor = sys.version_info[:2]
@@ -612,3 +680,47 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
         assert "if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:" in source
         setup = (REPO_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
         assert "-not $_pinnedIdx) {" in setup, "setup.ps1's own preservation guard moved"
+
+
+class TestOnlyTheResolversOwnLocationsCount:
+    """uv does not read PIP_FIND_LINKS, so a wheel hosted only there is not available.
+
+    Counting it dropped the package off the skip list and the uv resolve that followed
+    could not see the wheel at all, reaching the sdist the skip exists to avoid. pip cannot
+    be the resolver on this path either: pip_install refuses the fallback once the win_arm64
+    overrides are in force, because it has nothing to translate them into.
+    """
+
+    @staticmethod
+    def _skip_with(ips, tmp_path, monkeypatch, uv_value, pip_value):
+        tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        (tmp_path / _wheel("tiktoken", tag, tag, _this_platform(), "0.13.0")).write_bytes(b"")
+        for name, value in (("UV_FIND_LINKS", uv_value), ("PIP_FIND_LINKS", pip_value)):
+            if value is None:
+                monkeypatch.delenv(name, raising = False)
+            else:
+                monkeypatch.setenv(name, value)
+        req = tmp_path / "extras.txt"
+        req.write_text("tiktoken==0.13.0\n", encoding = "utf-8")
+        ips._find_links_wheel_versions.cache_clear()
+        try:
+            return ips._windows_arm64_skip_packages(req = req)
+        finally:
+            ips._find_links_wheel_versions.cache_clear()
+
+    def test_a_pip_only_location_does_not_unskip(self, ips, tmp_path, monkeypatch):
+        skips = self._skip_with(ips, tmp_path, monkeypatch, None, str(tmp_path))
+        assert "tiktoken" in skips, (
+            "the wheel is only where pip would look, and uv is what resolves here, so "
+            "counting it sends the resolve to an sdist that cannot build"
+        )
+
+    def test_a_uv_location_still_unskips(self, ips, tmp_path, monkeypatch):
+        skips = self._skip_with(ips, tmp_path, monkeypatch, str(tmp_path), None)
+        assert "tiktoken" not in skips
+
+    def test_install_ps1_sets_both_so_the_managed_wheelhouse_is_unaffected(self):
+        """The narrowing must not cost the path it was written for."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "UV_FIND_LINKS" in text and "PIP_FIND_LINKS" in text
+        assert '"UV_FIND_LINKS" = ","' in text, "and each keeps its own separator"

@@ -2959,7 +2959,7 @@ class TestTheWoaIndexOutlivesTheManifest:
 
     def test_the_marker_is_written_before_the_manifest_is_dropped(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        saved = text.index("Save-WoaTorchIndexMarker -IndexUrl $WinArm64TorchIndexUrl")
+        saved = text.index("Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex")
         dropped = text.index("$_ManifestDropped = $true")
         assert saved < dropped, (
             "written after the drop, the marker would not survive the very interruption "
@@ -3557,4 +3557,144 @@ class TestARebasedOptionPathKeepsItsQuoting:
             _function_source(INSTALL_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine")
         ) == normalized(
             _function_source(SETUP_PS1.read_text(encoding = "utf-8"), "Resolve-WoaOverrideLine")
+        )
+
+
+class TestTheMarkerRecordsTheIndexActuallyUsed:
+    """A generic pin never reached the marker, only the WoA chain did.
+
+    $_cudaIndexUrl prefers $PinnedTorchIndexUrl, but $WinArm64TorchIndexUrl -- the value
+    that was being saved -- consults only UNSLOTH_WOA_TORCH_INDEX_URL, the handover, the
+    manifest and the marker. So a run pinned elsewhere installed from the pin and then
+    recorded an NVIDIA channel it had not used, and the next fresh shell went back to it.
+    """
+
+    def test_the_saved_value_prefers_the_pin(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$_woaMarkerIndex = Get-PinnedTorchIndexUrl" in text
+        assert "if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }" in text
+        assert "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex" in text
+
+    def test_the_pin_is_read_before_it_is_used(self):
+        """Get-PinnedTorchIndexUrl is a function, so only its DEFINITION has to precede this."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert text.index("function Get-PinnedTorchIndexUrl") < text.index(
+            "$_woaMarkerIndex = Get-PinnedTorchIndexUrl"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "pinned, chain, expected, why",
+        [
+            ("", "https://pypi.nvidia.com/nvtorch_oot", "https://pypi.nvidia.com/nvtorch_oot",
+             "no pin: the WoA chain is what the run uses, so it is what is recorded"),
+            ("https://pypi.nvidia.com/nvtorch_oot_nightly", "https://pypi.nvidia.com/nvtorch_oot",
+             "https://pypi.nvidia.com/nvtorch_oot_nightly",
+             "a pin to another NVIDIA channel replaces the recorded one"),
+            ("https://download.pytorch.org/whl/cu130", "https://pypi.nvidia.com/nvtorch_oot", "",
+             "a pin to a recognised non-NVIDIA index clears it rather than leaving a lie"),
+            ("https://mirror.corp.test/simple", "https://pypi.nvidia.com/nvtorch_oot", "",
+             "and so does a private mirror"),
+        ],
+    )
+    def test_what_ends_up_on_disk(self, tmp_path, pinned, chain, expected, why):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                f"function Get-PinnedTorchIndexUrl {{ return '{pinned}' }}",
+                f"$WinArm64TorchIndexUrl = '{chain}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                _function_source(text, "Get-WoaTorchIndexMarker"),
+                # A previous run recorded the public channel; this run may not inherit it.
+                "Save-WoaTorchIndexMarker -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'",
+                "$_woaMarkerIndex = Get-PinnedTorchIndexUrl",
+                "if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }",
+                "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex",
+                "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
+
+
+class TestThePypiPyarrowWheelIsPinnedToo:
+    """"PyPI has a compatible wheel" is not "the newest release is one".
+
+    The probe cleared the native route on a wheel it then forgot, and the override was
+    emitted only for a staged file. With just pyarrow>=21.0.0 in force, uv takes the newest
+    release, and if that one ships only an sdist for this interpreter the resolve builds
+    Arrow from source -- the outcome this preflight exists to prevent.
+    """
+
+    def test_the_probe_records_what_it_matched(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("function Get-WoaPyarrowSource")
+        end = text.index("function Test-WoaNvidiaPresent", start)
+        body = text[start:end]
+        assert '$script:WoaPyarrowWheelName = $match.Value' in body, (
+            "the PyPI branch returns without naming the wheel it cleared"
+        )
+        assert "$script:WoaPyarrowWheelName = $null" in body, (
+            "and it clears the name on entry, so a re-probe cannot inherit the first answer"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "body, expected_pin, why",
+        [
+            (
+                "pyarrow-24.0.0-cp313-cp313-win_arm64.whl",
+                "24.0.0",
+                "the wheel that cleared the route is the one pinned",
+            ),
+            (
+                "pyarrow-19.0.1-cp313-cp313-win_arm64.whl",
+                "",
+                "below the floor: nothing is cleared, so nothing is pinned",
+            ),
+        ],
+    )
+    def test_the_recorded_name_yields_the_pin(self, body, expected_pin, why):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                "function substep { param($m, $c) }",
+                "function Join-UrlPath { param($Base, $Path) return $Base }",
+                "function Test-WoaWheelhouseIsLocal { $false }",
+                f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
+                "$script:WoaWheelhouse = ''",
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
+                _ps_function(INSTALL_PS1, "Test-ZipArchiveReadable"),
+                _ps_function(INSTALL_PS1, "Get-WoaPyarrowSource"),
+                "$null = Get-WoaPyarrowSource -PythonMinor '3.13'",
+                # The emission, verbatim from the override block.
+                "$pin = ''",
+                "if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName -match '^pyarrow-([^-]+)-') {",
+                "    $pin = $Matches[1] }",
+                "Write-Output ('[' + $pin + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 180,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expected_pin, why
+
+    def test_the_override_is_emitted_for_every_source(self):
+        """The pin is keyed on the recorded name, which all three routes now set."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("$script:WoaPyarrowWheelName = ") == 6, (
+            "the script-level init, the per-probe reset, and one per source: pypi, the "
+            "supplied UNSLOTH_PYARROW_WHEEL, the wheelhouse directory, the wheelhouse index"
         )

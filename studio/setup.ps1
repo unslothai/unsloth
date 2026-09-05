@@ -5118,7 +5118,16 @@ if ($WinArm64TorchIndexUrl) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
     # Written BEFORE the manifest is dropped below, which is the whole point: from here on
     # an interrupted run still leaves the next one able to find this index.
-    Save-WoaTorchIndexMarker -IndexUrl $WinArm64TorchIndexUrl
+    #
+    # What gets recorded is the index the torch steps will USE, which is the generic pin
+    # when there is one -- $_cudaIndexUrl prefers it, and $WinArm64TorchIndexUrl above never
+    # consults it. Recording the WoA chain instead left a marker naming an NVIDIA channel
+    # the run had not installed from, and the next fresh shell read it and went back there.
+    # An unrecordable pin clears the marker rather than leaving that lie behind, which is
+    # what Save-WoaTorchIndexMarker does with anything outside NVIDIA's own channels.
+    $_woaMarkerIndex = Get-PinnedTorchIndexUrl
+    if (-not $_woaMarkerIndex) { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
+    Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
 Restore-WoaResolverEnvironment
 

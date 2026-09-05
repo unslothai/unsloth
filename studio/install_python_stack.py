@@ -5461,14 +5461,21 @@ def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
     failure the skip list exists to prevent, so the caller checks the pin.
     """
     versions: "dict[str, set[str]]" = {}
-    # Each variable is split the way the tool that reads it splits it. A shared class that
-    # also broke on whitespace tore "C:\\private wheels" -- one directory to uv, which
-    # separates UV_FIND_LINKS on commas -- into two nonexistent paths, so every wheel an
-    # air-gapped user hosted there went unseen and stayed on the skip list.
-    for value, separator in (
-        (os.environ.get("UV_FIND_LINKS"), ","),
-        (os.environ.get("PIP_FIND_LINKS"), r"\s+"),
-    ):
+    # UV_FIND_LINKS ONLY, because uv is the only resolver that reaches this list. uv does
+    # not consume PIP_FIND_LINKS (`uv pip install --help` documents --find-links as
+    # `[env: UV_FIND_LINKS]`), and a wheel supplied only there was counted as available,
+    # dropped off the skip list, and then invisible to the uv resolve that followed, which
+    # reached the sdist the skip exists to avoid. Reading it is not a safe compromise
+    # either: counting a wheel no resolver on this path can see is the bug itself.
+    #
+    # pip cannot be the resolver here. pip_install refuses the fallback outright once the
+    # win_arm64 overrides are in force, because pip has nothing to translate them into, so
+    # a PIP_FIND_LINKS-only caller never reaches a pip resolve to use it. install.ps1 sets
+    # both variables regardless, so the managed wheelhouse is unaffected.
+    #
+    # Split on commas, the way uv reads it: a class that also broke on whitespace tore
+    # "C:\\private wheels", one directory to uv, into two nonexistent paths.
+    for value, separator in ((os.environ.get("UV_FIND_LINKS"), ","),):
         for entry in re.split(separator, value or ""):
             entry = entry.strip().strip('"')
             if not entry or "://" in entry:
@@ -5652,6 +5659,25 @@ WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
 }
 
 
+# The blocker versions the optional packages' OWN metadata demands, read off the releases
+# extras.txt pins. A wheelhouse can host a tag-compatible blocker that is simply too old:
+# the skip gets dropped, and then the optional package's metadata rejects the hosted
+# version. Nothing can replace it on this platform, so the whole extras pass fails rather
+# than one feature staying disabled, which is the outcome the skip list exists to produce.
+#
+# {blocker: (specifier, package it was read from, that package's pinned version)}. The
+# provenance is recorded so a bump to extras.txt is a prompt to re-read the metadata rather
+# than a silent drift; a test pins these to the versions actually pinned there.
+#
+# llvmlite has no entry on purpose: neither librosa nor openai-whisper names it, it arrives
+# through numba, and numba couples to it by an exact range per release. A floor invented
+# here would be a guess, so that one keeps the name-only answer it always had.
+WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
+    "grpcio": (">=1.74.0", "tensorboard", "2.21.0"),
+    "numba": (">=0.51.0", "librosa", "0.11.0"),
+}
+
+
 def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
     """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
     hosting a wheel is all it takes to re-enable one of these features here.
@@ -5673,8 +5699,14 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
             return False
         clauses = [clause for clause in pins.get(canonical, []) if clause]
         if not clauses:
-            # No direct line to satisfy -- a transitive blocker, or an unpinned entry.
-            return True
+            # No direct line to satisfy -- a transitive blocker, or an unpinned entry. A
+            # blocker with a known floor is still checked against it: it has no row here
+            # precisely because nothing installs it directly, which is what let any hosted
+            # version count.
+            floor = WINDOWS_ARM64_BLOCKER_FLOORS.get(canonical)
+            if floor is None:
+                return True
+            clauses = [floor[0]]
         verdicts = [_version_satisfies(v, c) for v in versions for c in clauses]
         if any(verdict is True for verdict in verdicts):
             return True

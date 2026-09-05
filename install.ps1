@@ -307,7 +307,7 @@ function Install-UnslothStudio {
     }
     $script:WoaPyarrowWheel = $null      # local path once provisioned
     $script:WoaPyarrowSource = $null     # "pypi" | "wheelhouse" | "local"
-    $script:WoaPyarrowWheelName = $null  # staged wheel filename, for the version pin
+    $script:WoaPyarrowWheelName = $null  # the wheel the pin is written from, staged or on PyPI
 
     function Test-ZipArchiveReadable {
         param([string]$Path)
@@ -591,6 +591,10 @@ function Install-UnslothStudio {
         param([string]$PythonMinor, [string]$AbiTag = "")
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
+        # Cleared on entry: this can run twice, once to decide the route and again for the
+        # interpreter actually chosen, and a name left over from the first answer would pin
+        # a version the second one never cleared.
+        $script:WoaPyarrowWheelName = $null
         # Tags AND readability: staging trusts the .whl name without opening it, so any file at all used
         # to select native and fail at resolution.
         if ($env:UNSLOTH_PYARROW_WHEEL) {
@@ -613,7 +617,14 @@ function Install-UnslothStudio {
         try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
-                if (Test-WoaPyarrowWheelUsable -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return "pypi" }
+                if (Test-WoaPyarrowWheelUsable -Name $match.Value -PyTag $tag -AbiTag $AbiTag) {
+                    # Recorded so the override pins THIS wheel. "PyPI has one" is not enough:
+                    # a newer release that ships only an sdist for this interpreter still
+                    # satisfies pyarrow>=21.0.0, and uv takes the newest, which is the Arrow
+                    # source build this whole preflight exists to avoid.
+                    $script:WoaPyarrowWheelName = $match.Value
+                    return "pypi"
+                }
             }
         } catch {}
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
@@ -5253,7 +5264,8 @@ exit 0
         $WoaOverrideLines += 'torch>=2.4'
         $WoaOverrideLines += 'torchvision>=0.19'
         # Without this the resolver takes the newest pyarrow on PyPI, an sdist here, and builds Arrow from
-        # source. Skipped when PyPI serves a win_arm64 wheel.
+        # source. Emitted for the PyPI route too: that route means a compatible WHEEL exists, not that
+        # the newest release is one.
         if ($script:WoaPyarrowWheelName -and $script:WoaPyarrowWheelName -match '^pyarrow-([^-]+)-') {
             $WoaOverrideLines += "pyarrow==$($Matches[1])"
         }
