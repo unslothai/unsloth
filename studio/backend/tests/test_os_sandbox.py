@@ -1536,6 +1536,63 @@ def test_seccomp_fallback_program_denies_nested_user_namespaces():
             assert index + 1 + jt < len(fallback_ops) and index + 1 + jf < len(fallback_ops)
 
 
+def _run_seccomp_program(program: bytes, *, nr: int, arch: int, arg0: int = 0) -> str:
+    """Interpret the classic-BPF seccomp program the way the kernel would, for one syscall."""
+    ops = [struct.unpack_from("=HBBI", program, i) for i in range(0, len(program), 8)]
+    data = {0: nr, 4: arch, 16: arg0 & 0xFFFFFFFF, 20: arg0 >> 32}
+    verdicts = {
+        0x80000000: "KILL",
+        0x7FFF0000: "ALLOW",
+        0x00050000 | errno.EPERM: "EPERM",
+        0x00050000 | errno.ENOSYS: "ENOSYS",
+    }
+    accumulator = 0
+    pc = 0
+    for _ in range(64):
+        assert pc < len(ops), "program fell off its end"
+        code, jt, jf, k = ops[pc]
+        if code == 0x20:
+            accumulator = data[k]
+            pc += 1
+        elif code == 0x15:
+            pc += 1 + (jt if accumulator == k else jf)
+        elif code == 0x45:
+            pc += 1 + (jt if accumulator & k else jf)
+        elif code == 0x06:
+            return verdicts[k]
+        else:
+            raise AssertionError(f"unexpected BPF opcode {code:#x}")
+    raise AssertionError("program did not terminate")
+
+
+@pytest.mark.parametrize(
+    "machine, arch, syscalls",
+    [
+        ("x86_64", 0xC000003E, {"read": 0, "socket": 41, "socketpair": 53, "clone": 56, "unshare": 272}),
+        ("aarch64", 0xC00000B7, {"read": 63, "socket": 198, "socketpair": 199, "clone": 220, "unshare": 97}),
+    ],
+)
+def test_seccomp_programs_decide_each_syscall_as_documented(monkeypatch, machine, arch, syscalls):
+    monkeypatch.setattr(os_sandbox.platform, "machine", lambda: machine)
+    for block_userns in (False, True):
+        program = os_sandbox._linux_seccomp_program(block_userns = block_userns)
+        run = lambda nr, arg0 = 0, arch = arch: _run_seccomp_program(program, nr = nr, arch = arch, arg0 = arg0)
+        assert run(syscalls["read"], arch = 0x1234) == "KILL"
+        assert run(syscalls["read"]) == "ALLOW"
+        assert run(syscalls["socket"], 2) == "ALLOW"  # AF_INET
+        assert run(syscalls["socket"], os_sandbox._AF_VSOCK) == "EPERM"
+        assert run(syscalls["socketpair"], os_sandbox._AF_VSOCK) == "EPERM"
+        assert run(425) == "EPERM"  # io_uring_setup
+        if machine == "x86_64":
+            assert run(syscalls["read"] | 0x40000000) == "EPERM"  # x32 ABI bit
+        nested = "EPERM" if block_userns else "ALLOW"
+        assert run(syscalls["unshare"], os_sandbox._CLONE_NEWUSER) == nested
+        assert run(syscalls["clone"], os_sandbox._CLONE_NEWUSER | 17) == nested
+        assert run(435) == ("ENOSYS" if block_userns else "ALLOW")  # clone3
+        # A plain fork-style clone keeps working under the fallback filter.
+        assert run(syscalls["clone"], 17) == "ALLOW"
+
+
 @_LINUX_ONLY
 def test_apparmor_userns_restriction_gets_profile_remediation(monkeypatch, isolated_capability_cache):
     raw = os_sandbox.SandboxCapability(

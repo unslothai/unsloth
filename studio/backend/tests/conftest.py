@@ -129,6 +129,7 @@ def _isolate_os_sandbox_state():
         os_sandbox._capability_cache.clear()
         os_sandbox._capability_cache.update(cache_before)
         os_sandbox._forget_system_scan_memo()
+        getattr(os_sandbox, "_bwrap_options_cache", {}).clear()
         if linux_backend is not None:
             linux_backend._bwrap = bwrap_before
             linux_backend._disable_userns_supported = userns_before
