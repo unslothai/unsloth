@@ -272,7 +272,10 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     assert response.status_code == 200
     expected = asdict(_capability())
     expected["limitations"] = []
+    expected["network_policies"] = list(expected["network_policies"])
+    expected["network_allowlist"] = list(expected["network_allowlist"])
     assert response.json() == expected
+    assert response.json()["network_policies"] == ["deny"]
     assert calls == [True]
 
     with _client(via_api_key = True) as client:

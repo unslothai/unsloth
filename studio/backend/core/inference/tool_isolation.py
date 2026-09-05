@@ -32,6 +32,8 @@ class ToolIsolationCapability:
     qualified: bool
     available: bool = False
     limitations: tuple[str, ...] = ()
+    network_policies: tuple[str, ...] = ("deny",)
+    network_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -213,6 +215,15 @@ def _snapshot_value(snapshot: object, name: str) -> Any:
     return getattr(snapshot, name)
 
 
+def _snapshot_optional(snapshot: object, name: str, default: Any) -> Any:
+    """Like _snapshot_value for fields older snapshots (or test doubles) may lack."""
+    if isinstance(snapshot, Mapping):
+        value = snapshot.get(name)
+    else:
+        value = getattr(snapshot, name, None)
+    return default if value is None else value
+
+
 def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
     """Return the OS backend's capability using a stable API-facing shape."""
 
@@ -232,6 +243,12 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
         available = bool(_snapshot_value(snapshot, "available")),
         qualified = bool(_snapshot_value(snapshot, "qualified")),
         limitations = tuple(str(item) for item in _snapshot_value(snapshot, "limitations")),
+        network_policies = tuple(
+            str(item) for item in _snapshot_optional(snapshot, "network_policies", ("deny",))
+        ),
+        network_allowlist = tuple(
+            str(item) for item in _snapshot_optional(snapshot, "network_allowlist", ())
+        ),
     )
 
 

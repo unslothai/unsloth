@@ -2782,6 +2782,10 @@ class ToolIsolationCapabilityResponse(BaseModel):
     available: bool
     qualified: bool
     limitations: list[str] = Field(default_factory = list)
+    # Network policies the OS backend can enforce ("deny" always; "allowlist"
+    # where a loopback proxy bridge exists) and the hosts that policy admits.
+    network_policies: list[str] = Field(default_factory = lambda: ["deny"])
+    network_allowlist: list[str] = Field(default_factory = list)
 
 
 class ToolIsolationLimitedGrantRequest(BaseModel):

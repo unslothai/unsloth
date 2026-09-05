@@ -2423,3 +2423,500 @@ def test_symlink_chain_strips_windows_extended_length_prefixes(monkeypatch, tmp_
     assert chain[1] == os.path.normpath(str(tmp_path / "python3"))
     assert chain[2] == os.path.normpath("\\\\server\\share\\python3.12")
     assert not any(hop.startswith("\\\\?\\") for hop in chain)
+
+
+# --- network allowlist policy -------------------------------------------------
+
+
+def _bridge_argv_test_setup(monkeypatch, tmp_path):
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    (identity / "passwd").write_text("studio:x:1:1::/nonexistent:/bin/sh\n", encoding = "utf-8")
+    (identity / "group").write_text("studio:x:1:\n", encoding = "utf-8")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
+    monkeypatch.setattr(
+        os_sandbox,
+        "_identity_files",
+        lambda: (str(identity), str(identity / "passwd"), str(identity / "group")),
+    )
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+    return backend, workdir
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Bubblewrap argv is Linux-only")
+def test_linux_deny_policy_argv_carries_no_bridge(monkeypatch, tmp_path):
+    backend, workdir = _bridge_argv_test_setup(monkeypatch, tmp_path)
+    prepared = backend.prepare(_spec(workdir, sys.executable, "-c", "pass"))
+    try:
+        assert os_sandbox._NETWORK_BRIDGE_ENV not in prepared.argv
+        assert len(prepared.pass_fds) == 1
+        assert prepared.spawn_callback is None
+        assert prepared.network_audit is None
+        wrapper = prepared.argv[prepared.argv.index("-c") + 1]
+        assert "send_fds" not in wrapper
+        assert "os.execvpe" in wrapper
+    finally:
+        prepared.cleanup()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "Bubblewrap argv is Linux-only")
+def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatch, tmp_path):
+    backend, workdir = _bridge_argv_test_setup(monkeypatch, tmp_path)
+    plan = os_sandbox.replace(
+        _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
+    )
+    prepared = backend.prepare(plan)
+    try:
+        argv = prepared.argv
+        control_fd = int(argv[argv.index(os_sandbox._NETWORK_BRIDGE_ENV) + 1])
+        assert argv[argv.index(os_sandbox._NETWORK_BRIDGE_ENV) - 1] == "--setenv"
+        assert control_fd in prepared.pass_fds
+        assert len(prepared.pass_fds) == 2
+        assert prepared.spawn_callback is not None
+        assert prepared.network_audit is not None
+        wrapper = argv[argv.index("-c") + 1]
+        assert "send_fds" in wrapper
+        assert '("127.0.0.1", 0)' in wrapper
+        # The bridge runs before the exec and after the nproc clamp.
+        assert wrapper.index("setrlimit") < wrapper.index("send_fds") < wrapper.index("os.execvpe")
+        # No proxy variables leak in through the host environment: the wrapper
+        # sets them inside the namespace once the handshake completed.
+        assert "HTTPS_PROXY" not in prepared.env
+        assert "--unshare-all" in argv
+    finally:
+        prepared.cleanup()
+    # Cleanup closed both socketpair ends and the proxy.
+    with pytest.raises(OSError):
+        os.fstat(control_fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the wrapper uses socket.send_fds on Linux")
+def test_linux_bridge_wrapper_hands_over_a_loopback_listener_and_publishes_the_proxy(tmp_path):
+    """Run the real wrapper (no Bubblewrap) against the real host-side handshake."""
+    wrapper = os_sandbox._linux_wrapper_source(limit = 4096, network_bridge = True)
+    host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    payload = (
+        "import os, json, sys; print(json.dumps({k: os.environ.get(k) for k in "
+        "('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY', "
+        f"'{os_sandbox._NETWORK_BRIDGE_ENV}')}}))"
+    )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        os_sandbox._NETWORK_BRIDGE_ENV: str(sandbox_end.fileno()),
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", wrapper, sys.executable, "-I", "-c", payload],
+        env = env,
+        pass_fds = (sandbox_end.fileno(),),
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+    )
+    sandbox_end.close()
+    proxy = None
+    try:
+        listener = os_sandbox._receive_bridge_listener(host_end, timeout = 20)
+        assert listener.getsockname()[0] == "127.0.0.1"
+        port = listener.getsockname()[1]
+        proxy = os_sandbox.AllowlistProxy(
+            os_sandbox.NetworkAllowlist.from_entries(["pypi.org"])
+        )
+        proxy.serve_listener(listener)
+        host_end.sendall(b"K " + proxy.credential.token.encode() + b"\n")
+        out, err = proc.communicate(timeout = 30)
+        assert proc.returncode == 0, err
+        import json
+
+        published = json.loads(out.strip().splitlines()[-1])
+        expected = f"http://sandbox:{proxy.credential.token}@127.0.0.1:{port}"
+        assert published["HTTPS_PROXY"] == expected
+        assert published["https_proxy"] == expected
+        assert published["HTTP_PROXY"] == expected
+        assert published["ALL_PROXY"] == expected
+        assert published["NO_PROXY"] == "localhost,127.0.0.1,::1"
+        assert published[os_sandbox._NETWORK_BRIDGE_ENV] is None
+        # The listener the child created is now served by the host proxy: an
+        # unauthenticated CONNECT gets the proxy's 407, proving the handover.
+        client = socket.create_connection(("127.0.0.1", port), timeout = 5)
+        client.sendall(b"CONNECT pypi.org:443 HTTP/1.1\r\nHost: pypi.org\r\n\r\n")
+        response = client.recv(4096)
+        client.close()
+        assert response.startswith(b"HTTP/1.1 407")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if proxy is not None:
+            proxy.close()
+        host_end.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the handshake is Linux-only")
+def test_bridge_listener_handover_rejects_wrong_socket_kinds(tmp_path):
+    host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        # A non-listening socket bound to a non-loopback address must be refused.
+        bad = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        bad.bind(("0.0.0.0", 0))
+        bad.listen(1)
+        socket.send_fds(sandbox_end, [b"L"], [bad.fileno()])
+        bad.close()
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not loopback"):
+            os_sandbox._receive_bridge_listener(host_end, timeout = 5)
+
+        unix_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        socket.send_fds(sandbox_end, [b"L"], [unix_listener.fileno()])
+        unix_listener.close()
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not a TCP socket"):
+            os_sandbox._receive_bridge_listener(host_end, timeout = 5)
+
+        not_listening = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        not_listening.bind(("127.0.0.1", 0))
+        socket.send_fds(sandbox_end, [b"L"], [not_listening.fileno()])
+        not_listening.close()
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not listening"):
+            os_sandbox._receive_bridge_listener(host_end, timeout = 5)
+
+        sandbox_end.sendall(b"X")
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unexpected message"):
+            os_sandbox._receive_bridge_listener(host_end, timeout = 5)
+
+        sandbox_end.close()
+        with pytest.raises(os_sandbox.SandboxUnavailableError):
+            os_sandbox._receive_bridge_listener(host_end, timeout = 5)
+    finally:
+        host_end.close()
+        try:
+            sandbox_end.close()
+        except OSError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the handshake is Linux-only")
+def test_bridged_spawn_kills_a_child_that_never_hands_over(monkeypatch, tmp_path):
+    monkeypatch.setattr(os_sandbox, "_NETWORK_BRIDGE_TIMEOUT_SECONDS", 1.0)
+    proxy = os_sandbox.AllowlistProxy(os_sandbox.NetworkAllowlist.from_entries(["pypi.org"]))
+    host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    spawn = os_sandbox._bridged_spawn(proxy, host_end, sandbox_end)
+    prepared = os_sandbox.PreparedSandboxLaunch(
+        argv = (sys.executable, "-c", "import time; time.sleep(30)"),
+        workdir = str(tmp_path),
+        env = {},
+        preexec_fn = None,
+        backend = "linux-bubblewrap",
+    )
+    kwargs = dict(pass_fds = (sandbox_end.fileno(),), stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    started = time.monotonic()
+    with pytest.raises(os_sandbox.SandboxUnavailableError) as excinfo:
+        spawn(prepared, kwargs)
+    assert excinfo.value.transient is True
+    assert time.monotonic() - started < 15
+    # The child was killed, both socketpair ends are closed and the proxy is down.
+    with pytest.raises(OSError):
+        os.fstat(host_end.fileno())
+    assert not any(
+        p.info.get("cmdline") and "time.sleep(30)" in " ".join(p.info["cmdline"])
+        for p in _iter_python_processes()
+    )
+
+
+def _iter_python_processes():
+    try:
+        import psutil
+    except ImportError:
+        return []
+    return list(psutil.process_iter(["cmdline"]))
+
+
+def test_capability_advertises_allowlist_only_for_a_bridge_capable_backend(
+    monkeypatch, isolated_capability_cache
+):
+    backend = _RecordingBackend()
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    capability = os_sandbox.capability_snapshot()
+    assert capability.available is True
+    assert capability.network_policies == ("deny",)
+    assert capability.network_allowlist == ()
+
+    backend.supports_network_allowlist = True
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "mirror.example.org,*.hf.co")
+    capability = os_sandbox.capability_snapshot(force = True)
+    assert capability.network_policies == ("deny", "allowlist")
+    assert capability.network_allowlist == ("mirror.example.org", "*.hf.co")
+    # The network fields are advisory and do not enter the grant generation.
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "other.example.org")
+    again = os_sandbox.capability_snapshot(force = True)
+    assert again.probe_generation == capability.probe_generation
+    assert again.network_allowlist == ("other.example.org",)
+
+    api_view = tool_isolation.capability_snapshot(force = True)
+    assert api_view.network_policies == ("deny", "allowlist")
+    assert api_view.network_allowlist == ("other.example.org",)
+
+
+def test_unavailable_capability_never_advertises_allowlist(monkeypatch, isolated_capability_cache):
+    backend = _RecordingBackend(
+        [os_sandbox.SandboxCapability("test-recording-backend", False, "no")]
+    )
+    backend.supports_network_allowlist = True
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    capability = os_sandbox.capability_snapshot()
+    assert capability.available is False
+    assert capability.network_policies == ("deny",)
+
+
+def test_prepare_refuses_allowlist_on_a_backend_without_a_bridge(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    backend = _RecordingBackend()
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    plan = os_sandbox.replace(_spec(tmp_path), network_policy = "allowlist")
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "not available with"):
+        os_sandbox.prepare_tool_launch(plan)
+    assert backend.prepared_specs == []
+
+
+def test_prepare_refuses_unknown_network_policy(monkeypatch, tmp_path, isolated_capability_cache):
+    backend = _RecordingBackend()
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    plan = os_sandbox.replace(_spec(tmp_path), network_policy = "everything")
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "unknown network policy"):
+        os_sandbox.prepare_tool_launch(plan)
+
+
+def test_prepare_records_the_allowlist_policy_and_hosts(monkeypatch, tmp_path, isolated_capability_cache):
+    backend = _RecordingBackend()
+    backend.supports_network_allowlist = True
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "pypi.org, *.hf.co")
+    deny = os_sandbox.prepare_tool_launch(_spec(tmp_path))
+    assert deny.execution_record.network_policy == "deny"
+    assert deny.execution_record.network_allowlist == ()
+    assert deny.execution_record.as_dict()["network_policy"] == "deny"
+
+    prepared = os_sandbox.prepare_tool_launch(
+        os_sandbox.replace(_spec(tmp_path), network_policy = "allowlist")
+    )
+    record = prepared.execution_record
+    assert record.network_policy == "allowlist"
+    assert record.network_allowlist == ("pypi.org", "*.hf.co")
+    assert record.os_isolation is True
+    assert record.as_dict()["network_allowlist"] == ["pypi.org", "*.hf.co"]
+    assert backend.prepared_specs[-1].network_policy == "allowlist"
+
+
+def test_prepare_refuses_allowlist_when_the_env_override_is_invalid(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    backend = _RecordingBackend()
+    backend.supports_network_allowlist = True
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: backend)
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "10.0.0.5")
+    capability = os_sandbox.capability_snapshot()
+    assert capability.network_policies == ("deny", "allowlist")
+    assert capability.network_allowlist == ()
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "network allowlist is invalid"):
+        os_sandbox.prepare_tool_launch(
+            os_sandbox.replace(_spec(tmp_path), network_policy = "allowlist")
+        )
+
+
+def test_limited_mode_refuses_the_allowlist_and_records_unrestricted(
+    monkeypatch, tmp_path, isolated_capability_cache
+):
+    store = tool_isolation.LimitedGrantStore(ttl_seconds = 60, max_entries = 4)
+    monkeypatch.setattr(tool_isolation, "_LIMITED_GRANTS", store)
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
+    capability = os_sandbox.capability_snapshot()
+    grant = tool_isolation.issue_limited_grant(
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        probe_generation = capability.probe_generation,
+    )
+    plan = os_sandbox.replace(
+        _spec(tmp_path),
+        requested_mode = "limited",
+        current_subject = "actor-a",
+        tool_ui_session_id = "page-a",
+        limited_grant = grant.token,
+    )
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    assert prepared.execution_record.network_policy == "unrestricted"
+    assert prepared.execution_record.network_allowlist == ()
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "requires OS isolation"):
+        os_sandbox.prepare_tool_launch(os_sandbox.replace(plan, network_policy = "allowlist"))
+
+
+def test_full_mode_records_unrestricted_network(monkeypatch, tmp_path, isolated_capability_cache):
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
+    prepared = os_sandbox.prepare_tool_launch(
+        os_sandbox.replace(_spec(tmp_path), requested_mode = "full", network_policy = "allowlist")
+    )
+    assert prepared.execution_record.network_policy == "unrestricted"
+    assert prepared.network_audit is None
+
+
+def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    private_tmp = tmp_path / "us-seatbelt-x"
+    private_tmp.mkdir()
+    base = os_sandbox._macos_seatbelt_profile(
+        workdir = str(workdir), private_tmp = str(private_tmp), runtime_paths = ()
+    )
+    assert "remote ip" not in base
+    with_proxy = os_sandbox._macos_seatbelt_profile(
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (),
+        proxy_port = 43111,
+    )
+    assert '(allow network-outbound (remote ip "localhost:43111"))' in with_proxy
+    assert with_proxy.count("remote ip") == 1
+    assert "(deny default)" in with_proxy
+
+
+def test_macos_prepare_starts_a_proxy_and_publishes_it_in_the_environment(monkeypatch, tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *a, **k: None)
+    monkeypatch.setattr(os_sandbox, "_validate_workdir", lambda path: str(path))
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "pypi.org")
+    backend = os_sandbox.MacOSSeatbeltBackend()
+    backend._sandbox_exec = "/usr/bin/sandbox-exec"
+    plan = os_sandbox.replace(
+        _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
+    )
+    prepared = backend.prepare(plan)
+    try:
+        profile = prepared.argv[2]
+        port = int(prepared.env["HTTPS_PROXY"].rsplit(":", 1)[1])
+        assert f'(allow network-outbound (remote ip "localhost:{port}"))' in profile
+        assert prepared.env["NO_PROXY"] == "localhost,127.0.0.1,::1"
+        assert prepared.network_audit is not None
+        # The proxy is live on the host loopback and authenticated.
+        client = socket.create_connection(("127.0.0.1", port), timeout = 5)
+        client.sendall(b"CONNECT pypi.org:443 HTTP/1.1\r\nHost: pypi.org\r\n\r\n")
+        assert client.recv(4096).startswith(b"HTTP/1.1 407")
+        client.close()
+    finally:
+        prepared.cleanup()
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", port), timeout = 1).close()
+
+    plain = backend.prepare(_spec(workdir, sys.executable, "-c", "pass"))
+    try:
+        assert "HTTPS_PROXY" not in plain.env
+        assert "remote ip" not in plain.argv[2]
+        assert plain.network_audit is None
+    finally:
+        plain.cleanup()
+
+
+def test_live_allowlist_proxy_reaches_only_allowlisted_hosts_from_inside_bubblewrap(
+    qualified_native_capability, tmp_path, monkeypatch
+):
+    """Inside the network namespace: the proxy port works, anything else does not."""
+    from core.inference import network_proxy
+
+    upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    upstream.bind(("127.0.0.1", 0))
+    upstream.listen(4)
+    upstream_port = upstream.getsockname()[1]
+    seen: list[bytes] = []
+
+    def serve():
+        upstream.settimeout(30)
+        try:
+            conn, _ = upstream.accept()
+        except OSError:
+            return
+        with conn:
+            seen.append(conn.recv(4096))
+            conn.sendall(b"pong-from-host")
+
+    thread = threading.Thread(target = serve, daemon = True)
+    thread.start()
+    monkeypatch.setattr(network_proxy, "REQUIRE_PUBLIC_ADDRESSES", False)
+    monkeypatch.setattr(network_proxy, "ALLOWED_PORTS", frozenset({upstream_port}))
+    monkeypatch.setattr(network_proxy, "DEFAULT_RESOLVER", lambda host, port: ["127.0.0.1"])
+    monkeypatch.setenv(os_sandbox.NETWORK_ALLOWLIST_ENV, "upstream.test")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    code = f"""
+import base64, json, os, socket, urllib.parse
+url = urllib.parse.urlsplit(os.environ["HTTPS_PROXY"])
+auth = base64.b64encode((url.username + ":" + url.password).encode()).decode()
+def tunnel(target):
+    s = socket.create_connection((url.hostname, url.port), timeout = 10)
+    s.sendall(("CONNECT %s HTTP/1.1\\r\\nHost: %s\\r\\nProxy-Authorization: Basic %s\\r\\n\\r\\n" % (target, target, auth)).encode())
+    head = b""
+    while b"\\r\\n\\r\\n" not in head:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        head += chunk
+    return s, head.split(b"\\r\\n")[0].decode()
+s, status = tunnel("upstream.test:{upstream_port}")
+s.sendall(b"ping-from-sandbox")
+echo = s.recv(4096).decode() if status.startswith("HTTP/1.1 200") else ""
+s.close()
+_, denied = tunnel("evil.example:{upstream_port}")
+_, ip_denied = tunnel("127.0.0.1:{upstream_port}")
+try:
+    socket.create_connection(("127.0.0.1", {upstream_port}), timeout = 3).close()
+    direct = "connected"
+except OSError as exc:
+    direct = type(exc).__name__
+print(json.dumps({{"status": status, "echo": echo, "denied": denied, "ip_denied": ip_denied, "direct": direct, "ctrl": os.environ.get("{os_sandbox._NETWORK_BRIDGE_ENV}")}}))
+"""
+    prepared = os_sandbox.prepare_tool_launch(
+        os_sandbox.replace(
+            _spec(workdir, sys.executable, "-I", "-c", code), network_policy = "allowlist"
+        )
+    )
+    try:
+        kwargs = dict(
+            cwd = prepared.workdir,
+            env = prepared.env,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+            close_fds = True,
+            stdin = subprocess.DEVNULL,
+            pass_fds = prepared.pass_fds,
+        )
+        if prepared.preexec_fn is not None:
+            kwargs["preexec_fn"] = prepared.preexec_fn
+        proc = os_sandbox.spawn_prepared_launch(prepared, **kwargs)
+        out, err = proc.communicate(timeout = 60)
+        assert proc.returncode == 0, err
+        import json
+
+        report = json.loads(out.strip().splitlines()[-1])
+        assert report["status"].startswith("HTTP/1.1 200"), report
+        assert report["echo"] == "pong-from-host"
+        assert report["denied"].startswith("HTTP/1.1 403")
+        assert report["ip_denied"].startswith("HTTP/1.1 403")
+        assert report["direct"] != "connected", "the namespace must not reach host loopback directly"
+        assert report["ctrl"] is None
+        assert seen == [b"ping-from-sandbox"]
+        summary = prepared.network_audit.summary()
+        assert summary["allowed"] == {"upstream.test": 1}
+        assert "evil.example" in summary["denied"]
+        assert "evil.example" in network_proxy.format_denied_trailer(prepared.network_audit)
+        assert prepared.execution_record.network_policy == "allowlist"
+        assert prepared.execution_record.network_allowlist == ("upstream.test",)
+    finally:
+        prepared.cleanup()
+        upstream.close()
+        thread.join(timeout = 5)
