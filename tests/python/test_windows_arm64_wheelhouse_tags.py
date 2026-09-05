@@ -430,10 +430,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
 
     @classmethod
     def _rows(cls) -> str:
-        return (
-            f"MeCab==0.996.13; {cls.ACTIVE}\n"
-            f"MeCab==0.996.5; {cls.INACTIVE}\n"
-        )
+        return f"MeCab==0.996.13; {cls.ACTIVE}\n" f"MeCab==0.996.5; {cls.INACTIVE}\n"
 
     def test_the_shipped_file_really_has_the_duplicate(self):
         text = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
@@ -493,6 +490,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         monkeypatch.setattr(ips, "_marker_is_active", lambda marker: None)
         req = tmp_path / "extras.txt"
         req.write_text(self._rows(), encoding = "utf-8")
-        assert ips._requirement_pins(req)["mecab"] == ["==0.996.13", "==0.996.5"], (
-            "including the one whose marker would otherwise have excluded it"
-        )
+        assert ips._requirement_pins(req)["mecab"] == [
+            "==0.996.13",
+            "==0.996.5",
+        ], "including the one whose marker would otherwise have excluded it"

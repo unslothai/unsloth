@@ -307,9 +307,7 @@ class TestResolverEnvironmentRestore:
         assert "missing" in got["warned"] and "install.ps1" in got["warned"]
 
     def test_the_helper_is_a_faithful_copy_of_install_ps1s(self):
-        """Get-UvSafePath exists in both scripts because neither can dot-source the other.
-
-        """
+        """Get-UvSafePath exists in both scripts because neither can dot-source the other."""
 
         def normalized(source: str) -> str:
             lines = [
@@ -328,9 +326,7 @@ class TestResolverEnvironmentRestore:
         assert normalized(install) == normalized(setup)
 
     def test_the_dependency_that_makes_this_necessary_is_still_there(self):
-        """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli.
-
-        """
+        """If studio.txt ever drops ddgs, this restore stops being load-bearing for brotli."""
         studio_txt = PACKAGE_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
         assert "ddgs" in studio_txt.read_text(encoding = "utf-8")
 
@@ -1955,15 +1951,20 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
     @staticmethod
     def _run(line: str) -> str:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join([
-            _function_source(text, "Resolve-WoaOverrideLine"),
-            "Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{}' -BaseDir '{}') + ']')".format(
-                line, TestACallerOverrideFileKeepsItsOwnDirectory.BASE,
-            ),
-        ])
+        script = "\n".join(
+            [
+                _function_source(text, "Resolve-WoaOverrideLine"),
+                "Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{}' -BaseDir '{}') + ']')".format(
+                    line,
+                    TestACallerOverrideFileKeepsItsOwnDirectory.BASE,
+                ),
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1][1:-1]
