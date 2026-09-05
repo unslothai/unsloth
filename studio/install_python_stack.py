@@ -5684,12 +5684,40 @@ WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
 # hosted wheel with no requirement to satisfy and the feature stays off however many wheels the
 # wheelhouse carries. Re-enabling one takes an explicit install, which is what publishing a
 # wheel has to mean if the message saying so is to be true.
-WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = ("hf-transfer", "xformers")
+# Each with the floor its own metadata declares, because a bare name plus --no-deps takes
+# whatever the wheelhouse happens to hold: pyproject.toml asks for xformers>=0.0.22.post7,
+# and a 0.0.20 wheel installed here would satisfy nobody while reporting success.
+WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = {
+    "hf-transfer": "",
+    "xformers": ">=0.0.22.post7",
+}
 
 
 def _wheelhouse_hosts(name: str) -> bool:
     """Does the resolver's own find-links carry a wheel for this distribution?"""
     return bool(_find_links_wheel_versions().get(_canonical_dist_name(name)))
+
+
+def _wheelhouse_best_version(name: str, floor: str) -> "str | None":
+    """The newest hosted version that clears ``floor``, or None if none does.
+
+    An unreadable comparison keeps the answer it would have had before this floor
+    existed, matching _windows_arm64_skip_packages: an exotic version is no worse off.
+    """
+    hosted = _find_links_wheel_versions().get(_canonical_dist_name(name)) or ()
+    usable = [
+        version
+        for version in hosted
+        if not floor or _version_satisfies(version, floor) is not False
+    ]
+    if not usable:
+        return None
+    try:
+        from packaging.version import Version
+
+        return max(usable, key = Version)
+    except Exception:
+        return sorted(usable)[-1]
 
 
 def _install_wheelhouse_optionals() -> None:
@@ -5698,23 +5726,43 @@ def _install_wheelhouse_optionals() -> None:
     --no-deps: the graph is already resolved and installed by the time this runs, and
     xformers names torch, so resolving here could walk the win_arm64 CUDA build off to
     whatever PyPI offers. A failure leaves the feature off, which is where it was.
+
+    Pinned to the selected version rather than installed by bare name, so the floor
+    checked here is the version that actually lands.
     """
     if not _is_win_arm64_interpreter():
         return
-    for name in WINDOWS_ARM64_WHEELHOUSE_OPTIONALS:
-        if not _wheelhouse_hosts(name):
+    for name, floor in WINDOWS_ARM64_WHEELHOUSE_OPTIONALS.items():
+        version = _wheelhouse_best_version(name, floor)
+        if version is None:
+            if _wheelhouse_hosts(name):
+                _note(f"windows on arm: the wheelhouse {name} is below {floor}; leaving it off")
             continue
-        ok = pip_install_try(
-            f"Installing {name} from the Windows on ARM wheelhouse",
+        if not pip_install_try(
+            f"Installing {name}=={version} from the Windows on ARM wheelhouse",
             "--no-deps",
             "--no-cache-dir",
-            name,
+            f"{name}=={version}",
             constrain = False,
-        )
-        if ok:
-            _note(f"windows on arm: installed {name} from the wheelhouse")
-        else:
+        ):
             _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
+            continue
+        # xFormers links its extension against ONE (torch, CUDA) pair; beside any other
+        # its ops vanish behind a log line rather than an error, which is the state this
+        # would otherwise report as installed. Same reading and same removal as the
+        # post-repair resync, so a wheel built for another torch does not sit here
+        # pretending the feature is on.
+        if _canonical_dist_name(name) == "xformers":
+            built_for = _resident_xformers_build_torch()
+            resident = str(_probe_installed_torch_version() or "")
+            if built_for and resident and built_for != resident:
+                _uninstall_distribution(name)
+                _note(
+                    f"windows on arm: the wheelhouse xformers was built for torch "
+                    f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+                )
+                continue
+        _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
 def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:

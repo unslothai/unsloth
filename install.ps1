@@ -839,6 +839,14 @@ function Install-UnslothStudio {
         $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
         $_woaAudioVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchaudio" -AbiTag $_woaAbiTag
         $script:WoaTorchAudio = Test-WoaAudioMatchesTorch -TorchVersion $_woaTorchVersion -AudioVersion $_woaAudioVersion
+        # Kept for the install below, which pins what the probe SELECTED. Open-ended specs there
+        # met --index-strategy unsafe-best-match, which uv documents as taking the best version
+        # from the combined candidate set of every index: once PyPI's stable win_arm64 CPU torch
+        # is one release ahead of this channel, it wins, and the native GPU path this whole
+        # branch exists for is quietly replaced by a CPU build that still imports.
+        $script:WoaTorchWheelVersion = $_woaTorchVersion
+        $script:WoaAudioWheelVersion = $_woaAudioVersion
+        $script:WoaVisionWheelVersion = Get-WoaCudaWheelVersion -IndexUrl $torchIndex -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag
         # Read off the wheel the probe actually selected, not the index URL. A mirror of NVIDIA's
         # prerelease channel need not spell "nightly", and without --prerelease=allow uv takes the
         # stable win_arm64 CPU torch from the PyPI extra index instead of the CUDA build this whole
@@ -6822,10 +6830,17 @@ exit 0
             # NVIDIA's out-of-tree builds sit above the usual ceiling (2.15.0.dev...+cu134), so lift it here.
             # The floors stay: unsloth needs them.
             if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64") {
-                $_torchSpecs = @("torch>=2.4", "torchvision>=0.19")
+                # The probed wheel, pinned exactly, local +cu tag included: that version exists on
+                # no other index, so best-match has nothing to cross over to. A floor is what let
+                # PyPI's newer CPU build win. Where the probe could not read a version the old
+                # floor stands -- worse than a pin, but it is what this did before, and torch
+                # being pinned already anchors the companion resolve.
+                $_torchSpecs = @()
+                $_torchSpecs += if ($script:WoaTorchWheelVersion) { "torch==$($script:WoaTorchWheelVersion)" } else { "torch>=2.4" }
+                $_torchSpecs += if ($script:WoaVisionWheelVersion) { "torchvision==$($script:WoaVisionWheelVersion)" } else { "torchvision>=0.19" }
                 # Only where the probe found one, so the "no torchaudio" case still holds.
                 if ($script:WoaTorchAudio) {
-                    $_torchSpecs += "torchaudio>=2.4"
+                    $_torchSpecs += if ($script:WoaAudioWheelVersion) { "torchaudio==$($script:WoaAudioWheelVersion)" } else { "torchaudio>=2.4" }
                     substep "windows on arm: this index publishes torchaudio; installing the full trio."
                 }
                 # NVIDIA's index publishes only torch/vision/audio, so PyPI has to serve their shared

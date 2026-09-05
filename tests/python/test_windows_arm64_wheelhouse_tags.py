@@ -748,31 +748,37 @@ class TestAHostedOptionalIsActuallyInstalled:
             ]
             assert rows, f"{name} is no longer excluded on ARM64; the explicit install is stale"
 
-    def test_a_hosted_optional_is_installed(self, ips, tmp_path, monkeypatch):
-        (tmp_path / _wheel("hf_transfer", "cp313", "cp313", "win_arm64")).write_text("")
-        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+    @staticmethod
+    def _calls(ips, monkeypatch, hosted, install_ok = True, **stubs):
+        """Run the step with `hosted` standing in for the wheelhouse listing."""
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
-        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: name == "hf-transfer")
-        calls = []
-        monkeypatch.setattr(ips, "pip_install_try", lambda label, *a, **kw: calls.append(a) or True)
+        monkeypatch.setattr(
+            ips, "_wheelhouse_best_version", lambda name, floor: hosted.get(name)
+        )
+        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: name in hosted)
         monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
+        calls = []
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **kw: calls.append(a) or install_ok
+        )
+        for name, value in stubs.items():
+            monkeypatch.setattr(ips, name, value)
         ips._install_wheelhouse_optionals()
+        return calls
+
+    def test_a_hosted_optional_is_installed(self, ips, monkeypatch):
+        calls = self._calls(ips, monkeypatch, {"hf-transfer": "0.1.9"})
         assert len(calls) == 1, calls
-        assert "hf-transfer" in calls[0]
+        assert "hf-transfer==0.1.9" in calls[0], "a bare name installs whatever is hosted"
         assert "--no-deps" in calls[0], "resolving here could walk torch off the CUDA build"
 
     def test_nothing_is_installed_without_a_hosted_wheel(self, ips, monkeypatch):
-        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
-        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: False)
-        monkeypatch.setattr(
-            ips, "pip_install_try", lambda *a, **kw: pytest.fail("installed with no wheel")
-        )
-        ips._install_wheelhouse_optionals()
+        assert self._calls(ips, monkeypatch, {}) == []
 
     def test_no_other_platform_is_touched(self, ips, monkeypatch):
         """Every non-win_arm64 host must install exactly what it installed before."""
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: False)
-        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: True)
+        monkeypatch.setattr(ips, "_wheelhouse_best_version", lambda name, floor: "9.9.9")
         monkeypatch.setattr(
             ips, "pip_install_try", lambda *a, **kw: pytest.fail("installed off win_arm64")
         )
@@ -780,11 +786,71 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_a_failed_optional_does_not_fail_the_install(self, ips, monkeypatch):
         """It is an optional feature: off is where it already was."""
-        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
-        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **kw: False)
-        monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
-        ips._install_wheelhouse_optionals()
+        self._calls(ips, monkeypatch, {"hf-transfer": "0.1.9"}, install_ok = False)
+
+    def test_a_wheel_below_the_declared_floor_is_not_installed(self, ips, monkeypatch, tmp_path):
+        """xformers>=0.0.22.post7 is what pyproject.toml asks for; 0.0.20 satisfies nobody."""
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (tmp_path / _wheel("xformers", tag, tag, version = "0.0.20")).write_text("")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") is None
+        (tmp_path / _wheel("xformers", tag, tag, version = "0.0.31")).write_text("")
+        ips._find_links_wheel_versions.cache_clear()
+        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.31"
+
+    def test_the_newest_clearing_wheel_wins(self, ips, monkeypatch, tmp_path):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        # Both clear the floor, so the floor cannot decide this one: 0.0.100 is the newer
+        # release, and it is the SMALLER of the two as text.
+        for version in ("0.0.23", "0.0.100"):
+            (tmp_path / _wheel("xformers", tag, tag, version = version)).write_text("")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.100", (
+            "sorted as text 0.0.23 would win"
+        )
+
+    def test_an_xformers_built_for_another_torch_is_removed(self, ips, monkeypatch):
+        """Its extension links against one exact pair; beside any other the ops vanish
+        behind a log line, which would otherwise be reported here as installed."""
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            _resident_xformers_build_torch = lambda: "2.9.0+cu128",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == ["xformers"]
+
+    def test_a_matching_xformers_is_kept(self, ips, monkeypatch):
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            _resident_xformers_build_torch = lambda: "2.15.0.dev20260101+cu134",
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == []
+
+    def test_a_wheel_with_no_build_metadata_is_left_alone(self, ips, monkeypatch):
+        """No recorded pair is not evidence of a wrong one, and hf_transfer has none."""
+        removed = []
+        self._calls(
+            ips,
+            monkeypatch,
+            {"xformers": "0.0.31"},
+            _resident_xformers_build_torch = lambda: None,
+            _probe_installed_torch_version = lambda: "2.15.0.dev20260101+cu134",
+            _uninstall_distribution = lambda name: removed.append(name) or True,
+        )
+        assert removed == []
 
     def test_the_step_runs_in_the_install(self, ips):
         """A helper nothing calls re-enables nothing."""

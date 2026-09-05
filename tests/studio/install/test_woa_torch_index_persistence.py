@@ -3977,3 +3977,125 @@ class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why
+
+
+class TestTheProbedCudaWheelIsWhatGetsInstalled:
+    """A floor plus unsafe-best-match is not a request for the wheel that was probed.
+
+    uv documents unsafe-best-match as selecting the best version from the combined
+    candidate set of every index, and the PyPI extra index is there because NVIDIA's
+    channel publishes only the trio. So the moment PyPI's stable win_arm64 CPU torch is
+    one release ahead of this channel, `torch>=2.4` takes it: the native GPU path is
+    replaced by a CPU build that imports perfectly and runs everything on the CPU.
+    """
+
+    @staticmethod
+    def _block() -> str:
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index("if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq \"win-arm64\") {")
+        return text[start : text.index("# Release preservation cannot run here", start)]
+
+    def test_the_trio_is_pinned_to_the_probed_versions(self):
+        block = self._block()
+        for spec in (
+            '"torch==$($script:WoaTorchWheelVersion)"',
+            '"torchvision==$($script:WoaVisionWheelVersion)"',
+            '"torchaudio==$($script:WoaAudioWheelVersion)"',
+        ):
+            assert spec in block, f"{spec} is not what gets installed"
+
+    def test_an_unreadable_version_keeps_the_old_floor(self):
+        """Strictly better than before is the bar; no worse is the floor."""
+        block = self._block()
+        assert 'else { "torch>=2.4" }' in block
+        assert 'else { "torchvision>=0.19" }' in block
+        assert 'else { "torchaudio>=2.4" }' in block
+
+    def test_the_versions_come_from_the_probe(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        for name, project in (
+            ("WoaTorchWheelVersion", None),
+            ("WoaAudioWheelVersion", None),
+            ("WoaVisionWheelVersion", "torchvision"),
+        ):
+            assert f"$script:{name} = " in text, f"{name} is never set"
+        assert '-Project "torchvision"' in text, "torchvision is never probed"
+
+    def test_the_pin_is_set_before_the_install_reads_it(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.index("$script:WoaVisionWheelVersion = ") < text.index(
+            '"torchvision==$($script:WoaVisionWheelVersion)"'
+        )
+
+    def test_audio_still_needs_the_pairing(self):
+        """The exact pin does not replace Test-WoaAudioMatchesTorch: a paired version is
+        what makes torchaudio installable at all, and this only fixes which one lands."""
+        block = self._block()
+        audio = block.index("torchaudio==")
+        assert "if ($script:WoaTorchAudio) {" in block[:audio]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "torch_v, vision_v, audio_v, has_audio, expected, why",
+        [
+            (
+                "2.15.0.dev20260101+cu134",
+                "0.26.0.dev20260101+cu134",
+                "2.11.0+cu134",
+                "$true",
+                "torch==2.15.0.dev20260101+cu134 torchvision==0.26.0.dev20260101+cu134"
+                " torchaudio==2.11.0+cu134",
+                "every probed version pinned, local tag included",
+            ),
+            (
+                "2.14.0+cu134",
+                "0.25.0+cu134",
+                "",
+                "$false",
+                "torch==2.14.0+cu134 torchvision==0.25.0+cu134",
+                "no paired audio: the trio is a pair, as before",
+            ),
+            (
+                "",
+                "",
+                "",
+                "$false",
+                "torch>=2.4 torchvision>=0.19",
+                "nothing readable: exactly the specs this used to send",
+            ),
+            (
+                "2.14.0+cu134",
+                "",
+                "",
+                "$false",
+                "torch==2.14.0+cu134 torchvision>=0.19",
+                "a half-readable probe pins what it read and floors the rest",
+            ),
+        ],
+    )
+    def test_what_the_specs_come_out_as(
+        self, torch_v, vision_v, audio_v, has_audio, expected, why
+    ):
+        script = "\n".join(
+            [
+                "function substep { param($m, $c) }",
+                '$VenvPlatform = "win-arm64"',
+                "$script:WoaNativeCudaTorch = $true",
+                f"$script:WoaTorchWheelVersion = '{torch_v}'",
+                f"$script:WoaVisionWheelVersion = '{vision_v}'",
+                f"$script:WoaAudioWheelVersion = '{audio_v}'",
+                f"$script:WoaTorchAudio = {has_audio}",
+                "$script:WoaTorchIsPrerelease = $false",
+                "$script:WoaTorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot'",
+                self._block(),
+                "Write-Output ($_torchSpecs -join ' ')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
