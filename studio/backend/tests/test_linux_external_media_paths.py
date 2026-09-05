@@ -142,6 +142,85 @@ def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(monkeyp
     assert roots == [normal_mount.resolve()]
 
 
+def test_linux_media_mount_roots_lists_user_and_legacy_volumes(monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    user_mount = base / "dspofu" / "USB"
+    legacy_mount = base / "Seagate"
+    other_user_dir = base / "other"
+    other_user_mount = other_user_dir / "backup"
+    sensitive_mount = base / "dspofu" / ".ssh"
+    user_mount.mkdir(parents = True)
+    legacy_mount.mkdir()
+    other_user_mount.mkdir(parents = True)
+    sensitive_mount.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_media_mount_roots(base, user = "dspofu")
+
+    assert user_mount.resolve() in roots
+    assert legacy_mount.resolve() in roots
+    # Another user's udisks folder is listed as a directory, not walked.
+    assert other_user_dir.resolve() in roots
+    assert other_user_mount.resolve() not in roots
+    assert sensitive_mount.resolve() not in roots
+    assert (base / "dspofu").resolve() not in roots
+
+
+def test_linux_media_mount_roots_follows_symlink_into_run_media(monkeypatch, tmp_path):
+    run_media = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    run_media.mkdir(parents = True)
+    base = tmp_path / "media"
+    user_dir = base / "dspofu"
+    user_dir.mkdir(parents = True)
+    alias = user_dir / "nvmeB"
+    alias.symlink_to(run_media, target_is_directory = True)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_media_mount_roots(base, user = "dspofu")
+
+    assert roots == [run_media.resolve()]
+
+
+def test_linux_mnt_mount_roots_lists_named_volumes(monkeypatch, tmp_path):
+    base = tmp_path / "mnt"
+    ssd = base / "ssd"
+    usb = base / "usb"
+    secret = base / ".ssh"
+    ssd.mkdir(parents = True)
+    usb.mkdir()
+    secret.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_mnt_mount_roots(base)
+
+    assert {p.resolve() for p in roots} == {ssd.resolve(), usb.resolve()}
+
+
+def test_linux_external_mount_roots_dedupes_aliased_volumes(monkeypatch, tmp_path):
+    shared = tmp_path / "vol"
+    shared.mkdir()
+    extra = tmp_path / "mnt-vol"
+    extra.mkdir()
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(external_media, "linux_run_media_mount_roots", lambda: [shared])
+    monkeypatch.setattr(external_media, "linux_media_mount_roots", lambda: [shared])
+    monkeypatch.setattr(external_media, "linux_mnt_mount_roots", lambda: [extra])
+
+    assert external_media.linux_external_mount_roots() == [shared, extra]
+
+
+def test_hub_scan_folder_accepts_linux_media_and_mnt_mounts(monkeypatch):
+    _stub_linux_path_checks(monkeypatch, scan_folders)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+    _stub_hub_scan_folder_db(monkeypatch)
+
+    media_row = scan_folders.add_scan_folder("/media/dspofu/USB/models")
+    mnt_row = scan_folders.add_scan_folder("/mnt/ssd/models")
+
+    assert media_row["path"] == "/media/dspofu/USB/models"
+    assert mnt_row["path"] == "/mnt/ssd/models"
+
+
 def test_hub_scan_folder_accepts_linux_run_media_mount(monkeypatch):
     _stub_linux_path_checks(monkeypatch, scan_folders)
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
@@ -257,6 +336,7 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = lambda: [media_root],
+        linux_external_mount_roots = lambda: [media_root],
         macos_volume_roots = lambda: [],
         windows_drive_roots = lambda: [],
     )
