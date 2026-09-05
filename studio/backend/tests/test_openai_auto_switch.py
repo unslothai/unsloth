@@ -123,6 +123,9 @@ class _LoadRecorder:
         # auto-switch caller overwrites it with the repo id.
         self.backend._openai_advertised_id = None
         self.backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
+        self.backend._openai_gguf_companion_state = resolver.local_gguf_companion_state(
+            tuple(request._gguf_companion_roots)
+        )
         from core.inference import llama_keepwarm as kw
 
         kw.note_model_loaded(self.backend)
@@ -2217,6 +2220,40 @@ def test_repo_level_request_reloads_resident_snapshot_without_companion_roots(
     assert len(recorder.calls) == 1
     assert tuple(map(Path, recorder.calls[0]._gguf_companion_roots)) == (old, newer)
     assert tuple(map(Path, backend._openai_gguf_companion_roots)) == (old, newer)
+
+
+@pytest.mark.parametrize("precreated", [False, True])
+def test_resident_repo_reloads_when_companion_finishes_in_existing_snapshot(
+    tmp_path, monkeypatch, precreated
+):
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / "weights"
+    companion = repo / "snapshots" / "companion"
+    selected.mkdir(parents = True)
+    companion.mkdir()
+    if precreated:
+        (companion / "mmproj-vision-model-F16.gguf").write_bytes(b"")
+    (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    backend = _FakeBackend("org/Other-GGUF", "Q4_K_M")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(selected), "Q4_K_M", "org/Vision-GGUF", True),
+        backend = backend,
+        recorder = recorder,
+    )
+
+    async def run():
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 1
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 1
+        (companion / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+        await inference_route._maybe_auto_switch_model("org/Vision-GGUF", object(), "tester")
+        assert len(recorder.calls) == 2
+
+    asyncio.run(run())
 
 
 def test_auto_switch_exact_revision_does_not_widen_companion_roots(tmp_path, monkeypatch):

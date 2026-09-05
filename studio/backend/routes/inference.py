@@ -7510,12 +7510,19 @@ def _loaded_identity_satisfies(requested: str) -> bool:
             return False
         companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
         if companion_roots:
-            from core.inference.local_model_resolver import local_gguf_companion_roots
+            from core.inference.local_model_resolver import (
+                local_gguf_companion_roots,
+                local_gguf_companion_state,
+            )
 
             # A revision pin drops repo scope; a repo alias must notice newly cached companions.
             if _looks_like_local_path(base) or companion_roots != local_gguf_companion_roots(
                 identifier, repo_level = True
             ):
+                return False
+            if getattr(
+                llama_backend, "_openai_gguf_companion_state", ()
+            ) != local_gguf_companion_state(companion_roots):
                 return False
         return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
     backend = get_inference_backend()
@@ -7878,6 +7885,7 @@ async def _maybe_auto_switch_model(
     )
     from core.inference.local_model_resolver import (
         local_gguf_companion_roots,
+        local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
@@ -8087,6 +8095,11 @@ async def _maybe_auto_switch_model(
                     target_id,
                     repo_level = repo_level_companion_resolution,
                 )
+        gguf_companion_state = (
+            await asyncio.to_thread(local_gguf_companion_state, gguf_companion_roots)
+            if gguf_companion_roots
+            else ()
+        )
         # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
         if (
             gguf_only
@@ -8141,6 +8154,8 @@ async def _maybe_auto_switch_model(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
             )
             if loaded_companion_roots != gguf_companion_roots:
+                return False
+            if getattr(backend, "_openai_gguf_companion_state", ()) != gguf_companion_state:
                 return False
             if bare:
                 return True
@@ -13328,6 +13343,16 @@ async def _load_model_impl(
 
         # Resolve once so dedupe, admission and launch use the same slot count.
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
+        from core.inference.local_model_resolver import local_gguf_companion_state
+
+        # Capture before metadata resolution; a download completing during launch must be noticed next time.
+        gguf_companion_state = (
+            await asyncio.to_thread(
+                local_gguf_companion_state, tuple(request._gguf_companion_roots)
+            )
+            if request._gguf_companion_roots
+            else ()
+        )
 
         def _reuse_loaded_gguf(
             intent: GgufLoadIntent, *, display_name: Optional[str] = None
@@ -13340,6 +13365,8 @@ async def _load_model_impl(
                 _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
                 and tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
                 == tuple(request._gguf_companion_roots)
+                and getattr(llama_backend, "_openai_gguf_companion_state", ())
+                == gguf_companion_state
                 and llama_backend.adopt_load_intent_if_matched(intent)
                 and getattr(llama_backend, "_audio_probed", True)
             ):
@@ -13955,6 +13982,7 @@ async def _load_model_impl(
             from core.inference.llama_keepwarm import note_model_loaded
 
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
+            llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.

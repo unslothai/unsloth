@@ -1781,6 +1781,7 @@ def detect_mmproj_file(
     # Walk incrementally so a sibling subdir's mmproj cannot leak in.
     seen: set[Path] = set()
     scan_order: list[Path] = []
+    recursive_root: Optional[Path] = None
 
     def _add(d: Path) -> None:
         try:
@@ -1820,6 +1821,8 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
+            if allow_disjoint_search_root:
+                recursive_root = root_resolved
         except OSError:
             pass
 
@@ -1827,7 +1830,7 @@ def detect_mmproj_file(
     seen_resolved: set[Path] = set()
     for d in scan_order:
         try:
-            files = list(_iter_gguf_files(d))
+            files = list(_iter_gguf_files(d, recursive = d == recursive_root))
         except OSError:
             continue
         for f in files:

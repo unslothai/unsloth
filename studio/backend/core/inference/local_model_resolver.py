@@ -169,6 +169,26 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
     return (str(selected), *(str(path) for path in siblings))
 
 
+def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
+    """File metadata for trusted snapshots, including newly completed companions."""
+    from pathlib import Path
+
+    state = []
+    for root in roots:
+        try:
+            for path in sorted(Path(root).rglob("*")):
+                if path.suffix.lower() != ".gguf":
+                    continue
+                try:
+                    stat = path.stat()
+                    state.append((str(path), stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    state.append((str(path), -1, -1))
+        except OSError:
+            state.append((root, -1, -1))
+    return tuple(state)
+
+
 def _local_gguf_entry(
     loader_id: str,
     info,

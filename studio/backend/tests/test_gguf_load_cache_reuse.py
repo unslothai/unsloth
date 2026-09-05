@@ -710,8 +710,8 @@ class TestLoadHubDownloadExclusion:
         assert intent.gguf_path is None
         assert intent.hf_variant == "Q8_0"
 
-    @pytest.mark.parametrize("roots_match", [True, False])
-    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self, roots_match):
+    @pytest.mark.parametrize("reuse_case", ["unchanged", "new_roots", "completed_file"])
+    def test_resident_gguf_reuse_precedes_model_metadata_resolution(self, reuse_case, tmp_path):
         from models.inference import LoadRequest
 
         route = _load_route_module(
@@ -729,8 +729,13 @@ class TestLoadHubDownloadExclusion:
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
-        if not roots_match:
+        if reuse_case == "new_roots":
             request._gguf_companion_roots = ("weights-revision", "companion-revision")
+        elif reuse_case == "completed_file":
+            request._gguf_companion_roots = (str(tmp_path),)
+            backend._openai_gguf_companion_roots = request._gguf_companion_roots
+            backend._openai_gguf_companion_state = ()
+            (tmp_path / "mmproj-F16.gguf").write_bytes(b"GGUF companion")
 
         class MetadataReached(BaseException):
             pass
@@ -746,7 +751,7 @@ class TestLoadHubDownloadExclusion:
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
-            if not roots_match:
+            if reuse_case != "unchanged":
                 with pytest.raises(MetadataReached):
                     _run_route_load(route, request)
                 return
