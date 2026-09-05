@@ -38,6 +38,9 @@ export function SettingsRow({
   return (
     <div
       data-settings-label={label}
+      // Marks the row for .settings-search-hit: its own py-3 already pads the
+      // highlight vertically, so only the horizontal axis needs an overhang.
+      data-settings-row=""
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the
         // label. justify-end right-aligns a wrapped control without breaking
