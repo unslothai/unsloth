@@ -53,9 +53,7 @@ def _run(
         UNSLOTH_STUDIO_READY_WAIT = "2",
     )
     e.update(env or {})
-    return subprocess.run(
-        ["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60
-    )
+    return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
 
 
 @behavioural
@@ -74,7 +72,10 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "password: s3cret pass" in res.stdout, res.stdout
     assert "60 min" in res.stdout, "the change-it-or-shut-down window is not explained"
     assert "Unsloth container ready" in res.stdout
-    assert "Studio      http://localhost:8000   username: unsloth   password: s3cret pass" in res.stdout
+    assert (
+        "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
+        in res.stdout
+    )
 
 
 @behavioural
@@ -87,7 +88,9 @@ def test_the_summary_carries_the_jupyter_note_and_port(tmp_path: Path):
             "UNSLOTH_JUPYTER_NOTE": "generated password: abc123",
         },
     )
-    assert "JupyterLab  http://localhost:9999   generated password: abc123" in res.stdout, res.stdout
+    assert (
+        "JupyterLab  http://localhost:9999   generated password: abc123" in res.stdout
+    ), res.stdout
     assert res.stdout.rstrip().endswith("=" * 72)
 
 
@@ -115,7 +118,9 @@ def test_a_disabled_timeout_drops_the_shutdown_note(tmp_path: Path, value: str):
     auth.mkdir()
     (auth / ".bootstrap_password").write_bytes(b"abc\n")
     res = _run(tmp_path, env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": value})
-    assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(res.stdout)
+    assert "Unsloth Studio login -> username: unsloth   password: abc\n" in res.stdout, repr(
+        res.stdout
+    )
     assert "change it on first sign-in" not in res.stdout
 
 
