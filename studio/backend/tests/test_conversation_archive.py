@@ -4,6 +4,7 @@
 """The archive behind rolling-context compaction: what it keeps, and what it must not touch."""
 
 import copy
+import json
 import os
 import sys
 
@@ -3659,6 +3660,271 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
         '{"text":"token ZQX-5150","images":[],"sessionId":"project-7",'
         '"files":[{"name":"out.csv","size":12}]}'
     ]
+
+
+# A `web_search` that found pictures, as the frontend leaves it on the card.
+_IMAGE_ID = "aabbccddeeff"
+_IMAGE_ENTRY = {
+    "id": _IMAGE_ID,
+    "title": "Ragdoll ZQXVARA123",
+    "domain": "example.com",
+    "source": "https://example.com/ragdoll.jpg",
+    "subject": "ragdoll",
+}
+# `register_images` writes `subject` only when given one -- the ordinary shape has none.
+_IMAGE_ENTRY_NO_SUBJECT = {key: value for key, value in _IMAGE_ENTRY.items() if key != "subject"}
+_SEARCH_TEXT = (
+    "The ZQXVARA123 ragdoll weighs 6 kg.\n\n---\n\n"
+    "ragdoll:\n- [[img:%s]] Ragdoll ZQXVARA123 \u2014 example.com" % _IMAGE_ID
+)
+_SEARCH_TEXT_REPLAYED = (
+    "The ZQXVARA123 ragdoll weighs 6 kg.\n\n---\n\n"
+    "ragdoll:\n-  Ragdoll ZQXVARA123 \u2014 example.com"
+)
+
+
+_ANSWER = "A ZQXVARA123 ragdoll weighs 6 kg."
+
+
+def _image_search_row(
+    result,
+    tool_name = "web_search",
+    answer = _ANSWER,
+):
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "w1",
+                    "toolName": tool_name,
+                    "args": {"query": "ragdoll ZQXVARA123"},
+                    "result": result,
+                },
+                {"type": "text", "text": answer},
+            ],
+        }
+    ]
+
+
+def _wire_tool_content(rows):
+    return [m["content"] for m in conversation_archive._as_wire(rows) if m["role"] == "tool"]
+
+
+def test_a_web_search_result_is_replayed_without_its_image_tokens():
+    """`{text, webImages}` is a wrapper too, and the tokens do not go back out.
+
+    The `images` key gated both existing wrappers, so a search result carried its whole
+    envelope instead and no turn that returned a picture matched what was sent.
+    """
+    result = {"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}
+
+    assert _wire_tool_content(_image_search_row(result)) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY_NO_SUBJECT]})
+    ) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": "[[img:%s]]" % _IMAGE_ID, "webImages": [_IMAGE_ENTRY]})
+    ) == ['{"result":""}']
+    assert _wire_tool_content(_image_search_row(result, "lookup")) == [_SEARCH_TEXT_REPLAYED]
+    # A token alone in a block takes its introducing blank line too.
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": "The ragdoll:\n\n[[img:%s]]\n\nIt weighs 6 kg." % _IMAGE_ID,
+                "webImages": [_IMAGE_ENTRY],
+            }
+        )
+    ) == ["The ragdoll:\n\nIt weighs 6 kg."]
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": _SEARCH_TEXT,
+                "webImages": [{**_IMAGE_ENTRY, "source": "HTTPS://example.com/cat.jpg"}],
+            }
+        )
+    ) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row(
+            {
+                "text": "see [[img:%s]] and [[img:not-an-id]]" % _IMAGE_ID,
+                "webImages": [_IMAGE_ENTRY],
+            }
+        )
+    ) == ["see  and [[img:not-an-id]]"]
+
+
+def test_an_envelope_that_is_not_the_search_shape_is_still_serialised_whole():
+    """Unwrapping on `text` alone would drop every other field a tool returned.
+
+    Every entry field is re-checked; a result failing any of them goes out as JSON.
+    """
+    rejected = [
+        [],
+        "not a list",
+        [{**_IMAGE_ENTRY, "source": "javascript:alert(1)"}],
+        # `httpſ` is `https` to a Unicode case fold and not to JavaScript's `/i`.
+        [{**_IMAGE_ENTRY, "source": "httpſ://example.com/cat.jpg"}],
+        [{**_IMAGE_ENTRY, "id": "nope"}],
+        [{**_IMAGE_ENTRY, "title": None}],
+        [{**_IMAGE_ENTRY, "domain": 7}],
+        # The frontend accepts an absent `subject`, not a null one.
+        [{**_IMAGE_ENTRY, "subject": None}],
+        [_IMAGE_ENTRY, {**_IMAGE_ENTRY, "id": "nope"}],
+    ]
+    for entries in rejected:
+        result = {"text": _SEARCH_TEXT, "webImages": entries}
+        assert _wire_tool_content(_image_search_row(result)) == [
+            json.dumps(result, ensure_ascii = False, separators = (",", ":"))
+        ], entries
+
+
+def test_a_result_that_is_two_wrappers_at_once_is_still_stripped():
+    """Being a wrapper and losing the tokens are two questions in the serializer."""
+    both = {
+        "text": _SEARCH_TEXT,
+        "images": [{"data": "AAAA", "mimeType": "image/png"}],
+        "webImages": [_IMAGE_ENTRY],
+    }
+    assert _wire_tool_content(_image_search_row(both)) == [_SEARCH_TEXT_REPLAYED]
+    sandboxed = {
+        "text": _SEARCH_TEXT,
+        "images": [],
+        "sessionId": "project-7",
+        "webImages": [_IMAGE_ENTRY],
+    }
+    assert _wire_tool_content(_image_search_row(sandboxed, "terminal")) == [_SEARCH_TEXT_REPLAYED]
+    assert _wire_tool_content(
+        _image_search_row({"text": _SEARCH_TEXT, "images": both["images"]})
+    ) == [_SEARCH_TEXT]
+    # A null session is not an absent one: nobody's wrapper.
+    nulled = {"text": _SEARCH_TEXT, "images": both["images"], "sessionId": None}
+    assert _wire_tool_content(_image_search_row(nulled)) == [
+        json.dumps(nulled, ensure_ascii = False, separators = (",", ":"))
+    ]
+
+
+def _persist_image_search_turn(answer = _ANSWER):
+    """The stored rows for one web_search turn, in the shape assistant-ui saves."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    row = _image_search_row({"text": _SEARCH_TEXT, "webImages": [_IMAGE_ENTRY]}, answer = answer)
+    rows = [
+        ("u0", None, "user", [{"type": "text", "text": "how heavy is a ZQXVARA123 ragdoll"}]),
+        ("a0", "u0", "assistant", row[0]["content"]),
+    ]
+    for index, (identifier, parent, role, content) in enumerate(rows):
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": content,
+                "createdAt": index + 2,
+            }
+        )
+
+
+# The request the client sent for that turn: one `tool` message, already stripped.
+_IMAGE_SEARCH_WIRE = [
+    {"role": "user", "content": "how heavy is a ZQXVARA123 ragdoll"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "w1",
+                "function": {"name": "web_search", "arguments": '{"query":"ragdoll ZQXVARA123"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "w1", "content": _SEARCH_TEXT_REPLAYED},
+    {"role": "assistant", "content": "A ZQXVARA123 ragdoll weighs 6 kg."},
+]
+
+
+def test_a_turn_that_returned_pictures_still_finds_its_transcript_seat(conn):
+    """The seat is matched against the stored rows, which is where the envelope lived.
+
+    `_transcript_positions` reads them through `_as_wire`, so a turn serialised whole
+    described a message the request never sent and matched no position at all.
+    """
+    _persist_image_search_turn()
+
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert len(positions) == 2, positions
+    assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1]
+
+
+def test_a_recalled_turn_that_returned_pictures_survives_the_branch_filter(conn):
+    """The other half: recall falls back to the stored rows when it has no branch.
+
+    `_live_transcript` rebuilds them the same way, so the archived turn matched nothing.
+    """
+    _persist_image_search_turn()
+    conversation_archive.archive_turns(THREAD, _IMAGE_SEARCH_WIRE)
+
+    with_branch = conversation_archive.recall(
+        THREAD, "ZQXVARA123 ragdoll", branch_messages = _IMAGE_SEARCH_WIRE
+    )
+    without_branch = conversation_archive.recall(THREAD, "ZQXVARA123 ragdoll")
+
+    assert with_branch is not None and "6 kg" in with_branch[0]
+    assert without_branch is not None, "the stored rows rejected a turn that is on branch"
+    assert "6 kg" in without_branch[0]
+
+
+def test_a_reply_that_shows_the_picture_still_finds_its_transcript_seat(conn):
+    """The other half of the same turn: the reply carries the token that placed the image.
+
+    Showing a picture IS writing the token -- the tool result says to -- and the serializer
+    strips it from the replayed reply, so a turn whose picture actually rendered still
+    matched no seat while only the `tool` message was mirrored.
+    """
+    answer = "%s\n\n[[img:%s]]" % (_ANSWER, _IMAGE_ID)
+    _persist_image_search_turn(answer = answer)
+
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1], positions
+
+
+def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
+    """`sanitizeAssistantReplayText` also substitutes inline audio, and for the same reason.
+
+    An audio model answers with the whole wav in an `<audio-player>` tag, so every such
+    turn reconstructed as a message megabytes longer than the one that was sent.
+    """
+    row = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": '<audio-player src="data:audio/wav;base64,QUJD" />'}
+            ],
+        }
+    ]
+
+    assert conversation_archive._probe_text(conversation_archive._as_wire(row)[0]) == (
+        '<audio-player src="[audio]" />'
+    )
+    # Off for a caller comparing the request against something written without it.
+    assert (
+        conversation_archive._probe_text(
+            conversation_archive._as_wire(row, sanitise_assistant = False)[0]
+        )
+        == '<audio-player src="data:audio/wav;base64,QUJD" />'
+    )
+    # The assistant side only: the serializer sanitises replies, not what the user typed.
+    user = [{"role": "user", "content": [{"type": "text", "text": "[[img:%s]]" % _IMAGE_ID}]}]
+    assert conversation_archive._probe_text(conversation_archive._as_wire(user)[0]) == (
+        "[[img:%s]]" % _IMAGE_ID
+    )
 
 
 def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):

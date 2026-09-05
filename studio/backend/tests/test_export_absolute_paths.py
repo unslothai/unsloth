@@ -98,6 +98,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
+    # routes/models.py imports this alongside get_current_subject; a stub missing it
+    # fails the import with "unknown location", which reads like a path problem.
+    auth_mod.allow_ambient_hf_token = lambda: True
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
@@ -142,6 +145,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
     utils_utils.canonical_model_repo_id = lambda value: value
+    # routes/models.py refuses a forced-anonymous caller offline through this; the stub
+    # answers False so the export paths under test take their ordinary route.
+    utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 

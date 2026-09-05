@@ -483,17 +483,10 @@ async def export_lora_adapter(
         )
 
 
-# Live export log stream (Server-Sent Events).
-#
-# The export worker's stdout/stderr is piped to the orchestrator as log
-# entries (core/export/worker.py, orchestrator.py); this endpoint streams
-# them to the browser for a live terminal panel during export operations.
-#
-# Shape follows routes/training.py::stream_training_progress: each event
-# carries id/event/data, the stream starts with a `retry:` directive, and
-# `Last-Event-ID` is honored on reconnect.
-
-
+# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and Last-Event-ID
+# honoured on reconnect.
+# Worker stdout/stderr reaches the orchestrator as log entries (core/export/worker.py, orchestrator.py); shape follows
+# routes/training.py.
 def _format_sse(
     data: str,
     event: str,

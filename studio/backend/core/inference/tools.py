@@ -1834,6 +1834,7 @@ _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sa
 # decides prompting, and fails closed: anything not provably read-only asks.
 
 # Read-only commands allowed to run without confirmation in auto mode.
+# ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
     {
         "ls",
@@ -10500,16 +10501,22 @@ def execute_tool(
             mcp_scope = None
         headers = parse_server_headers(server)
         url = server["url"]
+        use_oauth = bool(server.get("use_oauth"))
 
         def _config_current() -> bool:
-            # Re-read before a stdio session is cached: this call may have read
+            # Re-read before an MCP session is cached: this call may have read
             # the row just before an update/delete closed its sessions.
+            # use_oauth belongs here with the rest: a row switched to OAuth after
+            # we read it must not be reached through the unauthenticated client
+            # this call is about to open, and a close cannot stop that on its own
+            # (nothing is cached yet, so it has no generation to bump).
             row = mcp_servers_db.get_server(server_id)
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
+                and bool(row.get("use_oauth")) == use_oauth
             )
 
         return _fit_result_to_room(
@@ -10519,7 +10526,7 @@ def execute_tool(
                 name = tool_name,
                 args = arguments,
                 timeout = effective_timeout,
-                use_oauth = bool(server.get("use_oauth")),
+                use_oauth = use_oauth,
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
@@ -12097,12 +12104,25 @@ def _fetch_url_raw(
             )
 
         declared = resp.headers.get_content_charset()
-        declared_codec = codecs.lookup(declared).name if declared else None
+        declared_codec = None
+        try:
+            if declared:
+                declared_codec = codecs.lookup(declared).name
+        except (LookupError, ValueError):
+            # ValueError, not only LookupError: a NUL inside the label.
+            declared = None
         bom_codec = next(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        try:
+            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+        except (LookupError, ValueError):
+            # Survives lookup, fails the decode: base64/hex/zlib are not text codecs,
+            # "undefined" always raises, idna rejects replace. The fallback cannot raise.
+            declared = None
+            declared_codec = None
+            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):

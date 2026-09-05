@@ -53,8 +53,8 @@ import signal
 import subprocess
 import tempfile
 
-# pwsh aborting mid-flight prints this and leaves stdout empty while still exiting through
-# the normal path, so unlike the SIGABRT case there is no signal to key on.
+# pwsh aborting mid-flight prints this and leaves stdout empty while still exiting through the normal path, so unlike
+# the SIGABRT case there is no signal to key on.
 PWSH_CRASH_BANNER = "The PowerShell process will exit"
 
 # Resolved once. `None` on a box with no PowerShell, which is what the skipif guards read.
@@ -116,18 +116,17 @@ class PwshInterpreterCrash(AssertionError):
 def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     """Why this run produced no verdict, or None if it produced one."""
     if proc.returncode < 0:
-        # Popen reports "killed by signal N" as -N. .NET's stack-overflow failfast is
-        # SIGABRT; a SIGSEGV or a SIGKILL from the OOM killer would land here too, and all
-        # three mean the same thing to us: the script did not run to its end.
+        # Popen reports "killed by signal N" as -N. .NET's stack-overflow failfast is SIGABRT; a SIGSEGV or a SIGKILL
+        # from the OOM killer would land here too, and all three mean the same thing to us: the script did not run to
+        # its end.
         try:
             name = signal.Signals(-proc.returncode).name
         except ValueError:
             name = f"signal {-proc.returncode}"
         return f"killed by {name}"
-    # Only inspectable when the caller captured the streams; a call site that streams to the
-    # console gets the signal check alone, which is the case that actually bit CI. The
-    # byte-level tests capture without `text = True`, so the banner is searched for in
-    # whichever form the caller asked for rather than assuming str.
+    # Only inspectable when the caller captured the streams; a call site that streams to the console gets the signal
+    # check alone, which is the case that actually bit CI. The byte-level tests capture without `text = True`, so the
+    # banner is searched for in whichever form the caller asked for rather than assuming str.
     captured = [stream for stream in (proc.stdout, proc.stderr) if stream]
     if any(isinstance(stream, bytes) for stream in captured):
         streams = b"".join(
@@ -170,9 +169,8 @@ def run_pwsh(
     if attempts < 1:
         raise ValueError(f"attempts must be >= 1, got {attempts}")
 
-    # Redirect only pwsh's own startup cache, leaving every other variable as the call site
-    # meant it: `env = None` still means "inherit", and a hermetic env dict still gets
-    # exactly the keys it listed plus this one. See _pwsh_cache_dir for the measurement.
+    # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it: `env = None`
+    # still means "inherit", and a hermetic env dict still gets exactly the keys it listed plus this one.
     env = kwargs.get("env")
     env = dict(os.environ if env is None else env)
     env["XDG_CACHE_HOME"] = _pwsh_cache_dir()

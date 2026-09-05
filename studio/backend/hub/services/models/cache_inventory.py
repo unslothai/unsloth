@@ -41,11 +41,9 @@ from hub.services.models.common import (
     _runtime_for_format,
 )
 
-# Imported at module scope (not inside the per-repo scan loop) so a broken
-# import surfaces at startup instead of silently emptying the inventory: the
-# scan loop swallows per-repo exceptions and would drop every repo. Lives under
-# ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
-# imports in ``utils/models/__init__.py``.
+# Imported at module scope so a broken import surfaces at startup instead of silently emptying the
+# inventory: the scan loop swallows per-repo exceptions. Lives under utils, not utils.models, to
+# avoid the eager model-config imports in utils/models/__init__.py.
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.audio_tokens import detect_local_tts_audio_type
 from utils.hidden_models import (
@@ -76,14 +74,14 @@ _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
 
-# Retrying a superseded scan is only worth it while invalidations are occasional;
-# past this the endpoint has to answer instead of restarting the walk forever.
+# Retrying a superseded scan is only worth it while invalidations are occasional; past this the
+# endpoint has to answer instead of restarting the walk forever.
 _INVENTORY_SCAN_MAX_ATTEMPTS = 8
 # Last scan per inventory name that confirmed its epoch, served when the cap is hit.
 _last_confirmed_inventory: dict[str, list[dict]] = {}
 
-# Identity for a cached file with no HF blob (Windows without Developer Mode: hf
-# moves the blob into snapshots/ and leaves blobs/ empty).
+# Identity for a cached file with no HF blob: on Windows without Developer Mode hf moves the blob
+# into snapshots/ and leaves blobs/ empty.
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
 
 
@@ -187,9 +185,8 @@ def _repo_gguf_last_modified(repo_info) -> float:
 
 
 def _repo_has_mmproj(repo_info) -> bool:
-    # An mmproj file only makes a repo vision-capable when it is an actual GGUF
-    # projector; a non-GGUF sidecar (e.g. mmproj_config.json) does not, and the
-    # runtime's projector detection is GGUF-only.
+    # Only an actual GGUF projector makes a repo vision-capable; a non-GGUF sidecar
+    # (e.g. mmproj_config.json) does not, and the runtime's projector detection is GGUF-only.
     return any(
         _is_gguf_filename(f.file_name) and _is_mmproj_filename(f.file_name)
         for revision in repo_info.revisions
@@ -217,8 +214,8 @@ def cached_repo_files(revision) -> list:
     Every classification below reads these by name, and a "._" companion carries the described
     file's own name, so it answers each one the way the real file does.
     """
-    # The "._" name is on the snapshot entry, the bytes are in the content-addressed blob whose
-    # own name carries no prefix -- but the entry is a symlink to it, so one open reads both.
+    # The "._" name is on the snapshot entry while the bytes are in the content-addressed blob, but the
+    # entry is a symlink to it, so one open reads both.
     return [
         f
         for f in getattr(revision, "files", ()) or ()
@@ -409,8 +406,8 @@ def _cache_inventory_fields(
             active_hub_cache = active_hub_cache,
             payload_snapshots = payload_snapshots,
         )
-    # The directory this row loads from: the non-GGUF scan passes only
-    # *identity*, so snapshot_path alone classified nothing.
+    # The directory this row loads from: the non-GGUF scan passes only identity, so snapshot_path alone
+    # classified nothing.
     classify_snapshot = identity.load_snapshot or snapshot_path
     can_chat_override = None
     if classify_snapshot is not None:
@@ -433,27 +430,19 @@ def _cache_inventory_fields(
         else repo_info is not None and _repo_has_mmproj(repo_info)
     ):
         capabilities["supports_vision"] = True
-    # Qwen3-ASR's required mmproj is an audio projector, not a vision
-    # projector. Curated STT rows are visible only to task-scoped consumers and
-    # must never become eligible for chat auto-load.
-    # ``stt_only`` covers any repo whose config sniffs as Whisper, curated or not: a
-    # third-party checkpoint or a user's own fine-tune is just as unchattable, and can_chat
-    # is what auto-load and the chat picker filter on, neither of which looks at the task.
+    # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any
+    # repo whose config sniffs as Whisper: can_chat is what auto-load and the chat picker filter on.
     if stt_only or is_curated_stt_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
-    # Same rule for the speech-emitting half of the Audio page. The codec probe in
-    # _local_transformers_can_chat covers uncurated safetensors copies; native audio
-    # architectures are also passed explicitly. A GGUF repo ships no tokenizer_config
-    # to probe, so the curated ids answer for those.
+    # The codec probe covers uncurated safetensors copies and native audio architectures are passed
+    # explicitly; a GGUF repo ships no tokenizer_config to probe, so the curated ids answer for those.
     if tts_only or is_curated_tts_repo_id(repo_id):
         capabilities["can_chat"] = False
     if hidden_infra:
         capabilities["can_chat"] = False
-    # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
-    # format says. Set HERE rather than left to the row's companion flag alone: startup auto-load
-    # filters on capabilities.can_chat (isChattableCachedRepo), not on that flag, so a row that
-    # only carried the flag was still auto-loadable as a chat model.
+    # A VAE / text-encoder mirror holds no language model. Set HERE rather than left to the row's
+    # companion flag alone: startup auto-load filters on capabilities.can_chat, not on that flag.
     if companion:
         capabilities["can_chat"] = False
     return {
@@ -502,9 +491,8 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
         if normalized in native_companions:
             return True
 
-        # MOSS Local may name a different compatible tokenizer in its processor
-        # config. Classify the codec architecture too, so that dynamically
-        # resolved companion cannot surface as a chat checkpoint after download.
+        # MOSS Local may name a different compatible tokenizer, so classify the codec architecture too or
+        # that dynamically resolved companion surfaces as a chat checkpoint.
         config = _read_json_object(snapshot / "config.json") if snapshot is not None else {}
         model_type = str(config.get("model_type") or "").strip().lower()
         if model_type in {
@@ -536,8 +524,8 @@ def _cached_row_task(
     pick by it, so a row that arrives without one is dropped from those lists entirely.
     """
     try:
-        # Module-qualified: rebinding these names here re-points a load that resolved to
-        # routes.models before the move, which verify_import_hoist.py blocks.
+        # Module-qualified: rebinding these names re-points a load that resolved to routes.models before the
+        # move, which verify_import_hoist.py blocks.
         from hub.services.models import catalog_classification
         return (
             catalog_classification._repo_gguf_task(repo_info, selected)
@@ -581,14 +569,8 @@ def _scan_cached_gguf(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        # Symmetric with _scan_cached_models below. The index is built once for the
-        # whole scan and outside the per-repository try, so one malformed repo
-        # identity anywhere in the cache took the endpoint with it: a cache
-        # directory name holding a byte the filesystem encoding cannot decode
-        # arrives as a lone surrogate, hashing it for the repo key raises, and
-        # /api/hub/cached-gguf answers 500 with every valid row hidden. Falling
-        # back to the per-repo reads this replaced costs speed on a broken cache
-        # and nothing else.
+        # The index is built once for the whole scan and outside the per-repository try, so one undecodable
+        # cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
         logger.warning("Could not build shared cached-GGUF state index: %s", e)
         variant_states = None
 
@@ -622,20 +604,16 @@ def _scan_cached_gguf(
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
                 is_curated_stt = is_curated_stt_repo_id(repo_id)
-                # Hide infra repos unless the user downloaded a variant via
-                # the Hub; variant state only exists for user downloads. Exact
-                # curated STT repos are still emitted as management rows and
-                # the frontend's task allowlist keeps them out of Chat.
+                # Hide infra repos unless the user downloaded a variant: variant state only exists for user
+                # downloads, and curated STT repos are still emitted as management rows.
                 if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
                 # Must run after the skips above and before the partial walk it scopes.
                 gguf_snapshot, gguf_payload_snapshots = _repo_gguf_payload_snapshots(repo_info)
-                # Resolved before the row is classified, not inside _cache_inventory_fields
-                # below: a load_id left as the repo id resolves through refs/main, which can
-                # name an older revision than the newest payload snapshot. Classifying the
-                # newest then described a revision the load never reads.
+                # Resolved before the row is classified: a load_id left as the repo id resolves through refs/main,
+                # which can name an older revision than the newest payload snapshot.
                 gguf_identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
@@ -677,8 +655,8 @@ def _scan_cached_gguf(
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
-                    # GGUF row-level transport is ambiguous (variants may differ);
-                    # per-variant detail lives on GgufVariantDetail.
+                    # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on
+                    # GgufVariantDetail.
                     "partial_transport": None,
                     "partial_resumable": False,
                 }
@@ -729,9 +707,8 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
     rows = scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
-    # The walk itself takes seconds, so a delete or a finished download landing
-    # during it supersedes these rows just as surely as one landing before it:
-    # without this a repo deleted mid-scan is still listed in the response.
+    # The walk itself takes seconds, so a delete or finished download landing during it supersedes these
+    # rows as surely as one landing before it.
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
     return rows
@@ -752,9 +729,8 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
             continue
         _last_confirmed_inventory[name] = rows
         return _CachedInventoryScan(rows, True)
-    # Invalidations are arriving faster than the walk completes, so no scan will
-    # confirm as current. Answer with the last one that did rather than spin a
-    # full cache walk per epoch forever.
+    # Invalidations are arriving faster than the walk completes, so answer with the last scan that
+    # confirmed rather than spin a full cache walk per epoch forever.
     logger.warning(
         "Cached %s inventory kept racing cache invalidations; serving the last confirmed scan",
         name,
@@ -907,15 +883,12 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if snapshot is not None:
             for config_name, key in (
                 ("config.json", "has_config"),
-                # A diffusers pipeline's root manifest, which plays exactly the role config.json
-                # plays for transformers: from_pretrained reads it at the snapshot root to learn
-                # the component layout. Without it here no pure pipeline snapshot could classify
-                # (real repos ship model_index.json and per-component configs, never a root
-                # config.json), payload_snapshots came back empty, and every cached diffusion base
-                # pipeline was force-flagged partial and dropped from the On Device lists.
+                # model_index.json plays for a diffusers pipeline the role config.json plays for transformers:
+                # without it no pure pipeline snapshot could classify, and every cached diffusion base was
+                # force-flagged partial and dropped from On Device.
                 ("model_index.json", "has_config"),
-                # Modular Diffusers pipelines use this root manifest instead. Saved or custom
-                # modular snapshots may omit both conventional root manifests.
+                # Modular Diffusers pipelines use this root manifest instead, and saved or custom modular snapshots
+                # may omit both.
                 ("modular_model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
@@ -934,9 +907,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     )
 
     def _revisions_of(fmt: str) -> tuple[list, list]:
-        # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False
-        # because from_pretrained needs config.json in that one directory. Filename classification
-        # also matches torn revisions, so the whole ones are tracked separately.
+        # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False because
+        # from_pretrained needs config.json in that one directory.
         snapshots = [
             snapshot
             for snapshot, flags in revision_flags
@@ -948,9 +920,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
 
     payload_snapshots, complete = _revisions_of(model_format)
     if not complete:
-        # The repo-wide flags are OR-ed across revisions, so they can name a format whose every
-        # revision is torn while another format has a whole one sitting right there. Load what
-        # loads: an interrupted safetensors attempt must not hide a complete checkpoint.
+        # The repo-wide flags are OR-ed across revisions, so they can name a format whose every revision
+        # is torn while another format has a whole one: an interrupted safetensors attempt must not hide
+        # a complete checkpoint.
         for candidate in ("safetensors", "checkpoint", "adapter"):
             if candidate == model_format:
                 continue
@@ -1154,14 +1126,12 @@ def _scan_cached_models(
                         else None
                     ),
                 )
-                # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
-                # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
-                # Scoped to the row's own snapshot, like the download check above it: the repo-wide twin picks the newest revision for
-                # itself, so a newer companion-only snapshot beside the complete one refs/main resolves to marked this row partial.
+                # A companion-only prefetch passes the download check yet cannot from_pretrained, so mark it
+                # partial.
                 companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
                 snapshot_partial = download_partial or companion_only
-                # Flags are OR-ed over revisions, so no payload snapshot means no directory
-                # serves the row and it would reach for the Hub.
+                # Flags are OR-ed over revisions, so no payload snapshot means no directory serves the row and it
+                # would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
                 try:
@@ -1176,8 +1146,9 @@ def _scan_cached_models(
                     if is_whisper_stt
                     else (
                         "text-to-speech"
-                        # The probe answers for a repo whose card says nothing, so the
-                        # Audio page, which selects by task, still lists it.
+                        # The probe answers for a repo whose card says nothing, so the Audio page, which
+                        # selects by task,
+                        # still lists it.
                         if is_output_audio or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
@@ -1202,7 +1173,9 @@ def _scan_cached_models(
                             repo_id,
                             repo_cache_dir = repo_path,
                         )
-                        # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
+                        # Only a genuine download partial has a transport; a companion-only snapshot arrived
+                        # intact and has
+                        # no Resume story.
                         if download_partial
                         else None
                     ),
@@ -1215,15 +1188,14 @@ def _scan_cached_models(
                         if download_partial
                         else False
                     ),
-                    # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
-                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row. Read from the
-                    # row's snapshot: the manifest a sibling revision carries is not the one this row's load_id opens.
+                    # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must
+                    # not offer them as pipeline loads.
                     "single_file": bool(
                         row_task is not None
                         and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
                     ),
-                    # Listed so tens of GB of companion weights stay visible and deletable, but
-                    # flagged so no picker offers a denoiser-less repo as a load.
+                    # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker
+                    # offers a denoiser-less repo as a load.
                     "companion": _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
@@ -1246,9 +1218,8 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
-                # Native backend selection reads the load identity itself. A custom native
-                # fork addressed only by repo id is indistinguishable from an ordinary LLM,
-                # even though this inventory row detected its architecture from the snapshot.
+                # Native backend selection reads the load identity itself, so a custom native fork addressed only by
+                # repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:
                     row["load_id"] = str(load_snapshot)
                 if _prefer_cache_row(row, existing):

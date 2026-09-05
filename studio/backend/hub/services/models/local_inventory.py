@@ -65,16 +65,15 @@ _local_inventory_flights: dict[
 ] = {}
 
 
-# Retrying a superseded scan is only worth it while invalidations are occasional;
-# past this the endpoint must answer instead of restarting the walk forever.
+# Retrying a superseded scan is only worth it while invalidations are occasional; past this the endpoint must answer.
 _LOCAL_INVENTORY_MAX_ATTEMPTS = 8
 
 
 class _LocalCacheChanged(RuntimeError):
     def __init__(self, response: LocalModelListResponse) -> None:
         super().__init__("local inventory sources changed during the scan")
-        # Carried so the attempt cap can serve the freshest scan it has instead
-        # of looping forever or answering with nothing.
+        # Carried so the attempt cap can serve the freshest scan it has instead of looping forever or
+        # answering with nothing.
         self.response = response
 
 
@@ -121,6 +120,8 @@ def _has_immediate_model_weight(
                 if entry.is_file() and _is_immediate_model_weight_file(entry):
                     return True
             except OSError:
+                # Skip individual children that are unreadable (permissions, broken symlinks, etc.) rather than
+                # failing the entire scan.
                 continue
     except OSError:
         return False
@@ -218,8 +219,6 @@ def _scan_models_dir(
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
         except OSError:
-            # Skip individual children that are unreadable (permissions, broken
-            # symlinks, etc.) rather than failing the entire scan.
             continue
         if not has_model_files:
             continue
@@ -311,9 +310,8 @@ def _scan_hf_cache(
     if not discovered:
         return []
     if variant_states is None:
-        # Reached precisely when the caller's own guarded build already failed, so
-        # leaving this one bare handed the same exception straight back and undid
-        # that guard. Degrade to the per-repo reads instead, as the callers do.
+        # Reached precisely when the caller's own guarded build already failed, so leaving this bare handed
+        # the same exception back and undid that guard; degrade to the per-repo reads instead.
         try:
             variant_states = download_manifest.build_variant_state_index(
                 [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
@@ -364,8 +362,8 @@ def _scan_hf_cache(
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
-        # partial=False here; _apply_format_aware_partial below rewrites per-row
-        # so a hybrid repo's gguf row doesn't taint its safetensors row.
+        # _apply_format_aware_partial below rewrites per row, so a hybrid repo's gguf row does not taint its
+        # safetensors row.
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
@@ -394,8 +392,7 @@ def _scan_hf_cache(
                     )
                 ]
             else:
-                # Fallback row's model_format is "unknown"; either signal
-                # applies because we can't dispatch to a specific predicate.
+                # The fallback row's model_format is "unknown", so either signal applies.
                 rows = [
                     _local_model_info(
                         scan_path = repo_dir,
@@ -445,8 +442,8 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If the dir is itself a model dir (config + weights, or a diffusers pipeline root), it's not
-    # an LM Studio publisher structure -- return it as a single entry rather than descend.
+    # A directory that is itself a model dir is not an LM Studio publisher structure, so return it as a
+    # single entry rather than descend.
     if _is_model_directory(lm_dir) or _is_diffusers_pipeline_dir(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
@@ -494,8 +491,8 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     )
                 continue
 
-            # Child is itself a model dir: surface it directly, not as a publisher. A diffusers
-            # pipeline counts, or its component subdirs are walked as if they were models.
+            # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline
+            # counts, or its component subdirs are walked as models.
             if _is_model_directory(child) or _is_diffusers_pipeline_dir(child):
                 try:
                     updated_at = child.stat().st_mtime
@@ -579,8 +576,7 @@ def _inventory_path_identity(raw_path: str) -> str:
         normalized = normalize_path(raw)
         return os.path.normcase(os.path.realpath(os.path.expanduser(normalized)))
     except (OSError, UnicodeError, ValueError):
-        # Keep malformed sources distinct until the worker's existing request or
-        # per-folder error boundary turns them into a 403/skip.
+        # Keep malformed sources distinct until the worker's error boundary turns them into a 403 or a skip.
         return os.path.normcase(raw)
 
 
@@ -696,8 +692,8 @@ async def _collect_models_from_default_sources(
             lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
-        # Carry the registered path: the status registry is keyed on the row, not
-        # on the normalized Path this scan walks.
+        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path
+        # this scan walks.
         custom_sources.append((folder_path, discovered, str(folder["path"])))
         state_repositories.extend(
             ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
@@ -745,8 +741,8 @@ async def _collect_models_from_default_sources(
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
             continue
-        # Off the loop, like the scan above it: the probe opens directories, and on a
-        # stalled network mount scandir sits in the kernel with nothing to yield to.
+        # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount
+        # scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
@@ -765,9 +761,8 @@ def _scan_custom_folder(
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
 
     def _is_supported(m: LocalModelInfo) -> bool:
-        # A diffusers pipeline keeps its weights in component subdirs, so the root has no loose
-        # weight file to classify and lands as "unknown". It is exactly what the Images and Video
-        # loaders take, so judge it on its shape rather than on a format the layout cannot report.
+        # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge
+        # it on its shape rather than on a format the layout cannot report.
         if m.model_format in supported_formats:
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
@@ -834,9 +829,8 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
-                # Rebuilding from the format alone restored can_chat on rows the
-                # classifier had ruled out. The format is unchanged here, so
-                # carrying the old verdict through is idempotent.
+                # Rebuilding from the format alone restored can_chat on rows the classifier had ruled out; the
+                # format is unchanged here, so carrying the old verdict through is idempotent.
                 can_chat_override = model.capabilities.can_chat,
             ),
         }
@@ -967,10 +961,8 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     """Coalesce overlapping local inventory requests for the same models root."""
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
-        # These rows feed the same pickers as /api/models/local. Classified inside the
-        # shared worker so retrying waiters do not repeat GGUF metadata reads, and only
-        # for a response that is actually about to be served.
-        # Classification reads GGUF headers, so keep it off the event loop too.
+        # Classified inside the shared worker so retrying waiters do not repeat GGUF metadata reads, and off
+        # the event loop, since classification reads GGUF headers.
         try:
             from hub.services.models import catalog_classification
 
@@ -1005,8 +997,8 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None
     for _attempt in range(_LOCAL_INVENTORY_MAX_ATTEMPTS):
-        # Epoch first: the sources and folders below are read after it, so any
-        # change to them lands in a later epoch and the post-scan check sees it.
+        # Epoch first: the sources and folders below are read after it, so any change to them lands in a
+        # later epoch and the post-scan check sees it.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         custom_folders = await _load_custom_folders()
         sources = _local_inventory_sources()
@@ -1029,9 +1021,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         except _LocalCacheChanged as changed:
             superseded = changed.response
             continue
-    # Invalidations are outpacing the walk, so no scan will ever confirm as
-    # current. Answer with the freshest one (the loop only reaches here through
-    # the retry path, so there is always one) instead of rescanning forever.
+    # Invalidations are outpacing the walk, so answer with the freshest scan instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
     return await asyncio.to_thread(classify, superseded)
 
@@ -1043,9 +1033,8 @@ def get_models_folder_response() -> dict:
     the desktop app reveals it in the OS file manager.
     """
     path = _resolve_hf_cache_dir()
-    # Create it if missing so "Open folder" works before the first download:
-    # HF builds the cache lazily, and studio only pre-creates the *default*
-    # dir, not a user's explicit HF_HOME / HF_HUB_CACHE.
+    # Create it if missing so "Open folder" works before the first download: HF builds the cache
+    # lazily, and studio pre-creates only the default dir, not a user's explicit HF_HOME/HF_HUB_CACHE.
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as e:
