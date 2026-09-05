@@ -22,6 +22,7 @@ from core.inference.kv_swap import (
     SWAP_STREAK_PROTECT,
     KvSwapController,
     KvSwapError,
+    KvSwapNothingToSave,
     default_buffer_tokens,
     get_kv_swap_controller,
     kv_swap_chunk_tokens,
@@ -329,10 +330,13 @@ def test_swap_out_does_not_erase_when_the_save_reports_nothing():
     server.save_returns = 0
     controller = make_controller(server)
     controller.admit("a", prompt_tokens = 100, slot = 1)
-    with pytest.raises(KvSwapError, match = "saved 0 tokens"):
+    # An empty slot is signalled distinctly, because it is not a failure: llama-server
+    # clears idle slots itself under a unified KV, and pausing then would be pointless.
+    with pytest.raises(KvSwapNothingToSave, match = "no cells to free"):
         controller.swap_out("a")
     assert [c[1] for c in server.calls] == ["save"]     # no erase: content is never lost
     assert controller.get("a").state == RUNNING
+    assert issubclass(KvSwapNothingToSave, KvSwapError)
 
 
 def test_swap_out_propagates_a_failed_save_without_erasing():
@@ -473,3 +477,24 @@ def test_snapshot_reports_the_live_shape():
     assert snap["resident"] == 300
     assert snap["budget"] == 8192 - 20
     assert snap["swaps_out"] == 0
+
+
+# ------------------------------------------------------------------------ can_resume
+
+def test_can_resume_asks_only_whether_this_chat_fits():
+    controller = make_controller(n_ctx = 1020)      # budget 1000
+    controller.admit("big", prompt_tokens = 700, slot = 0)
+    controller.admit("me", prompt_tokens = 400, slot = 1)
+    controller.swap_out("me")
+    # 700 resident + 400 wanted = 1100 > 1000, so not yet.
+    assert controller.can_resume("me") is False
+    controller.update("big", prompt_tokens = 500)
+    # 500 + 400 = 900 <= 1000, even though "big" is still running.
+    assert controller.can_resume("me") is True
+
+
+def test_can_resume_ignores_the_chats_own_residency():
+    controller = make_controller(n_ctx = 1020)
+    controller.admit("me", prompt_tokens = 400, slot = 0)
+    assert controller.can_resume("me") is True
+    assert controller.can_resume("ghost") is False

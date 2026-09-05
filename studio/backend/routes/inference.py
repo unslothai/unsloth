@@ -97,6 +97,7 @@ from core.inference.orchestrator import (
 )
 from core.inference.kv_swap import (
     KvSwapError,
+    KvSwapNothingToSave,
     peek_kv_swap_controller,
 )
 from core.inference.llama_admission import (
@@ -1711,7 +1712,7 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # How long a swapped-out chat waits for cells before giving up and re-prefilling, and how
 # often it re-checks. The poll is coarse because a swap-in costs ~11 ms: a tighter loop
 # would only burn the executor thread the tool loop needs back.
-_KV_SWAP_MAX_WAIT_S = 300.0
+_KV_SWAP_MAX_WAIT_S = 900.0
 _KV_SWAP_POLL_S = 0.25
 # SSE comments the chat UI already renders as "Paused while another chat finishes".
 _OPENAI_KV_SWAP_SSE_PAUSED = ": preempt-paused\n\n"
@@ -21531,27 +21532,68 @@ async def produce_openai_chat_completions(
                         controller.note_progress(_kv_swap_chat_id)
                         return
 
+                    chat = controller.get(_kv_swap_chat_id)
                     controller.swap_out(_kv_swap_chat_id)
                     _kv_swap_state["paused"] = True
                     _kv_swap_state["swaps"] += 1
+                    logger.info(
+                        "llama kv swap paused: chat=%s slot=%s saved=%d resident=%d "
+                        "budget=%d keep=%s",
+                        _kv_swap_chat_id, slot,
+                        chat.saved_tokens if chat is not None else -1,
+                        decision.resident, decision.budget, decision.keep,
+                    )
+                    _swap_started = time.monotonic()
                     try:
                         # Blocking, and deliberately so: this runs on the tool loop's
                         # executor thread, exactly where recost_waiting already waits for
                         # cache room. The event loop keeps serving the client, which is
                         # what turns this into "waiting" in the UI instead of a stall.
                         deadline = time.monotonic() + _KV_SWAP_MAX_WAIT_S
+                        _fits = False
                         while time.monotonic() < deadline:
                             if cancel_event is not None and cancel_event.is_set():
                                 break
-                            if not controller.plan(incoming = 0).victims:
+                            # This chat's own fit, not the whole queue's: waiting for
+                            # everyone to fit means waiting for the queue to drain.
+                            if controller.can_resume(_kv_swap_chat_id):
+                                _fits = True
                                 break
+                            try:
+                                controller.reconcile(llama_backend.read_slots_snapshot())
+                            except Exception:
+                                pass
                             time.sleep(_KV_SWAP_POLL_S)
-                        controller.swap_in(_kv_swap_chat_id, slot)
+                        if _fits:
+                            controller.swap_in(_kv_swap_chat_id, slot)
+                        else:
+                            # Restoring into a cache with no room returns HTTP 400 and
+                            # loses the checkpoint anyway. Drop it deliberately instead
+                            # and let the round re-prefill, which always works.
+                            logger.info(
+                                "llama kv swap gave up waiting: chat=%s after %.1fs; "
+                                "resuming by re-prefill",
+                                _kv_swap_chat_id, time.monotonic() - _swap_started,
+                            )
+                            controller.fall_back(_kv_swap_chat_id)
+                        _chat_now = controller.get(_kv_swap_chat_id) if _fits else None
+                        if _fits:
+                            logger.info(
+                                "llama kv swap resumed: chat=%s slot=%s waited=%.1fs "
+                                "restore=%.1fms swaps=%d",
+                                _kv_swap_chat_id, slot,
+                                time.monotonic() - _swap_started,
+                                _chat_now.last_restore_ms if _chat_now is not None else -1.0,
+                                _kv_swap_state["swaps"],
+                            )
                     finally:
                         # Cleared even on a failed restore: the fallback path re-prefills,
                         # so the client is no longer waiting either way.
                         _kv_swap_state["paused"] = False
                         _kv_swap_state["resumed"] = True
+                except KvSwapNothingToSave:
+                    # No cells to free, so no reason to make this chat wait.
+                    return
                 except Exception as exc:
                     # Fall back to plain admission: slower to resume, never an error.
                     try:
@@ -21560,7 +21602,7 @@ async def produce_openai_chat_completions(
                             controller.fall_back(_kv_swap_chat_id)
                     except Exception:
                         pass
-                    logger.debug(f"KV swap skipped for {_kv_swap_chat_id}: {exc}")
+                    logger.info(f"llama kv swap fell back for {_kv_swap_chat_id}: {exc}")
 
             def _gguf_recost(conversation) -> None:
                 _kv_swap_round(conversation)

@@ -87,6 +87,16 @@ class KvSwapError(RuntimeError):
     """A swap could not be completed; the caller falls back to re-prefill."""
 
 
+class KvSwapNothingToSave(KvSwapError):
+    """The slot held no cells, so there is nothing to free and nothing to pause for.
+
+    Not a failure. llama-server clears an idle slot into its own prompt cache when
+    --cache-idle-slots is on under a unified KV, which is the default, so a slot can
+    legitimately be empty at a round boundary. Pausing the chat then would make it
+    wait for room it is not using.
+    """
+
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -375,6 +385,23 @@ class KvSwapController:
             decision.reason = "pressure" if decision.victims else "no-candidate"
             return decision
 
+    def can_resume(self, chat_id: str) -> bool:
+        """Whether the cells this chat needs are free right now.
+
+        Deliberately NOT "is the system unpressured": a paused chat that waits for every
+        other chat to fit as well waits for the whole queue to drain, which is how a
+        300 s resume timeout was first observed. It only has to fit ALONGSIDE what is
+        currently resident.
+        """
+        with self._lock:
+            chat = self._chats.get(chat_id)
+            if chat is None:
+                return False
+            resident = sum(
+                c.resident for c in self._chats.values() if c.chat_id != chat_id
+            )
+            return resident + chat.size <= self.budget
+
     # -------------------------------------------------------------------- swaps
 
     def _post(self, slot: int, action: str, filename: Optional[str] = None):
@@ -408,7 +435,7 @@ class KvSwapController:
                 n_saved = 0
         if n_saved <= 0:
             self._discard(filename)
-            raise KvSwapError(f"chat {chat_id} saved {n_saved} tokens")
+            raise KvSwapNothingToSave(f"chat {chat_id} holds no cells to free")
 
         self._post(chat.slot, "erase")
         with self._lock:
