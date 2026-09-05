@@ -24,6 +24,17 @@ export function toolThreadScope(paneScope: string, threadId?: string): string {
   return `${paneScope}\u0000${threadId ?? ""}`;
 }
 
+/** Narrow a thread scope to one assistant message: local card ids restart at `tool_call_0`
+ *  every turn, so with the thread alone a later turn's launch record would label an earlier
+ *  turn's card. The adapter gets `unstable_assistantMessageId`, which assistant-ui sources
+ *  from `message.id`, the value the card reads. */
+export function toolExecutionRecordScope(
+  threadScope: string,
+  assistantMessageId?: string,
+): string {
+  return `${threadScope}\u0000${assistantMessageId ?? ""}`;
+}
+
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
 /** Store-key scope for the conversation this component renders in, taken from the surrounding
@@ -126,17 +137,24 @@ export function preferSanitizedFullToolOutput(
   return preferFullToolOutput(stripAnsi(full), stripAnsi(result));
 }
 
-/** The launch record for one card, read under this component's pane+thread scope. A run that
- *  started before its thread had an id filed its records under the unresolved scope, so that
- *  is consulted too, but only while the thread is still running (see useToolOutputFor). */
+/** The launch record for one card, read under this component's pane+thread+message scope. A
+ *  run that started before its thread had an id filed its records under the unresolved scope,
+ *  so that is consulted too, but only while the thread is still running (see useToolOutputFor). */
 export function useToolExecutionRecordFor(
   toolCallId: string,
 ): ToolExecutionRecord | null {
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
+  const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const own = toolExecutionRecordFromCard(toolCallId, paneScope);
+  const own = toolExecutionRecordFromCard(
+    toolCallId,
+    toolExecutionRecordScope(paneScope, messageId),
+  );
   if (own !== null) return own;
   if (!isRunning || paneScope === unresolvedScope) return null;
-  return toolExecutionRecordFromCard(toolCallId, unresolvedScope);
+  return toolExecutionRecordFromCard(
+    toolCallId,
+    toolExecutionRecordScope(unresolvedScope, messageId),
+  );
 }

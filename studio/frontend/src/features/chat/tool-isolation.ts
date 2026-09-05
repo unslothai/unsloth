@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { backendLabel } from "./tool-isolation-labels";
 
 export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
 
@@ -38,29 +39,6 @@ export type ToolIsolationPresentation = {
   label: string;
   description: string;
 };
-
-function backendLabel(backend: string | null, environment: string): string {
-  if (backend === "windows-lpac") {
-    return "LPAC (Windows)";
-  }
-  if (backend === "macos-seatbelt") {
-    return "Seatbelt (lifecycle unverified)";
-  }
-  if (!backend?.toLowerCase().includes("bubblewrap")) {
-    return backend || "OS sandbox";
-  }
-  const normalized = environment.toLowerCase();
-  if (normalized.includes("wsl")) {
-    return "Bubblewrap (WSL2)";
-  }
-  if (normalized.includes("colab")) {
-    return "Bubblewrap (Colab)";
-  }
-  if (normalized.includes("container")) {
-    return "Bubblewrap (Container)";
-  }
-  return "Bubblewrap";
-}
 
 export function isLimitedGrantCurrent(
   grant: LimitedToolGrant | null,
@@ -112,14 +90,14 @@ export function toolIsolationPresentation(
   if (capability?.protection_state === "protected") {
     return {
       state: "protected",
-      label: `Protected · ${backendLabel(capability.backend, capability.environment)}`,
+      label: `Protected · ${backendLabel(capability.backend, capability.environment, capability.profile_id)}`,
       description: "Python and Terminal use qualified OS isolation.",
     };
   }
   if (capability?.protection_state === "preview") {
     return {
       state: "preview",
-      label: `Preview OS isolation · ${backendLabel(capability.backend, capability.environment)}`,
+      label: `Preview OS isolation · ${backendLabel(capability.backend, capability.environment, capability.profile_id)}`,
       description:
         "Python and Terminal use a preview sandbox whose live enforcement probe passed.",
     };

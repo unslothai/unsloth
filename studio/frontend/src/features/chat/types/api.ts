@@ -585,9 +585,9 @@ const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
 const MAX_AUTHORITATIVE_EXECUTION_RECORDS = 2048;
 const RECORD_KEY_SEPARATOR = "\u0000";
 
-/** Local model tool-call ids repeat across conversations ("call_0"), so a record is filed
- *  under the pane+thread scope its run wrote it in. An absent scope is the legacy single
- *  namespace, kept for callers that have no scope (hydration of stored content). */
+/** Local model tool-call ids repeat across conversations and across turns ("tool_call_0"), so
+ *  a record is filed under the pane+thread+assistant-message scope its run wrote it in (see
+ *  toolExecutionRecordScope). An absent scope is the legacy single namespace. */
 function executionRecordKey(toolCallId: string, scope?: string): string {
   return `${scope ?? ""}${RECORD_KEY_SEPARATOR}${toolCallId}`;
 }
@@ -706,20 +706,14 @@ export function toolExecutionRecordFromCard(
   );
 }
 
-/** Drop a card's record. Without a scope every scope's entry for that id goes, which is what
- *  a rehydrated (stored, provenance-free) card needs. */
+/** Drop a card's record in exactly one scope. An unscoped call touches only the legacy
+ *  unscoped namespace: hydrating one conversation must never erase a record another pane or
+ *  thread filed under the same repeating local id. */
 export function discardAuthoritativeExecutionRecord(
   toolCallId: string,
   scope?: string,
 ): void {
-  if (scope !== undefined) {
-    authoritativeExecutionRecords.delete(executionRecordKey(toolCallId, scope));
-    return;
-  }
-  const suffix = `${RECORD_KEY_SEPARATOR}${toolCallId}`;
-  for (const key of [...authoritativeExecutionRecords.keys()]) {
-    if (key.endsWith(suffix)) authoritativeExecutionRecords.delete(key);
-  }
+  authoritativeExecutionRecords.delete(executionRecordKey(toolCallId, scope));
 }
 
 /** Test seam: how many records are held right now. */
@@ -779,7 +773,11 @@ export function toolExecutionRecordLabel(
   }
   if (!record.os_isolation) return null;
   if (record.backend === "windows-lpac") {
-    return "Preview OS isolation · LPAC (Windows)";
+    // Mirrors backendLabel in tool-isolation-labels.ts (this module stays free of runtime
+    // imports so the node tests can load it): the plain AppContainer fallback is not LPAC.
+    return record.profile_id.startsWith("windows-appcontainer")
+      ? "Preview OS isolation · AppContainer (Windows)"
+      : "Preview OS isolation · LPAC (Windows)";
   }
   if (record.backend === "macos-seatbelt") {
     return "Preview OS isolation · Seatbelt (lifecycle unverified)";

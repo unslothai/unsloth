@@ -97,7 +97,12 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "./stores/research-run-store";
-import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import {
+  ToolPaneScopeContext,
+  toolExecutionRecordScope,
+  toolPaneScope,
+  toolThreadScope,
+} from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
@@ -779,15 +784,19 @@ function cloneAttachments(
   return JSON.parse(JSON.stringify(attachments));
 }
 
-function toThreadMessage(m: MessageRecord): ThreadMessage {
+/** `threadScope` is the pane+thread scope this loader is hydrating. A stored card carries no
+ *  launch provenance, so its record goes, but only the one this very message filed: local ids
+ *  repeat, and an unscoped discard would take another pane's or thread's live record with it. */
+function toThreadMessage(m: MessageRecord, threadScope: string): ThreadMessage {
   const content =
     Array.isArray(m.content) && m.content.length > 0
       ? cloneContent(m.content)
       : [{ type: "text" as const, text: "" }];
   if (Array.isArray(content)) {
+    const recordScope = toolExecutionRecordScope(threadScope, m.id);
     for (const part of content) {
       if (part.type === "tool-call") {
-        discardAuthoritativeExecutionRecord(part.toolCallId);
+        discardAuthoritativeExecutionRecord(part.toolCallId, recordScope);
       }
     }
   }
@@ -2061,20 +2070,27 @@ function useStudioRuntimeAdapters(
         // than a flat list, inferring sequential parents for old messages in mixed threads. Fall
         // back to fromArray for fully legacy threads.
         const hasParentIds = msgs.some((m) => m.parentId != null);
+        // The scope the adapter writes launch records under for this conversation.
+        const hydrationScope = toolThreadScope(
+          toolPaneScope(modelType, pairId),
+          remoteId,
+        );
         if (hasParentIds) {
           const resolveParent = createParentResolver();
           return completeLoad(
             {
               messages: msgs.map((m) => ({
                 parentId: resolveParent(m),
-                message: toThreadMessage(m),
+                message: toThreadMessage(m, hydrationScope),
               })),
             },
             remoteId,
           );
         }
         return completeLoad(
-          ExportedMessageRepository.fromArray(msgs.map(toThreadMessage)),
+          ExportedMessageRepository.fromArray(
+            msgs.map((m) => toThreadMessage(m, hydrationScope)),
+          ),
           remoteId,
         );
       },

@@ -40,15 +40,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { toolIsolationPresentation } from "./tool-isolation";
-
-const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = {
-  deprecated_undocumented_sbpl:
-    "Apple deprecates sandbox-exec and does not document SBPL for third-party products.",
-  detached_descendant_cleanup_unverified:
-    "Cleanup of descendants that create a new session or double-fork is unverified.",
-  pytorch_posix_shm_namespace_shared:
-    "PyTorch tensor sharing uses macOS's host POSIX shared-memory namespace. Access is limited to PyTorch's randomized names, but the namespace is not private.",
-};
+import { TOOL_ISOLATION_LIMITATION_TEXT } from "./tool-isolation-labels";
 
 /** Permission levels for tool calls. Full access stays last because it disables both approval
  *  prompts and the code sandbox. */

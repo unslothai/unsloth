@@ -19,6 +19,7 @@ import {
 } from "../src/features/chat/types/api.ts";
 import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued-chat-run-settings.ts";
 import { protectedIsolationDefaults } from "../src/features/chat/utils/tool-isolation-defaults.ts";
+import { queuedIsolationDecisionIsCurrent } from "../src/features/chat/utils/queued-isolation-gate.ts";
 
 const record = (
   overrides: Partial<ToolExecutionRecord> = {},
@@ -109,6 +110,18 @@ test("cards use exact labels from the backend execution record", () => {
       record({ backend: "windows-lpac", environment: "windows" }),
     ),
     "Preview OS isolation · LPAC (Windows)",
+  );
+  // The plain AppContainer fallback is a weaker profile and is never called LPAC.
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({
+        backend: "windows-lpac",
+        environment: "windows",
+        profile_id: "windows-appcontainer-preview-v1",
+        limitations: ["all_application_packages_ambient_read"],
+      }),
+    ),
+    "Preview OS isolation · AppContainer (Windows)",
   );
   assert.equal(
     toolExecutionRecordLabel(
@@ -268,11 +281,69 @@ test("execution records are filed per pane and thread scope, never by bare call 
   assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-2"), null);
   assert.ok(toolExecutionRecordFromCard(id, "pane-a\u0000thread-1"));
 
-  // Hydration has no scope: it clears every scope's entry for the id.
+  // An unscoped discard is the legacy namespace only: hydrating one conversation must not
+  // erase a record another pane or thread filed under the same repeating id.
   attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, "pane-b\u0000thread-9");
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord);
   discardAuthoritativeExecutionRecord(id);
-  assert.equal(toolExecutionRecordFromCard(id, "pane-a\u0000thread-1"), null);
-  assert.equal(toolExecutionRecordFromCard(id, "pane-b\u0000thread-9"), null);
+  assert.equal(toolExecutionRecordFromCard(id), null);
+  assert.ok(toolExecutionRecordFromCard(id, "pane-a\u0000thread-1"));
+  assert.ok(toolExecutionRecordFromCard(id, "pane-b\u0000thread-9"));
+  discardAuthoritativeExecutionRecord(id, "pane-a\u0000thread-1");
+  discardAuthoritativeExecutionRecord(id, "pane-b\u0000thread-9");
+});
+
+test("execution records are filed per assistant message, so a repeated turn id cannot relabel an earlier card", () => {
+  const id = "tool_call_0";
+  // toolPaneScope / toolThreadScope / toolExecutionRecordScope spelled out (tool-output-scope.ts
+  // imports React, which node --test cannot load): pane, pair, thread, then assistant message.
+  const thread = "base\u0000\u0000thread-1";
+  const turnOne = `${thread}\u0000msg-1`;
+  const turnTwo = `${thread}\u0000msg-2`;
+  const fullRecord = parseBackendExecutionRecord(
+    record({
+      requested_mode: "full",
+      effective_mode: "full",
+      backend: "none",
+      profile_id: "full-access",
+      os_isolation: false,
+    }),
+  );
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, fullRecord, turnOne);
+  // The next turn mints tool_call_0 again and is Required this time.
+  discardAuthoritativeExecutionRecord(id, turnTwo);
+  attachAuthoritativeExecutionRecord({ toolCallId: id }, parseBackendExecutionRecord(record()), turnTwo);
+  assert.equal(toolExecutionRecordFromCard(id, turnOne)?.effective_mode, "full");
+  assert.equal(toolExecutionRecordFromCard(id, turnTwo)?.effective_mode, "os_isolation_required");
+  // Hydrating message 1 of this thread drops exactly its record and nothing else.
+  discardAuthoritativeExecutionRecord(id, turnOne);
+  assert.equal(toolExecutionRecordFromCard(id, turnOne), null);
+  assert.ok(toolExecutionRecordFromCard(id, turnTwo));
+  discardAuthoritativeExecutionRecord(id, turnTwo);
+});
+
+test("a queued Full send is fenced to the UI session that authorized it", () => {
+  // Session A chooses Full and queues a send while the model loads.
+  const sessionA = { toolExecutionMode: "full" as const, toolIsolationUiSessionId: "ui-a" };
+  const snapshot = { ...sessionA };
+  assert.ok(queuedIsolationDecisionIsCurrent(snapshot, sessionA));
+  // Authentication rotates: the store returns to protected defaults under a new session id.
+  const rotated = {
+    ...protectedIsolationDefaults("auto"),
+    toolIsolationUiSessionId: "ui-b",
+  };
+  assert.equal(rotated.toolExecutionMode, "os_isolation_required");
+  assert.ok(!queuedIsolationDecisionIsCurrent(snapshot, rotated));
+  // Session B independently selects Full: A's queued request still does not qualify.
+  const sessionB = { toolExecutionMode: "full" as const, toolIsolationUiSessionId: "ui-b" };
+  assert.ok(!queuedIsolationDecisionIsCurrent(snapshot, sessionB));
+  // Turning Full off in the same session is rejected as before.
+  assert.ok(
+    !queuedIsolationDecisionIsCurrent(snapshot, {
+      toolExecutionMode: "os_isolation_required",
+      toolIsolationUiSessionId: "ui-a",
+    }),
+  );
 });
 
 test("the record map is bounded and evicts the oldest entry first", () => {
@@ -318,4 +389,21 @@ test("the store and adapter route every exit from Full through the shared transi
   assert.match(adapter, /const requestedMode = runtime\.toolExecutionMode;/);
   assert.match(adapter, /const requestedGrant = runtime\.limitedToolGrant;/);
   assert.match(adapter, /isolation\.toolIsolationUiSessionId !== requestedUiSessionId/);
+  // The Full branch applies the same session fence through the shared helper.
+  const fullBranch = adapter.slice(
+    adapter.indexOf('if (requestedMode === "full") {'),
+    adapter.indexOf('toolIsolationRequestFields = { tool_execution_mode: "full" };'),
+  );
+  assert.match(fullBranch, /queuedIsolationDecisionIsCurrent\(/);
+  assert.match(fullBranch, /toolIsolationUiSessionId: requestedUiSessionId/);
+  // Launch records are attached and discarded under the message-scoped key, and hydration
+  // discards in that exact scope rather than sweeping every scope for the id.
+  assert.match(adapter, /toolExecutionRecordScope\(\s*toolOutputPaneScope,\s*unstable_assistantMessageId,?\s*\)/);
+  assert.doesNotMatch(adapter, /discardAuthoritativeExecutionRecord\([^)]*toolOutputPaneScope\)/);
+  const provider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId\)/);
+  assert.match(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId, recordScope\)/);
 });
