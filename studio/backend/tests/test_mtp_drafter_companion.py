@@ -2043,12 +2043,14 @@ def _write_gguf(path: Path, architecture: str) -> Path:
     return path
 
 
-def test_detect_dflash_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+def test_detect_dflash_file_leaves_a_shared_assets_pool_alone(tmp_path):
+    # The published sidecar names no family, so one under a Hermes assets/ pool could be any
+    # download's; DSpark and MTP sidecars name their weight, DFlash keeps the root-only rule.
     weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
     (tmp_path / "assets").mkdir()
-    sidecar = _write_gguf(tmp_path / "assets" / "dflash-kquant.gguf", "dflash")
+    _write_gguf(tmp_path / "assets" / "dflash-kquant.gguf", "dflash")
 
-    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
+    assert detect_dflash_file(str(weight)) is None
 
 
 def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):

@@ -104,8 +104,9 @@ def detect_dflash_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    # Hermes stages a download's drafter under models/assets/, like its projector.
-    dirs = [start_dir, start_dir / "assets"]
+    # Not assets/: the published sidecar names no family, so in Hermes' shared pool it
+    # could not be told apart from another download's, and Hermes stages no DFlash.
+    dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
 

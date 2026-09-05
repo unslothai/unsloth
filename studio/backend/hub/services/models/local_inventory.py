@@ -737,18 +737,26 @@ async def _collect_models_from_default_sources(
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
     for folder_path, discovered, row_path in custom_sources:
         try:
+            custom_models = await asyncio.to_thread(
+                _scan_custom_folder,
+                folder_path,
+                discovered = discovered,
+                variant_states = variant_states,
+                active_hub_cache = hf_cache_dir,
+            )
             if _inventory_physical_identity(str(folder_path)) in hermes_identities:
                 # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-                # a generic walk of it lists every download a second time under the same id.
-                custom_models = await asyncio.to_thread(scan_hermes_dir, folder_path)
-            else:
-                custom_models = await asyncio.to_thread(
-                    _scan_custom_folder,
-                    folder_path,
-                    discovered = discovered,
-                    variant_states = variant_states,
-                    active_hub_cache = hf_cache_dir,
-                )
+                # the walk lists every download a second time under the same id. Anything else kept
+                # in that folder is still the user's custom row.
+                staged = {
+                    _inventory_physical_identity(row.path)
+                    for row in await asyncio.to_thread(scan_hermes_dir, folder_path)
+                }
+                custom_models = [
+                    model
+                    for model in custom_models
+                    if _inventory_physical_identity(model.path) not in staged
+                ]
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Only an OS failure is something the user can fix, so only that is shown.

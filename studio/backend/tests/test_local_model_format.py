@@ -202,6 +202,8 @@ def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tm
     models_root.mkdir()
     hermes = tmp_path / ".hermes" / "models"
     weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    # Something else the user keeps in that folder stays a custom row.
+    extra = _touch(hermes / "extra" / "Other-Q4_K_M.gguf")
     sources = _empty_compat_sources(tmp_path)._replace(hermes_dirs = (hermes,))
 
     rows = models_route.collect_local_models(
@@ -210,7 +212,10 @@ def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tm
         sources = sources,
     )
 
-    assert [(row.source, Path(row.path)) for row in rows] == [("hermes", weight)]
+    assert sorted((row.source, Path(row.path)) for row in rows) == [
+        ("custom", extra.parent),
+        ("hermes", weight),
+    ]
 
 
 def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):

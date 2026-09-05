@@ -1142,6 +1142,10 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
     hermes.mkdir(parents = True)
     weight = hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf"
     weight.write_bytes(b"\x00" * 32)
+    # Something else the user keeps in that folder stays a custom row.
+    extra = hermes / "extra" / "Other-Q4_K_M.gguf"
+    extra.parent.mkdir()
+    extra.write_bytes(b"\x00" * 32)
     monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
     monkeypatch.setattr(local_inventory, "record_scan_failure", lambda *_a, **_k: None)
 
@@ -1160,7 +1164,10 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
-    assert [(row.source, row.path) for row in rows] == [("hermes", str(weight))]
+    assert sorted((row.source, row.path) for row in rows) == [
+        ("custom", str(extra.parent)),
+        ("hermes", str(weight)),
+    ]
 
 
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):

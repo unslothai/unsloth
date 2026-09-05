@@ -1151,15 +1151,6 @@ def collect_local_models(
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
     for folder in custom_folders:
         folder_path = Path(folder["path"])
-        if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
-            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-            # a generic walk of it lists every download a second time under the same id.
-            hermes_models = _scan_hermes_dir(folder_path)
-            note_scan_folder_scanned(
-                str(folder.get("path", folder_path)), found = bool(hermes_models)
-            )
-            local_models += hermes_models
-            continue
         try:
             # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
             _generic = [
@@ -1200,6 +1191,18 @@ def collect_local_models(
                 ):
                     custom_models.append(model)
             custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
+            if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
+                # Registering ~/.hermes/models was how Hermes downloads were listed before this
+                # scan; the walk lists every download a second time under the same id. Anything
+                # else kept in that folder is still the user's custom row.
+                staged = {
+                    _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
+                }
+                custom_models = [
+                    m
+                    for m in custom_models
+                    if _compat_inventory_path_identity(m.path) not in staged
+                ]
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
