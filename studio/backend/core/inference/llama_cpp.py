@@ -32215,6 +32215,17 @@ class LlamaCppBackend:
                 # refuses an empty assistant turn, so the attempt is re-issued whole.
                 try:
                     preempt_policy.on_preempted(_checkpoint)
+                except Exception:
+                    logger.debug("preemption policy raised on pause; resuming anyway", exc_info = True)
+                # Tell the client it is paused, not broken, exactly as the plain path
+                # does. The route turns this into the `: preempt-paused` comment and the
+                # GUI into "Paused while another chat finishes". This loop never yielded
+                # it: measured with four browser sessions at -c 8192, eight pauses in the
+                # server log, the line shown zero times, because every GUI chat carries
+                # tools and runs here. Yielded AFTER on_preempted, so the signal cannot
+                # arrive before the lease it describes has gone back.
+                yield {"type": "preempt", "state": "paused"}
+                try:
                     _resumed = preempt_policy.await_resume()
                     preempt_policy.on_resumed()
                 except Exception:
@@ -32227,6 +32238,8 @@ class LlamaCppBackend:
                     # partial in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
                     break
+                # Paired with the pause above, so a client that shows one shows the other.
+                yield {"type": "preempt", "state": "resumed"}
                 _preempt_display_seed = (cumulative_display, _last_emitted, in_thinking)
                 continue
             except httpx.ConnectError:

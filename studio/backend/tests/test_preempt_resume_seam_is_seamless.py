@@ -51,6 +51,7 @@ from test_llama_plain_chat_preempt_resume import (  # noqa: E402
     _run as _run_plain,
 )
 from test_llama_tool_loop_preempt_resume import (  # noqa: E402
+    _TOOL,
     _Recorder as _ToolRecorder,
     _run as _run_tools,
 )
@@ -280,3 +281,78 @@ class TestTheToolLoopSeam:
         assembled = _as_a_route_would(snapshots)
         assert assembled.count("<think>") == 1, assembled
         assert assembled.endswith("</think>Answer."), assembled
+
+
+class TestTheToolLoopAnnouncesThePause:
+    """The tool loop is the path every GUI chat takes, and it announced nothing.
+
+    Eight pauses in the server log, the paused line shown zero times, four browser
+    sessions at -c 8192. The plain path had yielded the event since the signal was
+    written; this loop paused and resumed in silence.
+    """
+
+    def test_a_pause_and_its_resume_are_both_announced(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _ToolRecorder(
+            monkeypatch,
+            [
+                [_delta("Once upon a time"), _finish(), _done()],
+                [_delta(" there was a cat."), _finish(), _done()],
+            ],
+            signal = signal,
+        )
+        events = _run_tools(recorder.backend, signal = signal, policy = policy)
+        states = [
+            event["state"]
+            for event in events
+            if isinstance(event, dict) and event.get("type") == "preempt"
+        ]
+        assert states == ["paused", "resumed"]
+
+    def test_the_pause_is_announced_after_the_lease_goes_back(self, monkeypatch):
+        """Order matters: a client told it is paused before the cells are released could
+        act on a state the ledger does not yet show."""
+        signal = preemption.PreemptSignal()
+        order: list[str] = []
+
+        class _Policy(_RecordingPolicy):
+            def on_preempted(self, checkpoint):
+                order.append("on_preempted")
+                super().on_preempted(checkpoint)
+
+            def on_resumed(self):
+                order.append("on_resumed")
+                super().on_resumed()
+
+        policy = _Policy()
+        recorder = _ToolRecorder(
+            monkeypatch,
+            [
+                [_delta("Once"), _finish(), _done()],
+                [_delta(" upon"), _finish(), _done()],
+            ],
+            signal = signal,
+        )
+        for event in recorder.backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write me a poem"}],
+            tools = [_TOOL],
+            cancel_event = __import__("threading").Event(),
+            preempt_event = signal,
+            preempt_policy = policy,
+        ):
+            if isinstance(event, dict) and event.get("type") == "preempt":
+                order.append(event["state"])
+        assert order == ["on_preempted", "paused", "on_resumed", "resumed"]
+
+    def test_a_chat_that_never_pauses_announces_nothing(self, monkeypatch):
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _ToolRecorder(
+            monkeypatch,
+            [[_delta("Once upon a time."), _finish(), _done()]],
+            signal = signal,
+            pause_attempts = (),
+        )
+        events = _run_tools(recorder.backend, signal = signal, policy = policy)
+        assert not [e for e in events if isinstance(e, dict) and e.get("type") == "preempt"]
