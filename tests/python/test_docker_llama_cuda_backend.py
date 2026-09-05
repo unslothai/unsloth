@@ -70,6 +70,84 @@ def test_guard_installs_the_matching_cublas_major(dockerfile: str):
     assert "libcublas" in guard
 
 
+def _guard_shell(dockerfile: str) -> str:
+    """The guard's RUN body as one shell script: strip the Dockerfile's `RUN set -eux`
+    prefix, drop comment lines, and join the backslash continuations."""
+    start = dockerfile.index("CUDA_SO=")
+    body = dockerfile[dockerfile.rindex("RUN set -eux", 0, start) + len("RUN set -eux") :]
+    # the Dockerfile parser drops comment lines and joins backslash continuations into
+    # one logical line; the instruction ends at the first line without a backslash
+    out = []
+    for line in body.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        if line.endswith("\\"):
+            out.append(line[:-1])
+            continue
+        out.append(line)
+        break
+    return " ".join(out)
+
+
+@pytest.mark.parametrize(
+    "soname, expected",
+    [
+        # arm64: upstream ships a CUDA 13 arm64 llama.cpp; the -cu13 name on PyPI is a
+        # deprecated stub whose sdist fails on purpose (the first publish died there)
+        ("libcublas.so.13", "nvidia-cublas==13.*"),
+        # amd64: cu12, where the suffixed name is still the real package
+        ("libcublas.so.12", "nvidia-cublas-cu12"),
+    ],
+)
+def test_guard_uses_the_package_name_pypi_actually_serves(
+    dockerfile: str, soname: str, expected: str, tmp_path: Path
+):
+    """Drive the guard's own shell with ldd and uv stubbed, and check the spec it hands
+    to uv. Only the resolution is faked: the branch logic is the Dockerfile's."""
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ldd").write_text(
+        "#!/bin/sh\n"
+        f"printf '\\t%s => not found\\n' {soname}\n"
+        "printf '\\tlibcuda.so.1 => not found\\n'\n",
+        encoding = "utf-8",
+    )
+    (bin_dir / "ldconfig").write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    venv_bin = tmp_path / "opt" / "unsloth-venv" / "bin"
+    venv_bin.mkdir(parents = True)
+    (venv_bin / "uv").write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" >> {tmp_path / 'uv_args'}\n"
+        # pretend the install resolved the library: rewrite what ldd reports
+        f"printf '#!/bin/sh\\nprintf \"\\\\tlibcuda.so.1 => not found\\\\n\"\\n' > {bin_dir / 'ldd'}\n",
+        encoding = "utf-8",
+    )
+    (venv_bin / "python").write_text("#!/bin/sh\n", encoding = "utf-8")
+    for f in (bin_dir / "ldd", bin_dir / "ldconfig", venv_bin / "uv", venv_bin / "python"):
+        f.chmod(0o755)
+    cuda_so = tmp_path / "opt" / "unsloth" / "llama.cpp" / "libggml-cuda.so"
+    cuda_so.parent.mkdir(parents = True)
+    cuda_so.write_bytes(b"")
+
+    script = _guard_shell(dockerfile).replace("/opt/", f"{tmp_path}/opt/")
+    res = subprocess.run(
+        ["sh", "-c", "set -eux " + script],
+        capture_output = True,
+        text = True,
+        env = dict(os.environ, PATH = f"{bin_dir}:{os.environ['PATH']}"),
+    )
+    assert res.returncode == 0, res.stderr
+    args = (tmp_path / "uv_args").read_text(encoding = "utf-8").splitlines()
+    assert args[-1] == expected, (
+        f"for {soname} the guard asked uv for {args[-1]!r}, expected {expected!r}; "
+        f"stderr={res.stderr!r}"
+    )
+    assert "OK: llama.cpp CUDA backend dependencies all resolve" in res.stdout
+
+
 def test_guard_runs_after_the_prebuilt_is_fetched(dockerfile: str):
     fetch = dockerfile.index("fetch_llama_prebuilt.py")
     guard = dockerfile.index("CUDA_SO=")

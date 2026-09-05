@@ -530,9 +530,18 @@ RUN set -eux \
         want="$(ldd "$CUDA_SO" | sed -n 's/^[[:space:]]*\(libcublas\.so\.[0-9]*\)[[:space:]]*=> not found$/\1/p' | head -n1)"; \
         if [ -n "$want" ]; then \
             major="${want##*.}"; \
-            echo ">> $want missing, installing nvidia-cublas-cu${major}"; \
+            # CUDA 13 dropped the -cuNN suffix: nvidia-cublas-cu13 on PyPI is a stub
+            # whose sdist fails on purpose, and the real wheels (nvidia/cu13/lib, the
+            # path registered with the loader above) are nvidia-cublas==13.*. This is
+            # the arm64 bundle's case; the amd64 one wants cu12 and keeps the old name.
+            if [ "$major" -ge 13 ]; then \
+                pkg="nvidia-cublas==${major}.*"; \
+            else \
+                pkg="nvidia-cublas-cu${major}"; \
+            fi; \
+            echo ">> $want missing, installing $pkg"; \
             /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-                "nvidia-cublas-cu${major}"; \
+                "$pkg"; \
             ldconfig; \
         fi; \
         missing="$(ldd "$CUDA_SO" | grep 'not found' | grep -v 'libcuda\.so\.1 ' || true)"; \
