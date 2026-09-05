@@ -48,8 +48,9 @@ def _wheel(
     py: str,
     abi: str,
     plat: str | None = None,
+    version: str = "1.0.0",
 ) -> str:
-    return f"{dist}-1.0.0-{py}-{abi}-{plat or _this_platform()}.whl"
+    return f"{dist}-{version}-{py}-{abi}-{plat or _this_platform()}.whl"
 
 
 class TestWheelMatchesInterpreter:
@@ -294,3 +295,125 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         assert (
             "$WoaWheelStable -and ($abiTags -contains 'abi3')" in first
         ), "and abi3 is not installable on a free-threaded build"
+
+
+class TestAHostedWheelMustAlsoSatisfyThePin:
+    """Name-only was not enough. Every requirement these entries gate is ``==``-pinned, so
+    a wheelhouse holding tiktoken 0.12.0 against a ``tiktoken==0.13.0`` line clears the
+    skip and hands the resolver a version it cannot use -- it goes to PyPI, finds no
+    win_arm64 wheel at 0.13.0, and falls to the sdist this list exists to avoid.
+    """
+
+    @staticmethod
+    def _req(tmp_path, text):
+        req = tmp_path / "extras.txt"
+        req.write_text(text, encoding = "utf-8")
+        return req
+
+    @pytest.fixture
+    def wheelhouse(self, tmp_path, monkeypatch):
+        d = tmp_path / "wheels"
+        d.mkdir()
+        monkeypatch.setenv("UV_FIND_LINKS", str(d))
+        monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+        return d
+
+    @pytest.mark.parametrize(
+        "have, pin, still_skipped, why",
+        [
+            ("0.12.0", "tiktoken==0.13.0", True, "the pinned version is not the one hosted"),
+            ("0.13.0", "tiktoken==0.13.0", False, "an exact match re-enables it"),
+            ("0.13", "tiktoken==0.13.0", False, "0.13 and 0.13.0 are the same release"),
+            ("0.12.0", "tiktoken>=0.10", False, "a range the hosted wheel satisfies"),
+            ("0.9.0", "tiktoken>=0.10", True, "a range it does not"),
+            ("0.12.0", "tiktoken", False, "no specifier: nothing to fail"),
+            ("0.12.0", "tiktoken===0.12.0", False,
+             "arbitrary equality is beyond the comparison, so the name-only answer stands"),
+        ],
+    )
+    def test_the_pin_decides(self, ips, wheelhouse, have, pin, still_skipped, why):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (wheelhouse / _wheel("tiktoken", tag, tag, version = have)).write_bytes(b"")
+        req = self._req(wheelhouse.parent, f"{pin}\n")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert ("tiktoken" in ips._windows_arm64_skip_packages(req)) is still_skipped, why
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_any_hosted_version_that_satisfies_is_enough(self, ips, wheelhouse):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        for version in ("0.12.0", "0.13.0"):
+            (wheelhouse / _wheel("tiktoken", tag, tag, version = version)).write_bytes(b"")
+        req = self._req(wheelhouse.parent, "tiktoken==0.13.0\n")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "tiktoken" not in ips._windows_arm64_skip_packages(req)
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_a_blocker_with_no_line_of_its_own_is_still_name_only(self, ips, wheelhouse):
+        """grpcio arrives transitively -- extras.txt has no grpcio line to satisfy."""
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (wheelhouse / _wheel("grpcio", tag, tag, version = "1.60.0")).write_bytes(b"")
+        req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "tensorboard" not in ips._windows_arm64_skip_packages(req), (
+                "its only blocker is hosted, and tensorboard itself is pure Python"
+            )
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    def test_no_requirements_file_keeps_the_old_answer(self, ips, wheelhouse):
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        (wheelhouse / _wheel("tiktoken", tag, tag, version = "0.12.0")).write_bytes(b"")
+        ips._find_links_wheel_names.cache_clear()
+        try:
+            assert "tiktoken" not in ips._windows_arm64_skip_packages()
+        finally:
+            ips._find_links_wheel_names.cache_clear()
+
+    @pytest.mark.parametrize(
+        "version, specifier, expected",
+        [
+            ("2.11.0", "==2.11.0", True),
+            ("2.11.0", "==2.11", True),
+            ("2.11.1", "==2.11.*", True),
+            ("2.12.0", "==2.11.*", False),
+            ("1.4.1", "<=1.4.1", True),
+            ("1.4.2", "<=1.4.1", False),
+            ("2.3.3", ">=2.0,<3", True),
+            ("3.0.0", ">=2.0,<3", False),
+            ("1.2.5", "~=1.2", True),
+            ("2.0.0", "~=1.2", False),
+            ("1.0.0", "!=1.0.0", False),
+            ("1.0.1", "!=1.0.0", True),
+            ("1.0", "", True),
+            ("1!2.0", "==2.0", None),
+            ("1.0", "===1.0", None),
+            ("not-a-version", "==1.0", None),
+        ],
+    )
+    def test_the_comparison_itself(self, ips, version, specifier, expected):
+        assert ips._version_satisfies(version, specifier) is expected
+
+    def test_pins_are_read_canonically_and_markers_dropped(self, ips, tmp_path):
+        req = tmp_path / "r.txt"
+        req.write_text(
+            "# comment\n"
+            "-r other.txt\n"
+            "Hf_Transfer == 0.1.9 ; sys_platform != 'win32'\n"
+            "httpx[brotli]>=0.27\n"
+            "local @ file:///x\n",
+            encoding = "utf-8",
+        )
+        pins = ips._requirement_pins(req)
+        assert pins["hf_transfer"] == "== 0.1.9"
+        assert pins["httpx"] == ">=0.27"
+        assert "local" not in pins, "a direct URL has no version to compare"
+        assert "-r" not in pins

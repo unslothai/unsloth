@@ -5432,15 +5432,21 @@ def _wheel_matches_interpreter(filename: str) -> bool:
 
 
 @functools.lru_cache(maxsize = 1)
-def _find_links_wheel_names() -> frozenset[str]:
-    """Canonical names of the wheels sitting in the configured find-links directories.
+def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
+    """Canonical name -> versions of the wheels in the configured find-links directories.
 
     install.ps1 points UV_FIND_LINKS / PIP_FIND_LINKS at a local wheelhouse on Windows on
     ARM, holding the wheels PyPI does not publish for win_arm64. Anything served there is
     installable, so it must not also be filtered out as unavailable -- but only the wheels
     tagged for this interpreter are, which is what the resolver will agree to.
+
+    The VERSIONS come back too, not just the names: every requirement these gate is
+    ``==``-pinned, and a wheelhouse holding tiktoken 0.12.0 against a ``tiktoken==0.13.0``
+    line satisfies nothing -- the resolver goes to PyPI, finds no win_arm64 wheel for the
+    pinned version, and falls to an sdist that cannot build here. That is the exact
+    failure the skip list exists to prevent, so the caller checks the pin.
     """
-    names: set[str] = set()
+    versions: "dict[str, set[str]]" = {}
     for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
         # The two variables do not agree on a separator -- uv reads UV_FIND_LINKS as a
         # comma-separated list, pip splits its repeatable options on whitespace -- and
@@ -5455,10 +5461,118 @@ def _find_links_wheel_names() -> frozenset[str]:
                 for wheel in Path(entry).glob("*.whl"):
                     if not _wheel_matches_interpreter(wheel.name):
                         continue
-                    names.add(_canonical_dist_name(wheel.name.split("-", 1)[0]))
+                    fields = wheel.name[:-4].split("-")
+                    if len(fields) < 5:
+                        continue  # not a wheel filename; _wheel_matches_interpreter agrees
+                    name = _canonical_dist_name(fields[0])
+                    versions.setdefault(name, set()).add(fields[1])
             except OSError:
                 continue
-    return frozenset(names)
+    return {name: frozenset(vers) for name, vers in versions.items()}
+
+
+def _find_links_wheel_names() -> frozenset[str]:
+    """Just the names from :func:`_find_links_wheel_versions`."""
+    return frozenset(_find_links_wheel_versions())
+
+
+# The cache moved to the versions scan, but this is the name callers already reach for and
+# clear between wheelhouses; forwarding it keeps one cache with one way to drop it.
+_find_links_wheel_names.cache_clear = _find_links_wheel_versions.cache_clear  # type: ignore[attr-defined]
+
+
+def _parse_release(version: str) -> "tuple[int, ...] | None":
+    """The numeric release segment of a PEP 440 version, or None when it has none."""
+    match = re.match(r"^\s*v?(\d+(?:\.\d+)*)", version or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _version_satisfies(version: str, specifier: str) -> "bool | None":
+    """Does ``version`` satisfy the PEP 440 specifier set ``specifier``?
+
+    None means "cannot tell" -- an epoch, an arbitrary-equality clause, anything this
+    deliberately small comparison does not model. The caller treats that as it treated
+    every version before this existed, so an exotic pin is no worse off than it was.
+    """
+    specifier = (specifier or "").strip()
+    if not specifier:
+        return True
+    got = _parse_release(version)
+    # "!" that is not part of "!=" is a PEP 440 epoch, which _parse_release does not model.
+    if got is None or "!" in (version or "") or "!" in specifier.replace("!=", ""):
+        return None
+    for clause in specifier.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        match = re.fullmatch(r"(==|!=|>=|<=|~=|>|<)\s*([^\s]+)", clause)
+        if not match:
+            return None
+        op, want_raw = match.group(1), match.group(2).rstrip(".*")
+        wildcard = match.group(2).endswith(".*")
+        want = _parse_release(want_raw)
+        if want is None:
+            return None
+        # Pad to a common length so 2.11 and 2.11.0 compare equal, as PEP 440 says.
+        width = max(len(got), len(want))
+        lhs = got + (0,) * (width - len(got))
+        rhs = want + (0,) * (width - len(want))
+        if wildcard:
+            # ==1.2.* / !=1.2.*: only the prefix is compared.
+            prefix = got[:len(want)] + (0,) * max(0, len(want) - len(got))
+            ok = prefix == want
+            if op == "==":
+                pass
+            elif op == "!=":
+                ok = not ok
+            else:
+                return None
+        elif op == "==":
+            ok = lhs == rhs
+        elif op == "!=":
+            ok = lhs != rhs
+        elif op == ">=":
+            ok = lhs >= rhs
+        elif op == "<=":
+            ok = lhs <= rhs
+        elif op == ">":
+            ok = lhs > rhs
+        elif op == "<":
+            ok = lhs < rhs
+        else:  # ~=X.Y[.Z] is ">=X.Y[.Z], ==X.Y.*" one level up
+            if len(want) < 2:
+                return None
+            ok = lhs >= rhs and got[:len(want) - 1] == want[:len(want) - 1]
+        if not ok:
+            return False
+    return True
+
+
+def _requirement_pins(req: "Path | None") -> "dict[str, str]":
+    """Canonical name -> version specifier for the direct lines of a requirements file.
+
+    Only what is written there: markers, extras and comments are dropped, and a line
+    without a specifier maps to "". Unreadable means no pins, which leaves the name-only
+    behaviour untouched.
+    """
+    pins: "dict[str, str]" = {}
+    if req is None:
+        return pins
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except OSError:
+        return pins
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].split(";", 1)[0].strip()
+        if not line or line.startswith("-") or "@" in line:
+            continue
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(.*)$", line)
+        if not match:
+            continue
+        pins[_canonical_dist_name(match.group(1))] = match.group(2).strip()
+    return pins
 
 
 # Some entries are skipped not for themselves but for dependencies with no win_arm64
@@ -5476,12 +5590,36 @@ WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
 }
 
 
-def _windows_arm64_skip_packages() -> set[str]:
+def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
     """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
-    hosting a wheel is all it takes to re-enable one of these features here."""
-    available = _find_links_wheel_names()
+    hosting a wheel is all it takes to re-enable one of these features here.
+
+    ``req`` is the requirements file about to be installed, when there is one. Its pins
+    decide whether a hosted wheel is actually usable: a name match is not enough, because
+    the resolver has to honour ``tiktoken==0.13.0`` and a staged 0.12.0 wheel leaves it
+    with the unbuildable sdist rather than the skip this list is here to keep.
+    """
+    available = _find_links_wheel_versions()
     if not available:
         return set(WINDOWS_ARM64_SKIP_PACKAGES)
+    pins = _requirement_pins(req)
+
+    def hosted(name: str) -> bool:
+        canonical = _canonical_dist_name(name)
+        versions = available.get(canonical)
+        if not versions:
+            return False
+        pin = pins.get(canonical)
+        if not pin:
+            # No direct line to satisfy -- a transitive blocker, or an unpinned entry.
+            return True
+        verdicts = [_version_satisfies(v, pin) for v in versions]
+        if any(verdict is True for verdict in verdicts):
+            return True
+        # All False is a definite miss; a None anywhere means this pin is beyond the
+        # comparison, and unreadable pins keep the name-only answer they always had.
+        return any(verdict is None for verdict in verdicts)
+
     keep_skipping: set[str] = set()
     for package in WINDOWS_ARM64_SKIP_PACKAGES:
         canonical = _canonical_dist_name(package)
@@ -5492,9 +5630,9 @@ def _windows_arm64_skip_packages() -> set[str]:
             # tensorboard and librosa publish py3-none-any wheels that the staging step
             # copies, so a wheelhouse can hold the package while still lacking grpcio or
             # numba, and unskipping it there sends the resolver to that sdist instead.
-            if all(_canonical_dist_name(b) in available for b in blockers):
+            if all(hosted(b) for b in blockers):
                 continue
-        elif canonical in available:
+        elif hosted(package):
             continue
         keep_skipping.add(package)
     return keep_skipping
@@ -6920,7 +7058,10 @@ def pip_install(
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
     if actual_req is not None and _is_win_arm64_interpreter():
-        _arm64_skip = _windows_arm64_skip_packages()
+        # The ORIGINAL file, not the Windows-filtered copy above: same lines minus some,
+        # so the pins are identical, and reading the source keeps this independent of
+        # which filters ran first.
+        _arm64_skip = _windows_arm64_skip_packages(req if req is not None else actual_req)
         if _arm64_skip:
             actual_req = _filter_requirements(actual_req, _arm64_skip)
             temp_reqs.append(actual_req)

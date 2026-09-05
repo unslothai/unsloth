@@ -1558,3 +1558,129 @@ class TestTheRestoreMergesRatherThanStandsDown:
         assert (
             "elseif (-not $env:UV_OVERRIDE) {" in body
         ), "the no-caller case still assigns ours alone"
+
+
+class TestThePurgeKeepsWhatIsNotOurs:
+    """The purge drops a PREVIOUS run's resolver settings, not the caller's.
+
+    Since the assignments started PREPENDING this StudioHome's wheelhouse to whatever the
+    caller had, a value that merely starts with an owned path still carries the caller's
+    own entries behind it -- and removing the whole variable took an air-gapped mirror
+    with it on the second `irm | iex` of one shell.
+    """
+
+    @staticmethod
+    def _purge_block() -> str:
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index('$_woaOwnedPrefix = Join-Path $StudioHome "woa"')
+        end = text.index("if ($script:WoaNativeCudaTorch) {", start)
+        return text[start:end]
+
+    def test_the_block_works_entry_by_entry(self):
+        block = self._purge_block()
+        assert "$_woaKept" in block, "entries are kept, not just the whole value dropped"
+        assert "-split '[,\\s]+'" in block, (
+            "every separator the three variables are read with: uv takes UV_FIND_LINKS "
+            "comma-separated and UV_OVERRIDE space-separated, pip splits on whitespace"
+        )
+        assert '"UV_FIND_LINKS" = ","' in block, "and each is rejoined with its own"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "var, value, expected, why",
+        [
+            ("UV_FIND_LINKS", "{home}/woa/wheels", "", "ours alone still goes"),
+            ("UV_FIND_LINKS", "{home}/woa/wheels,/mnt/mirror", "/mnt/mirror",
+             "the caller's mirror survives the comma form"),
+            ("PIP_FIND_LINKS", "{home}/woa/wheels /mnt/mirror", "/mnt/mirror",
+             "and the whitespace form"),
+            ("PIP_FIND_LINKS", "/a {home}/woa/wheels /b", "/a /b",
+             "ours is removed from the middle without disturbing the rest"),
+            ("UV_FIND_LINKS", "/mnt/mirror", "/mnt/mirror",
+             "a value that is entirely the caller's is untouched"),
+            ("UV_OVERRIDE", "{home}/woa/overrides.txt", "", "ours alone still goes"),
+            ("UV_OVERRIDE", "{home}/woa/overrides.txt /etc/ov.txt", "/etc/ov.txt",
+             "a caller's override file survives"),
+        ],
+    )
+    def test_only_the_owned_entries_are_removed(self, var, value, expected, why):
+        home = "/home/u/AppData/Local/unsloth"
+        script = "\n".join([
+            f"$StudioHome = '{home}'",
+            "function Get-UvSafePath { param([string]$p) return $p }",
+            f"$env:{var} = '{value.format(home = home)}'",
+            self._purge_block(),
+            f"Write-Output ('[' + $env:{var} + ']')",
+        ])
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
+
+
+class TestAMalformedHandoffUrlDoesNotCostTheManifest:
+    """write_manifest documents that it never raises.
+
+    UNSLOTH_WOA_SELECTED_TORCH_INDEX comes in from the environment -- setup.ps1 forwards
+    it as received -- and urlsplit raises ValueError on a malformed authority, before the
+    write-side try block, losing the whole manifest.
+    """
+
+    @pytest.mark.parametrize(
+        "bad", ["https://[", "https://pypi.nvidia.com:notaport/x", "https://[::1", "://"],
+    )
+    def test_the_manifest_is_still_written(self, tmp_path, bad):
+        module = _load_manifest_module()
+        written = module.write_manifest(tmp_path, woa_torch_index = bad)
+        assert written is not None, "a bad URL must not take the manifest with it"
+        payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
+        assert "woa_torch_index" not in payload, "and it is certainly not persisted"
+
+    def test_a_good_url_is_still_persisted(self, tmp_path):
+        module = _load_manifest_module()
+        written = module.write_manifest(
+            tmp_path, woa_torch_index = "https://pypi.nvidia.com/nvtorch_oot/",
+        )
+        payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
+        assert payload["woa_torch_index"] == "https://pypi.nvidia.com/nvtorch_oot"
+
+
+class TestAStaleTorchaudioIsRemoved:
+    """A fresh-shell update on Windows on ARM cannot see UNSLOTH_WOA_HAS_TORCHAUDIO, so it
+    installs torch/torchvision alone. uv leaves an already-installed torchaudio exactly
+    where it is, and a channel that has moved torch to a new minor leaves that wheel's
+    compiled extension linked against the previous libtorch.
+    """
+
+    @staticmethod
+    def _block() -> str:
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("if ($WinArm64Venv -and $WinArm64NoAudio) {")
+        end = text.index("# Triton for Windows enables torch.compile", start)
+        return text[start:end]
+
+    def test_the_removal_is_conditional_on_a_mismatch(self):
+        block = self._block()
+        assert "Fast-Uninstall torchaudio" in block
+        assert "$_woaAudioMm -ne $_woaTorchMm" in block, (
+            "a matching audio wheel is the one this venv was installed with and stays"
+        )
+        assert "$_woaAudioProbe.Ok" in block, (
+            "a probe that did not answer says nothing; it must not trigger a removal"
+        )
+
+    def test_it_only_runs_where_audio_was_dropped(self):
+        block = self._block()
+        assert block.startswith("if ($WinArm64Venv -and $WinArm64NoAudio) {"), (
+            "on every other host, and on a WoA index that DOES publish torchaudio, the "
+            "trio asked for it and the resolver already matched the pair"
+        )
+
+    def test_it_runs_after_the_install_succeeded(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        failed = text.index('Exit-SetupFailure "PyTorch CUDA installation failed')
+        assert text.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed, (
+            "removing audio before knowing torch installed would strip a working venv"
+        )

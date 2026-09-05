@@ -5480,6 +5480,37 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         Exit-SetupFailure "PyTorch CUDA installation failed (exit code $torchInstallExit)"
     }
 
+    # Windows on ARM, torchaudio left out of the trio: drop a torchaudio that no longer
+    # matches. UNSLOTH_WOA_HAS_TORCHAUDIO lives only in install.ps1's process, so a
+    # fresh-shell `unsloth studio update` takes the historical "no win_arm64 audio wheel"
+    # answer and installs torch/torchvision alone. uv upgrades that pair without touching
+    # an audio wheel it was not asked about, so a channel that has moved torch to a new
+    # minor leaves torchaudio's compiled extension linked against the previous libtorch
+    # and `import torchaudio` dies. Only on a mismatch: an audio wheel that still matches
+    # is the one this venv was installed with and stays. Best effort -- a probe that does
+    # not answer, or an uninstall that fails, is not worth failing an otherwise good
+    # torch install over.
+    if ($WinArm64Venv -and $WinArm64NoAudio) {
+        $_woaAudioCode = "import importlib.metadata as m; " +
+            "print('T=' + next((d.version for d in m.distributions() " +
+            "if (d.metadata['Name'] or '').lower() == 'torch'), '')); " +
+            "print('A=' + next((d.version for d in m.distributions() " +
+            "if (d.metadata['Name'] or '').lower() == 'torchaudio'), ''))"
+        $_woaAudioProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_woaAudioCode
+        if ($_woaAudioProbe.Ok) {
+            $_woaTorchVer = if ($_woaAudioProbe.Output -match '(?m)^T=(\S+)\s*$') { $Matches[1] } else { "" }
+            $_woaAudioVer = if ($_woaAudioProbe.Output -match '(?m)^A=(\S+)\s*$') { $Matches[1] } else { "" }
+            # torchaudio tracks torch's own major.minor (torch 2.11 -> torchaudio 2.11), so
+            # comparing the first two components is the whole ABI question here.
+            $_woaTorchMm = if ($_woaTorchVer -match '^(\d+\.\d+)') { $Matches[1] } else { "" }
+            $_woaAudioMm = if ($_woaAudioVer -match '^(\d+\.\d+)') { $Matches[1] } else { "" }
+            if ($_woaAudioMm -and $_woaTorchMm -and $_woaAudioMm -ne $_woaTorchMm) {
+                substep "windows on arm: removing torchaudio $_woaAudioVer (torch is now $_woaTorchMm)" "Yellow"
+                Fast-Uninstall torchaudio | Out-Null
+            }
+        }
+    }
+
     # Triton for Windows enables torch.compile (without it training can hang).
     substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {

@@ -321,19 +321,28 @@ def write_manifest(
     # verify-install and desktop-capabilities.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
-        parsed = urlsplit(candidate)
+        # urlsplit raises ValueError on a malformed authority ("https://[", a bad port),
+        # and this value arrives from the environment: setup.ps1 forwards
+        # UNSLOTH_WOA_SELECTED_TORCH_INDEX as it received it. Raising here would happen
+        # BEFORE the write below and break this function's never-raises contract, losing
+        # the whole manifest -- so an unparseable URL simply is not one we persist.
+        try:
+            parsed = urlsplit(candidate)
+            _woa_ok = (
+                parsed.scheme == "https"
+                and parsed.hostname == "pypi.nvidia.com"
+                and parsed.netloc == parsed.hostname
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            _woa_ok = False
         # netloc, not hostname, for the port test: hostname strips ":443", so
         # https://pypi.nvidia.com:443/... was written and then refused by setup.ps1's
         # reader, whose pattern allows no port -- persisting a value that could never be
         # read back is worse than not persisting it. Requiring the two to be equal keeps
         # writer and reader accepting exactly the same set, and drops userinfo with it.
-        if (
-            parsed.scheme == "https"
-            and parsed.hostname == "pypi.nvidia.com"
-            and parsed.netloc == parsed.hostname
-            and not parsed.query
-            and not parsed.fragment
-        ):
+        if _woa_ok:
             payload["woa_torch_index"] = candidate.rstrip("/")
     path = manifest_path(root)
     try:

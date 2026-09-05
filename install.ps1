@@ -4949,17 +4949,37 @@ exit 0
     # Both spellings: the assignment below hands uv the 8.3 short form when the long one
     # contains a space, so matching only the long prefix would leave this run's own
     # variables behind on the next pass -- the exact leak this block exists to stop.
+    # Entry by entry, not the whole variable: the assignments below PREPEND this run's
+    # wheelhouse to whatever the caller already had ("<ours>,<their mirror>" for
+    # UV_FIND_LINKS, "<ours> <their mirror>" for PIP_FIND_LINKS), so a value that merely
+    # STARTS with an owned path still carries the caller's own entries behind it, and
+    # dropping the variable outright would take an air-gapped user's mirror with it on the
+    # second `irm | iex` of a shell. Split on every separator any of the three accept --
+    # uv reads UV_FIND_LINKS comma-separated and UV_OVERRIDE space-separated, pip splits
+    # on whitespace -- and rejoin with the one that variable is actually read with.
     $_woaOwnedPrefix = Join-Path $StudioHome "woa"
     $_woaOwnedPrefixes = @($_woaOwnedPrefix, (Get-UvSafePath $_woaOwnedPrefix)) |
         Where-Object { $_ } | Select-Object -Unique
+    $_woaJoinWith = @{ "UV_OVERRIDE" = " "; "UV_FIND_LINKS" = ","; "PIP_FIND_LINKS" = " " }
     foreach ($_woaResolverVar in 'UV_OVERRIDE', 'UV_FIND_LINKS', 'PIP_FIND_LINKS') {
         $_woaInherited = [Environment]::GetEnvironmentVariable($_woaResolverVar)
         if (-not $_woaInherited) { continue }
-        foreach ($_woaPrefix in $_woaOwnedPrefixes) {
-            if ($_woaInherited.StartsWith($_woaPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
-                break
+        $_woaKept = @()
+        foreach ($_woaEntry in ($_woaInherited -split '[,\s]+')) {
+            if (-not $_woaEntry) { continue }
+            $_woaOwned = $false
+            foreach ($_woaPrefix in $_woaOwnedPrefixes) {
+                if ($_woaEntry.StartsWith($_woaPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $_woaOwned = $true
+                    break
+                }
             }
+            if (-not $_woaOwned) { $_woaKept += $_woaEntry }
+        }
+        if ($_woaKept.Count -eq 0) {
+            Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
+        } elseif ($_woaKept.Count -ne @($_woaInherited -split '[,\s]+' | Where-Object { $_ }).Count) {
+            Set-Item "Env:$_woaResolverVar" -Value ($_woaKept -join $_woaJoinWith[$_woaResolverVar])
         }
     }
     if ($script:WoaNativeCudaTorch) {
