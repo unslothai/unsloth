@@ -18733,6 +18733,26 @@ def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
     return ordinal
 
 
+def _mark_image_owner_turn(messages: list, ordinal: int) -> list:
+    """Give the *ordinal*-th user turn a structured image part ahead of its text: the
+    renderers attach it to the newest turn unless one already carries it."""
+    marked = list(messages)
+    seen = 0
+    for index, message in enumerate(marked):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        if seen == ordinal:
+            body = message.get("content")
+            if isinstance(body, str):
+                marked[index] = {
+                    **message,
+                    "content": [{"type": "image"}, {"type": "text", "text": body}],
+                }
+            break
+        seen += 1
+    return marked
+
+
 def _images_in_last_user_message(messages: list) -> int:
     """Image parts on the newest user turn.
 
@@ -23750,22 +23770,9 @@ async def produce_openai_chat_completions(
         if _sf_renders_image:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
-                _sf_seen_users = 0
-                for _sf_idx, _sf_msg in enumerate(gen_kwargs["messages"]):
-                    if not isinstance(_sf_msg, dict) or _sf_msg.get("role") != "user":
-                        continue
-                    if _sf_seen_users == _sf_image_ordinal:
-                        _sf_body = _sf_msg.get("content")
-                        if isinstance(_sf_body, str):
-                            gen_kwargs["messages"][_sf_idx] = {
-                                **_sf_msg,
-                                "content": [
-                                    {"type": "image"},
-                                    {"type": "text", "text": _sf_body},
-                                ],
-                            }
-                        break
-                    _sf_seen_users += 1
+                gen_kwargs["messages"] = _mark_image_owner_turn(
+                    gen_kwargs["messages"], _sf_image_ordinal
+                )
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none": keep history templating but advertise no tools
         # (heal_gate is off, markup would relay as prose). A forced function
@@ -23787,6 +23794,13 @@ async def produce_openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
+    elif _sf_renders_image:
+        # The plain route too: later turns then share the prefix that holds the image.
+        _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+        if _sf_image_ordinal is not None:
+            gen_kwargs["messages"] = _mark_image_owner_turn(
+                gen_kwargs["messages"], _sf_image_ordinal
+            )
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
