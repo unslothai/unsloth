@@ -1500,6 +1500,18 @@ class PreemptionController:
             # live run the exempt chat simply grew until it filled the entire window and
             # its turn had to be truncated. Anti-starvation is handled by promotion after
             # repeated preemptions instead, which does not hand anyone the whole cache.
+            # Including one that arrived a moment ago and has generated nothing. Choosing
+            # it looks like waste in the log -- "armed ... preempted=<itself>" -- and it is
+            # the cheapest outcome available, twice over. Its charge is a RESERVATION: it
+            # is unmeasured, llama-server cannot see a prompt it has not prefilled, so
+            # cancelling it evicts no cells and destroys no work, where sparing it means
+            # taking cells off a chat that is decoding to admit one that has not started.
+            # And it costs no prefill either: arming sets the signal before the generator's
+            # first upstream request, and `_stream_with_retry` asks the interrupt before it
+            # opens the POST, so llama-server is never asked to prefill. Measured
+            # 2026-09-05 at `evict-latency ms=6.5`, a socket that was never opened. What
+            # follows is a wait for room, which is the admission wait spelled as a pause.
+            # Pinned by test_arming_into_a_full_cache_costs_no_prefill.
             victims = [p for p in self._participants.values() if p.preemptable]
             # A chat preempted this many times running is promoted above newest-first, so
             # repeatedly losing does not become never finishing. A THRESHOLD rather than a
