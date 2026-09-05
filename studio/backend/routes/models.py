@@ -1022,6 +1022,17 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
+def _scan_hermes_dir(hermes_dir: Path) -> List[LocalModelInfo]:
+    """Hermes rows in this module's row schema; the scanner builds the Hub inventory's."""
+    from hub.services.models.hermes import scan_hermes_dir
+
+    fields = LocalModelInfo.model_fields
+    return [
+        LocalModelInfo.model_validate({k: v for k, v in row.model_dump().items() if k in fields})
+        for row in scan_hermes_dir(hermes_dir)
+    ]
+
+
 class _CompatLocalInventorySources(NamedTuple):
     hf_cache_dir: Path
     legacy_hf: Path
@@ -1063,7 +1074,6 @@ def collect_local_models(
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
-    from hub.services.models.hermes import scan_hermes_dir
     from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
@@ -1132,14 +1142,24 @@ def collect_local_models(
 
     for hermes_dir in sources.hermes_dirs:
         try:
-            local_models += scan_hermes_dir(hermes_dir)
+            local_models += _scan_hermes_dir(hermes_dir)
         except Exception as e:
             logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
 
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
+    hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
     for folder in custom_folders:
         folder_path = Path(folder["path"])
+        if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
+            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
+            # a generic walk of it lists every download a second time under the same id.
+            hermes_models = _scan_hermes_dir(folder_path)
+            note_scan_folder_scanned(
+                str(folder.get("path", folder_path)), found = bool(hermes_models)
+            )
+            local_models += hermes_models
+            continue
         try:
             # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
             _generic = [
@@ -1196,7 +1216,9 @@ def collect_local_models(
         # custom entries. Mirrors _promote_to_custom_source() in
         # hub/services/models/local_inventory.py.
         local_models += [
-            m if m.source in ("hf_cache", "ollama") else m.model_copy(update = {"source": "custom"})
+            m
+            if m.source in ("hf_cache", "ollama", "hermes")
+            else m.model_copy(update = {"source": "custom"})
             for m in custom_models
         ]
 

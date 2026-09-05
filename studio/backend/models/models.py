@@ -221,7 +221,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -269,6 +269,10 @@ class LocalModelListResponse(BaseModel):
     lmstudio_dirs: List[str] = Field(
         default_factory = list,
         description = "LM Studio model directories that were scanned",
+    )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
