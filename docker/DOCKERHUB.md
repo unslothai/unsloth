@@ -91,7 +91,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 
 | Variable | Effect |
 |---|---|
-| `UNSLOTH_STUDIO_PASSWORD` | Studio admin password for user `unsloth`. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
+| `UNSLOTH_STUDIO_PASSWORD` | Initial Studio admin password for user `unsloth`; ignored once a password is stored. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
 | `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
 | `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |

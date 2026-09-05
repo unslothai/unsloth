@@ -18,7 +18,17 @@ fi
 AUTH_DIR="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}/auth"
 FILE="${AUTH_DIR}/.bootstrap_password"
 WAIT="${UNSLOTH_STUDIO_PASSWORD_WAIT:-600}"
-TIMEOUT="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-3600}"
+# Same rules as studio/backend/auth/bootstrap_timeout.py: unset, blank or malformed
+# means the 3600 s default (a typo must not hide the note), 0 or negative disables.
+raw="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}"
+raw="${raw//[[:space:]]/}"
+if [[ "$raw" =~ ^-[0-9]+$ ]]; then
+    TIMEOUT=0
+elif [[ "$raw" =~ ^\+?[0-9]+$ ]]; then
+    TIMEOUT=$(( 10#${raw#+} ))
+else
+    TIMEOUT=3600
+fi
 # An auth.db with no bootstrap file means the password was changed on an earlier
 # boot (Studio deletes the file then), so there is nothing to wait ten minutes for.
 [[ -e "${AUTH_DIR}/auth.db" && ! -s "$FILE" ]] && WAIT=$(( WAIT < 30 ? WAIT : 30 ))
@@ -40,7 +50,7 @@ done
 # LF-terminated on every OS; strip only that, a password may end in a space
 password="$(tr -d '\r\n' < "$FILE")"
 note=""
-if [[ "$TIMEOUT" =~ ^[0-9]+$ ]] && (( TIMEOUT > 0 )); then
+if (( TIMEOUT > 0 )); then
     note="   (change it on first sign-in: Studio stops after $(( TIMEOUT / 60 )) min with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)"
 fi
 echo "Unsloth Studio login -> username: unsloth   password: ${password}${note}"

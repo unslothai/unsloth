@@ -11,7 +11,8 @@
 # Environment:
 #   JUPYTER_PORT       Jupyter port inside the container       (default 8888)
 #   JUPYTER_PASSWORD   Jupyter login password (unset: generated and printed)
-#   UNSLOTH_STUDIO_PASSWORD  Studio admin password (unset: generated and printed)
+#   UNSLOTH_STUDIO_PASSWORD  initial Studio admin password (unset: generated and
+#                      printed); ignored once a password is stored
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
@@ -106,13 +107,17 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     fi
 fi
 
-STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
-if [[ -z "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
-    if [[ -e "${UNSLOTH_STUDIO_HOME}/auth/auth.db" && ! -s "${UNSLOTH_STUDIO_HOME}/auth/.bootstrap_password" ]]; then
-        STUDIO_NOTE="user unsloth, password set on an earlier boot"
-    else
-        STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
-    fi
+STUDIO_AUTH="${UNSLOTH_STUDIO_HOME}/auth"
+if [[ -e "${STUDIO_AUTH}/auth.db" && ! -s "${STUDIO_AUTH}/.bootstrap_password" ]]; then
+    # A password is stored (Studio deletes the bootstrap file on the first change).
+    # UNSLOTH_STUDIO_PASSWORD only sets the initial one: the CLI exits 1 when one is
+    # already set, and supervisord would give up on Studio after a restart.
+    unset UNSLOTH_STUDIO_PASSWORD
+    STUDIO_NOTE="user unsloth, password set on an earlier boot"
+elif [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
+    STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
+else
+    STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
 fi
 echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
