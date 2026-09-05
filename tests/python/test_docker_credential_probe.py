@@ -23,12 +23,23 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-credential-probe.yml"
 @pytest.fixture(scope = "module")
 def delete_step() -> str:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    steps = [s for job in doc["jobs"].values() for s in job["steps"] if s.get("name") == "Delete the probe tag"]
+    steps = [
+        s
+        for job in doc["jobs"].values()
+        for s in job["steps"]
+        if s.get("name") == "Delete the probe tag"
+    ]
     assert len(steps) == 1, "the delete step disappeared or was renamed"
     return steps[0]["run"]
 
 
-def _run(step: str, tmp_path: Path, *, still_there: bool, token: str = "tok") -> tuple[subprocess.CompletedProcess, str]:
+def _run(
+    step: str,
+    tmp_path: Path,
+    *,
+    still_there: bool,
+    token: str = "tok",
+) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "curl.log"
@@ -47,18 +58,32 @@ def _run(step: str, tmp_path: Path, *, still_there: bool, token: str = "tok") ->
     assert "${{" not in script, "unexpanded expression in the delete step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env.update(REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe")
+    env.update(
+        REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe"
+    )
     res = subprocess.run(
-        ["bash", "-e", "-c", script], capture_output = True, text = True, env = env, cwd = str(tmp_path), timeout = 60
+        ["bash", "-e", "-c", script],
+        capture_output = True,
+        text = True,
+        env = env,
+        cwd = str(tmp_path),
+        timeout = 60,
     )
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
 
 
-def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(delete_step: str, tmp_path: Path):
+def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
+    delete_step: str, tmp_path: Path
+):
     res, log = _run(delete_step, tmp_path, still_there = False)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "-X DELETE https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth/tags/credential-probe" in log
-    assert "/v2/repositories/" not in log, "the legacy route answers every organization token with 403"
+    assert (
+        "-X DELETE https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth/tags/credential-probe"
+        in log
+    )
+    assert (
+        "/v2/repositories/" not in log
+    ), "the legacy route answers every organization token with 403"
     assert '"identifier": "unsloth"' in log
     assert "Authorization: Bearer tok" in log
 
