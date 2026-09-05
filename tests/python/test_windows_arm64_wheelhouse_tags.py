@@ -441,6 +441,20 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
     wrong wheel cleared the skip.
     """
 
+    # One marker that holds on every host and one that holds on none. The real pair is
+    # `sys_platform != "darwin" or python_version < "3.14"` against its complement, which
+    # would make these tests answer differently on a macOS 3.14 box than on Linux CI --
+    # the same host dependence that had to be taken out of the pin-reading test above.
+    ACTIVE = 'python_version >= "3"'
+    INACTIVE = 'sys_platform == "nonesuch"'
+
+    @classmethod
+    def _rows(cls) -> str:
+        return (
+            f"MeCab==0.996.13; {cls.ACTIVE}\n"
+            f"MeCab==0.996.5; {cls.INACTIVE}\n"
+        )
+
     def test_the_shipped_file_really_has_the_duplicate(self):
         text = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
             encoding = "utf-8",
@@ -450,14 +464,9 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
 
     def test_only_the_active_row_is_kept(self, ips, tmp_path):
         req = tmp_path / "extras.txt"
-        req.write_text(
-            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
-            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
-            encoding = "utf-8",
-        )
+        req.write_text(self._rows(), encoding = "utf-8")
         pins = ips._requirement_pins(req)
-        # This test host is Linux, so the first row is the active one.
-        assert pins["mecab"] == ["==0.996.13"]
+        assert pins["mecab"] == ["==0.996.13"], "the inactive row must not overwrite it"
 
     def test_an_inactive_row_cannot_unskip(self, ips, tmp_path, monkeypatch):
         major, minor = sys.version_info[:2]
@@ -466,11 +475,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         wheels.mkdir()
         (wheels / _wheel("mecab", tag, tag, version = "0.996.5")).write_bytes(b"")
         req = tmp_path / "extras.txt"
-        req.write_text(
-            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
-            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
-            encoding = "utf-8",
-        )
+        req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
         ips._find_links_wheel_names.cache_clear()
@@ -488,11 +493,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         wheels.mkdir()
         (wheels / _wheel("mecab", tag, tag, version = "0.996.13")).write_bytes(b"")
         req = tmp_path / "extras.txt"
-        req.write_text(
-            'MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"\n'
-            'MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"\n',
-            encoding = "utf-8",
-        )
+        req.write_text(self._rows(), encoding = "utf-8")
         monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
         monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
         ips._find_links_wheel_names.cache_clear()
@@ -511,9 +512,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
         """The fallback is no stricter than the name-only check that came before."""
         monkeypatch.setattr(ips, "_marker_is_active", lambda marker: None)
         req = tmp_path / "extras.txt"
-        req.write_text(
-            'MeCab==0.996.13; sys_platform != "darwin"\n'
-            'MeCab==0.996.5; sys_platform == "darwin"\n',
-            encoding = "utf-8",
+        req.write_text(self._rows(), encoding = "utf-8")
+        assert ips._requirement_pins(req)["mecab"] == ["==0.996.13", "==0.996.5"], (
+            "including the one whose marker would otherwise have excluded it"
         )
-        assert ips._requirement_pins(req)["mecab"] == ["==0.996.13", "==0.996.5"]

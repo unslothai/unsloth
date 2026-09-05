@@ -2077,45 +2077,64 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in text
         ), "uv splits UV_OVERRIDE on whitespace and combines the files"
 
+    # The rewriter calls [System.IO.Path]::GetFullPath, so on Windows "/opt/corp/ov" comes
+    # back as "C:\\opt\\corp\\ov" with backslashes. os.path.abspath applies the same rule
+    # independently, which keeps the expected value right on every host instead of only on
+    # the POSIX one these were first written on.
+    BASE = "/opt/corp/ov"
+
+    @staticmethod
+    def _rebased(relative: str) -> str:
+        return os.path.abspath(
+            os.path.join(TestACallerOverrideFileKeepsItsOwnDirectory.BASE, relative)
+        )
+
     @requires_pwsh
     @pytest.mark.parametrize(
-        "line, expected, why",
+        "line, prefix, rebased, why",
         [
-            ("-r nested.txt", "-r /opt/corp/ov/nested.txt", "a nested include"),
-            ("--requirement=sub/n.txt", "--requirement=/opt/corp/ov/sub/n.txt", "long form"),
-            ("-c cons.txt", "-c /opt/corp/ov/cons.txt", "a constraint file"),
-            ("-f wheels", "-f /opt/corp/ov/wheels", "a find-links directory"),
-            ("-r /etc/n.txt", "-r /etc/n.txt", "an absolute path is already right"),
-            ("-r https://x.test/n.txt", "-r https://x.test/n.txt", "so is a URL"),
-            ("brotli==1.1.0", "brotli==1.1.0", "an ordinary requirement is untouched"),
-            (
-                'foo ; platform_machine == "AMD64"',
-                'foo ; platform_machine == "AMD64"',
-                "and so is a marker",
-            ),
-            ("foo @ https://x.test/a.whl", "foo @ https://x.test/a.whl", "a direct URL"),
-            ("foo @ file:dist/a.whl", "foo @ file:/opt/corp/ov/dist/a.whl", "a relative file: URL"),
-            ("dist/a.whl", "/opt/corp/ov/dist/a.whl", "a bare relative wheel path"),
-            ("a.whl", "a.whl", "a bare name with no directory is a requirement, not a path"),
-            ("# note", "# note", "a comment"),
+            ("-r nested.txt", "-r ", "nested.txt", "a nested include"),
+            ("--requirement=sub/n.txt", "--requirement=", "sub/n.txt", "long form"),
+            ("-c cons.txt", "-c ", "cons.txt", "a constraint file"),
+            ("-f wheels", "-f ", "wheels", "a find-links directory"),
+            ("foo @ file:dist/a.whl", "foo @ file:", "dist/a.whl", "a relative file: URL"),
+            ("dist/a.whl", "", "dist/a.whl", "a bare relative wheel path"),
         ],
     )
-    def test_the_rewriter(self, line, expected, why):
+    def test_a_relative_reference_is_rebased(self, line, prefix, rebased, why):
+        assert self._run(line) == prefix + self._rebased(rebased), why
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "line, why",
+        [
+            ("-r /etc/n.txt", "an absolute path is already right"),
+            ("-r https://x.test/n.txt", "so is a URL"),
+            ("brotli==1.1.0", "an ordinary requirement is untouched"),
+            ('foo ; platform_machine == "AMD64"', "and so is a marker"),
+            ("foo @ https://x.test/a.whl", "a direct URL"),
+            ("a.whl", "a bare name with no directory is a requirement, not a path"),
+            ("# note", "a comment"),
+        ],
+    )
+    def test_everything_else_is_returned_unchanged(self, line, why):
+        assert self._run(line) == line, why
+
+    @staticmethod
+    def _run(line: str) -> str:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        script = "\n".join(
-            [
-                _function_source(text, "Resolve-WoaOverrideLine"),
-                f"Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{line}' -BaseDir '/opt/corp/ov') + ']')",
-            ]
-        )
+        script = "\n".join([
+            _function_source(text, "Resolve-WoaOverrideLine"),
+            "Write-Output ('[' + (Resolve-WoaOverrideLine -Line '{}' -BaseDir '{}') + ']')".format(
+                line, TestACallerOverrideFileKeepsItsOwnDirectory.BASE,
+            ),
+        ])
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True,
-            text = True,
-            timeout = 120,
+            capture_output = True, text = True, timeout = 120,
         )
         assert done.returncode == 0, done.stderr
-        assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
+        return done.stdout.strip().splitlines()[-1][1:-1]
 
     @requires_pwsh
     @pytest.mark.parametrize(
