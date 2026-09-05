@@ -25,6 +25,7 @@ except Exception as _unsloth_exc:
     _UNSLOTH_IMPORT_ERROR = _unsloth_exc
 
 from huggingface_hub import HfApi, ModelCard
+from hub.utils.hf_tokens import HfTokenArg, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
@@ -465,7 +466,7 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
@@ -475,10 +476,18 @@ class ExportBackend:
         checkpoints, matching the token the worker used for the security preflight
         (otherwise a gated repo passes scanning then 401s at from_pretrained).
 
+        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as
+        "go and find a credential" (``if token is None: get_token()`` in ``save.py`` and
+        ``hf_login``), and ``get_token()`` reads the operator's stored login off disk.
+
         Returns:
             Tuple of (success: bool, message: str)
         """
-        token = hf_token if hf_token and hf_token.strip() else None
+        token = normalize_token(hf_token)
+        # The sentinel is about credential *use*, so only the loaders get it. The detection
+        # probes take the plain token: their shared-cache guards refuse an anonymous cached
+        # read, which offline misreads a cached VLM as a text model.
+        probe_token = token or None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -510,10 +519,10 @@ class ExportBackend:
             # skip.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 self.is_vision = not self._audio_type and is_vision_model(
-                    model_id, hf_token = token, local_files_only = local_files_only
+                    model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
 
             if self._audio_type == "csm":
@@ -710,7 +719,7 @@ class ExportBackend:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -841,15 +850,27 @@ class ExportBackend:
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
+                # No push, but the merge resolves the base repo and save.py substitutes
+                # get_token() for a None, so the credential still has to be spelled out.
+                merged_token_kw = (
+                    {"token": hf_token}
+                    if (hf_token or is_anonymous(hf_token))
+                    and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
+                    else {}
+                )
                 if _IS_MLX:
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
                         save_method = mlx_save_method,
+                        **merged_token_kw,
                     )
                 else:
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer, save_method = save_method
+                        save_directory,
+                        self.current_tokenizer,
+                        save_method = save_method,
+                        **merged_token_kw,
                     )
 
                 # Compressed / torchao writes to the "<dir>-<suffix>" sibling; report that as output.
@@ -945,7 +966,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -1133,7 +1154,7 @@ class ExportBackend:
         local_token_kw = (
             {"token": hf_token}
             if imatrix_file
-            and hf_token
+            and (hf_token or is_anonymous(hf_token))
             and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
             else {}
         )
@@ -1323,7 +1344,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
@@ -1401,8 +1422,9 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
-                        token = hf_token or None,
+                        # A token lets convert_lora_to_gguf.py fetch a gated base's config;
+                        # False keeps a denied caller off get_token().
+                        token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
