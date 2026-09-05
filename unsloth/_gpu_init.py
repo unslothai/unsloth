@@ -289,7 +289,8 @@ try:
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
 
-# Unsloth's own detection repeats zoo's, so it can raise even after zoo's import succeeded.
+# Under UNSLOTH_ZOO_DISABLE_GPU_INIT (Studio's light-init path) zoo answers "cpu" instead of
+# raising, and this check, which does not read that flag, is then the one that raises.
 try:
     from .device_type import arch_lacks_bf16, hip_visible_archs
 except NotImplementedError as device_type_error:
