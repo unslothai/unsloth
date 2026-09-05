@@ -3983,9 +3983,10 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         return True
     # A CUDA torch already here is the only one win_arm64 has: its family tag is not on
     # download.pytorch.org, so the driver-derived expectation can only disagree and
-    # "repairing" it resolves a cu130 with no wheel. An explicit CPU pin is exempt --
-    # stated, not inferred, and /cpu does publish win_arm64. Mirrors setup.ps1's guard.
-    if _is_win_arm64_interpreter() and not _explicit_cpu_torch_index_pin():
+    # "repairing" it resolves a cu130 with no wheel. ANY explicit pin is exempt -- what this
+    # distrusts is the INFERRED expectation, so a user pinning cu129 (or /cpu) must still
+    # reach it. Mirrors setup.ps1's guard, which exempts every pin the same way.
+    if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
             return True
@@ -5493,6 +5494,28 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
     specifier = (specifier or "").strip()
     if not specifier:
         return True
+    # packaging first, for the same reason _marker_is_active borrows it: it is what pip and
+    # uv answer this with, including the default that a prerelease does not satisfy a
+    # specifier that did not ask for one.
+    for module_name in ("packaging.specifiers", "pip._vendor.packaging.specifiers"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        try:
+            spec_set = module.SpecifierSet(specifier)
+            # prereleases explicitly off unless the specifier itself names one, which is the
+            # policy uv and pip resolve under. packaging's own default reads a bare ">=0.12"
+            # as containing 0.13.0rc1; the resolver would not take that wheel, and this
+            # question is only ever asked about a wheel a resolver has to take.
+            return bool(spec_set.contains(version, prereleases = bool(spec_set.prereleases)))
+        except Exception:
+            break
+    # The comparison below models the numeric release only, so 0.13.0rc1 reduces to 0.13.0
+    # and reads as satisfying ==0.13.0 -- which uv then rejects, sending the resolve to the
+    # sdist the skip list exists to avoid. A non-final version is not judged here at all.
+    if not re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", version or ""):
+        return False
     got = _parse_release(version)
     # "!" that is not part of "!=" is a PEP 440 epoch, which _parse_release does not model.
     if got is None or "!" in (version or "") or "!" in specifier.replace("!=", ""):

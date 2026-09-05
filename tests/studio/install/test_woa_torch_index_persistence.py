@@ -931,18 +931,25 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
 
 
 class TestPrereleasesAreOnlyForTheNightlyChannel:
-    """setup.ps1 must gate --prerelease=allow the way install.ps1 already does."""
+    """setup.ps1 must gate --prerelease=allow the way install.ps1 already does.
+
+    The URL spelling is now the SECOND signal: install.ps1 reads the answer off the wheel it
+    probed and hands it over, because a mirror of a prerelease-only channel need not have
+    "nightly" anywhere in its address.
+    """
 
     @requires_pwsh
     @pytest.mark.parametrize(
-        "index, expect_pre",
+        "index, handover, expect_pre",
         [
-            ("https://pypi.nvidia.com/nvtorch_oot", False),
-            ("https://pypi.nvidia.com/nvtorch_oot_nightly", True),
-            ("", False),
+            ("https://pypi.nvidia.com/nvtorch_oot", "0", False),
+            ("https://pypi.nvidia.com/nvtorch_oot_nightly", "0", True),
+            ("", "0", False),
+            ("https://mirror.test/simple", "1", True),
+            ("https://mirror.test/simple", "0", False),
         ],
     )
-    def test_the_flag_follows_the_channel(self, index: str, expect_pre: bool):
+    def test_the_flag_follows_the_channel(self, index: str, handover: str, expect_pre: bool):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$WinArm64IndexArgs = if (")
         end = text.index("} else { @() }", start) + len("} else { @() }")
@@ -951,6 +958,9 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
                 "$WinArm64Venv = $true",
                 "$UseUv = $true",
                 f"$WinArm64TorchIndexUrl = '{index}'",
+                f"$WinArm64EffectiveTorchIndexUrl = '{index}'",
+                f"$WinArm64HandoffApplies = ${bool(index)}",
+                f"$env:UNSLOTH_WOA_TORCH_PRERELEASE = '{handover}'",
                 text[start:end],
                 "Write-Output ($WinArm64IndexArgs -join ' ')",
             ]
@@ -976,6 +986,8 @@ class TestPrereleasesAreOnlyForTheNightlyChannel:
                 "$WinArm64Venv = $false",
                 "$UseUv = $true",
                 "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot_nightly'",
+                "$WinArm64EffectiveTorchIndexUrl = $WinArm64TorchIndexUrl",
+                "$WinArm64HandoffApplies = $false",
                 text[start:end],
                 "Write-Output \"[$($WinArm64IndexArgs -join ' ')]\"",
             ]
@@ -1094,6 +1106,10 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 "$script:WoaWheelhouse = 'https://example.test/wheels'",
                 _function_source(text, "Test-WoaWheelTags"),
+                _function_source(text, "Test-WoaVersionAtLeast"),
+                # Every pyarrow candidate is floored against constraints.txt now.
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _function_source(text, "Test-WoaPyarrowWheelUsable"),
                 # The supplied-wheel branch opens the archive now, so its helper is
                 # needed too; PowerShell does not hoist.
                 _function_source(text, "Test-ZipArchiveReadable"),
@@ -1597,7 +1613,9 @@ class TestTheWheelTagsAreMatchedAsFields:
     def test_no_substring_match_is_left(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "$tag-$AbiTag*" not in text, "every probe goes through the field parser"
-        assert text.count("Test-WoaWheelTags") >= 7, (
+        # The six pyarrow sites now go through Test-WoaPyarrowWheelUsable, which is a floor
+        # check wrapped around this one, so they still reach the field parser.
+        assert (text.count("Test-WoaWheelTags") + text.count("Test-WoaPyarrowWheelUsable")) >= 7, (
             "the pyarrow probe (supplied wheel, PyPI, local wheelhouse, remote index), "
             "the CUDA wheel scan, and both staging sites"
         )
@@ -1892,8 +1910,8 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         assert "$_woaKeepFiles += $_woaOvFull" in block, "kept where it is"
         assert "$_woaOvConflicts" in block, "only a package clash forces a rewrite"
         assert (
-            "Resolve-WoaOverrideLine -Line $_woaOvLine -BaseDir $_woaOvDir" in block
-        ), "and a folded line has its relative references made absolute"
+            "Resolve-WoaOverrideLine -Line $_woaOvEntry.Line -BaseDir $_woaOvEntry.BaseDir" in block
+        ), "and a folded line has its relative references made absolute, against the file it came from"
 
     def test_the_kept_files_reach_uv(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -2001,6 +2019,8 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         script = "\n".join(
             [
                 _function_source(text, "Resolve-WoaOverrideLine"),
+                # PowerShell does not hoist, so the scanner the block calls has to be here too.
+                _function_source(text, "Get-WoaRequirementEntries"),
                 "function Get-UvSafePath { param([string]$p) return $p }",
                 "$WoaOverrideLines = @('# generated', 'torch>=2.4', 'torchvision>=0.19')",
                 f"$WoaOverrides = '{managed}'",
@@ -2022,9 +2042,13 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         written = managed.read_text(encoding = "utf-8")
         if folded:
             assert value == [str(managed)], why
-            assert (
-                str(caller_dir / "nested.txt") in written
-            ), "the include is rebased onto the directory it was written for"
+            # The include is FLATTENED as it folds, not copied as an "-r" line: its contents
+            # arrive rebased against the directory the include was written in, which is the
+            # only way a conflict discovered one level down can also be removed.
+            assert "idna==3.10" in written, (
+                "the include's own lines did not come across, so folding dropped them"
+            )
+            assert "-r " not in written, "an include line copied verbatim would move its base"
             assert "torch==2.9.0" not in written, "our own declaration still wins"
         else:
             assert value == [str(managed), str(caller)], why
@@ -2112,7 +2136,7 @@ class TestTheMergedOverrideFileIsRebasedToo:
     def test_the_merge_rebases(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         block = text[text.index("$_woaMerged = Join-Path $woaDir") :][:1600]
-        assert "Resolve-WoaOverrideLine -Line $_woaLine -BaseDir" in block
+        assert "Resolve-WoaOverrideLine -Line $_woaEntry.Line -BaseDir $_woaEntry.BaseDir" in block
         assert "$_woaLines += $_woaLine" not in block, "no line is copied verbatim"
 
     def test_the_helper_is_a_faithful_copy_of_install_ps1s(self):
@@ -2398,3 +2422,257 @@ class TestAConfiguredWoaMirrorSurvivesAFreshShell:
             )
             payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
         assert "woa_torch_index" not in payload
+
+
+class TestAWheelhousePyarrowMustClearTheFloor:
+    """A tag-compatible pyarrow is not enough: it also has to satisfy the ARM64 constraint.
+
+    Staging turns whichever wheel it picks into an exact `pyarrow==<version>` override, and
+    single-env/constraints.txt floors the ARM64 row at 21.0.0. A 19.x wheel in the wheelhouse
+    therefore selected the native path and then made the dependency pass unsatisfiable, after
+    the ARM64 venv had already been built.
+    """
+
+    def test_the_floor_matches_the_constraint(self):
+        """Two places state it, so a bump to one that skips the other is caught here."""
+        floor = re.search(
+            r'\$script:WoaPyarrowFloor\s*=\s*"([^"]+)"',
+            INSTALL_PS1.read_text(encoding = "utf-8"),
+        )
+        assert floor, "install.ps1 no longer declares the pyarrow floor"
+        constraints = (PACKAGE_ROOT / "studio" / "backend" / "requirements" /
+                       "single-env" / "constraints.txt").read_text(encoding = "utf-8")
+        pinned = re.search(
+            r'(?m)^pyarrow>=([0-9.]+);\s*sys_platform == "win32" and platform_machine == "ARM64"',
+            constraints,
+        )
+        assert pinned, "the ARM64 pyarrow row is gone from constraints.txt"
+        assert floor.group(1) == pinned.group(1), (
+            f"install.ps1 floors pyarrow at {floor.group(1)} but constraints.txt requires "
+            f">={pinned.group(1)}, so the staged wheel would not satisfy the resolve"
+        )
+
+    def test_every_pyarrow_candidate_goes_through_the_floor(self):
+        """Counted: a seventh candidate site added later cannot skip the check.
+
+        Four in the preflight (supplied wheel, PyPI, wheelhouse directory, wheelhouse index)
+        and two in staging, which picks the file the override is written from.
+        """
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("Test-WoaPyarrowWheelUsable") == 7, (
+            "one definition and six call sites; a pyarrow candidate is being accepted on "
+            "its tags alone somewhere"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "name, expected, why",
+        [
+            ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", "True", "at the floor"),
+            ("pyarrow-23.0.1-cp313-cp313-win_arm64.whl", "True", "above it"),
+            ("pyarrow-19.0.1-cp313-cp313-win_arm64.whl", "False", "below it"),
+            ("pyarrow-21.0.0-cp312-cp312-win_arm64.whl", "False", "wrong interpreter"),
+            ("pyarrow-notaversion-cp313-cp313-win_arm64.whl", "False", "unreadable version"),
+        ],
+    )
+    def test_the_floor_is_applied(self, name, expected, why):
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
+                f"Write-Output ([bool](Test-WoaPyarrowWheelUsable -Name '{name}' "
+                "-PyTag 'cp313' -AbiTag 'cp313'))",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, why
+
+
+class TestThePrereleaseAnswerComesFromTheWheel:
+    """Not from the URL: a mirror of a prerelease-only channel need not say "nightly".
+
+    Without --prerelease=allow, uv takes the stable win_arm64 CPU torch from the PyPI extra
+    index instead of the 2.15.0.dev CUDA build the probe just proved, so the install
+    completes CPU-only on a machine that was bought for its GPU.
+    """
+
+    def test_the_installer_reads_the_probed_version(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert re.search(
+            r"\$script:WoaTorchIsPrerelease\s*=\s*\[bool\]\(\$_woaTorchVersion\s*-match",
+            text,
+        ), "install.ps1 no longer derives the prerelease answer from the probed wheel"
+        assert "if ($script:WoaTorchIsPrerelease -or ($script:WoaTorchIndexUrl -match 'nightly'))" in text, (
+            "the --prerelease=allow gate is back to testing only the URL spelling"
+        )
+
+    def test_the_answer_is_handed_to_setup(self):
+        """setup.ps1 cannot probe the index itself, so install.ps1 has to tell it."""
+        assert "UNSLOTH_WOA_TORCH_PRERELEASE" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "UNSLOTH_WOA_TORCH_PRERELEASE" in SETUP_PS1.read_text(encoding = "utf-8")
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "version, expected",
+        [
+            ("2.15.0.dev20260101+cu134", "True"),
+            ("2.14.0rc1+cu134", "True"),
+            ("2.14.0a1+cu134", "True"),
+            ("2.14.0+cu134", "False"),
+            ("", "False"),
+        ],
+    )
+    def test_the_version_test_itself(self, version, expected):
+        script = (
+            f"$v = '{version}'\n"
+            "Write-Output ([bool]($v -match '(?i)\\d(a|b|rc)\\d|\\.dev\\d'))"
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expected, version
+
+
+class TestAChangedPinInvalidatesTheHandover:
+    """install.ps1's flags describe the index IT chose, not the one this run will use.
+
+    Change UNSLOTH_TORCH_INDEX_URL and re-run `unsloth studio update` in the same shell and
+    the pin outranks the handover for the install itself, while the torchaudio and prerelease
+    answers still came from the previous channel: the trio asks a new index for an audio
+    wheel it does not publish, and the whole torch update aborts.
+    """
+
+    def test_the_handover_index_is_read_before_it_is_overwritten(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        capture = text.index("$_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX)")
+        rewrite = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl")
+        assert capture < rewrite, (
+            "the handover value is read after setup.ps1 overwrites it, so the comparison "
+            "always succeeds and the staleness check does nothing"
+        )
+
+    def test_both_flags_are_gated_on_it(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert '$WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")' in text
+        assert '($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1")' in text
+
+    def test_the_effective_index_prefers_the_pin(self):
+        """The same order the install itself uses, or the two would disagree."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl)" in text
+        assert '$_cudaIndexUrl = if ($PinnedTorchIndexUrl) { $TorchInstallIndexUrl }' in text
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "pinned, handoff, audio, expect_no_audio, why",
+        [
+            ("", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
+             "unpinned and unchanged: the handover still describes this index"),
+            ("https://pypi.nvidia.com/nvtorch_oot", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
+             "pinned to the same index: still current"),
+            ("https://pypi.nvidia.com/nvtorch_oot/", "https://pypi.nvidia.com/nvtorch_oot", "1", "False",
+             "a trailing slash is not a different index"),
+            ("https://mirror.test/simple", "https://pypi.nvidia.com/nvtorch_oot", "1", "True",
+             "pinned elsewhere: the audio answer belongs to the old channel"),
+            ("", "", "1", "True", "no handover to trust"),
+            ("", "https://pypi.nvidia.com/nvtorch_oot", "0", "True", "the handover says no audio"),
+        ],
+    )
+    def test_the_staleness_rule(self, pinned, handoff, audio, expect_no_audio, why):
+        script = "\n".join(
+            [
+                f"$_woaHandoffIndex = '{handoff}'",
+                f"$PinnedTorchIndexUrl = '{pinned}'",
+                "$WinArm64TorchIndexUrl = $_woaHandoffIndex",
+                "$WinArm64Venv = $true",
+                f"$env:UNSLOTH_WOA_HAS_TORCHAUDIO = '{audio}'",
+                "$WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl) { ([string]$PinnedTorchIndexUrl).Trim().TrimEnd('/') }",
+                "                                  elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }",
+                "                                  else { '' }",
+                "$WinArm64HandoffApplies = [bool]($WinArm64EffectiveTorchIndexUrl -and $_woaHandoffIndex -and",
+                "    $WinArm64EffectiveTorchIndexUrl.Equals($_woaHandoffIndex, [System.StringComparison]::OrdinalIgnoreCase))",
+                '$WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")',
+                "Write-Output ([bool]$WinArm64NoAudio)",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == expect_no_audio, why
+
+
+class TestAnOverrideConflictCanHideInAnInclude:
+    """uv follows a nested -r inside an override file, so the top-level scan was not enough.
+
+    Two override files naming the same package is an error to uv, so calling them disjoint
+    and handing over both turns a working install into a resolution failure -- or, when uv
+    accepts the pair, the caller's capped torch wins over the managed ARM64 override.
+    """
+
+    @staticmethod
+    def _names(tmp_path, install: bool):
+        source = INSTALL_PS1 if install else SETUP_PS1
+        name = "Get-WoaRequirementEntries" if install else "Get-RequirementEntries"
+        top = (tmp_path / "top.txt").as_posix()
+        script = "\n".join(
+            [
+                _ps_function(source, name),
+                f"$e = @({name} -Path '{top}')",
+                "foreach ($x in $e) { Write-Output ($x.Line.Trim() + '|' + [System.IO.Path]::GetFileName($x.BaseDir)) }",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        return [line for line in done.stdout.strip().splitlines() if line]
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    def test_an_included_file_is_read(self, tmp_path, install):
+        nested = tmp_path / "managed"
+        nested.mkdir()
+        (nested / "nested.txt").write_text("torch<2.9\n", encoding = "utf-8")
+        (tmp_path / "top.txt").write_text("# a comment\nrich>=13\n-r managed/nested.txt\n", encoding = "utf-8")
+        lines = self._names(tmp_path, install)
+        assert any(line.startswith("torch<2.9|managed") for line in lines), (
+            f"the include was not followed, so a torch conflict reads as disjoint: {lines}"
+        )
+        assert any(line.startswith("rich>=13|") for line in lines)
+        assert not any(line.startswith("-r ") for line in lines), "the include line survived as a line"
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    def test_a_cycle_terminates(self, tmp_path, install):
+        (tmp_path / "top.txt").write_text("-r other.txt\nrich>=13\n", encoding = "utf-8")
+        (tmp_path / "other.txt").write_text("-r top.txt\ntorch<2.9\n", encoding = "utf-8")
+        lines = self._names(tmp_path, install)
+        assert any(line.startswith("torch<2.9|") for line in lines)
+        assert any(line.startswith("rich>=13|") for line in lines)
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    def test_a_missing_include_is_not_fatal(self, tmp_path, install):
+        (tmp_path / "top.txt").write_text("-r gone.txt\nrich>=13\n", encoding = "utf-8")
+        lines = self._names(tmp_path, install)
+        assert [line.split("|")[0] for line in lines] == ["rich>=13"]
+
+    def test_the_scan_and_the_fold_read_the_same_thing(self):
+        """Detecting a conflict one level down and then folding only the top file would
+        drop the line that caused the conflict, which is worse than not folding at all.
+        """
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("$_woaOvEntries") == 3, "the conflict scan and the fold have diverged"
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile))" in setup

@@ -3849,16 +3849,40 @@ function Get-RequirementName {
 }
 
 # Missing or unreadable reads as empty, so the caller sees a file declaring nothing.
+# Includes followed: uv reads a nested -r inside an override file, so a conflicting package can
+# sit one level down where a scan of the top file finds nothing, and calling those files disjoint
+# hands uv two that name the same package. Each line comes back with the directory it was READ
+# from, because that is what uv resolves the line's own relative paths against.
+function Get-RequirementEntries {
+    param([string]$Path, $Seen = $null, [int]$Depth = 0)
+    if ($Depth -gt 8) { return @() }
+    if ($null -eq $Seen) { $Seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase) }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    try { $full = Convert-Path -LiteralPath $Path } catch { return @() }
+    if (-not $Seen.Add($full)) { return @() }
+    try { $lines = [System.IO.File]::ReadAllLines($full) } catch { return @() }
+    $dir = [System.IO.Path]::GetDirectoryName($full)
+    $entries = @()
+    foreach ($line in $lines) {
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
+            $nested = $Matches[1].Trim('"', "'")
+            if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
+            $entries += @(Get-RequirementEntries -Path $nested -Seen $Seen -Depth ($Depth + 1))
+            continue
+        }
+        $entries += , @{ Line = $line; BaseDir = $dir }
+    }
+    return $entries
+}
+
 function Get-RequirementNames {
     param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
     $names = @()
-    try {
-        foreach ($line in [System.IO.File]::ReadAllLines((Convert-Path -LiteralPath $Path))) {
-            $name = Get-RequirementName -Line $line
-            if ($name) { $names += $name }
-        }
-    } catch { return @() }
+    foreach ($entry in (Get-RequirementEntries -Path $Path)) {
+        $name = Get-RequirementName -Line $entry.Line
+        if ($name) { $names += $name }
+    }
     return @($names | Sort-Object -Unique)
 }
 
@@ -3905,13 +3929,12 @@ function Restore-WoaResolverEnvironment {
                 $_woaMerged = Join-Path $woaDir "overrides.merged.txt"
                 $_woaLines = @([System.IO.File]::ReadAllLines($overrides))
                 foreach ($_woaFile in $_woaCallerFiles) {
-                    if (-not (Test-Path -LiteralPath $_woaFile -PathType Leaf)) { continue }
-                    foreach ($_woaLine in [System.IO.File]::ReadAllLines((Convert-Path -LiteralPath $_woaFile))) {
-                        if ($_woaLine -match '^\s*(#|$)') { continue }
-                        if ((Get-RequirementName -Line $_woaLine) -in $_woaOursNames) { continue }
+                    # Flattened as it folds, so an include's contents are carried too.
+                    foreach ($_woaEntry in (Get-RequirementEntries -Path $_woaFile)) {
+                        if ((Get-RequirementName -Line $_woaEntry.Line) -in $_woaOursNames) { continue }
                         # Rebased: uv resolves these against the file CONTAINING the
                         # line, so copying one elsewhere moves its base.
-                        $_woaLines += (Resolve-WoaOverrideLine -Line $_woaLine -BaseDir ([System.IO.Path]::GetDirectoryName((Convert-Path -LiteralPath $_woaFile))))
+                        $_woaLines += (Resolve-WoaOverrideLine -Line $_woaEntry.Line -BaseDir $_woaEntry.BaseDir)
                     }
                 }
                 try {
@@ -5005,6 +5028,10 @@ if (-not $SkipPythonDeps) {
 # Get-PersistedWoaTorchIndex reads that very file. Outside the no-torch guard: studio.txt and the
 # manifest rewrite happen in every mode.
 $WinArm64Venv = Test-WinArm64Venv
+# Read BEFORE the re-export below overwrites it: this is the index install.ps1 probed, and the
+# flags it left in this shell (torchaudio, prerelease) describe THAT index, not whichever one
+# this run ends up using.
+$_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) { $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/') } else { "" }
 # The index install.ps1 probed. Without it the CUDA branch below points at the
 # driver-derived family, which has no win_arm64 CUDA wheel. Empty when absent.
 $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL) {
@@ -5180,7 +5207,18 @@ if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
 # install.ps1 reports which way its index went. Absent that, assume none: asking for a
 # wheel that does not exist makes the trio unresolvable, skipping one costs only audio.
-$WinArm64NoAudio = $WinArm64Venv -and ($env:UNSLOTH_WOA_HAS_TORCHAUDIO -ne "1")
+# Which index the torch steps will ACTUALLY use: an explicit pin outranks the handover and the
+# manifest, as $_cudaIndexUrl does below. Change the pin and re-run `unsloth studio update` in the
+# same shell and install.ps1's flags are about the PREVIOUS channel: a stale "1" asks a new index
+# for a torchaudio wheel it does not publish and fails the otherwise valid torch update, and a
+# stale "0" suppresses audio on an index that does have it. Neither flag applies unless the index
+# they were measured on is still the one in force.
+$WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl) { ([string]$PinnedTorchIndexUrl).Trim().TrimEnd('/') }
+                                  elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
+                                  else { "" }
+$WinArm64HandoffApplies = [bool]($WinArm64EffectiveTorchIndexUrl -and $_woaHandoffIndex -and
+    $WinArm64EffectiveTorchIndexUrl.Equals($_woaHandoffIndex, [System.StringComparison]::OrdinalIgnoreCase))
+$WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")
 if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel on this index)" }
 elseif ($WinArm64Venv) { substep "windows on arm: this index publishes torchaudio; keeping it in the torch trio" }
 # The ceilings below are written for download.pytorch.org's x64 wheels. The only win_arm64 CUDA
@@ -5196,7 +5234,10 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 # default would take PyPI's wheel-less build. Empty on every other host.
 $WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
     $_woaIndexArgs = @("--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
-    if ($WinArm64TorchIndexUrl -match 'nightly') {
+    # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal,
+    # since a mirror of a prerelease-only channel need not say "nightly" anywhere in its address.
+    if (($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_TORCH_PRERELEASE -eq "1") -or
+        ($WinArm64EffectiveTorchIndexUrl -match 'nightly')) {
         $_woaIndexArgs = @("--prerelease=allow") + $_woaIndexArgs
     }
     $_woaIndexArgs

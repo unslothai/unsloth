@@ -388,9 +388,12 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("1.0.0", "!=1.0.0", False),
             ("1.0.1", "!=1.0.0", True),
             ("1.0", "", True),
-            ("1!2.0", "==2.0", None),
-            ("1.0", "===1.0", None),
-            ("not-a-version", "==1.0", None),
+            # packaging answers these now, and correctly: an epoch does not vanish, arbitrary
+            # equality matches, and a version it cannot parse is not one a resolver would take.
+            # None is still the contract when packaging is absent AND the numeric path applies.
+            ("1!2.0", "==2.0", False),
+            ("1.0", "===1.0", True),
+            ("not-a-version", "==1.0", False),
         ],
     )
     def test_the_comparison_itself(self, ips, version, specifier, expected):
@@ -494,3 +497,118 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
             "==0.996.13",
             "==0.996.5",
         ], "including the one whose marker would otherwise have excluded it"
+
+
+class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
+    """A wheelhouse holding 0.13.0rc1 must not unskip a package pinned to ==0.13.0.
+
+    The numeric-release comparison reduces both to (0, 13, 0), so the wheel read as
+    satisfying the pin, the skip was dropped, and uv -- which applies PEP 440 properly --
+    rejected the wheel and fell to the ARM64 sdist the skip list exists to avoid.
+    """
+
+    @pytest.mark.parametrize(
+        "version, specifier, expected, why",
+        [
+            ("0.13.0rc1", "==0.13.0", False, "a release candidate is not the release"),
+            ("0.13.0", "==0.13.0", True, "the final version still satisfies it"),
+            ("0.13.0.dev1", "==0.13.0", False, "nor is a dev build"),
+            ("0.13.0rc1", ">=0.12", False, "a prerelease is excluded unless asked for"),
+            ("0.13.0", ">=0.12", True, "an ordinary version is unaffected"),
+            ("2.11", "==2.11.0", True, "trailing zeros still compare equal"),
+        ],
+    )
+    def test_the_comparison_is_pep_440(self, ips, version, specifier, expected, why):
+        assert ips._version_satisfies(version, specifier) is expected, why
+
+    def test_the_fallback_refuses_what_it_cannot_model(self, ips, monkeypatch):
+        """With packaging unavailable the numeric path runs, and it must not guess.
+
+        Returning "satisfied" for a version it cannot parse is the failure this fixes, so
+        the fallback answers False rather than falling through to the release compare.
+        """
+        import importlib
+
+        real = importlib.import_module
+
+        def no_packaging(name, *args, **kwargs):
+            if "packaging" in name:
+                raise ImportError(name)
+            return real(name, *args, **kwargs)
+
+        monkeypatch.setattr(ips.importlib, "import_module", no_packaging)
+        assert ips._version_satisfies("0.13.0rc1", "==0.13.0") is False
+        assert ips._version_satisfies("0.13.0", "==0.13.0") is True
+
+    def test_a_prerelease_wheel_leaves_the_package_skipped(self, ips, tmp_path, monkeypatch):
+        """End to end: the wheel is in the wheelhouse, and the skip survives anyway."""
+        tag = _this_platform()
+        py = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        if "win_arm64" not in tag:
+            monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "tiktoken" in name)
+        (tmp_path / f"tiktoken-0.13.0rc1-{py}-{py}-win_arm64.whl").write_bytes(b"PK\x03\x04")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        ips._find_links_wheel_versions.cache_clear()
+        req = tmp_path / "extras.txt"
+        req.write_text("tiktoken==0.13.0\n", encoding = "utf-8")
+        skipped = ips._windows_arm64_skip_packages(req = req)
+        ips._find_links_wheel_versions.cache_clear()
+        assert "tiktoken" in skipped, (
+            "an rc wheel satisfied an exact pin, so tiktoken was unskipped and the "
+            "resolve fell to the sdist"
+        )
+
+
+class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
+    """The ARM64 CUDA-preservation shortcut distrusts the INFERRED expectation, not a pin.
+
+    A native win_arm64 venv holding cu134 has a family tag download.pytorch.org does not
+    publish, so the driver-derived expectation can only disagree and "repairing" it would
+    resolve a cu130 with no wheel. But a user who asks for cu129 by URL or family has stated
+    where they want to be, and exempting only a /cpu pin left them silently on the old build.
+    setup.ps1 already exempts every explicit pin; this is the same rule.
+    """
+
+    class _Reached(Exception):
+        """Raised where the shortcut used to return, so "got past it" is observable."""
+
+    @pytest.fixture
+    def native_arm64_cuda_venv(self, ips, monkeypatch):
+        monkeypatch.setattr(ips, "NO_TORCH", False, raising = False)
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_probe_installed_torch_version", lambda: "2.14.0+cu134")
+
+        def reached():
+            raise TestAnExplicitPinIsNotOverriddenByThePreservationShortcut._Reached()
+
+        monkeypatch.setattr(ips, "_expected_torch_flavor_tag", reached)
+        for name in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(name, raising = False)
+        return ips
+
+    def test_an_unpinned_run_still_keeps_the_cuda_build(self, native_arm64_cuda_venv):
+        assert native_arm64_cuda_venv._ensure_expected_torch_flavor() is True, (
+            "without a pin the shortcut has to hold, or a working native CUDA venv is "
+            "repaired into a cu130 with no win_arm64 wheel"
+        )
+
+    @pytest.mark.parametrize(
+        "name, value",
+        [
+            ("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu129"),
+            ("UNSLOTH_TORCH_INDEX_FAMILY", "cu129"),
+            ("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu"),
+            ("UNSLOTH_TORCH_INDEX_URL", "https://mirror.test/simple"),
+        ],
+    )
+    def test_a_pinned_run_is_evaluated(self, native_arm64_cuda_venv, monkeypatch, name, value):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(TestAnExplicitPinIsNotOverriddenByThePreservationShortcut._Reached):
+            native_arm64_cuda_venv._ensure_expected_torch_flavor()
+
+    def test_the_two_installers_agree(self):
+        """setup.ps1 exempts every pin; the Python half must not narrow that to /cpu."""
+        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        assert "if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:" in source
+        setup = (REPO_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+        assert "-not $_pinnedIdx) {" in setup, "setup.ps1's own preservation guard moved"
