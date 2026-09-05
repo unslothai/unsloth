@@ -49,7 +49,6 @@ TEMP = WORKDIR / "temp" / "project_chat_view_switch"
 
 SOURCES = (PROVIDER, STORE, QUEUE)
 
-# Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
     "aui",
     "checkpoint",
@@ -141,8 +140,6 @@ def _set_active_thread_id_reducer() -> str:
 
 
 # `export { X } from "./y"` and `import type { X } from "./y"`, at the top level.
-# The harness inlines one file, so a surviving specifier is a module Node cannot
-# resolve in the temp dir; the names themselves are stubbed in the prelude.
 _REEXPORT = re.compile(
     r"^(?:export|import)\s+(?:type\s+)?\{[^}]*\}\s+from\s+[\"'][^\"']+[\"'];\s*$",
     re.MULTILINE,
@@ -583,8 +580,8 @@ def _harness_source() -> str:
     return prelude + _prompt_queue_boundary_body() + render
 
 
-# A rejected switchToNewThread() is only caught on the deferred path, so node would abort
-# the whole process on the immediate one. Recorded here instead, and asserted on.
+# A rejected switchToNewThread() is only caught on the deferred path, so node would abort the whole process on the
+# immediate one. Recorded here instead, and asserted on.
 SCRIPT_HEADER = """
 const unhandled: string[] = [];
 process.on("unhandledRejection", (reason: any) => {
@@ -607,8 +604,7 @@ def _run(imports: str, body: str) -> dict:
     return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
-# A resident GGUF, so the second effect has something it could price. Only the tests about
-# the pause gate need it; everywhere else the bar has nothing to count and stands down.
+# A resident GGUF, so the second effect has something it could price.
 LOADED_MODEL = """
     seed({ params: { checkpoint: "unsloth/gguf-model" }, loadedContextLength: 8192 });
 """
@@ -630,9 +626,9 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
         "ThreadNewChatSwitch must render only for a new-chat nonce, and never alongside "
         "ThreadAutoSwitch: both write the same shared switch state"
     )
-    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread
-    # publication can tell "this pane is on screen" from "a switch away from it has not
-    # landed yet". Both switch children still share it, which is what the count protects.
+    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread publication can tell "this pane is
+    # on screen" from "a switch away from it has not landed yet". Both switch children still share it, which is what the
+    # count protects.
     assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 3, (
         "both switch children must share ONE ref, or leaving a new chat for a saved one "
         "cannot tell the next new chat that the composer is no longer fresh -- and the "
@@ -670,8 +666,6 @@ def test_the_harness_stubs_every_name_the_queue_boundary_imports():
     assert not missing, f"prompt-queue-boundary.ts imports {missing}, which this harness omits"
 
 
-# ---------------------------------------------------------------------------
-# (a) Nonce transitions.
 # ---------------------------------------------------------------------------
 
 
@@ -964,8 +958,8 @@ def test_a_composer_that_is_not_mounted_yet_does_not_break_the_switch():
 @pytest.mark.parametrize(
     ("setup", "path", "attempts"),
     [
-        # activeNonce is non-null when the second nonce arrives, so the clear is the
-        # synchronous one, outside any promise chain of its own.
+        # activeNonce is non-null when the second nonce arrives, so the clear is the synchronous one, outside any
+        # promise chain of its own.
         pytest.param(
             'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id = "immediate"
         ),

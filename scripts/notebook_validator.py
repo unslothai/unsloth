@@ -79,27 +79,24 @@ COLAB_PIP_FREEZE_URL = (
 )
 COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 
-# Oracle files snapshotted from googlecolab/backend-info. The colab-diff
-# subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base
-# image rotations land in CI within ~24h, giving R-INST-002/003/004/005
-# earlier signal.
+# Oracle files snapshotted from googlecolab/backend-info.
+# The colab-diff subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base image rotations land in CI
+# within ~24h, giving R-INST-002/003/004/005 earlier signal.
 COLAB_ORACLE_FILES: dict[str, str] = {
     "pip-freeze.gpu.txt": "colab_pip_freeze.gpu.txt",
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-# Only the pip oracle feeds a rule: `lint --colab-pin` reads it, and that is
-# what R-INST-002/003/004/005 resolve against. apt-list / os-info are human
-# context (what else the image ships), so their drift is reported but never
-# fails --strict -- otherwise an Ubuntu security bump nothing can consult
-# turns the daily cron red.
+# Only the pip oracle feeds a rule: `lint --colab-pin` reads it, and that is what R-INST-002/003/004/005 resolve
+# against. apt-list / os-info are human context (what else the image ships), so their drift is reported but never
+# fails --strict -- otherwise an Ubuntu security bump nothing can consult turns the daily cron red.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 
+
+# torch.minor -> compatible torchcodec.minor strings. Source: pytorch/torchcodec README compatibility matrix.
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
-# torch.minor -> set of compatible torchcodec.minor strings.
-# Source: pytorch/torchcodec compatibility matrix on its README.
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
@@ -114,8 +111,8 @@ PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
     {"trigger_peft": "0.19", "torchao_floor": "0.16.0"},
 ]
 
-# git+ allowlist: install lines that legitimately fetch from GitHub. Anything
-# else flags R-INST-001.
+# git+ allowlist: install lines that legitimately fetch from GitHub.
+# Anything else flags R-INST-001.
 GIT_PLUS_ALLOWLIST = (
     "github.com/SparkAudio/Spark-TTS",
     "github.com/state-spaces/mamba",
@@ -123,8 +120,6 @@ GIT_PLUS_ALLOWLIST = (
     "github.com/unslothai/unsloth-zoo",
     "github.com/unslothai/unsloth",
 )
-
-# ----- Findings ----- #
 
 
 @dataclasses.dataclass
@@ -259,9 +254,6 @@ def cmp_versions(a: str, b: str) -> int:
     return 0
 
 
-# ----- Install-cell parsing ----- #
-
-
 @dataclasses.dataclass
 class PipInvocation:
     tool: str  # "pip" | "uv-pip"
@@ -297,12 +289,10 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
         return None
     tool = "uv-pip" if "uv" in m.group("tool") else "pip"
     rest = m.group("rest")
-    # Strip trailing comment.
     rest = re.split(r"(?<!\S)#", rest, maxsplit = 1)[0]
     try:
         tokens = shlex.split(rest, posix = True)
     except ValueError:
-        # f-string interpolation like {xformers}: replace braces with placeholders.
         rest_safe = re.sub(r"\{[^}]+\}", "PLACEHOLDER", rest)
         try:
             tokens = shlex.split(rest_safe, posix = True)
@@ -356,7 +346,6 @@ def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
             yield inv
 
 
-# Spec parsing: only what we need (no full PEP 440).
 SPEC_RE = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[^\]]*\])?(?P<rest>.*)$")
 OP_VERSION_RE = re.compile(r"(==|>=|<=|!=|~=|>|<)\s*([0-9][^,;\s]*)")
 
@@ -421,8 +410,8 @@ def transitive_constraint(name: str, version: str, target: str) -> tuple[str | N
     requires = info.get("requires_dist") or []
     target_l = target.lower()
     for req in requires:
-        # Examples: 'tokenizers (<=0.23.0,>=0.22.0)', 'tokenizers <=0.23.0,>=0.22.0',
-        # 'tokenizers (>=0.22.0,<=0.23.0); python_version >= "3.9"'
+        # Examples: 'tokenizers (<=0.23.0,>=0.22.0)', 'tokenizers <=0.23.0,>=0.22.0', 'tokenizers (>=0.22.0,<=0.23.0);
+        # python_version >= "3.9"'
         head = req.split(";", 1)[0].strip()
         m = re.match(r"^([A-Za-z0-9._-]+)\s*\(?([^)]*)?\)?\s*$", head)
         if not m:
@@ -623,7 +612,7 @@ def rule_inst_004_torchcodec_torch(
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        return findings  # unknown torch minor — don't flag
+        return findings  # unknown torch minor, don't flag
     if c_minor not in allowed:
         findings.append(
             Finding(
@@ -721,9 +710,9 @@ class _APIScanner(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         # SFTConfig with suboptimal optim (R-API-003).
-        # NOTE: PR #221 also stripped gradient_checkpointing kwargs from some
-        # vision notebooks, but they're still accepted by live TRL (trl==0.25.1)
-        # so that was cosmetic. We don't flag them; R-API-004 catches real drift.
+        # NOTE: PR #221 also stripped gradient_checkpointing kwargs from some vision notebooks, but they're still
+        # accepted by live TRL (trl==0.25.1) so that was cosmetic.
+        # R-API-004 catches real drift.
         if isinstance(node.func, ast.Name) and node.func.id == "SFTConfig":
             for kw in node.keywords:
                 if (
@@ -764,7 +753,6 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
 # ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
 
 POLICY_CLAUSES_DEFAULT = [
-    # (id, regex, applies_to_predicate_on_install_cell_text)
     (
         "torchao-floor",
         re.compile(r"torchao>=0\.16\.0"),
@@ -844,9 +832,7 @@ def cmd_drift(args: argparse.Namespace) -> int:
         check = False,
         capture_output = True,
     )
-    # The restore MUST run even on SystemExit/KeyboardInterrupt, else the
-    # working tree stays rolled back into the stash. A bare try/finally keeps
-    # the original exception while still running the cleanup (stash pop).
+    # The restore MUST run even on SystemExit/KeyboardInterrupt, else the working tree stays rolled back into the stash.
     findings: list[Finding] = []
     rc: int
     try:
@@ -974,16 +960,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
             continue
         rel = str(path.relative_to(nbdir))
         env = target_environment(rel)
-        # Colab oracle applies only to Colab notebooks; other targets get the
-        # environment-agnostic rules only (their preinstalls aren't tracked).
+        # Colab oracle applies only to Colab notebooks; other targets get the environment-agnostic rules only (their
+        # preinstalls aren't tracked).
         oracle = colab if env == "colab" else {}
         cells = install_cells(nb)
-        # Per-cell forbid-pattern checks.
         for idx, cell in cells:
             findings += rule_inst_001_git_plus(cell, rel, idx)
             findings += rule_inst_006_double_bang(cell, rel, idx)
-        # Whole-notebook rules: install steps may span multiple cells, so merge
-        # before resolving compat against Colab.
+        # Whole-notebook rules: install steps may span multiple cells, so merge before resolving compat against Colab.
         merged = "\n".join(c for _, c in cells)
         if env == "colab" and merged:
             first_cell = cells[0][0] if cells else None
@@ -1088,9 +1072,8 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
     colab-diff drift report is acknowledged in one command."""
     if args.all:
         snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
-        # Fetch everything before writing anything. Writing as we go would let a
-        # transient apt/os-info failure leave a mixed-generation directory -- and
-        # since pip is fetched first and is the only oracle --strict reads, the
+        # Fetch everything before writing anything. Writing as we go would let a transient apt/os-info failure leave
+        # a mixed-generation directory -- and since pip is fetched first and is the only oracle --strict reads, the
         # tripwire would go quiet on a refresh that actually failed.
         payloads: dict[str, bytes] = {}
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():

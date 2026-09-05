@@ -912,14 +912,18 @@ def _delete_cached_model_blocking(
             )
 
     # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
-    # family, so removing it while one is installed leaves that quant unloadable. Derived from what is
-    # installed right now, and only for a WHOLE-repo delete.
+    # family, so removing it while one is installed leaves that quant unloadable with nothing on screen
+    # to say why. Derived from what is installed right now, never from a stored count, and only for a
+    # WHOLE-repo delete. Deleting the dependants first makes the base an orphan, which Free up space
+    # then offers.
     # Here rather than in the async caller so it shares this function's cache walk and stubs: the check
     # IS part of the destructive stage.
-    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens one
-    # fixed filename inside a chat GGUF repo, so removing that quant strands the image checkpoint. A
-    # FLAG, never a rewrite of `variant`: widening the scope would delete revisions the user did not
-    # ask for.
+    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens exactly
+    # Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one quant strands the
+    # image checkpoint however many siblings remain, and none of them is a substitute for a fixed
+    # filename. A FLAG, never a rewrite of `variant`: that name is the destructive scope, and widening
+    # it here would delete every revision and manifest the user did not ask for, and purge a sibling
+    # quant out from under an in-flight download.
     guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
     if guard_this_delete and _is_companion_base_repo(repo_id):
         # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base,
