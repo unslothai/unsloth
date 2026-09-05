@@ -465,9 +465,8 @@ class TestTheBufferCanHoldOnePrefillChunk:
         what this pins.
         """
         from core.inference.llama_preemption import preemption_buffer_tokens
-        buffer = preemption_buffer_tokens(
-            16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000
-        )
+
+        buffer = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000)
         assert buffer >= 2048, (
             "a buffer smaller than one prefill chunk cannot prevent the decode failure "
             "that starts the shrinking-batch retry"
@@ -479,9 +478,7 @@ class TestTheBufferCanHoldOnePrefillChunk:
         """They are cells the drafter puts in BEFORE acceptance, not part of the chunk."""
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        plain = preemption_buffer_tokens(
-            16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000
-        )
+        plain = preemption_buffer_tokens(16384, slots = 4, batch_tokens = 2048, pending_prefill = 5000)
         drafted = preemption_buffer_tokens(
             16384, slots = 4, batch_tokens = 2048, draft_tokens = 6, pending_prefill = 5000
         )

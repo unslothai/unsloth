@@ -360,7 +360,6 @@ class TestTheResidentCaseIsUnchanged:
         assert c.snapshot().prefilling == 3010, "the whole prompt goes back in"
 
 
-
 class TestTheRouteReadsTheLaunchesBatchSize:
     """A `--batch-size 512` load reserved for 2048, which is the whole cache's worth.
 
@@ -374,7 +373,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
     def test_the_public_accessor_is_read(self):
         import routes.inference as inference
-
         class _Backend:
             _requested_n_batch = 512
 
@@ -386,7 +384,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
     def test_the_private_field_is_read_when_the_property_is_absent(self):
         import routes.inference as inference
-
         class _Backend:
             _requested_n_batch = 512
 
@@ -394,7 +391,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
     def test_an_unstated_batch_still_falls_back_to_the_llama_cpp_default(self):
         import routes.inference as inference
-
         class _Backend:
             requested_n_batch = None
             _requested_n_batch = None
@@ -402,10 +398,16 @@ class TestTheRouteReadsTheLaunchesBatchSize:
         assert inference._openai_llama_effective_batch_tokens(_Backend()) == 2048
 
     def test_a_512_batch_shrinks_the_reserve_a_pending_prefill_takes(self):
-        assert preemption_buffer_tokens(
-            BUDGET, slots = SLOTS, draft_tokens = DRAFTS,
-            batch_tokens = 512, pending_prefill = 5000,
-        ) == IDLE_BUFFER, "512 is under the reaction headroom, which then covers it"
+        assert (
+            preemption_buffer_tokens(
+                BUDGET,
+                slots = SLOTS,
+                draft_tokens = DRAFTS,
+                batch_tokens = 512,
+                pending_prefill = 5000,
+            )
+            == IDLE_BUFFER
+        ), "512 is under the reaction headroom, which then covers it"
 
 
 class TestNotReservingRoomTwiceForTheSameChunk:
