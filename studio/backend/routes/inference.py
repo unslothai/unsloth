@@ -7009,6 +7009,7 @@ def _target_is_vision(
     load_path: str,
     gguf_variant: Optional[str] = None,
     need_image: bool = True,
+    gguf_companion_roots: tuple[str, ...] = (),
 ) -> bool:
     # A local GGUF's vision capability is its companion mmproj, a filesystem check
     # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
@@ -7028,6 +7029,7 @@ def _target_is_vision(
                 hf_token = os.environ.get("HF_TOKEN"),
                 gguf_variant = gguf_variant,
                 require_image = need_image,
+                gguf_companion_roots = gguf_companion_roots or None,
             )
         )
     except Exception as exc:
@@ -7065,6 +7067,7 @@ def _target_accepts_request_input(
     gguf_variant: Optional[str] = None,
     need_image: bool = True,
     needs_video: bool = False,
+    gguf_companion_roots: tuple[str, ...] = (),
 ) -> bool:
     """Whether a switch target can accept this request's image or audio input.
 
@@ -7074,7 +7077,14 @@ def _target_accepts_request_input(
     tokenizer's special tokens.
     """
     if is_gguf:
-        return _target_is_vision(load_path, gguf_variant, need_image)
+        if not gguf_companion_roots:
+            return _target_is_vision(load_path, gguf_variant, need_image)
+        return _target_is_vision(
+            load_path,
+            gguf_variant,
+            need_image,
+            gguf_companion_roots,
+        )
     # input_video is llama.cpp's own part type, so a clip is refused right after the load.
     if needs_video:
         return False
@@ -7601,6 +7611,22 @@ def _loaded_identity_satisfies(requested: str) -> bool:
         # alias it recorded and land here.
         if advertised is None and identifier and _looks_like_local_path(identifier):
             return False
+        companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
+        if companion_roots:
+            from core.inference.local_model_resolver import (
+                local_gguf_companion_roots,
+                local_gguf_companion_state,
+            )
+
+            # A revision pin drops repo scope; a repo alias must notice newly cached companions.
+            if _looks_like_local_path(base) or companion_roots != local_gguf_companion_roots(
+                identifier, repo_level = True
+            ):
+                return False
+            if getattr(
+                llama_backend, "_openai_gguf_companion_state", ()
+            ) != local_gguf_companion_state(companion_roots):
+                return False
         return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
@@ -7961,6 +7987,8 @@ async def _maybe_auto_switch_model(
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import (
+        local_gguf_companion_roots,
+        local_gguf_companion_state,
         local_target_is_gguf,
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
@@ -8076,16 +8104,25 @@ async def _maybe_auto_switch_model(
         # resolve so only the reload-stash path runs and no name is ever matched.
         reload_only = requested_model == _RELOAD_ONLY_MODEL
         resolved = None
+        repo_level_companion_resolution = False
+        stashed_gguf_companion_roots: tuple[str, ...] = ()
         if auto_switch_on and not reload_only:
             # Fresh hits and entries retained across an additions-only download are
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
-            resolved = resolve_trusted_cached_local_gguf(requested_model)
+            resolved = resolve_trusted_cached_local_gguf(
+                requested_model,
+                include_companion_scope = True,
+            )
             if resolved is not None:
                 warm_index_soon()
             else:
-                resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+                resolved = await asyncio.to_thread(
+                    resolve_local_gguf,
+                    requested_model,
+                    include_companion_scope = True,
+                )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -8116,8 +8153,10 @@ async def _maybe_auto_switch_model(
                 if claim_resident:
                     _claim_slot_for_non_preview(fastapi_request)
                 return
-            if len(last) == 3:
-                target_id, variant, override_id = last
+            if len(last) >= 3:
+                target_id, variant, override_id = last[:3]
+                if len(last) >= 4:
+                    stashed_gguf_companion_roots = tuple(last[3] or ())
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
@@ -8138,9 +8177,32 @@ async def _maybe_auto_switch_model(
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
-            target_id, variant, override_id = resolved
+            if len(resolved) >= 4:
+                target_id, variant, override_id, repo_level_companion_resolution = resolved[:4]
+            else:
+                target_id, variant, override_id = resolved
+                requested_base, _requested_variant = split_model_ref(requested_model)
+                repo_level_companion_resolution = _matches_any(
+                    requested_base,
+                    (override_id, public_model_id(override_id)),
+                )
         # Not inferred from the quant: a GGUF loaded from a local directory carries none.
         target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
+        gguf_companion_roots: tuple[str, ...] = ()
+        if target_is_gguf:
+            if resolved is None:
+                gguf_companion_roots = stashed_gguf_companion_roots
+            else:
+                gguf_companion_roots = await asyncio.to_thread(
+                    local_gguf_companion_roots,
+                    target_id,
+                    repo_level = repo_level_companion_resolution,
+                )
+        gguf_companion_state = (
+            await asyncio.to_thread(local_gguf_companion_state, gguf_companion_roots)
+            if gguf_companion_roots
+            else ()
+        )
         # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
         if (
             gguf_only
@@ -8190,6 +8252,13 @@ async def _maybe_auto_switch_model(
             if advertised:
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                return False
+            loaded_companion_roots = tuple(
+                getattr(backend, "_openai_gguf_companion_roots", ()) or ()
+            )
+            if loaded_companion_roots != gguf_companion_roots:
+                return False
+            if getattr(backend, "_openai_gguf_companion_state", ()) != gguf_companion_state:
                 return False
             if bare:
                 return True
@@ -8241,6 +8310,7 @@ async def _maybe_auto_switch_model(
                 variant,
                 target_requires_image,
                 require_video,
+                gguf_companion_roots,
             )
         ):
             raise HTTPException(
@@ -8332,8 +8402,10 @@ async def _maybe_auto_switch_model(
                                 else {}
                             )
                             try:
+                                load_request = LoadRequest(**load_kwargs)
+                                load_request._gguf_companion_roots = gguf_companion_roots
                                 await _load_model_impl(
-                                    LoadRequest(**load_kwargs),
+                                    load_request,
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
@@ -8355,8 +8427,10 @@ async def _maybe_auto_switch_model(
                                     exc.detail,
                                 )
                                 load_kwargs.pop("gpu_ids", None)
+                                load_request = LoadRequest(**load_kwargs)
+                                load_request._gguf_companion_roots = gguf_companion_roots
                                 await _load_model_impl(
-                                    LoadRequest(**load_kwargs),
+                                    load_request,
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
@@ -13439,6 +13513,16 @@ async def _load_model_impl(
 
         # Resolve once so dedupe, admission and launch use the same slot count.
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
+        from core.inference.local_model_resolver import local_gguf_companion_state
+
+        # Capture before metadata resolution; a download completing during launch must be noticed next time.
+        gguf_companion_state = (
+            await asyncio.to_thread(
+                local_gguf_companion_state, tuple(request._gguf_companion_roots)
+            )
+            if request._gguf_companion_roots
+            else ()
+        )
 
         def _reuse_loaded_gguf(
             intent: GgufLoadIntent, *, display_name: Optional[str] = None
@@ -13449,6 +13533,10 @@ async def _load_model_impl(
                 # (the intent match lowercases the identifier). Checked before the adopt so
                 # a mismatch never adopts the caller's placement.
                 _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
+                and tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
+                == tuple(request._gguf_companion_roots)
+                and getattr(llama_backend, "_openai_gguf_companion_state", ())
+                == gguf_companion_state
                 and llama_backend.adopt_load_intent_if_matched(intent)
                 and getattr(llama_backend, "_audio_probed", True)
             ):
@@ -13579,6 +13667,7 @@ async def _load_model_impl(
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
+                    gguf_companion_roots = request._gguf_companion_roots or None,
                 )
 
         # Guard and call go to the worker together: from_identifier can import transformers
@@ -14068,6 +14157,8 @@ async def _load_model_impl(
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
+            llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
+            llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
             # A plain load advertises its own identifier; auto-switch overwrites
             # this with the repo id right after _load_model_impl returns.

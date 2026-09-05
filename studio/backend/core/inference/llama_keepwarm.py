@@ -792,7 +792,9 @@ def _loaded_identity(backend):
     # Third slot is the advertised id (repo id) an auto-switch load sets on the backend; it's the override key, so an
     # idle stash keyed by the concrete load path doesn't drop the user's saved launch flags on the alias reload.
     advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
-    return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
+    identity = (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
+    companion_roots = tuple(getattr(backend, "_openai_gguf_companion_roots", ()) or ())
+    return (*identity, companion_roots) if companion_roots else identity
 
 
 def _note_idle_unload_event(freed) -> None:
