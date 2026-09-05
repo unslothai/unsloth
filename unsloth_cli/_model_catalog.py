@@ -324,6 +324,13 @@ def _gguf_file_is_loadable(path: Path) -> bool:
     return present >= set(range(1, total + 1))
 
 
+def _is_gguf_file(path: str) -> bool:
+    try:
+        return path.lower().endswith(".gguf") and Path(path).is_file()
+    except OSError:
+        return False
+
+
 def _preferred_complete_gguf(path: str) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -581,10 +588,7 @@ def local_folder_entries() -> List[ModelEntry]:
         if _local_is_a_diffusers_pipeline(model):
             continue
         target = model.load_id or model.id
-        # A GGUF DIRECTORY goes through detect_gguf_model, which sorts by size and takes the largest
-        # complete file, commonly the F16, while cached and exported rows resolve a Q4-class quant. Same
-        # folder, dramatically bigger load by source alone, so an OOM rather than a preference.
-        if is_gguf:
+        if is_gguf and not _is_gguf_file(target):
             target = _preferred_complete_gguf(target) or target
         entries.append(
             ModelEntry(
