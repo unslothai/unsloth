@@ -6443,6 +6443,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         chat_template_override_reason = None,
         # llama.cpp allocates the window it reports: bounded by construction.
         context_length_enforced = True,
+        # llama.cpp sizes its own context; nothing here is fitted on its behalf.
+        context_length_fitted = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -11261,6 +11263,212 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
     return None
 
 
+# What an MLX estimate falls back to when the panel names no context and the checkpoint declares
+# no window it can be held to: the MLX loader's own default.
+_DEFAULT_MLX_ESTIMATE_CTX = 2048
+
+
+def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
+    """The window this checkpoint declares, held to what a load may be asked for.
+
+    Read from the files rather than from a resident model, by the rule the load resolves it
+    with, so the estimate and the load name the same ceiling.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import mlx_native_context_length
+    from core.inference.mlx_memory import _snapshot_config
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    try:
+        config = _snapshot_config(model_dir)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    native = mlx_native_context_length(SimpleNamespace(config = config))
+    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+
+
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
+    """The window a load naming no Context Length would be fitted to, and the KV width it runs
+    at -- the load's own fit, asked of the files instead of a resident model. ``(None, kv_bits)``
+    where nothing is fitted: the ceiling is served, carrying no bound to spend the request on."""
+    from core.inference.mlx_inference import mlx_fit_to_memory, mlx_kv_quant_is_refused
+
+    ceiling = _mlx_estimate_ceiling(model_dir)
+    if not ceiling:
+        return None, kv_bits
+    window, applied, _bounded = mlx_fit_to_memory(
+        model_dir,
+        ceiling,
+        load_in_4bit = load_in_4bit,
+        # Only the text path keeps a prompt history between turns, and the fit reserves room
+        # for one that will be kept.
+        retains_history = not getattr(config, "is_vision", False),
+        kv_bits = kv_bits,
+        # Asked only where the answer matters: it builds the architecture.
+        applies = lambda: not mlx_kv_quant_is_refused(model_dir),
+    )
+    return window, applied
+
+
+def _mlx_estimate_available() -> bool:
+    """Whether this host would actually run the load through MLX.
+
+    The same criterion ``detect_hardware`` selects the MLX backend on, rather than a bare
+    ``import mlx.core``: that succeeds on a stack whose mlx-lm or mlx-vlm the worker refuses,
+    and the load then runs on a backend allocating to a different plan entirely.
+    """
+    try:
+        from utils.mlx_repair import is_apple_silicon, mlx_stack_blockers
+    except Exception:
+        return False
+    try:
+        return bool(is_apple_silicon() and not mlx_stack_blockers())
+    except Exception:
+        return False
+
+
+def _the_revision_that_loads(snapshots: list) -> list:
+    """Just the revision `main` names, where it names one that is here.
+
+    A load resolves the repository through that ref and either completes it or fails, so no other
+    revision beside it may stand in: pricing one during an interrupted download would quote
+    weights, an architecture and a cache the load never opens. Where the ref names nothing on this
+    disk, the snapshots that are here are all there is to weigh.
+    """
+    from hub.utils.hf_cache_state import ref_snapshot_dir
+
+    paths = [Path(snapshot) for snapshot in snapshots]
+    if not paths:
+        return paths
+    pinned = ref_snapshot_dir(paths[0].parent.parent)
+    return [pinned] if pinned is not None else paths
+
+
+def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
+    def _complete(directory: Path, shards) -> bool:
+        named = [
+            (Path(shard).parent, match)
+            for shard in shards
+            if (match := _re.fullmatch(r"(.+)-(\d+)-of-(\d+)\.safetensors", Path(shard).name))
+        ]
+        if not named:
+            return _index_agrees(directory)
+        # Beside the shard that named them, since an index may name a subdirectory.
+        for parent, match in named:
+            stem, total = match.group(1), match.group(3)
+            width, count = len(match.group(2)), int(total)
+            if any(
+                not (parent / f"{stem}-{i:0{width}d}-of-{total}.safetensors").is_file()
+                for i in range(1, count + 1)
+            ):
+                return False
+        return _index_agrees(directory)
+
+    def _index_agrees(directory: Path) -> bool:
+        """Whether an index that describes THIS directory finds all of it here.
+
+        An index overlapping the directory nowhere describes some other snapshot -- a parent's,
+        inherited by a re-upload -- so it is not evidence this download is unfinished.
+        """
+        index = directory / "model.safetensors.index.json"
+        if not index.is_file():
+            return True
+        try:
+            with open(index, encoding = "utf-8") as handle:
+                weight_map = json.load(handle).get("weight_map", {})
+            named = {shard for shard in weight_map.values() if isinstance(shard, str)}
+        except (ValueError, OSError, AttributeError):
+            return True
+        here = {str(path.relative_to(directory)) for path in directory.glob("**/*.safetensors")}
+        return not (named & here) or named <= here
+
+    def _usable(path) -> bool:
+        directory = Path(path)
+        if not directory.is_dir() or not (directory / "config.json").is_file():
+            return False
+        # What the loading package reads, not every safetensors file beside the config.
+        from core.inference.mlx_memory import mlx_shard_files
+
+        try:
+            snapshot = json.loads((directory / "config.json").read_text(encoding = "utf-8"))
+        except Exception:
+            snapshot = None
+        try:
+            shards = mlx_shard_files(
+                str(directory), snapshot if isinstance(snapshot, dict) else None
+            )
+        except Exception:
+            return False
+        if not shards:
+            return False
+        return _complete(directory, shards)
+
+    candidate = getattr(config, "path", None)
+    if candidate and _usable(candidate):
+        return str(candidate)
+    identifier = candidate or getattr(config, "identifier", None)
+    if not identifier or getattr(config, "is_local", False):
+        return None
+    names = [_mlx_load_identifier(str(identifier))]
+    if "/" not in names[0]:
+        names.append(f"unsloth/{names[0]}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return None
+    for root in roots or [None]:
+        for name in names:
+            try:
+                snapshots = _iter_hf_cache_snapshots(name, cache_dir = root)
+            except Exception:
+                continue
+            for snapshot in _the_revision_that_loads(list(snapshots)):
+                if _usable(snapshot):
+                    return str(snapshot)
+    return None
+
+
+def _mlx_load_identifier(identifier: str) -> str:
+    """The repository the MLX load would actually open, not the one selected."""
+    try:
+        from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
+    except Exception:
+        return identifier
+    try:
+        return _remap_unsloth_bnb_hub_id_for_mlx(identifier, None)[0] or identifier
+    except Exception:
+        return identifier
+
+
+def _mlx_estimate_load_in_4bit(config, request) -> bool:
+    """The 4-bit setting the load resolves, not the one the panel sent."""
+    if not request.load_in_4bit:
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    identifier = getattr(config, "identifier", None)
+    return not _offline_guarded(
+        (identifier, getattr(config, "base_model", None)),
+        latest_tier_active_for,
+        identifier,
+        request.hf_token,
+    )
+
+
+def _mlx_estimate_kv_bits(mlx_kv_bits) -> Optional[int]:
+    if not isinstance(mlx_kv_bits, int) or isinstance(mlx_kv_bits, bool):
+        return None
+    try:
+        from core.inference.mlx_inference import MLX_KV_BITS_CHOICES
+    except Exception:
+        return None
+    return mlx_kv_bits if mlx_kv_bits in MLX_KV_BITS_CHOICES else None
+
+
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
@@ -13561,6 +13769,9 @@ async def _load_model_impl(
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
                     context_length_enforced = _model_info.get("context_length_enforced"),
+                    context_length_fitted = _positive_int_or_none(
+                        _model_info.get("context_length_fitted")
+                    ),
                     chat_template = _chat_template,
                 )
 
@@ -14321,6 +14532,7 @@ async def _load_model_impl(
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
             context_length_enforced = _model_info.get("context_length_enforced"),
+            context_length_fitted = _positive_int_or_none(_model_info.get("context_length_fitted")),
             chat_template = _chat_template,
         )
 
@@ -15468,17 +15680,16 @@ async def estimate_memory(
     fastapi_request: Request = None,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Price a prospective GGUF load from its header, before anything is allocated.
+    """Price a prospective load from its metadata, before the load allocates anything.
 
-    Reads only GGUF metadata and file sizes, so it is safe to call on every settings
-    change: no model is loaded, no device is touched, nothing is downloaded. A model
-    that is not on this disk answers ``not_downloaded``.
+    Reads GGUF metadata and file sizes -- or, for an MLX repo, safetensors headers and the
+    shapes of an architecture built and never evaluated -- so it is safe to call on every
+    settings change: no model is loaded, no tensor data is read, nothing is downloaded.
 
-    The arithmetic is the loader's own KV, compute-buffer and companion sizing, which
-    is the point. Weights times a constant is fine until the KV cache stops being a
-    rounding error: at 262k tokens the cache can outweigh the weights, and it swings
-    fourfold on the cache dtype alone. Where the header cannot supply the dims this
-    answers ``kv_estimable = false`` rather than quoting an assumed total.
+    The arithmetic is the loader's own KV, compute-buffer and companion sizing. Weights
+    times a constant is fine until the KV cache stops being a rounding error: at 262k
+    tokens the cache can outweigh the weights. Where the metadata cannot supply the dims
+    this answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
@@ -15512,10 +15723,6 @@ async def estimate_memory(
     requested_slots = _resolve_parallel_slots(request, fastapi_request)
 
     def _estimate() -> EstimateMemoryResponse:
-        resolved_slots = _effective_parallel_slots(
-            requested_slots,
-            diffusion_kind = False,
-        )
         config = _cached_estimate_config(
             model_identifier,
             request.gguf_variant,
@@ -15527,12 +15734,88 @@ async def estimate_memory(
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
-            # Safetensors / MLX allocate on a different plan; the GGUF arithmetic
-            # would be a made-up number in a confident box.
-            return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            # MLX allocates on a different plan, so the GGUF arithmetic would be invented.
+            if not _mlx_estimate_available():
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            from core.inference.native_audio import is_native_audio_model
+
+            if is_native_audio_model(model_identifier):
+                # The worker hands these to the native audio backend ahead of the MLX path, so
+                # pricing one here would quote a language model this load never builds.
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            if getattr(config, "is_lora", False):
+                # Not the base underneath it either: the adapter's own tensors go resident on top.
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            model_dir = _local_mlx_model_dir(config)
+            if not model_dir:
+                return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+            from core.inference.mlx_inference import (
+                mlx_bound_displaces_quantization,
+                mlx_bound_would_be_enforced,
+                mlx_kv_quant_is_refused,
+            )
+            from core.inference.mlx_memory import mlx_memory_breakdown
+
+            mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+            mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits)
+            # /load takes an MLX context from max_seq_length ALONE, so n_ctx -- llama.cpp's field
+            # -- is not a pin here. A caller sending only n_ctx would otherwise be told its load
+            # opens at that length and is fitted to nothing, while the load it describes is
+            # unpinned and fits to whatever this machine holds.
+            mlx_named_ctx = request.max_seq_length or 0
+            mlx_fitted_ctx = None
+            if mlx_named_ctx:
+                # A pin instructs memory too, so a bound the cache can carry spends the request
+                # there as well -- probed, since the architecture may cap itself or not.
+                if mlx_bound_displaces_quantization(
+                    instructed = True,
+                    bounded = mlx_bound_would_be_enforced(model_dir, mlx_named_ctx),
+                ):
+                    mlx_kv_bits = None
+                # Asked only where the bound rule left a width standing: it builds the tower.
+                if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir):
+                    mlx_kv_bits = None
+            else:
+                # Fitted to the width the load will really run at, so the KV width moves the
+                # reported length too. The fit answers both; asking again could only disagree.
+                mlx_fitted_ctx, mlx_kv_bits = _mlx_estimate_fitted_context(
+                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                )
+            mlx_breakdown = mlx_memory_breakdown(
+                model_dir,
+                # Naming nothing is what a load does when the user pins nothing, and such a load
+                # opens at the window this machine holds. Pricing the loader's own default there
+                # would quote a fraction of the cache the conversation is free to grow into.
+                n_ctx = (
+                    mlx_named_ctx
+                    or mlx_fitted_ctx
+                    or _mlx_estimate_ceiling(model_dir)
+                    or _DEFAULT_MLX_ESTIMATE_CTX
+                ),
+                # The load refuses to quantize a bounded cache, so such a window is priced full.
+                kv_bits = mlx_kv_bits,
+                # /load quantizes an unquantized checkpoint by default and does not always honour the request.
+                load_in_4bit = mlx_load_in_4bit,
+            )
+            if mlx_breakdown is None:
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            return EstimateMemoryResponse(
+                **project_estimate_memory_response(
+                    build_memory_estimate(
+                        mlx_breakdown,
+                        quant_file_bytes = 0,
+                        context_fitted = mlx_fitted_ctx,
+                    )
+                )
+            )
         gguf_path = _local_gguf_main_path(config)
         if not gguf_path:
             return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        # Asked only once the load is known to be a GGUF one: this walks nine install layouts and can run `llama-server --help` against a ten second timeout.
+        resolved_slots = _effective_parallel_slots(
+            requested_slots,
+            diffusion_kind = False,
+        )
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
@@ -16443,6 +16726,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
             context_length_enforced = model_info.get("context_length_enforced"),
+            context_length_fitted = _positive_int_or_none(model_info.get("context_length_fitted")),
             # 0 is an answer (size it yourself); None means no request is recorded. Either
             # spelling: the route stamps max_seq_length_requested on every non-GGUF load,
             # and the MLX mirror carries requested_context_length.
@@ -24733,7 +25017,7 @@ def _openai_model_objects() -> list[dict]:
         ):
             entry["task"] = _TTS_MODEL_TASK
 
-        for _field in ("native_context_length", "max_context_length"):
+        for _field in ("native_context_length", "max_context_length", "context_length_fitted"):
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value

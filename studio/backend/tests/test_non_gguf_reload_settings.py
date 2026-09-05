@@ -194,6 +194,49 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         assert response.load_in_4bit is False
         assert response.requested_gpu_ids == [0, 1]
 
+    def test_a_window_fitted_to_the_machine_reaches_the_client(self, monkeypatch):
+        """Only the worker measured it, and nothing outside can recompute it."""
+        response = self._status_for(monkeypatch, {"context_length_fitted": 14336})
+
+        assert response.context_length_fitted == 14336
+
+    def test_every_projection_that_reports_a_bound_reports_how_it_was_chosen(self):
+        """Four hand-maintained projections, and a drop from any one of them is silent.
+
+        Whether the window bounds the cache and whether the machine chose it are read together by
+        a client deciding what to show, so they are kept together at every site that reports one.
+        """
+        from pathlib import Path
+
+        lines = Path("routes/inference.py").read_text().split("\n")
+        orphaned = [
+            index + 1
+            for index, line in enumerate(lines)
+            if "context_length_enforced" in line
+            and not any(
+                "context_length_fitted" in lines[near]
+                for near in range(max(0, index - 6), min(len(lines), index + 7))
+            )
+        ]
+
+        assert orphaned == [], f"context_length_enforced without a fitted window at {orphaned}"
+
+    def test_the_parent_mirrors_every_context_field_the_worker_sends(self):
+        """The hop the route test cannot see: a field the mirror drops is one no API reports."""
+        from core.inference.orchestrator import _mirrored_model_entry
+
+        sent = {
+            "context_length": 14336,
+            "native_context_length": 40960,
+            "max_context_length": 40960,
+            "requested_context_length": 0,
+            "context_length_enforced": True,
+            "context_length_fitted": 14336,
+        }
+        mirrored = _mirrored_model_entry(dict(sent, display_name = "m"), "m")
+
+        assert {name: mirrored.get(name) for name in sent} == sent
+
     def test_the_mlx_mirror_wins_over_the_stamped_spelling(self, monkeypatch):
         """#8125: the MLX worker mirrors the real context back as requested_context_length."""
         response = self._status_for(
