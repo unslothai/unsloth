@@ -79,7 +79,10 @@ import {
 } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
-import { markdownSandboxImageSrc } from "./sandbox-files";
+import {
+  decodeSegment,
+  markdownSandboxImageSrc,
+} from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -149,8 +152,9 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
     node: _node,
     ...dom
   } = props as ComponentProps<"img"> & { node?: unknown };
-  // The same pair the adapter resolves a run's session from (`unstable_threadId ?? activeThreadId`),
-  // so an answer written inside a project reads the project's workspace, not the thread's.
+  // The fallback scope, for a src that records no session of its own (a bare `plot.png`): the same
+  // pair the adapter resolves a run's session from (`unstable_threadId ?? activeThreadId`). A src
+  // that DOES record one keeps it -- the folder its files were written to is where they still are.
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
@@ -176,9 +180,12 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const sized = dom.width != null || dom.height != null;
   // Download naming follows the replaced renderer: a real extension on the path wins whole (alt must
   // never override a real filename); otherwise any extension in alt is STRIPPED and one inferred from the
-  // blob's type is appended -- so alt="plot" downloads "plot.png", not "plot".
+  // blob's type is appended -- so alt="plot" downloads "plot.png", not "plot". Split before DECODING,
+  // so a raw `#`/`?` keeps its delimiter meaning, then decode: `loss curve #1.png` must save under its
+  // real name, not as `loss%20curve%20%231.png`.
   const downloadName = (blobType: string): string => {
-    const tail = (file ?? src ?? "").split(/[?#]/)[0].split("/").pop() ?? "";
+    const tail =
+      decodeSegment((file ?? src ?? "").split(/[?#]/)[0].split("/").pop() ?? "") || "";
     const dot = tail.lastIndexOf(".");
     if (dot > -1 && tail.length - dot - 1 <= 4) return tail;
     const ext = /jpe?g/.test(blobType)

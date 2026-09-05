@@ -610,23 +610,43 @@ test("thumbnails load from Unsloth's own endpoint, which the img policy allows",
 
 test("an on-disk image survives sanitize as a path, and is rewritten before it reaches the DOM", () => {
   // The sanitizer's job ends at "carries no scheme, so keep it": what it cannot know is that the
-  // route answers on the Authorization header. So the surviving path must be re-derived per chat --
-  // the model writes whichever sid it happened to be talking to, and a project thread reads the
-  // PROJECT's workspace -- and fetched, not handed to an <img> unchanged.
+  // route answers on the Authorization header. So the surviving path must be resolved per chat --
+  // the session the src RECORDS wins (the model echoes real workdir paths out of the stdout it saw;
+  // a moved chat's older files still sit in the folder named there, which is what the tool card
+  // above the prose already resolves to) -- and fetched, not handed to an <img> unchanged.
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];
   const written =
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png";
   assert.equal(safeMarkdownUrl(written, "src", imgNode), written);
 
-  // The sid the model wrote is discarded; this chat's scope decides. `project-<id>` else threadId,
-  // exactly as sandboxSessionIdFor resolves it for a tool call's own envelope.
+  // The recorded session survives a move: p1 is where this chat lives NOW, and the file it wrote
+  // while living under __LOCALID_Y3VK67e is still there -- which is also what the tool card above
+  // this prose resolves from its envelope, so prose and card must never disagree.
   assert.equal(
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
-    "/api/inference/sandbox/t-1/outputs/loss%20curve%20%231.png",
+    "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
   );
   assert.equal(
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: "p1" }),
-    "/api/inference/sandbox/project-p1/outputs/loss%20curve%20%231.png",
+    "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
+  );
+  // A bare path records nothing; only then does this chat's scope decide. `project-<id>` else
+  // threadId, exactly as sandboxSessionIdFor resolves it for a tool call's own envelope.
+  assert.equal(
+    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: "p1" }),
+    "/api/inference/sandbox/project-p1/outputs/plot.png",
+  );
+  assert.equal(
+    markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: null }),
+    "/api/inference/sandbox/t-1/outputs/plot.png",
+  );
+  // The not-path-safe form records in the query instead of a path segment, and round-trips the same.
+  assert.equal(
+    markdownSandboxImageSrc("/api/inference/sandbox/_/plot.png?session=session%2Fid", {
+      threadId: "t-1",
+      projectId: null,
+    }),
+    "/api/inference/sandbox/_/plot.png?session=session%2Fid",
   );
   // A bare relative path is the same file: every scheme-carrying src is already gone by now. It
   // arrives percent-encoded, because in a URL a literal `#` starts a fragment and a raw space ends the
@@ -651,6 +671,12 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     "photo.avif",
     "AVIF is inline on the backend too; the two lists must not drift",
   );
+  // A `..` -- raw or `%2e%2e`-encoded -- pops the scope segment prepended above: one dot reads
+  // another chat's folder, two land on another route. It stays raw and fails honestly instead.
+  assert.equal(sandboxFileForSrc("../project-other/plot.png"), null);
+  assert.equal(sandboxFileForSrc("outputs/%2e%2e/other/plot.png"), null);
+  // A single `.` is noise URL parsing drops anyway; it changes nothing about which file this is.
+  assert.equal(sandboxFileForSrc("./plot.png"), "plot.png");
   // Somebody else's URL, left exactly as it was.
   assert.equal(sandboxFileForSrc("/assets/logo.png"), null);
   assert.equal(sandboxFileForSrc("data:image/png;base64,AAAA"), null);

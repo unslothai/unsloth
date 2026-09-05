@@ -52,8 +52,9 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
   );
   assert.ok(
     /markdownSandboxImageSrc\(src,\s*\{/.test(MARKDOWN_TEXT),
-    "the src is re-derived from this chat's scope (project-<id> else threadId), not passed through " +
-      "with whichever sid the model happened to be talking to",
+    "a src that RECORDS a session keeps it -- the folder its files were written to is where they " +
+      "still are after a move, and it is what the tool card above the prose already resolves from; " +
+      "only one that records nothing falls back to this chat's scope",
   );
   assert.ok(
     MARKDOWN_TEXT.includes("useSandboxImage(file)"),
@@ -64,8 +65,14 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];
   const written = "/api/inference/sandbox/__LOCALID_Y3VK67e/plot.png";
   assert.equal(safeMarkdownUrl(written, "src", imgNode), written);
+  // The recorded session wins (it is where the file was WRITTEN); a bare path records nothing and
+  // only then falls back to this chat's scope.
   assert.equal(
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
+    "/api/inference/sandbox/__LOCALID_Y3VK67e/plot.png",
+  );
+  assert.equal(
+    markdownSandboxImageSrc("plot.png", { threadId: "t-1", projectId: null }),
     "/api/inference/sandbox/t-1/plot.png",
   );
   assert.equal(markdownSandboxImageSrc("data:image/png;base64,AAAA", { threadId: "t-1", projectId: null }), null);
@@ -152,5 +159,10 @@ test("the img restatement keeps what the wholesale replacement silently dropped"
     MARKDOWN_TEXT.includes('.replace(/\\.[^/.]+$/'),
     'download names: a real extension on the path wins whole; otherwise alt\'s extension is stripped ' +
       'and one inferred from blob.type is appended -- alt="plot" downloads "plot.png", not "plot"',
+  );
+  assert.ok(
+    MARKDOWN_TEXT.includes("decodeSegment((file ?? src"),
+    "the tail is cut with raw delimiters split off FIRST, then decoded: `loss curve #1.png` must " +
+      "save under its real name, not as loss%20curve%20%231.png",
   );
 });

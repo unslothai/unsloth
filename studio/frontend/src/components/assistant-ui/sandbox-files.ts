@@ -148,8 +148,11 @@ export const SANDBOX_INLINE_IMAGE_EXTS = new Set([
 const HAS_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/;
 const PROTOCOL_RELATIVE_RE = /^[/\\]{2}/;
 
-/** `100%.png` is a real filename; a stray `%` must not throw on every render. */
-function decodeSegment(segment: string): string {
+/**
+ * `100%.png` is a real filename; a stray `%` must not throw on every render. Exported because the
+ * download name is cut from the ENCODED route path and must be decoded back before it names a file.
+ */
+export function decodeSegment(segment: string): string {
   try {
     return decodeURIComponent(segment);
   } catch {
@@ -158,34 +161,70 @@ function decodeSegment(segment: string): string {
 }
 
 /**
- * The file a model-written markdown `src` points at, or null when it does not point at this chat's
- * sandbox. A bare relative path (`outputs/plot.png`) counts: the sanitizer already dropped every
- * scheme-carrying src, so a scheme-less image path in an answer is this chat's file and nothing else.
+ * The FILE a model-written markdown `src` points at, or null when it does not point at a sandbox
+ * file at all. A bare relative path (`outputs/plot.png`) counts: the sanitizer already dropped every
+ * scheme-carrying src, so a scheme-less image path in an answer is this chat's file and nothing else
+ * -- and one carrying `..` points somewhere that is NOT this chat's folder, so it stays raw and fails
+ * honestly instead of silently fetching another chat's file (or another route).
  */
 export function sandboxFileForSrc(src: string): string | null {
   const trimmed = src.trim();
   if (!trimmed || HAS_SCHEME_RE.test(trimmed) || PROTOCOL_RELATIVE_RE.test(trimmed)) {
     return null;
   }
-  // The sid rides in `?session=` when it is not path-safe; either way we re-derive it, so drop it.
+  // The sid rides in `?session=` when it is not path-safe; either way the caller reads it back with
+  // sandboxSessionInSrc, so it never reaches the file path.
   const path = trimmed.split("?")[0].split("#")[0];
   if (path.startsWith("/") && !path.startsWith(SANDBOX_ROUTE_PREFIX)) {
     return null; // some other app route (`/assets/...`), not a sandbox file
   }
   const segments = path.startsWith(SANDBOX_ROUTE_PREFIX)
-    ? // The sid segment goes in the bin with the query: the caller re-derives it from this chat.
+    ? // The recorded sid is not part of the file path; sandboxSessionInSrc reads it back out.
       path.slice(SANDBOX_ROUTE_PREFIX.length).split("/").slice(1)
     : path.split("/");
-  const name = segments[segments.length - 1] ?? "";
+  // Decode FIRST, then judge: `%2e%2e` IS `..`, and a dot segment pops the scope segment the caller
+  // prepends -- one reads another chat's folder, two land on another route. A bare `.` is noise URL
+  // parsing drops anyway; drop it here so callers see one canonical shape.
+  const decoded = segments.map(decodeSegment);
+  if (decoded.some((segment) => segment === "..")) return null;
+  const parts = decoded.filter((segment) => segment !== ".");
+  const name = parts[parts.length - 1] ?? "";
   const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
   // A `.csv` is a download card, not an `<img>`; leave it to the file cards.
   if (!SANDBOX_INLINE_IMAGE_EXTS.has(ext)) return null;
-  return segments.map(decodeSegment).join("/");
+  return parts.join("/");
 }
 
 /**
- * The URL to fetch for a sandbox `src`: the model's own session segment is DISCARDED and rebuilt
- * from this chat's scope, so an answer written in a project reads the project's workspace.
+ * The session a `src` records for itself: the segment after the route prefix (or the `?session=`
+ * query when the id was not path-safe at write time). A bare relative path records nothing: null.
+ */
+export function sandboxSessionInSrc(src: string): string | null {
+  const trimmed = src.trim();
+  if (!trimmed || HAS_SCHEME_RE.test(trimmed) || PROTOCOL_RELATIVE_RE.test(trimmed)) {
+    return null;
+  }
+  const [path, ...queryAndFragment] = trimmed.split("?");
+  // A bare relative path records nothing: the caller's fallback scope is all there is.
+  if (!path.startsWith(SANDBOX_ROUTE_PREFIX)) return null;
+  const segment = path.slice(SANDBOX_ROUTE_PREFIX.length).split("/")[0] ?? "";
+  // `sandboxRoutePrefix` carries a not-path-safe id in the query under `_`; mirror it back out.
+  if (queryAndFragment.length > 0) {
+    const session = new URLSearchParams(
+      queryAndFragment.join("?").split("#")[0] ?? "",
+    ).get("session");
+    if (session) return decodeSegment(session);
+  }
+  return segment ? decodeSegment(segment) : null;
+}
+
+/**
+ * The URL to fetch for a sandbox `src`. The session the src RECORDS wins when it names one: that is
+ * the folder the files landed in when the message was WRITTEN -- where a chat moved between projects
+ * still has its older files, and exactly what the tool card above the prose resolves from its own
+ * persisted envelope. A model echoes real workdir paths out of the stdout it saw; discarding that echo
+ * is what broke those answers' images after a move. Only a path that records nothing (a bare
+ * `outputs/plot.png`) falls back to this chat's CURRENT scope: `project-<id>` else threadId.
  */
 export function markdownSandboxImageSrc(
   src: string,
@@ -193,8 +232,9 @@ export function markdownSandboxImageSrc(
 ): string | null {
   const file = sandboxFileForSrc(src);
   if (file === null) return null;
-  const sessionId = sandboxSessionIdFor(ctx.threadId, ctx.projectId);
-  // No thread yet means no directory to read from; the raw src stays as it is.
+  const sessionId =
+    sandboxSessionInSrc(src) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
+  // No recorded session and no thread yet means no directory to read from; the raw src stays as it is.
   return sessionId ? sandboxFilePath(sessionId, file) : null;
 }
 
