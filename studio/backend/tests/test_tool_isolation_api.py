@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -139,6 +140,126 @@ def test_responses_translation_preserves_isolation_fields():
     assert translated.tool_ui_session_id == "page-a"
     assert translated.permission_mode == "ask"
     assert translated.bypass_permissions is False
+    assert translated.tool_network_policy == "deny"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda **values: ChatCompletionRequest(messages = [], **values),
+        lambda **values: ChatCountTokensRequest(messages = [], **values),
+        lambda **values: ResponsesRequest(input = "hello", **values),
+        lambda **values: AnthropicMessagesRequest(messages = [], **values),
+    ],
+)
+def test_network_policy_defaults_to_deny_and_rejects_unknown_values(factory):
+    # A client that predates the field, or sends an explicit null, gets no network.
+    assert factory().tool_network_policy == "deny"
+    assert factory(tool_network_policy = None).tool_network_policy == "deny"
+    assert factory(tool_network_policy = "allowlist").tool_network_policy == "allowlist"
+    with pytest.raises(ValueError):
+        factory(tool_network_policy = "open")
+    # The policy is a separate axis: it never widens the execution mode or permissions.
+    request = factory(tool_network_policy = "allowlist")
+    assert request.tool_execution_mode == "os_isolation_required"
+    # The token-count request leaves an unset bypass as None; the rest default to False.
+    assert not request.bypass_permissions
+
+
+def test_responses_translation_preserves_network_policy():
+    payload = ResponsesRequest(input = "hello", tool_network_policy = "allowlist")
+    translated = inference_route._build_chat_request(payload, [], False)
+    assert translated.tool_network_policy == "allowlist"
+
+
+def test_requested_network_allowlist_is_gated_on_mode_and_capability(monkeypatch):
+    calls: list[bool] = []
+
+    def _snapshot(*, force: bool):
+        calls.append(force)
+        capability = _capability(qualified = True)
+        return isolation.ToolIsolationCapability(
+            **{
+                **asdict(capability),
+                "network_policies": ("deny", "allowlist"),
+                "network_allowlist": ("pypi.org", "huggingface.co"),
+            }
+        )
+
+    monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", _snapshot)
+    allow = ChatCompletionRequest(messages = [], tool_network_policy = "allowlist")
+    assert inference_route._requested_network_allowlist(allow) == ["pypi.org", "huggingface.co"]
+    # The description helper never forces a live probe.
+    assert calls == [False]
+    assert inference_route._requested_network_allowlist(ChatCompletionRequest(messages = [])) is None
+    assert (
+        inference_route._requested_network_allowlist(
+            ChatCompletionRequest(
+                messages = [], tool_network_policy = "allowlist", tool_execution_mode = "limited"
+            )
+        )
+        is None
+    )
+    assert (
+        inference_route._requested_network_allowlist(
+            ChatCompletionRequest(
+                messages = [], tool_network_policy = "allowlist", bypass_permissions = True
+            )
+        )
+        is None
+    )
+
+    def _deny_only(*, force: bool):
+        return _capability(qualified = True)
+
+    monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", _deny_only)
+    assert inference_route._requested_network_allowlist(allow) is None
+
+    def _broken(*, force: bool):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(inference_route, "tool_isolation_capability_snapshot", _broken)
+    assert inference_route._requested_network_allowlist(allow) is None
+
+
+def test_capability_shape_tolerates_backends_without_the_new_fields():
+    # A backend snapshot that predates the network proxy and the restricted token.
+    legacy = {
+        "environment": "native_linux",
+        "backend": "linux-bubblewrap",
+        "protection_state": "protected",
+        "profile_id": "linux-bubblewrap-v2",
+        "probe_generation": "probe-1",
+        "environment_fingerprint": "fp",
+        "reason": "",
+        "remediation": "",
+        "retryable": False,
+        "qualified": True,
+        "available": True,
+        "limitations": (),
+    }
+    shaped = isolation._shape_capability(legacy)
+    assert shaped.network_policies == ("deny",)
+    assert shaped.network_allowlist == ()
+    assert shaped.limited_backend is None
+    assert shaped.limited_profile_id is None
+    assert shaped.limited_limitations == ()
+    # And one that publishes them, as a plain mapping or as attributes.
+    enriched = {
+        **legacy,
+        "network_policies": ["deny", "allowlist"],
+        "network_allowlist": ["pypi.org"],
+        "limited_backend": "windows-restricted-token",
+        "limited_profile_id": "windows-restricted-token-write-isolation-v1",
+        "limited_limitations": ["user_profile_readable"],
+    }
+    shaped = isolation._shape_capability(enriched)
+    assert shaped.network_policies == ("deny", "allowlist")
+    assert shaped.network_allowlist == ("pypi.org",)
+    assert shaped.limited_backend == "windows-restricted-token"
+    assert shaped.limited_profile_id == "windows-restricted-token-write-isolation-v1"
+    assert shaped.limited_limitations == ("user_profile_readable",)
+    assert isolation._shape_capability(SimpleNamespace(**enriched)) == shaped
 
 
 def test_store_binds_grant_to_actor_ui_session_generation_and_mode():
@@ -272,6 +393,9 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     assert response.status_code == 200
     expected = asdict(_capability())
     expected["limitations"] = []
+    expected["network_policies"] = ["deny"]
+    expected["network_allowlist"] = []
+    expected["limited_limitations"] = []
     assert response.json() == expected
     assert calls == [True]
 

@@ -557,6 +557,9 @@ export interface OpenAIChatMessage {
 
 export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
 
+/** Mirrors ToolNetworkPolicy in tool-isolation.ts (this module stays import-free). */
+export type ToolNetworkPolicy = "deny" | "allowlist";
+
 /** Launch-time protection facts emitted by the backend that ran the tool. */
 export interface ToolExecutionRecord {
   requested_mode: ToolExecutionMode;
@@ -568,6 +571,10 @@ export interface ToolExecutionRecord {
   os_isolation: boolean;
   retained_safeguards: string[];
   limitations?: string[];
+  /** Network reach the launch actually had. Absent from older backends, which means "deny". */
+  network_policy?: ToolNetworkPolicy;
+  /** Hosts admitted when network_policy is "allowlist". */
+  network_allowlist?: string[];
 }
 
 /** Reserved backend metadata. Model/provider arguments must never retain it. */
@@ -621,7 +628,13 @@ function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
     !record.retained_safeguards.every((item) => typeof item === "string") ||
     (record.limitations !== undefined &&
       (!Array.isArray(record.limitations) ||
-        !record.limitations.every((item) => typeof item === "string")))
+        !record.limitations.every((item) => typeof item === "string"))) ||
+    (record.network_policy !== undefined &&
+      record.network_policy !== "deny" &&
+      record.network_policy !== "allowlist") ||
+    (record.network_allowlist !== undefined &&
+      (!Array.isArray(record.network_allowlist) ||
+        !record.network_allowlist.every((item) => typeof item === "string")))
   ) {
     return null;
   }
@@ -637,6 +650,12 @@ function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
     limitations: Array.isArray(record.limitations)
       ? ([...record.limitations] as string[])
       : [],
+    ...(record.network_policy !== undefined
+      ? { network_policy: record.network_policy as ToolNetworkPolicy }
+      : {}),
+    ...(Array.isArray(record.network_allowlist)
+      ? { network_allowlist: [...record.network_allowlist] as string[] }
+      : {}),
   };
 }
 
@@ -760,8 +779,20 @@ export function stripUntrustedExecutionMetadataFromContent(
   });
 }
 
-/** A card label derived only from the backend's launch-time record. */
+/** A card label derived only from the backend's launch-time record. An OS-isolated launch that
+ *  reached the network allowlist says so, since the sandbox was deliberately opened that far. */
 export function toolExecutionRecordLabel(
+  record: ToolExecutionRecord | null,
+): string | null {
+  const base = toolExecutionRecordBaseLabel(record);
+  if (!base || !record) return base;
+  if (record.os_isolation && record.network_policy === "allowlist") {
+    return `${base} · network allowlist`;
+  }
+  return base;
+}
+
+function toolExecutionRecordBaseLabel(
   record: ToolExecutionRecord | null,
 ): string | null {
   if (!record) return null;
@@ -769,7 +800,10 @@ export function toolExecutionRecordLabel(
     return "Full access · security restrictions disabled";
   }
   if (record.effective_mode === "limited") {
-    return "Limited · no OS isolation";
+    // Mirrors limitedBackendLabel in tool-isolation-labels.ts.
+    return record.backend === "windows-restricted-token"
+      ? "Limited · restricted token (Windows)"
+      : "Limited · no OS isolation";
   }
   if (!record.os_isolation) return null;
   if (record.backend === "windows-lpac") {
@@ -857,6 +891,9 @@ export interface OpenAIChatCompletionsRequest {
   tool_ui_session_id?: string;
   /** Opaque, session-only consent proof. Sent only for current Limited mode. */
   limited_grant?: string;
+  /** Outbound network for an OS-isolated launch. Omitted means "deny"; "allowlist" is sent only
+   *  when the capability advertised it. Ignored under Limited and Full. */
+  tool_network_policy?: ToolNetworkPolicy;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

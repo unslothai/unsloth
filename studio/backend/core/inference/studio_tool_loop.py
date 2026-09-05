@@ -363,6 +363,8 @@ class ToolLoopPolicy:
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
     tool_execution_mode: str = "os_isolation_required"
+    # "deny" or "allowlist"; only meaningful under os_isolation_required.
+    network_policy: str = "deny"
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1207,6 +1209,7 @@ async def stream_with_studio_tools(
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
     tool_execution_mode = policy.tool_execution_mode
+    network_policy = policy.network_policy
 
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
@@ -1715,6 +1718,7 @@ async def stream_with_studio_tools(
                     kwargs["output_callback"] = output_callback
                 for key, value in (
                     ("tool_execution_mode", tool_execution_mode),
+                    ("network_policy", network_policy),
                     ("current_subject", run.current_subject),
                     ("tool_ui_session_id", run.tool_ui_session_id),
                     ("limited_grant", run.limited_grant),

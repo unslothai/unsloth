@@ -4,6 +4,7 @@
 import {
   ChevronDown,
   CircleAlert,
+  Globe,
   Hand,
   RefreshCw,
   ShieldCheck,
@@ -39,8 +40,16 @@ import {
   type PermissionMode,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import { toolIsolationPresentation } from "./tool-isolation";
-import { TOOL_ISOLATION_LIMITATION_TEXT } from "./tool-isolation-labels";
+import {
+  type ToolIsolationCapability,
+  toolIsolationPresentation,
+} from "./tool-isolation";
+import {
+  TOOL_ISOLATION_LIMITATION_TEXT,
+  limitedBackendLabel,
+  networkAllowlistSummary,
+} from "./tool-isolation-labels";
+import { capabilityOffersNetworkAllowlist } from "./utils/tool-network-policy";
 
 /** Permission levels for tool calls. Full access stays last because it disables both approval
  *  prompts and the code sandbox. */
@@ -84,6 +93,20 @@ export const FULL_ACCESS_WARNING =
 
 export const TOOL_ISOLATION_UNAVAILABLE_WARNING =
   "OS isolation isn’t available in this environment. Python and Terminal can run with Unsloth’s software safeguards, but they may access anything available to the Studio process.";
+
+const TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE =
+  "On this Windows host, Limited runs under a restricted token: writes outside the sandbox directory are refused, but files readable by your account, the network and other processes stay reachable.";
+
+/** The Limited consent text for this host: the generic warning, plus what the Windows
+ *  restricted token adds when the backend reports it. */
+function limitedModeWarning(
+  capability: Pick<ToolIsolationCapability, "limited_backend"> | null,
+): string {
+  if (capability?.limited_backend === "windows-restricted-token") {
+    return `${TOOL_ISOLATION_UNAVAILABLE_WARNING} ${TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE}`;
+  }
+  return TOOL_ISOLATION_UNAVAILABLE_WARNING;
+}
 
 export function permissionModeOption(mode: PermissionMode) {
   return (
@@ -210,11 +233,23 @@ function ToolIsolationMenuSection({
   const error = useChatRuntimeStore((s) => s.toolIsolationError);
   const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
   const setMode = useChatRuntimeStore((s) => s.setToolExecutionMode);
+  const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
+  const setNetworkPolicy = useChatRuntimeStore((s) => s.setToolNetworkPolicy);
   const presentation = toolIsolationPresentation(mode, capability, grant);
 
   const unavailable =
     presentation.state === "unavailable" &&
     capability?.protection_state === "unavailable";
+  const osIsolated =
+    presentation.state === "protected" || presentation.state === "preview";
+  // The toggle exists only where the backend can enforce it (Linux and macOS today); a Windows
+  // or older backend never advertises "allowlist" and shows nothing here.
+  const offersAllowlist =
+    osIsolated && capabilityOffersNetworkAllowlist(capability);
+  const limitedBackend = limitedBackendLabel(
+    capability?.limited_backend ?? null,
+  );
+  const showLimitedFacts = presentation.state === "limited" || unavailable;
 
   return (
     <>
@@ -257,6 +292,24 @@ function ToolIsolationMenuSection({
                 </dd>
               </>
             ) : null}
+            {osIsolated ? (
+              <>
+                <dt>Network</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {offersAllowlist && networkPolicy === "allowlist"
+                    ? "Allowlist"
+                    : "Off"}
+                </dd>
+              </>
+            ) : null}
+            {showLimitedFacts && limitedBackend ? (
+              <>
+                <dt>Limited backend</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {limitedBackend}
+                </dd>
+              </>
+            ) : null}
           </dl>
         ) : null}
         {capability?.reason ? (
@@ -277,7 +330,17 @@ function ToolIsolationMenuSection({
             {capability.remediation}
           </p>
         ) : null}
-        {presentation.state === "limited" || unavailable ? (
+        {showLimitedFacts
+          ? capability?.limited_limitations.map((limitation) => (
+              <p
+                key={`limited-${limitation}`}
+                className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+              >
+                {TOOL_ISOLATION_LIMITATION_TEXT[limitation] ?? limitation}
+              </p>
+            ))
+          : null}
+        {showLimitedFacts ? (
           <p className="text-xs leading-snug text-muted-foreground">
             Process Guard, sanitized environment, resource limits, descriptor
             closure, workdir policy, timeout, cancellation, and cleanup remain
@@ -288,6 +351,38 @@ function ToolIsolationMenuSection({
           <p className="text-xs leading-snug text-destructive">{error}</p>
         ) : null}
       </div>
+      {offersAllowlist && capability ? (
+        <DropdownMenuItem
+          onSelect={(event) => {
+            // Keep the menu open so the Network row above reflects the change at once.
+            event.preventDefault();
+            setNetworkPolicy(networkPolicy === "allowlist" ? "deny" : "allowlist");
+          }}
+          className={cn(
+            "items-start gap-2 py-2",
+            networkPolicy === "allowlist" && "font-medium",
+          )}
+          aria-checked={networkPolicy === "allowlist"}
+          role="menuitemcheckbox"
+        >
+          <Globe className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-ui-13 leading-tight">
+              Allow network to package and model hosts
+            </span>
+            <span className="text-xs font-normal leading-snug text-muted-foreground">
+              {networkAllowlistSummary(capability.network_allowlist)}
+            </span>
+          </span>
+          {networkPolicy === "allowlist" ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto mt-0.5 size-4 shrink-0"
+            />
+          ) : null}
+        </DropdownMenuItem>
+      ) : null}
       {unavailable ? (
         <DropdownMenuItem
           onSelect={() => setTimeout(onRequestLimited, 0)}
@@ -332,6 +427,7 @@ export function LimitedModeConfirmDialog({
   const requestGrant = useChatRuntimeStore((s) => s.requestLimitedToolGrant);
   const loading = useChatRuntimeStore((s) => s.toolIsolationGrantLoading);
   const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -339,7 +435,7 @@ export function LimitedModeConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
           <AlertDialogDescription>
-            {TOOL_ISOLATION_UNAVAILABLE_WARNING}
+            {limitedModeWarning(capability)}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error ? (

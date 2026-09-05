@@ -539,6 +539,7 @@ def run_safetensors_tool_loop(
     current_subject: Optional[str] = None,
     tool_ui_session_id: Optional[str] = None,
     limited_grant: Optional[str] = None,
+    network_policy: str = "deny",
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -1494,6 +1495,7 @@ def run_safetensors_tool_loop(
                         kwargs["output_callback"] = _output_callback
                     for key, value in (
                         ("tool_execution_mode", tool_execution_mode),
+                        ("network_policy", network_policy),
                         ("current_subject", current_subject),
                         ("tool_ui_session_id", tool_ui_session_id),
                         ("limited_grant", limited_grant),

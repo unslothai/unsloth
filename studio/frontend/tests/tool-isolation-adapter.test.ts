@@ -148,6 +148,73 @@ test("cards use exact labels from the backend execution record", () => {
   assert.equal(toolExecutionRecordLabel(null), null);
 });
 
+test("records carry the network policy and the card label says when the allowlist was open", () => {
+  // Older backends omit both fields; the parsed record then has neither and the label is unchanged.
+  const legacy = parseBackendExecutionRecord(record());
+  assert.ok(legacy);
+  assert.ok(!("network_policy" in legacy));
+  assert.equal(toolExecutionRecordLabel(legacy), "Protected · Bubblewrap");
+
+  const allowlisted = parseBackendExecutionRecord(
+    record({
+      network_policy: "allowlist",
+      network_allowlist: ["pypi.org", "huggingface.co"],
+    }),
+  );
+  assert.ok(allowlisted);
+  assert.equal(allowlisted.network_policy, "allowlist");
+  assert.deepEqual(allowlisted.network_allowlist, ["pypi.org", "huggingface.co"]);
+  assert.equal(
+    toolExecutionRecordLabel(allowlisted),
+    "Protected · Bubblewrap · network allowlist",
+  );
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({ network_policy: "deny", network_allowlist: [] }),
+    ),
+    "Protected · Bubblewrap",
+  );
+  // A Limited or Full launch never had a sandbox to open, so the suffix never appears there
+  // even if a backend echoed the field.
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({ effective_mode: "full", os_isolation: false, network_policy: "allowlist" }),
+    ),
+    "Full access · security restrictions disabled",
+  );
+  // Unknown policies and malformed host lists invalidate the record rather than degrading.
+  assert.equal(
+    parseBackendExecutionRecord({ ...record(), network_policy: "open" }),
+    null,
+  );
+  assert.equal(
+    parseBackendExecutionRecord({ ...record(), network_allowlist: "pypi.org" }),
+    null,
+  );
+});
+
+test("a Limited launch under the Windows restricted token is labelled as such", () => {
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({
+        effective_mode: "limited",
+        os_isolation: false,
+        backend: "windows-restricted-token",
+        profile_id: "windows-restricted-token-write-isolation-v1",
+        environment: "windows",
+        limitations: ["user_profile_readable", "network_unrestricted"],
+      }),
+    ),
+    "Limited · restricted token (Windows)",
+  );
+  assert.equal(
+    toolExecutionRecordLabel(
+      record({ effective_mode: "limited", os_isolation: false, backend: "none" }),
+    ),
+    "Limited · no OS isolation",
+  );
+});
+
 test("backend completion replaces start while JSON replay needs backend provenance", () => {
   const started = record({ probe_generation: "started" });
   const completed = record({ probe_generation: "completed" });
@@ -217,6 +284,7 @@ test("returning to protected defaults drops Full and Limited for every persisted
   for (const level of ["ask", "auto", "off"] as const) {
     const next = protectedIsolationDefaults(level);
     assert.equal(next.toolExecutionMode, "os_isolation_required");
+    assert.equal(next.toolNetworkPolicy, "deny");
     assert.equal(next.limitedToolGrant, null);
     assert.equal(next.bypassPermissions, false);
     assert.equal(next.toolIsolationConsentOpen, false);
@@ -243,11 +311,13 @@ test("a queued send snapshots the isolation decision alongside the permission le
     bypassPermissions: false,
     confirmToolCalls: true,
     toolExecutionMode: "limited",
+    toolNetworkPolicy: "allowlist",
     limitedToolGrant: grant,
     toolIsolationUiSessionId: "ui-1",
   } as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0];
   const snapshot = snapshotQueuedChatRunSettings(state);
   assert.equal(snapshot.toolExecutionMode, "limited");
+  assert.equal(snapshot.toolNetworkPolicy, "allowlist");
   assert.equal(snapshot.limitedToolGrant, grant);
   assert.equal(snapshot.toolIsolationUiSessionId, "ui-1");
   // Later store changes do not reach a snapshot already taken.
@@ -388,6 +458,11 @@ test("the store and adapter route every exit from Full through the shared transi
   // The send path reads the run snapshot, not the live store, for the isolation decision.
   assert.match(adapter, /const requestedMode = runtime\.toolExecutionMode;/);
   assert.match(adapter, /const requestedGrant = runtime\.limitedToolGrant;/);
+  assert.match(adapter, /const requestedNetworkPolicy = runtime\.toolNetworkPolicy;/);
+  // Every network field on the wire goes through the capability-gated helper, never raw.
+  assert.doesNotMatch(adapter, /tool_network_policy: requestedNetworkPolicy/);
+  assert.doesNotMatch(adapter, /tool_network_policy: runtime\.toolNetworkPolicy/);
+  assert.doesNotMatch(adapter, /tool_network_policy: toolNetworkPolicy\b/);
   assert.match(adapter, /isolation\.toolIsolationUiSessionId !== requestedUiSessionId/);
   // The Full branch applies the same session fence through the shared helper.
   const fullBranch = adapter.slice(

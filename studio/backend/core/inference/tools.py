@@ -10054,8 +10054,14 @@ _LIMITED_TOOL_DESCRIPTION_PREFIX = (
 )
 
 
-def apply_os_isolated_tool_descriptions(tools: list[dict]) -> list[dict]:
+def apply_os_isolated_tool_descriptions(
+    tools: list[dict], network_allowlist: list[str] | tuple[str, ...] | None = None
+) -> list[dict]:
     """Name the shell that actually runs inside the Windows sandbox.
+
+    ``network_allowlist`` names the hosts an allowlist-policy turn may reach; the
+    network backend appends that list to the python/terminal descriptions so the
+    model knows pip and Hugging Face work while everything else is refused.
 
     The module-level terminal description promises Git bash whenever the host
     has one, but an OS-isolated launch on Windows runs cmd (see _get_shell_cmd),
@@ -10063,6 +10069,7 @@ def apply_os_isolated_tool_descriptions(tools: list[dict]) -> list[dict]:
     other platform, mode and tool is returned untouched, and a list without the
     terminal tool is returned as-is.
     """
+    del network_allowlist  # merge shim: consumed by the network backend branch
     if sys.platform != "win32" or not _windows_bash():
         return tools
     out: list[dict] = []
@@ -10563,6 +10570,7 @@ def execute_tool(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,  # merge shim: "deny" | "allowlist"; the network backend branch enforces it
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10736,6 +10744,7 @@ def execute_tool(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10752,6 +10761,7 @@ def execute_tool(
                 tool_ui_session_id = tool_ui_session_id,
                 limited_grant = limited_grant,
                 launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -16456,6 +16466,7 @@ def _python_exec(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,  # merge shim: "deny" | "allowlist"; the network backend branch enforces it
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -16718,6 +16729,7 @@ def _bash_exec(
     tool_ui_session_id: str | None = None,
     limited_grant: str | None = None,
     launch_record_callback = None,
+    network_policy: str | None = None,  # merge shim: "deny" | "allowlist"; the network backend branch enforces it
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 

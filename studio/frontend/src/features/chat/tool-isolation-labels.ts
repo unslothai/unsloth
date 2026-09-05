@@ -21,7 +21,48 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "This Windows AppContainer can read files shared with all application packages, such as Program Files and Windows. The user profile, the network and other processes stay out of reach.",
   null_device_and_named_pipes_denied:
     "Inside the Windows sandbox, Python cannot open NUL or create named pipes, so multiprocessing and imports that need them (such as torch) fail; use Limited or Full access for that work.",
+  user_profile_readable:
+    "Limited mode on Windows can read your user profile, including documents and credentials stored as files; only writes are confined.",
+  network_unrestricted:
+    "Limited mode on Windows does not restrict the network; the tool can reach any host.",
+  everyone_writable_objects_writable:
+    "Limited mode on Windows can still write to locations that grant Everyone write access, such as some temp and public folders.",
+  proxy_allowlist_only_https_connect:
+    "The network allowlist admits only HTTPS connections to the listed hosts through a local proxy; plain HTTP, other ports and every other host are refused.",
+  network_allowlist_unsupported_on_windows:
+    "The network allowlist is not offered on Windows; OS-isolated launches there have no network.",
 };
+
+/** Human label for the way Limited mode is implemented when it is more than the software
+ *  safeguards. Null means plain Limited (no OS-level confinement at all). */
+export function limitedBackendLabel(limitedBackend: string | null): string | null {
+  if (!limitedBackend) {
+    return null;
+  }
+  if (limitedBackend === "windows-restricted-token") {
+    return "restricted token (Windows)";
+  }
+  return limitedBackend;
+}
+
+/** One line naming what an allowlist launch may reach, from the backend's host list. */
+export function networkAllowlistSummary(hosts: readonly string[]): string {
+  if (hosts.length === 0) {
+    return "No hosts are allowlisted on this backend.";
+  }
+  const families: string[] = [];
+  if (hosts.some((host) => host.endsWith("pypi.org") || host.endsWith("pythonhosted.org"))) {
+    families.push("PyPI");
+  }
+  if (hosts.some((host) => host.endsWith("huggingface.co") || host.endsWith("hf.co"))) {
+    families.push("Hugging Face");
+  }
+  if (hosts.some((host) => host.endsWith("github.com") || host.endsWith("githubusercontent.com"))) {
+    families.push("GitHub");
+  }
+  const named = families.length > 0 ? families.join(", ") : `${hosts.length} hosts`;
+  return `HTTPS only, to ${named} (${hosts.length} hosts). Everything else stays blocked.`;
+}
 
 /** Human label for the sandbox backend. The Windows backend has two profiles: the
  *  less-privileged AppContainer (LPAC) and the plain zero-capability AppContainer it falls back

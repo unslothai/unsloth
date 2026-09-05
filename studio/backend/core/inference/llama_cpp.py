@@ -28466,6 +28466,7 @@ class LlamaCppBackend:
         tool_ui_session_id: Optional[str] = None,
         limited_grant: Optional[str] = None,
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        network_policy: str = "deny",
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -31257,6 +31258,7 @@ class LlamaCppBackend:
                                 kwargs["output_callback"] = _output_callback
                             for _key, _value in (
                                 ("tool_execution_mode", tool_execution_mode),
+                                ("network_policy", network_policy),
                                 ("current_subject", current_subject),
                                 ("tool_ui_session_id", tool_ui_session_id),
                                 ("limited_grant", limited_grant),
