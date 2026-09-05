@@ -1631,6 +1631,55 @@ def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     assert "m" not in o.loading_models
 
 
+def _load_with_dead_worker(monkeypatch, *, cancelled):
+    # The worker dies while load_model is parked in _wait_response, so the cancel reaches
+    # this thread as a dead subprocess rather than as a response.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda gpu_ids, **k: ([0], "sel"))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: None)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+
+    def _dead(expected, timeout = 300.0):
+        if cancelled:
+            o.loading_models.discard("m")  # cancel_load clears the marker, then kills
+        raise RuntimeError(
+            "The inference worker stopped unexpectedly while loading the model. "
+            "Details: process missing."
+        )
+
+    monkeypatch.setattr(o, "_wait_response", _dead)
+    return o, types.SimpleNamespace(identifier = "m", gguf_variant = None)
+
+
+def test_load_model_reports_a_cancel_when_the_worker_is_killed_mid_wait(monkeypatch):
+    # Stop-loading surfaced as "the inference worker stopped unexpectedly", logged as a
+    # 500 with a traceback: _wait_response only sees the worker die.
+    o, cfg = _load_with_dead_worker(monkeypatch, cancelled = True)
+
+    assert o.load_model(cfg) is False
+    assert o.active_model_name is None
+    assert o.models == {}
+    assert "m" not in o.loading_models
+
+
+def test_load_model_still_raises_when_the_worker_really_crashes(monkeypatch):
+    # The other half: nothing cancelled this load, so a dead worker stays an error.
+    o, cfg = _load_with_dead_worker(monkeypatch, cancelled = False)
+
+    with pytest.raises(RuntimeError, match = "stopped unexpectedly"):
+        o.load_model(cfg)
+
+
 # ----------------------------------------------------------------------------
 # /unload cancels a still-loading GGUF off the lifecycle gate -- item #1.
 # ----------------------------------------------------------------------------
