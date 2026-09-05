@@ -30,13 +30,16 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile.studio"
 behavioural = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 
 
-def _run(home: Path, *, env: dict | None = None, wait: str = "3") -> subprocess.CompletedProcess:
+def _run(
+    home: Path,
+    *,
+    env: dict | None = None,
+    wait: str = "3",
+) -> subprocess.CompletedProcess:
     e = {k: v for k, v in os.environ.items() if not k.startswith("UNSLOTH_STUDIO")}
     e.update(UNSLOTH_STUDIO_HOME = str(home), UNSLOTH_STUDIO_PASSWORD_WAIT = wait)
     e.update(env or {})
-    return subprocess.run(
-        ["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60
-    )
+    return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
 
 
 @behavioural
@@ -104,5 +107,7 @@ def test_the_image_wires_the_printer_in():
         encoding = "utf-8"
     )
     launch = LAUNCH.read_text(encoding = "utf-8")
-    assert "first-boot password below" not in launch, "the banner promises what Studio no longer prints"
+    assert (
+        "first-boot password below" not in launch
+    ), "the banner promises what Studio no longer prints"
     assert "UNSLOTH_STUDIO_PASSWORD" in launch
