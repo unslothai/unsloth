@@ -98,6 +98,8 @@ from core.inference.orchestrator import (
 from core.inference.kv_swap import (
     KvSwapError,
     KvSwapNothingToSave,
+    kv_swap_enabled,
+    kv_swap_force_every,
     peek_kv_swap_controller,
 )
 from core.inference.llama_admission import (
@@ -21492,6 +21494,13 @@ async def produce_openai_chat_completions(
                 # The lease carries the slot admission handed out, which is the same slot
                 # llama-server will use once `id_slot` is in the payload. Read late: the
                 # generator is built before the reservation exists.
+                #
+                # Gated on the feature switch, not just on the swap firing: pinning
+                # overrides llama-server's own slot choice (--slot-prompt-similarity picks
+                # the slot whose cache best matches), so with the feature off the request
+                # has to go out exactly as it did before, or the off arm is not a control.
+                if not kv_swap_enabled():
+                    return None
                 reservation = _gguf_admission_hold["reservation"]
                 if reservation is None:
                     return None
@@ -21528,7 +21537,11 @@ async def produce_openai_chat_completions(
                     except Exception:
                         pass
                     decision = controller.plan()
-                    if _kv_swap_chat_id not in decision.victims:
+                    # UNSLOTH_LLAMA_KV_SWAP_EVERY forces a swap at every round whatever
+                    # the pressure, so the checkpoint path can be exercised and timed on a
+                    # machine that is not actually short of cache. Test knob, default off.
+                    _forced = kv_swap_force_every() > 0
+                    if not _forced and _kv_swap_chat_id not in decision.victims:
                         controller.note_progress(_kv_swap_chat_id)
                         return
 
@@ -21550,7 +21563,7 @@ async def produce_openai_chat_completions(
                         # cache room. The event loop keeps serving the client, which is
                         # what turns this into "waiting" in the UI instead of a stall.
                         deadline = time.monotonic() + _KV_SWAP_MAX_WAIT_S
-                        _fits = False
+                        _fits = _forced
                         while time.monotonic() < deadline:
                             if cancel_event is not None and cancel_event.is_set():
                                 break
