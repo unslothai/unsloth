@@ -510,3 +510,24 @@ test("the store and adapter route every exit from Full through the shared transi
   assert.doesNotMatch(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId\)/);
   assert.match(provider, /discardAuthoritativeExecutionRecord\(part\.toolCallId, recordScope\)/);
 });
+
+test("every Full entry and exit and the Limited grant close the network allowlist", () => {
+  // The allowlist is a per-decision grant. It must not survive a trip through Full (where it is
+  // hidden and ignored) or a Limited grant (which cannot enforce it) and resurface later.
+  const runtimeStore = readFileSync(
+    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+    "utf8",
+  );
+  const fullEntries = runtimeStore.match(
+    /toolExecutionMode: "full" as ToolExecutionMode,\n\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/g,
+  );
+  assert.equal(fullEntries?.length ?? 0, 2, "setPermissionMode(full) and setBypassPermissions(true)");
+  assert.match(
+    runtimeStore,
+    /leavingFullAccess\n\s*\? \{\n\s*toolExecutionMode:\n\s*"os_isolation_required" as ToolExecutionMode,\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
+  );
+  assert.match(
+    runtimeStore,
+    /limitedToolGrant: grant,\n\s*toolExecutionMode: "limited",\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
+  );
+});

@@ -91,13 +91,12 @@ export function toolIsolationPresentation(
     };
   }
   if (mode === "limited" && isLimitedGrantCurrent(grant, capability)) {
-    const limitedBackend = limitedBackendLabel(
-      capability?.limited_backend ?? null,
-    );
-    if (limitedBackend) {
+    // Only the Windows write-restricted token earns the write-confinement wording; any
+    // other advertised Limited backend keeps the plain description.
+    if (capability?.limited_backend === "windows-restricted-token") {
       return {
         state: "limited",
-        label: `Limited · ${limitedBackend}`,
+        label: `Limited · ${limitedBackendLabel(capability.limited_backend)}`,
         description:
           "Writes outside the sandbox directory are refused by the restricted token; each execution record says whether it applied. Reads, the network and other processes are not isolated.",
       };

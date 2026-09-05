@@ -5253,6 +5253,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode,
           bypassPermissions: true,
           toolExecutionMode: "full" as ToolExecutionMode,
+          toolNetworkPolicy: "deny" as ToolNetworkPolicy,
           limitedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
@@ -5270,6 +5271,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           ? {
               toolExecutionMode:
                 "os_isolation_required" as ToolExecutionMode,
+              // The allowlist is a per-decision grant; a Required session that
+              // resumes after Full starts with the network closed again.
+              toolNetworkPolicy: "deny" as ToolNetworkPolicy,
               limitedToolGrant: null,
             }
           : {}),
@@ -5288,6 +5292,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions,
           permissionMode: "full" as PermissionMode,
           toolExecutionMode: "full" as ToolExecutionMode,
+          toolNetworkPolicy: "deny" as ToolNetworkPolicy,
           limitedToolGrant: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
@@ -5430,6 +5435,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       set(() => ({
         limitedToolGrant: grant,
         toolExecutionMode: "limited",
+        // Limited cannot enforce the allowlist; the decision does not carry over.
+        toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         toolIsolationGrantLoading: false,
         toolIsolationError: null,
       }));

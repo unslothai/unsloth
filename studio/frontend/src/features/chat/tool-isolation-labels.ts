@@ -40,7 +40,9 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
 /** Human label for the way Limited mode is implemented when it is more than the software
  *  safeguards. Null means plain Limited (no OS-level confinement at all). */
 export function limitedBackendLabel(limitedBackend: string | null): string | null {
-  if (!limitedBackend) {
+  if (!limitedBackend || limitedBackend === "process-guard") {
+    // The process guard is the software-safeguards Limited every platform has; it adds
+    // no OS-level confinement, so it gets no qualifier.
     return null;
   }
   if (limitedBackend === "windows-restricted-token") {
