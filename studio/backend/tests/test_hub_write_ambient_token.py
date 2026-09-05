@@ -181,11 +181,9 @@ def test_load_checkpoint_forwards_the_policy(
 
 @pytest.fixture
 def worker_in_process(monkeypatch):
-    """Let run_export_process run here without it taking over the pytest process.
-
-    _setup_log_capture dup2s pipes over fds 1 and 2 with no teardown; it is written for the
-    dedicated subprocess. UNSLOTH_OFFLINE_PROBE keeps a live Hub request out of a unit test.
-    """
+    """Let run_export_process run here without it taking over the pytest process:
+    _setup_log_capture dup2s pipes over fds 1 and 2 with no teardown, and
+    UNSLOTH_OFFLINE_PROBE keeps a live Hub request out of a unit test."""
     from core.export import worker
 
     monkeypatch.setattr(worker, "_setup_log_capture", lambda resp_queue: None)
@@ -275,8 +273,7 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     monkeypatch, allow_ambient, caller_token, expected
 ):
     """model_config's shared-cache guards read is_anonymous(), so a plain None walks past
-    them; the preflight helpers all have to get the same canonical value. Tier detection is
-    the one exception, below."""
+    them; every preflight helper but tier detection gets the same canonical value."""
     from core.export import worker
     from utils import security as security_pkg
     from utils import transformers_version
@@ -330,8 +327,7 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     assert seen["subdirs"] == expected
     assert seen["file_security"] == expected
     assert backend.load_checkpoint.call_args.kwargs["hf_token"] == expected
-    # Tier detection is the exception: it reads config.json off the hub cache, and the
-    # sentinel is refused that read, so it takes the plain token like the other probes.
+    # Tier detection reads config.json off the hub cache, which the sentinel is refused.
     assert seen["tier"] == (expected or None)
 
 
@@ -508,9 +504,8 @@ def test_offline_type_detection_is_not_degraded_by_the_sentinel(monkeypatch):
 
 
 def test_offline_tier_detection_is_not_degraded_by_the_sentinel(monkeypatch, tmp_path):
-    """_load_config_json refuses every hub-cache read for the sentinel, so offline a cached
-    model whose tier is only in its config.json drops to the default sidecar. The export
-    worker hands tier detection the plain token for that reason."""
+    """_load_config_json refuses a hub-cache read for the sentinel, so offline a cached model
+    whose tier is only in its config.json drops to the default sidecar."""
     import json
     from types import SimpleNamespace
 

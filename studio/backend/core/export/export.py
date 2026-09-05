@@ -476,21 +476,17 @@ class ExportBackend:
         checkpoints, matching the token the worker used for the security preflight
         (otherwise a gated repo passes scanning then 401s at from_pretrained).
 
-        The ``False`` sentinel means the caller was denied the ambient token, and it has to
-        travel all the way down. ``None`` is not anonymous to this stack, it is the request
-        to go and find a credential: unsloth spells that ``if token is None: get_token()``
-        (``save.py``, and ``hf_login`` at ``models/_utils.py:4106``), and ``get_token()``
-        reads the operator's stored login, which the environment scrub does not touch.
+        ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as
+        "go and find a credential" (``if token is None: get_token()`` in ``save.py`` and
+        ``hf_login``), and ``get_token()`` reads the operator's stored login off disk.
 
         Returns:
             Tuple of (success: bool, message: str)
         """
         token = normalize_token(hf_token)
-        # The sentinel is about credential *use*, so it goes to the loaders. The detection
-        # probes take the plain token: their shared-cache guards refuse a cached read for an
-        # anonymous caller, which offline misreads a cached VLM as a text model. Cache-read
-        # policy is a separate, pre-existing question (see the PR description); this change
-        # only stops the operator's credential being used.
+        # The sentinel is about credential *use*, so only the loaders get it. The detection
+        # probes take the plain token: their shared-cache guards refuse an anonymous cached
+        # read, which offline misreads a cached VLM as a text model.
         probe_token = token or None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
@@ -854,9 +850,8 @@ class ExportBackend:
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                # The merge resolves and prewarms the base repo, and save.py substitutes
-                # get_token() for a None, so the credential comes along even though nothing
-                # is being pushed.
+                # No push, but the merge resolves the base repo and save.py substitutes
+                # get_token() for a None, so the credential still has to be spelled out.
                 merged_token_kw = (
                     {"token": hf_token}
                     if (hf_token or is_anonymous(hf_token))
@@ -1427,9 +1422,8 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # Forward the token so convert_lora_to_gguf.py can fetch a gated
-                        # base's config, and forward False so a caller denied the ambient one
-                        # stays anonymous instead of falling back to get_token().
+                        # A token lets convert_lora_to_gguf.py fetch a gated base's config;
+                        # False keeps a denied caller off get_token().
                         token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.

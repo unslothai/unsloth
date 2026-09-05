@@ -557,7 +557,7 @@ def publish_job_dataset(
     hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
     hf_token = hf_token or None
     # publish_recipe_dataset hands the token straight to HuggingFaceHubClient and
-    # card.push_to_hub, so a None here publishes as whoever the host is logged in as.
+    # card.push_to_hub, so None publishes as whoever the host is logged in as.
     if hf_token is None and not allow_ambient:
         raise HTTPException(
             status_code = 400,

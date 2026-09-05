@@ -83,9 +83,8 @@ def _resolve_export_hf_token(
 ) -> HfTokenArg:
     """The credential this export runs under, as the anonymous-aware sentinel.
 
-    ``None`` is not anonymous downstream: unsloth reads it as "go and find a credential"
-    (``if token is None: get_token()``), so a caller denied the ambient token has to be
-    spelled ``False`` rather than left unset.
+    ``None`` reads downstream as "go and find a credential" (``if token is None:
+    get_token()``), so a caller denied the ambient token is spelled ``False``.
     """
     token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
     if push_to_hub and token is None and not allow_ambient:
@@ -122,8 +121,8 @@ async def load_checkpoint(
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
-            # The sentinel alone cannot say whether a *supplied* token came from a UI
-            # session or an API key, and only the latter's worker gets scrubbed.
+            # The sentinel cannot say whether a *supplied* token came from a UI session or
+            # an API key, and only the latter's worker gets scrubbed.
             allow_ambient = allow_ambient,
             subject = current_subject,
         )
