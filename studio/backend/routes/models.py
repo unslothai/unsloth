@@ -194,7 +194,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
+from hub.utils.hf_tokens import HfTokenArg, cache_reads_authorized, hf_token_arg, is_anonymous
 from utils.utils import anonymous_and_offline
 
 
@@ -2364,7 +2364,7 @@ def _model_config_inspection_target(
         return model_name
     # The cached snapshot answers from disk without consulting the token, so a caller
     # denied the ambient credential is sent to the Hub, which refuses a private repo.
-    if is_anonymous(hf_token):
+    if not cache_reads_authorized(hf_token, repo_id = canonical_model_repo_id(model_name)):
         return model_name
     from hub.utils.hf_cache_state import (
         latest_snapshot_from_cache_path,
@@ -2433,7 +2433,9 @@ async def get_model_config(
 
             # The bare repo id above only helps if the probes then go over the wire:
             # local_files_only resolves config.json out of the cache, unauthorized.
-            probe_local_only = prefer_local_cache and not is_anonymous(hf_token)
+            probe_local_only = prefer_local_cache and cache_reads_authorized(
+                hf_token, repo_id = model_name
+            )
             is_vision = is_vision_model(
                 inspection_target,
                 hf_token = hf_token,
@@ -2606,7 +2608,11 @@ async def scan_model_remote_code(
                 normalize_path(exact_snapshot_path),
                 hf_token,
             )
-        elif prefer_local_cache is True and not local_model and not is_anonymous(hf_token):
+        elif (
+            prefer_local_cache is True
+            and not local_model
+            and cache_reads_authorized(hf_token, repo_id = model_name)
+        ):
             # Same guard as the exact_snapshot branch: resolving to a cached snapshot
             # hands the scanner a private repo's Python, unauthorized.
             from core.training.training import _resolve_model_snapshot

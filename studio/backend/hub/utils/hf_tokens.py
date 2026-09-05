@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import threading
+import time
 from typing import Literal, MutableMapping, Optional, Union
 
 HfTokenArg = Optional[Union[str, Literal[False]]]
@@ -63,3 +66,89 @@ def normalize_token(hf_token: HfTokenArg) -> HfTokenArg:
 def is_anonymous(hf_token: HfTokenArg) -> bool:
     """Named because a bare ``is False`` invites a ``not hf_token`` "simplification"."""
     return hf_token is False
+
+
+# Positive and negative answers share this TTL: a revoked token must not keep
+# reading the host cache, and a flapping Hub must not be hit on every request.
+_REPO_ACCESS_TTL_S = 60.0
+_REPO_ACCESS_CACHE_MAX = 1024
+_repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
+_repo_access_lock = threading.Lock()
+
+
+def reset_repo_access_cache() -> None:
+    """Drop memoized Hub access answers. Tests only."""
+    with _repo_access_lock:
+        _repo_access_cache.clear()
+
+
+def cache_reads_authorized(
+    hf_token: HfTokenArg,
+    *,
+    repo_id: str,
+    repo_type: str = "model",
+) -> bool:
+    """Whether this caller may read the host Hub disk cache for *repo_id*.
+
+    ``is_anonymous`` authenticates the caller class, not the credential: any
+    token-shaped string leaves the sentinel and would otherwise take the disk
+    fast paths. Ambient ``None`` is the operator and may use the cache. An
+    explicit token is authorized only after ``auth_check`` confirms it can
+    read the named repository. ``repo_info`` is not enough: gated public
+    metadata still returns for an invalid token, which would serve the host
+    cache to a credential that cannot fetch the files.
+
+    Offline: the Hub probe cannot run, so an explicit token is denied unless a
+    recent online probe is still memoized (see ``_REPO_ACCESS_TTL_S``). That is
+    intentional fail-closed: without wire proof, the cache must not answer for a
+    credential that might be a token-shaped string from an API key. UI sessions
+    keep ``None`` and still read the cache offline.
+    """
+    if is_anonymous(hf_token):
+        return False
+    if not isinstance(hf_token, str) or not hf_token:
+        return True
+    repo = (repo_id or "").strip()
+    if not repo:
+        return False
+    return _explicit_token_reaches_repo(repo, hf_token, repo_type)
+
+
+def _hub_offline() -> bool:
+    try:
+        from utils.utils import hf_env_offline
+        return hf_env_offline()
+    except Exception:
+        return False
+
+
+def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bool:
+    key = (
+        repo_id.casefold(),
+        repo_type,
+        hashlib.sha256(token.encode()).hexdigest()[:16],
+    )
+    now = time.monotonic()
+    cached = _repo_access_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    if _hub_offline():
+        # No wire to verify against; only a memo from a recent online probe counts.
+        return False
+    allowed = _probe_repo_access(repo_id, token, repo_type)
+    with _repo_access_lock:
+        if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
+            _repo_access_cache.clear()
+        _repo_access_cache[key] = (now + _REPO_ACCESS_TTL_S, allowed)
+    return allowed
+
+
+def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
+    try:
+        # Access-specific: /auth-check 401s a gated repo with a bad token.
+        # repo_info still returns public metadata in that case.
+        from huggingface_hub import auth_check
+        auth_check(repo_id, repo_type = repo_type, token = token)
+        return True
+    except Exception:
+        return False

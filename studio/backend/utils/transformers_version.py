@@ -49,6 +49,7 @@ from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
     HfTokenArg,
     apply_token_to_child_env,
+    cache_reads_authorized,
     is_anonymous,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -924,14 +925,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Every route to the hub cache below reads it without authorizing, so a caller denied
     # the ambient credential is refused them all: keying the memo apart is not enough when
     # the value it memoizes came off disk in the first place.
-    if is_anonymous(hf_token):
-        cache_denied = True
-    else:
-        cache_denied = False
+    cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
-        # never the miss, so a later online read still fetches the config.
+        # never the miss, so a later online read still fetches the config. An explicit token
+        # without a recent online probe is denied here (fail closed); ambient ``None`` keeps
+        # the cache path.
         if cache_denied:
             return None
         cfg = _config_json_from_hf_cache(model_name)
