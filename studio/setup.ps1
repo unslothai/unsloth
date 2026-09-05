@@ -5114,7 +5114,12 @@ $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL
 } else { "" }
 # Re-exported, not just held locally: install_python_stack.py reads it when it rewrites
 # the manifest, so a fresh-shell update would otherwise erase the index for good.
-if ($WinArm64TorchIndexUrl) {
+# Either record is worth writing: gating on the WoA chain alone lost the pin on a venv that
+# had nothing to recover -- installed through a credentialed mirror, which neither record
+# keeps -- so a later run pinned to an NVIDIA channel installed from it and persisted nothing,
+# and the next fresh shell fell back to the driver-derived index with no win_arm64 CUDA wheel.
+$_woaPinnedIndex = if ($WinArm64Venv) { Get-PinnedTorchIndexUrl } else { $null }
+if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     # What gets RECORDED is the index the torch steps will USE, which is the generic pin when
     # there is one -- $_cudaIndexUrl prefers it, and $WinArm64TorchIndexUrl above never
     # consults it. Recording the WoA chain instead named an NVIDIA channel the run had not
@@ -5126,7 +5131,7 @@ if ($WinArm64TorchIndexUrl) {
     # already been corrected. An unpersistable pin is handled at each end: write_manifest
     # keeps only NVIDIA's own channels, and Save-WoaTorchIndexMarker clears the marker rather
     # than leaving the previous answer behind.
-    $_woaMarkerIndex = Get-PinnedTorchIndexUrl
+    $_woaMarkerIndex = $_woaPinnedIndex
     if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }
     else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
     # install.ps1's torchaudio and prerelease answers were measured on the index it probed.

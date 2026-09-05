@@ -138,6 +138,26 @@ def _function_source(text: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces in {name}")
 
 
+def _persistence_block(text: str) -> str:
+    """The live `if (...) { ... }` that writes both index records.
+
+    Sliced out of setup.ps1 rather than restated here: a copy of the block passes forever
+    after the original stops matching it, which is exactly the failure these tests exist
+    to catch.
+    """
+    start = text.index("$_woaPinnedIndex = if ($WinArm64Venv)")
+    guard = text.index("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {", start)
+    depth = 0
+    for index in range(text.index("{", guard), len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    raise AssertionError("unbalanced braces in the persistence block")
+
+
 class TestReadSide:
     """studio/setup.ps1: what Get-PersistedWoaTorchIndex hands back to the resolver."""
 
@@ -380,10 +400,10 @@ class TestTheRecoveryReachesEveryModeThatNeedsIt:
         export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
         stack = text.index('python "$PSScriptRoot\\install_python_stack.py"')
         assert assign < export < stack, "recovered, re-exported, then read by the stack"
-        block = text.rindex("if ($WinArm64TorchIndexUrl) {", 0, export)
+        block = text.rindex("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {", 0, export)
         assert (
-            "$_woaMarkerIndex = Get-PinnedTorchIndexUrl" in text[block:export]
-        ), "guarded: an empty recovery must not export an empty value"
+            "$_woaMarkerIndex = $_woaPinnedIndex" in text[block:export]
+        ), "guarded: neither record present must not export an empty value"
 
     def test_studio_txt_is_installed_in_no_torch_mode(self):
         """The premise of the placement test above."""
@@ -3572,7 +3592,7 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
 
     def test_the_saved_value_prefers_the_pin(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "$_woaMarkerIndex = Get-PinnedTorchIndexUrl" in text
+        assert "$_woaMarkerIndex = $_woaPinnedIndex" in text
         assert "else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }" in text
         assert "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex" in text
         # The same value the marker gets, or the manifest shadows the marker on the next
@@ -3584,7 +3604,7 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
         """Get-PinnedTorchIndexUrl is a function, so only its DEFINITION has to precede this."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert text.index("function Get-PinnedTorchIndexUrl") < text.index(
-            "$_woaMarkerIndex = Get-PinnedTorchIndexUrl"
+            "$_woaPinnedIndex = if ($WinArm64Venv) { Get-PinnedTorchIndexUrl }"
         )
 
     @requires_pwsh
@@ -3630,10 +3650,9 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
                 _function_source(text, "Get-WoaTorchIndexMarker"),
                 # A previous run recorded the public channel; this run may not inherit it.
                 "Save-WoaTorchIndexMarker -IndexUrl 'https://pypi.nvidia.com/nvtorch_oot'",
-                "$_woaMarkerIndex = Get-PinnedTorchIndexUrl",
-                "if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }",
-                "else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }",
-                "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex",
+                "$WinArm64Venv = $true",
+                "$_woaHandoffIndex = ''",
+                _persistence_block(text),
                 "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
             ]
         )
@@ -3660,7 +3679,7 @@ class TestTheManifestRecordsTheSameIndexAsTheMarker:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         export = text.index("$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex")
         save = text.index("Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex")
-        resolve = text.index("$_woaMarkerIndex = Get-PinnedTorchIndexUrl")
+        resolve = text.index("$_woaMarkerIndex = $_woaPinnedIndex")
         assert resolve < export < save, "resolved once, then written to both records"
 
     def test_the_stack_writes_that_variable_into_the_manifest(self):
@@ -3879,3 +3898,82 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
         assert (
             bool(staged) is readable
         ), f"a rejected wheel must not stay in the managed directory: {staged}"
+
+
+class TestAnExplicitPinIsPersistedWithoutAnOldRecord:
+    """The persistence block was gated on the WoA chain alone.
+
+    A native venv installed through a credentialed corporate mirror has nothing to recover:
+    write_manifest keeps only NVIDIA's channels and Save-WoaTorchIndexMarker clears rather
+    than lie, so the chain is empty. Pin UNSLOTH_TORCH_INDEX_URL at an NVIDIA channel on a
+    later direct update and the torch install used it while the guard skipped both records,
+    leaving the next fresh shell to fall back to the driver-derived download.pytorch index,
+    which publishes no win_arm64 CUDA wheel.
+    """
+
+    def test_either_record_opens_the_block(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {" in text
+
+    def test_the_pin_is_only_consulted_on_a_native_venv(self):
+        """Every other host must reach the block exactly as it did before."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert (
+            "$_woaPinnedIndex = if ($WinArm64Venv) { Get-PinnedTorchIndexUrl } else { $null }"
+            in text
+        )
+
+    def test_the_pin_is_resolved_once(self):
+        """Two reads of the getter are two chances to disagree about what was installed."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$_woaMarkerIndex = $_woaPinnedIndex" in text
+        opens = text.index("if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {")
+        closes = text.index("Restore-WoaResolverEnvironment", opens)
+        assert "Get-PinnedTorchIndexUrl" not in text[opens:closes], (
+            "the block calls the getter again instead of using the value the guard tested"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "pinned, chain, expected, why",
+        [
+            (
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "nothing to recover, but the pin is what the install used",
+            ),
+            (
+                "",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "https://pypi.nvidia.com/nvtorch_oot",
+                "no pin: the recovered chain, exactly as before",
+            ),
+            ("", "", "", "neither: the block does not run at all"),
+        ],
+    )
+    def test_what_the_guard_lets_through(self, tmp_path, pinned, chain, expected, why):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                "$WinArm64Venv = $true",
+                f"function Get-PinnedTorchIndexUrl {{ return '{pinned}' }}",
+                f"$WinArm64TorchIndexUrl = '{chain}'",
+                "$_woaHandoffIndex = ''",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                _function_source(text, "Get-WoaTorchIndexMarker"),
+                _persistence_block(text),
+                "Write-Output ('[' + $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1][1:-1] == expected, why

@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -2676,3 +2677,84 @@ class TestASharedCardIsNotMeasuredByItsTotal:
             settled = 1600.0,
         )
         assert failure is None
+
+
+class TestTheSamplesAreScopedToTheVisibleCard:
+    """nvidia-smi ignores CUDA_VISIBLE_DEVICES and answers for every PHYSICAL card.
+
+    Kaggle offers a two-GPU T4 session and build_kernel.py pins each payload to one card,
+    so both samplers were reading the whole box. An unrelated process starting on the
+    HIDDEN card and taking 200 MiB was then enough evidence for the device-wide delta to
+    carry a CPU-served run past the memory assertion.
+    """
+
+    @staticmethod
+    def _selector(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu.visible_device_selector()
+
+    def test_unset_selects_every_card(self):
+        assert self._selector(None) is None
+
+    def test_a_pinned_card_selects_only_it(self):
+        assert self._selector("1") == "1"
+
+    def test_a_list_is_carried_through(self):
+        assert self._selector("0, 1") == "0,1"
+
+    def test_a_uuid_needs_no_mapping(self):
+        """`nvidia-smi -i` takes the GPU-UUID form directly."""
+        assert self._selector("GPU-84ccface-663f") == "GPU-84ccface-663f"
+
+    def test_an_empty_value_is_no_cards_not_all_of_them(self):
+        assert self._selector("") == ""
+
+    @staticmethod
+    def _scoped(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu._scoped(["nvidia-smi", "--query-gpu=memory.used"])
+
+    def test_the_pin_reaches_the_command(self):
+        assert self._scoped("1") == ["nvidia-smi", "-i", "1", "--query-gpu=memory.used"]
+
+    def test_no_pin_leaves_the_command_alone(self):
+        assert self._scoped(None) == ["nvidia-smi", "--query-gpu=memory.used"]
+
+    def test_no_visible_card_takes_no_sample(self):
+        assert self._scoped("") is None
+
+    def test_both_samplers_are_scoped(self):
+        """The pair is the point: scoping one ruler and not the other still compares
+        a card-local reading against a box-wide one."""
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "7, 100\n", "")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "7"}):
+            with mock.patch.object(run_studio_gpu, "run", fake_run):
+                run_studio_gpu.nvidia_used_mib()
+                run_studio_gpu.nvidia_compute_apps_listing()
+        assert len(seen) == 2
+        for cmd in seen:
+            assert cmd[1:3] == ["-i", "7"], f"unscoped sample: {cmd}"
+
+    def test_neither_sampler_runs_without_a_visible_card(self):
+        def explode(cmd, **kwargs):
+            raise AssertionError(f"sampled with no visible card: {cmd}")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": ""}):
+            with mock.patch.object(run_studio_gpu, "run", explode):
+                assert run_studio_gpu.nvidia_used_mib() is None
+                assert run_studio_gpu.nvidia_compute_apps_listing() is None

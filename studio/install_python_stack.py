@@ -5678,6 +5678,45 @@ WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
 }
 
 
+# Optional features the RELEASED metadata excludes on win_arm64 by marker rather than by any
+# filter here: pyproject.toml gates hf_transfer and xformers on platform_machine != 'ARM64'.
+# Nothing then requires them, so install.ps1 declining to emit its removal override leaves a
+# hosted wheel with no requirement to satisfy and the feature stays off however many wheels the
+# wheelhouse carries. Re-enabling one takes an explicit install, which is what publishing a
+# wheel has to mean if the message saying so is to be true.
+WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = ("hf-transfer", "xformers")
+
+
+def _wheelhouse_hosts(name: str) -> bool:
+    """Does the resolver's own find-links carry a wheel for this distribution?"""
+    return bool(_find_links_wheel_versions().get(_canonical_dist_name(name)))
+
+
+def _install_wheelhouse_optionals() -> None:
+    """Install the hosted optionals the metadata cannot ask for. Best effort.
+
+    --no-deps: the graph is already resolved and installed by the time this runs, and
+    xformers names torch, so resolving here could walk the win_arm64 CUDA build off to
+    whatever PyPI offers. A failure leaves the feature off, which is where it was.
+    """
+    if not _is_win_arm64_interpreter():
+        return
+    for name in WINDOWS_ARM64_WHEELHOUSE_OPTIONALS:
+        if not _wheelhouse_hosts(name):
+            continue
+        ok = pip_install_try(
+            f"Installing {name} from the Windows on ARM wheelhouse",
+            "--no-deps",
+            "--no-cache-dir",
+            name,
+            constrain = False,
+        )
+        if ok:
+            _note(f"windows on arm: installed {name} from the wheelhouse")
+        else:
+            _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
+
+
 def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
     """WINDOWS_ARM64_SKIP_PACKAGES minus whatever the wheelhouse already provides, so
     hosting a wheel is all it takes to re-enable one of these features here.
@@ -7158,7 +7197,14 @@ def pip_install(
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
-    if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
+    if (
+        actual_req is not None
+        and PLATFORM_LACKS_TORCHCODEC_WHEEL
+        # Unless the wheelhouse carries one. Dropping it unconditionally meant a hosted
+        # win_arm64 torchcodec could never be installed: extras-no-deps.txt is the only
+        # line that asks for it, and this removed that line before the resolver saw it.
+        and not _wheelhouse_hosts("torchcodec")
+    ):
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
         # wheel. `unsloth studio update --local` does not pass
         # --no-torch, so the NO_TORCH filter above does not fire; do
@@ -7642,6 +7688,10 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "extras-no-deps.txt",
     )
+
+    # 3c. Optional win_arm64 features whose released metadata excludes them outright, so
+    #     no requirement file can pull them in even when the wheelhouse hosts a wheel.
+    _install_wheelhouse_optionals()
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
     #    changes, since Windows can remove shared files during replacement.

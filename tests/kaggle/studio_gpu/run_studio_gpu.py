@@ -175,12 +175,47 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 127, "", f"{type(exc).__name__}: {exc}")
 
 
+def visible_device_selector() -> str | None:
+    """CUDA_VISIBLE_DEVICES as an ``nvidia-smi -i`` argument, or None if unset.
+
+    nvidia-smi ignores CUDA_VISIBLE_DEVICES and reports every PHYSICAL card, so both
+    samplers below were device-wide on a two-card host while the payload was pinned to
+    one. An unrelated process starting on the HIDDEN card and taking 200 MiB was then
+    enough to carry a CPU-served run past the memory assertion.
+
+    The entries are passed to `-i` as written, which is the same reading of them that
+    gpu_inventory() already uses to slice nvidia-smi's rows, and matches build_kernel.py
+    setting the variable from the index it admitted the payload on. `-i` also accepts the
+    GPU-UUID form, so a UUID entry needs no mapping here.
+
+    Drivers old enough to take only ONE id reject the list, and both callers read that as
+    "nvidia-smi did not answer" -- no sample rather than a device-wide one, which is the
+    safe direction: it withdraws the fallback ruler instead of widening it.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    return ",".join(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _scoped(cmd: list[str]) -> list[str] | None:
+    """`cmd` restricted to the visible cards, or None when none are visible at all."""
+    selector = visible_device_selector()
+    if selector is None:
+        return cmd
+    if not selector:
+        # A deliberate empty CUDA_VISIBLE_DEVICES: no card is visible, so there is
+        # nothing to sample. Reading it as "every card" is the bug being fixed.
+        return None
+    return [cmd[0], "-i", selector, *cmd[1:]]
+
+
 def nvidia_used_mib() -> float | None:
-    """Device-wide VRAM in use, summed over every visible GPU."""
-    proc = run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-        timeout = 60,
-    )
+    """VRAM in use, summed over the cards this process can actually see."""
+    cmd = _scoped(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
     total = 0.0
@@ -321,10 +356,12 @@ def nvidia_compute_apps_listing() -> tuple[dict[int, int], set[int]] | None:
     Both, because the interesting case is the difference: a pid that is listed but has no
     figure is on the card and unattributable, which is not the same as absent.
     """
-    proc = run(
-        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
-        timeout = 60,
+    cmd = _scoped(
+        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"]
     )
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
     return parse_compute_apps(proc.stdout), listed_pids(proc.stdout)

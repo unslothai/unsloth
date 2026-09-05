@@ -724,3 +724,94 @@ class TestOnlyTheResolversOwnLocationsCount:
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "UV_FIND_LINKS" in text and "PIP_FIND_LINKS" in text
         assert '"UV_FIND_LINKS" = ","' in text, "and each keeps its own separator"
+
+
+class TestAHostedOptionalIsActuallyInstalled:
+    """Omitting the removal override only helps a package something still requires.
+
+    install.ps1 reports "keeping X (the wheelhouse provides a win_arm64 wheel)" and then
+    just declines to emit X's AMD64-only override line. For hf_transfer and xformers the
+    RELEASED metadata already excludes win_arm64 by marker, so no requirement survives for
+    a hosted wheel to satisfy; for torchcodec the only line that asks for it was being
+    filtered out here unconditionally. In all three cases hosting a wheel changed nothing.
+    """
+
+    def test_the_optionals_are_the_ones_metadata_excludes(self, ips):
+        """Named here only because pyproject.toml puts them out of reach on ARM64."""
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+        for name in ips.WINDOWS_ARM64_WHEELHOUSE_OPTIONALS:
+            stem = name.replace("-", "[-_]")
+            rows = [
+                line
+                for line in pyproject.splitlines()
+                if re.search(rf'"\s*{stem}\b', line) and "ARM64" in line
+            ]
+            assert rows, f"{name} is no longer excluded on ARM64; the explicit install is stale"
+
+    def test_a_hosted_optional_is_installed(self, ips, tmp_path, monkeypatch):
+        (tmp_path / _wheel("hf_transfer", "cp313", "cp313", "win_arm64")).write_text("")
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: name == "hf-transfer")
+        calls = []
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda label, *a, **kw: calls.append(a) or True
+        )
+        monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
+        ips._install_wheelhouse_optionals()
+        assert len(calls) == 1, calls
+        assert "hf-transfer" in calls[0]
+        assert "--no-deps" in calls[0], "resolving here could walk torch off the CUDA build"
+
+    def test_nothing_is_installed_without_a_hosted_wheel(self, ips, monkeypatch):
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: False)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **kw: pytest.fail("installed with no wheel")
+        )
+        ips._install_wheelhouse_optionals()
+
+    def test_no_other_platform_is_touched(self, ips, monkeypatch):
+        """Every non-win_arm64 host must install exactly what it installed before."""
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: False)
+        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: True)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **kw: pytest.fail("installed off win_arm64")
+        )
+        ips._install_wheelhouse_optionals()
+
+    def test_a_failed_optional_does_not_fail_the_install(self, ips, monkeypatch):
+        """It is an optional feature: off is where it already was."""
+        monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
+        monkeypatch.setattr(ips, "_wheelhouse_hosts", lambda name: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **kw: False)
+        monkeypatch.setattr(ips, "_note", lambda *a, **kw: None)
+        ips._install_wheelhouse_optionals()
+
+    def test_the_step_runs_in_the_install(self, ips):
+        """A helper nothing calls re-enables nothing."""
+        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        assert "    _install_wheelhouse_optionals()" in source
+
+    def test_a_hosted_torchcodec_keeps_its_requirement(self, ips):
+        """The one line that asks for torchcodec was filtered out before the resolver."""
+        source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        guard = source.index("and PLATFORM_LACKS_TORCHCODEC_WHEEL")
+        block = source[guard : source.index("_filter_requirements", guard)]
+        assert 'not _wheelhouse_hosts("torchcodec")' in block
+
+    def test_the_hosted_check_reads_the_resolvers_own_wheels(self, ips, tmp_path, monkeypatch):
+        """And only wheels THIS interpreter could install: the staging copies cp311
+        through cp314, and a wheel tagged for another minor is invisible to the resolver."""
+        major, minor = sys.version_info[:2]
+        tag = f"cp{major}{minor}"
+        monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
+        # The listing is memoized for the process, so each state needs its own read.
+        ips._find_links_wheel_versions.cache_clear()
+        assert not ips._wheelhouse_hosts("torchcodec")
+        (tmp_path / _wheel("torchcodec", f"cp{major}{minor + 1}", f"cp{major}{minor + 1}")).write_text("")
+        ips._find_links_wheel_versions.cache_clear()
+        assert not ips._wheelhouse_hosts("torchcodec"), "a foreign-tagged wheel is not hosted"
+        (tmp_path / _wheel("torchcodec", tag, tag)).write_text("")
+        ips._find_links_wheel_versions.cache_clear()
+        assert ips._wheelhouse_hosts("torchcodec")
