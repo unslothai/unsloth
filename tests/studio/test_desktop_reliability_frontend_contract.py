@@ -620,26 +620,94 @@ def _open_tag(source: str, marker: str) -> str:
     raise AssertionError(f"unterminated JSX tag for {marker!r}")
 
 
-def _has_left_inset(open_tag: str) -> bool:
-    """Whether the tag leaves a non-zero left padding in the element's resting state.
+def _class_expression(open_tag: str) -> str:
+    """The value of the tag's ``className``, with comments stripped.
 
-    Last one wins, because cn() resolves through tailwind-merge: `cn("pl-4", "pl-0")`
-    renders flush however the earlier token reads. Variant-prefixed utilities like
-    `hover:pl-4` do not set the resting state, and an arbitrary value is measured
-    rather than compared as text, so `pl-[0px]` is zero. Only quoted strings are read,
-    so a class named in a comment inside the tag does not count.
+    Only this attribute decides what the element renders, so a padding token quoted
+    in a comment or in some unrelated prop cannot stand in for a real class.
+    """
+    after = open_tag[open_tag.index("=", open_tag.index("className")) + 1 :].lstrip()
+    end, depth, quote = len(after), 0, ""
+    for index, char in enumerate(after):
+        if quote:
+            if char == quote and after[index - 1] != "\\":
+                quote = ""
+                if depth == 0:
+                    end = index + 1
+                    break
+        elif char in "\"'`":
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    return re.sub(r"//[^\n]*|/\*.*?\*/", "", after[:end], flags = re.DOTALL)
+
+
+def _unconditional_classes(expression: str) -> list:
+    """The classes the element always carries, in source order.
+
+    An argument holding `&&` or `?` renders only in some state, and this test is about
+    the collapsed one, so `cn(pinned && "pl-4")` contributes nothing: `pinned` is false
+    exactly when the arrows need the inset.
+    """
+    inner = expression[1:-1] if expression.startswith("{") else expression
+    if inner.strip().startswith("cn("):
+        inner = inner.strip()[3:].rsplit(")", 1)[0]
+    classes, depth, quote, start = [], 0, "", 0
+    parts = []
+    for index, char in enumerate(inner + ","):
+        if quote:
+            if char == quote and inner[index - 1] != "\\":
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(inner[start:index])
+            start = index + 1
+    for part in parts:
+        literal = re.fullmatch(r'\s*"([^"]*)"\s*', part)
+        if literal:
+            classes.extend(literal.group(1).split())
+    return classes
+
+
+# Tailwind's own scale, plus the arbitrary values whose length is a plain literal. A
+# `var()` or `calc()` cannot be resolved from source and is deliberately not accepted.
+_PADDING = re.compile(r"(p|px|pl)-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?$")
+_PLAIN_LENGTH = re.compile(r"\[(\d+(?:\.\d+)?)(px|rem|em|ch|%|vh|vw)?\]$")
+
+
+def _has_left_inset(open_tag: str) -> bool:
+    """Whether the element always renders with a non-zero left padding.
+
+    tailwind-merge resolves conflicts last-wins, and `p-*` and `px-*` both set the left
+    edge, so `cn("pl-4", "p-0")` is flush however the first token reads. Variants like
+    `hover:pl-4` do not describe the resting state. Anything whose value cannot be read
+    off the source, such as `pl-[var(--inset,0px)]`, counts as unproven rather than as
+    an inset.
     """
     effective = None
-    for token in " ".join(re.findall(r'"([^"]*)"', open_tag)).split():
+    for token in _unconditional_classes(_class_expression(open_tag)):
         if ":" in token:
             continue
-        match = re.fullmatch(r"pl-(\d+(?:\.\d+)?|\[[^\]]+\])", token)
+        match = _PADDING.fullmatch(token)
         if match:
-            effective = match.group(1)
+            effective = match.group(2)
     if effective is None:
         return False
+    if effective == "px":
+        return True
     if effective.startswith("["):
-        return re.fullmatch(r"\[0(?:\.0+)?[a-z%]*\]", effective) is None
+        plain = _PLAIN_LENGTH.fullmatch(effective)
+        return plain is not None and float(plain.group(1)) != 0
     return float(effective) != 0
 
 
