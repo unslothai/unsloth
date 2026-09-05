@@ -593,6 +593,13 @@ def _symlink_chain(path: str) -> list[str]:
             target = os.readlink(current)
         except OSError:
             break
+        if sys.platform == "win32":
+            # os.readlink reports absolute targets in extended-length form; keep
+            # the ordinary spelling so hops compare and bind like every other path.
+            if target.startswith("\\\\?\\UNC\\"):
+                target = "\\" + target[len("\\\\?\\UNC\\"):]
+            elif target.startswith("\\\\?\\"):
+                target = target[len("\\\\?\\"):]
         current = os.path.normpath(os.path.join(os.path.dirname(current), target))
     return hops
 

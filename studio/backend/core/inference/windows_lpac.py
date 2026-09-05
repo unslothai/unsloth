@@ -1559,11 +1559,19 @@ def _probe_payload(
 from ctypes import wintypes
 k = ctypes.WinDLL('kernel32', use_last_error=True)
 a = ctypes.WinDLL('advapi32', use_last_error=True)
+# Explicit signatures: the default c_int return truncates the 64-bit pseudo handle
+# from GetCurrentProcess to 0xFFFFFFFF, which under an AppContainer's strict handle
+# checks raises STATUS_INVALID_HANDLE (0xC0000008) instead of a clean failure.
+k.GetCurrentProcess.restype = wintypes.HANDLE
+a.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+a.OpenProcessToken.restype = wintypes.BOOL
+a.GetTokenInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+a.GetTokenInformation.restype = wintypes.BOOL
 token = wintypes.HANDLE()
-assert a.OpenProcessToken(k.GetCurrentProcess(), 0x0008, ctypes.byref(token))
+assert a.OpenProcessToken(k.GetCurrentProcess(), 0x0008, ctypes.byref(token)), ctypes.get_last_error()
 def token_dword(kind):
     value = wintypes.DWORD(); size = wintypes.DWORD(ctypes.sizeof(value))
-    assert a.GetTokenInformation(token, kind, ctypes.byref(value), size, ctypes.byref(size))
+    assert a.GetTokenInformation(token, kind, ctypes.byref(value), size, ctypes.byref(size)), (kind, ctypes.get_last_error())
     return value.value
 assert token_dword(29) == 1
 assert token_dword(46) == {1 if less_privileged else 0}

@@ -1675,6 +1675,7 @@ class _TokenPrintingBackend:
         )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX live probe (Windows has its own)")
 def test_live_probe_tolerates_missing_ipv6_loopback(monkeypatch):
     real_socket = socket.socket
 
@@ -2384,3 +2385,25 @@ def test_live_twenty_launch_startup_measurement(
     record_property("sandbox_startup_median_ms", round(median_ms, 3))
     record_property("sandbox_startup_p95_ms", round(p95_ms, 3))
     print(f"sandbox startup over 20 launches: median={median_ms:.3f}ms p95={p95_ms:.3f}ms")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows extended-length link targets")
+def test_symlink_chain_strips_windows_extended_length_prefixes(monkeypatch, tmp_path):
+    """os.readlink on Windows reports absolute targets as \\\\?\\C:\\...; hops keep the plain spelling."""
+    links = {
+        str(tmp_path / "python"): "\\\\?\\" + str(tmp_path / "python3"),
+        str(tmp_path / "python3"): "\\\\?\\UNC\\server\\share\\python3.12",
+    }
+
+    def fake_readlink(path):
+        try:
+            return links[path]
+        except KeyError:
+            raise OSError("not a link")
+
+    monkeypatch.setattr(os_sandbox.os, "readlink", fake_readlink)
+    chain = os_sandbox._symlink_chain(str(tmp_path / "python"))
+    assert chain[0] == str(tmp_path / "python")
+    assert chain[1] == os.path.normpath(str(tmp_path / "python3"))
+    assert chain[2] == os.path.normpath("\\\\server\\share\\python3.12")
+    assert not any(hop.startswith("\\\\?\\") for hop in chain)
