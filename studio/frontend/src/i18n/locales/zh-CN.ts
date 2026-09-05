@@ -899,7 +899,11 @@ export const zhCN = {
         currentStreak: "当前连续天数",
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
-        activityDescription: "过去{weeks}共{total}",
+        activityDescription: {
+          daily: "过去{weeks}共{total}",
+          weekly: "峰值周 {total} · 最近{weeks}",
+          cumulative: "过去{weeks}累计{total}",
+        },
         mode: {
           daily: "按天",
           weekly: "按周",

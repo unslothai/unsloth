@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  activitySummaryForMode,
   formatCompactNumber,
   formatDayCount,
   formatDuration,
@@ -179,6 +180,34 @@ test("day keys parse as local dates, not UTC", () => {
   assert.equal(parsed.getFullYear(), 2026);
   assert.equal(parsed.getMonth(), 2);
   assert.equal(parsed.getDate(), 9);
+});
+
+test("activity summaries follow the selected chart mode", () => {
+  const grid = [
+    [
+      { day: { tokens: 10 } },
+      { day: { tokens: 20 } },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+    ],
+    [
+      { day: { tokens: 100 } },
+      { day: { tokens: 50 } },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+    ],
+  ];
+
+  assert.equal(activitySummaryForMode(grid, "daily"), 180);
+  assert.equal(activitySummaryForMode(grid, "cumulative"), 180);
+  assert.equal(activitySummaryForMode(grid, "weekly"), 150);
+  assert.equal(activitySummaryForMode([], "daily"), 0);
 });
 
 test("series modes reshape the same daily data", () => {

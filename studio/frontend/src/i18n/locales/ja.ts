@@ -904,7 +904,11 @@ export const ja = {
         currentStreak: "現在の連続日数",
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
-        activityDescription: "直近{weeks}で{total}",
+        activityDescription: {
+          daily: "直近{weeks}で{total}",
+          weekly: "ピーク週 {total} · 直近{weeks}",
+          cumulative: "直近{weeks}で累計{total}",
+        },
         mode: {
           daily: "日次",
           weekly: "週次",

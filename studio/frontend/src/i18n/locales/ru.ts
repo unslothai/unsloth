@@ -925,7 +925,11 @@ export const ru = {
         currentStreak: "Текущая серия",
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
-        activityDescription: "Период: {weeks} · {total}",
+        activityDescription: {
+          daily: "Период: {weeks} · {total}",
+          weekly: "Пиковая неделя {total} · последние {weeks}",
+          cumulative: "{total} накоплено за последние {weeks}",
+        },
         mode: {
           daily: "По дням",
           weekly: "По неделям",

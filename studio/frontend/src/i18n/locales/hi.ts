@@ -924,7 +924,11 @@ export const hi = {
         currentStreak: "मौजूदा स्ट्रीक",
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
-        activityDescription: "अवधि: {weeks} · {total}",
+        activityDescription: {
+          daily: "अवधि: {weeks} · {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
+          cumulative: "पिछले {weeks} में कुल {total}",
+        },
         mode: {
           daily: "दैनिक",
           weekly: "साप्ताहिक",
