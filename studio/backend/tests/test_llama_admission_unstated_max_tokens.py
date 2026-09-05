@@ -76,7 +76,13 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
     def test_max_tokens_max_does_not_reserve_the_budget(self):
         cost = self._cost(_chat(max_tokens = self.BUDGET))
         assert cost < self.BUDGET, "Max Tokens = Max still reserves the whole cache"
-        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 100
+        # Its FAIR SHARE, not the flat allowance. This asserted `<= 1024 + 100` while the
+        # charge was a flat estimate the share could only lower; the charge is now the
+        # whole share, because charging less than the wire permits is what made the
+        # reservation unsafe. The property this test exists for is unchanged and is the
+        # one asserted here: a default chat never reserves the cache, and `capacity` of
+        # them still fit (test_four_default_chats_fit_at_once).
+        assert cost <= self.BUDGET // self.CAPACITY
 
     def test_four_default_chats_fit_at_once(self):
         """The change, as the user sees it: four chats on Max have to fit together."""
@@ -193,9 +199,25 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_a_large_cache_is_unchanged(self):
-        """The clamp must bite only where the share is the tighter of the two."""
-        assert self._cost(32768, 4) == self._cost(262144, 4)
+    def test_the_charge_does_not_scale_with_the_cache(self):
+        """A bigger cache does NOT buy a bigger charge. This has now flipped twice.
+
+        It first asserted no scaling, was changed to require scaling when the charge became
+        the share, and is back: the share may only LOWER the flat allowance, never raise it.
+
+        Raising it bought nothing. The point of charging a whole share was to keep
+        `charged >= permitted`, and the wire clamp permits the WINDOW, so that never held --
+        on a 262144 cache the charge was 65536 against a permitted 262144. All the larger
+        charge did was reserve cells for text nobody had generated, which is `pending` in
+        `_committed_locked` and therefore spurious preemption: measured with correct
+        accounting, real occupancy peaked at 12350 of a 16384 cache, never reached the 14312
+        ceiling, and the run still preempted 9 times and lost two turns.
+        """
+        assert self._cost(262144, 4) == self._cost(
+            32768, 4
+        ), "a large cache must not be charged more for the same unstated request"
+        for budget in (32768, 262144):
+            assert self._cost(budget, 4) < budget // 4
 
     def test_the_share_only_ever_lowers_the_allowance(self):
         base = _openai_llama_admission_output_allowance(

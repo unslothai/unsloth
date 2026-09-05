@@ -5609,8 +5609,10 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    # The cap keeps the first calls in order (no reordering / drop of leading ones).
-    assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    # The cap keeps the FIRST calls and drops the tail. Which of them reaches its tool
+    # first is no longer fixed, since the round runs them together, so compare the set:
+    # what the cap must never do is drop a leading call and keep a later one.
+    assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
 
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
@@ -6032,10 +6034,11 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         )
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
+    # is not fixed. These tests are about argument routing -- each call keeping its own
+    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
+    # asserted directly below, on the cards and on the replayed conversation.
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -6087,10 +6090,11 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         )
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
+    # is not fixed. These tests are about argument routing -- each call keeping its own
+    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
+    # asserted directly below, on the cards and on the replayed conversation.
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -6181,7 +6185,7 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
         )
     )
 
-    assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
+    assert sorted(call["query"] for call in calls) == ["a", "b", "c"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
