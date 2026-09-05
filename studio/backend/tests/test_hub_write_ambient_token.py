@@ -196,7 +196,7 @@ def worker_in_process(monkeypatch):
 @pytest.mark.parametrize(
     "allow_ambient,caller_token,env_token,disable_implicit,passed",
     [
-        (False, None, None, "1", False),
+        (False, None, None, "1", None),
         (False, "hf_caller", "hf_caller", "0", "hf_caller"),
         (True, None, "hf_operator_secret", None, None),
     ],
@@ -275,9 +275,11 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     monkeypatch, allow_ambient, caller_token, expected
 ):
     """model_config's shared-cache guards read is_anonymous(), so a plain None walks past
-    them; the preflight helpers all have to get the same canonical value."""
+    them; the preflight helpers all have to get the same canonical value. Tier detection is
+    the one exception, below."""
     from core.export import worker
     from utils import security as security_pkg
+    from utils import transformers_version
     from utils.models import model_config
 
     seen: dict = {}
@@ -289,6 +291,11 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     class _Decision:
         blocked = False
 
+    monkeypatch.setattr(
+        transformers_version,
+        "latest_tier_active_for",
+        lambda name, token: _record("tier", token, False),
+    )
     monkeypatch.setattr(
         model_config,
         "get_base_model_from_lora_identifier",
@@ -312,7 +319,7 @@ def test_the_load_preflight_runs_under_the_callers_credential(
         backend,
         {
             "checkpoint_path": "owner/model",
-            "load_in_4bit": False,
+            "load_in_4bit": True,
             "hf_token": caller_token,
             "allow_ambient": allow_ambient,
         },
@@ -323,6 +330,9 @@ def test_the_load_preflight_runs_under_the_callers_credential(
     assert seen["subdirs"] == expected
     assert seen["file_security"] == expected
     assert backend.load_checkpoint.call_args.kwargs["hf_token"] == expected
+    # Tier detection is the exception: it reads config.json off the hub cache, and the
+    # sentinel is refused that read, so it takes the plain token like the other probes.
+    assert seen["tier"] == (expected or None)
 
 
 # ------------------------------------------------------------------------ export backend
@@ -495,3 +505,40 @@ def test_offline_type_detection_is_not_degraded_by_the_sentinel(monkeypatch):
     assert seen["audio"] is None, "an anonymous probe must not be forced down the guard"
     assert seen["vision"] is None
     assert seen["loader"] is False, "the loader still gets the sentinel"
+
+
+def test_offline_tier_detection_is_not_degraded_by_the_sentinel(monkeypatch, tmp_path):
+    """_load_config_json refuses every hub-cache read for the sentinel, so offline a cached
+    model whose tier is only in its config.json drops to the default sidecar. The export
+    worker hands tier detection the plain token for that reason."""
+    import json
+    from types import SimpleNamespace
+
+    from utils import transformers_version as tv
+
+    repo = "acme/private-finetune"
+    repo_dir = tmp_path / ("models--" + repo.replace("/", "--"))
+    (repo_dir / "snapshots" / "abc123").mkdir(parents = True)
+    (repo_dir / "snapshots" / "abc123" / "config.json").write_text(
+        json.dumps({"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]})
+    )
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("abc123")
+
+    monkeypatch.setattr(tv, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("UNSLOTH_DISABLE_TIER_PROBE", "1")
+
+    def _tier(hf_token):
+        for cache in (
+            tv._config_json_cache,
+            tv._config_needs_510_cache,
+            tv._config_needs_550_cache,
+            tv._config_needs_530_cache,
+            tv._tokenizer_class_cache,
+        ):
+            cache.clear()
+        return tv.get_transformers_tier(repo, hf_token)
+
+    assert _tier(False) == "default", "the sentinel is what breaks the cached tier read"
+    assert _tier(None) == "530", "the plain token reads it, as it did before this change"

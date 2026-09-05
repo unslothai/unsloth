@@ -25,8 +25,6 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from hub.utils.hf_tokens import HfTokenArg
-
 logger = get_logger(__name__)
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
@@ -167,7 +165,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _activate_transformers_version(model_name: str, hf_token: HfTokenArg = None) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -245,7 +243,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     checkpoint_path = cmd["checkpoint_path"]
     # The route carries the policy as a flag; the preflight helpers read it off the token,
     # and None means "find a credential" to everything downstream. Rebuild the canonical
-    # HfTokenArg once, here, and use it for the whole load.
+    # HfTokenArg once, here, and use it for every credential in the load.
     hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
@@ -253,7 +251,9 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # expert weights into unvalidated paths (same flip as the chat worker).
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
-        if latest_tier_active_for(checkpoint_path, hf_token):
+        # Same tier chain as the activation above, so the same plain token: the sentinel
+        # would read no cache offline, miss the sidecar and leave 4-bit on.
+        if latest_tier_active_for(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -568,7 +568,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # module constant. Everything this worker and its children do inherits this environment.
     # An export runs under the identity that loaded the checkpoint; the orchestrator spawns a
     # fresh worker per load, so a later load re-decides.
-    from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg
+    from hub.utils.hf_tokens import apply_token_to_child_env
 
     if not config.get("allow_ambient", True):
         apply_token_to_child_env(os.environ, config.get("hf_token") or False)
@@ -576,15 +576,13 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            # The sentinel, not None: `or None` asks the tier probe to find a credential,
-            # and _probe_autoconfig scrubs its child env only for the sentinel.
-            _activate_transformers_version(
-                checkpoint_path,
-                hf_token_arg(
-                    config.get("hf_token"),
-                    allow_ambient_token = config.get("allow_ambient", True),
-                ),
-            )
+            # The plain token, like the load preflight's detection probes: tier detection
+            # reads config.json, and _load_config_json refuses the hub cache outright for the
+            # sentinel, so offline a cached model whose tier is only in its config falls to
+            # the default sidecar and fails to load. Nothing here turns None into a
+            # credential: the reads are raw urllib, and _probe_autoconfig's child inherits
+            # the environment scrubbed above.
+            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
             _send_response(
                 resp_queue,
