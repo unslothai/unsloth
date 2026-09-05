@@ -62,9 +62,9 @@ def sync_job() -> dict:
 
 def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
     doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    tags = [
-        s for s in doc["jobs"]["merge-studio"]["steps"] if s.get("id") == "meta"
-    ][0]["with"]["tags"]
+    tags = [s for s in doc["jobs"]["merge-studio"]["steps"] if s.get("id") == "meta"][0]["with"][
+        "tags"
+    ]
     latest = [l for l in tags.splitlines() if "value=latest" in l][0]
     gate = latest.split("enable=", 1)[1].strip()
     assert sync_job["needs"] == "merge-studio"
@@ -74,21 +74,25 @@ def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
     )
 
 
-def _run_sync(step: str, tmp_path: Path, *, live_after_patch: str, token: str = "tok"):
+def _run_sync(
+    step: str,
+    tmp_path: Path,
+    *,
+    live_after_patch: str,
+    token: str = "tok",
+):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "curl.log"
     # what the Hub reports after the PATCH; a file, so the README's backticks and
     # dollar signs never pass through the stub's shell
     live = tmp_path / "live.json"
-    live.write_text(
-        json.dumps({"full_description": live_after_patch}), encoding = "utf-8"
-    )
+    live.write_text(json.dumps({"full_description": live_after_patch}), encoding = "utf-8")
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
         'case "$*" in\n'
-        f"  *auth/token*) printf '{{\"access_token\": \"{token}\"}}' ;;\n"
+        f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
         f"  *) cat {live} ;;\n"
         "esac\n",
@@ -116,9 +120,7 @@ def _run_sync(step: str, tmp_path: Path, *, live_after_patch: str, token: str = 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
     step = sync_job["steps"][-1]["run"]
-    res, log = _run_sync(
-        step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8")
-    )
+    res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/repositories/unsloth/unsloth/" in log
     assert "Authorization: Bearer tok" in log
