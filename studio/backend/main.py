@@ -318,6 +318,7 @@ from routes import (
 )
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
+from routes.spark_serving import router as spark_serving_router
 from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -849,6 +850,14 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
+
+    # Two-Spark serving: stop the router and the peer's server before this node's
+    # llama-server goes down with the rest. A no-op unless a topology was attached.
+    try:
+        from core.inference.spark_serving import shutdown as _spark_serving_shutdown
+        await _spark_serving_shutdown()
+    except Exception as exc:
+        _lifespan_log.warning("two-Spark serving teardown failed at shutdown: %s", exc)
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
@@ -1500,6 +1509,7 @@ app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profi
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(spark_serving_router, prefix = "/api/inference/spark", tags = ["inference"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
