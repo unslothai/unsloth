@@ -342,12 +342,22 @@ jobs:
           # pushed, because baking another run's base image is silent otherwise.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # A build leg does not push a bare image manifest: with provenance and SBOM
+          # on, buildx pushes each arch as an OCI index (image + attestation) and
+          # `imagetools create` flattens THOSE children into the merged index, so the
+          # per-arch index digest itself never appears there. Comparing at the wrong
+          # level failed the first publish runs on main against a correct manifest.
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
+                      | jq -r '.manifests[]?.digest')"
+              [ -n "$want" ] || want="sha256:${d}"
+              for w in $want; do
+                  grep -qxF "$w" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which does not contain ${w} (from sha256:${d} this run pushed); another ref at this commit retagged it"
+                      missing=1
+                  }
+              done
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
@@ -497,12 +507,19 @@ jobs:
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
+          # per-arch pushes are indexes (image + attestation) that the merge
+          # flattens, so compare their children, not the index digest; see the base merge
           missing=0
           for d in *; do
-              grep -qxF "sha256:$d" <<<"$CHILDREN" || {
-                  echo "::error::${TAG} resolved to ${DIGEST}, which does not contain the sha256:${d} this run pushed; another ref at this commit retagged it"
-                  missing=1
-              }
+              want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
+                      | jq -r '.manifests[]?.digest')"
+              [ -n "$want" ] || want="sha256:${d}"
+              for w in $want; do
+                  grep -qxF "$w" <<<"$CHILDREN" || {
+                      echo "::error::${TAG} resolved to ${DIGEST}, which does not contain ${w} (from sha256:${d} this run pushed); another ref at this commit retagged it"
+                      missing=1
+                  }
+              done
           done
           test "$missing" = 0
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
