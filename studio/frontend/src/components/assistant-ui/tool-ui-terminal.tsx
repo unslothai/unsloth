@@ -21,7 +21,6 @@ import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
-  toolExecutionRecordFromCard,
   toolExecutionRecordLabel,
 } from "@/features/chat/types/api";
 
@@ -30,6 +29,7 @@ import {
   preferSanitizedFullToolOutput,
   useToolAwaitingApproval,
   useToolOutputFor,
+  useToolExecutionRecordFor,
   useToolPaneScope,
 } from "@/features/chat";
 
@@ -41,7 +41,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const command = toolArgText((args as { command?: unknown })?.command);
   const executionLabel = toolExecutionRecordLabel(
-    toolExecutionRecordFromCard(toolCallId),
+    useToolExecutionRecordFor(toolCallId),
   );
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the command, not running it yet.

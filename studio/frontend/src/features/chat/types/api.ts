@@ -580,6 +580,17 @@ type BackendExecutionRecord = ToolExecutionRecord & {
 };
 
 const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
+/** Records outlive their cards only until a run ends; this bound keeps a tab that streams
+ *  thousands of tool calls from growing the map without limit (oldest entry goes first). */
+const MAX_AUTHORITATIVE_EXECUTION_RECORDS = 2048;
+const RECORD_KEY_SEPARATOR = "\u0000";
+
+/** Local model tool-call ids repeat across conversations ("call_0"), so a record is filed
+ *  under the pane+thread scope its run wrote it in. An absent scope is the legacy single
+ *  namespace, kept for callers that have no scope (hydration of stored content). */
+function executionRecordKey(toolCallId: string, scope?: string): string {
+  return `${scope ?? ""}${RECORD_KEY_SEPARATOR}${toolCallId}`;
+}
 
 export function stripUntrustedExecutionMetadata(args: unknown): unknown {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
@@ -660,27 +671,60 @@ export type ToolCardState = {
 export function attachAuthoritativeExecutionRecord<T extends ToolCardState>(
   card: T,
   record: ToolExecutionRecord | null,
+  scope?: string,
 ): Omit<T, "executionRecord"> & ToolCardState {
   const ordinaryCard = Object.fromEntries(
     Object.entries(card).filter(([key]) => key !== "executionRecord"),
   ) as Omit<T, "executionRecord">;
+  const key = executionRecordKey(card.toolCallId, scope);
   if (isBackendExecutionRecord(record)) {
-    authoritativeExecutionRecords.set(card.toolCallId, record);
+    // Re-insert so a refreshed record counts as the newest entry.
+    authoritativeExecutionRecords.delete(key);
+    authoritativeExecutionRecords.set(key, record);
+    while (
+      authoritativeExecutionRecords.size > MAX_AUTHORITATIVE_EXECUTION_RECORDS
+    ) {
+      const oldest = authoritativeExecutionRecords.keys().next().value;
+      if (oldest === undefined) break;
+      authoritativeExecutionRecords.delete(oldest);
+    }
     return { ...ordinaryCard, executionRecord: record };
   }
-  authoritativeExecutionRecords.delete(card.toolCallId);
+  authoritativeExecutionRecords.delete(key);
   return ordinaryCard;
 }
 
-/** Read the process-local backend record associated with this live card. */
+/** Read the process-local backend record associated with this live card, in the scope the
+ *  run that produced it wrote under. */
 export function toolExecutionRecordFromCard(
   toolCallId: string,
+  scope?: string,
 ): ToolExecutionRecord | null {
-  return authoritativeExecutionRecords.get(toolCallId) ?? null;
+  return (
+    authoritativeExecutionRecords.get(executionRecordKey(toolCallId, scope)) ??
+    null
+  );
 }
 
-export function discardAuthoritativeExecutionRecord(toolCallId: string): void {
-  authoritativeExecutionRecords.delete(toolCallId);
+/** Drop a card's record. Without a scope every scope's entry for that id goes, which is what
+ *  a rehydrated (stored, provenance-free) card needs. */
+export function discardAuthoritativeExecutionRecord(
+  toolCallId: string,
+  scope?: string,
+): void {
+  if (scope !== undefined) {
+    authoritativeExecutionRecords.delete(executionRecordKey(toolCallId, scope));
+    return;
+  }
+  const suffix = `${RECORD_KEY_SEPARATOR}${toolCallId}`;
+  for (const key of [...authoritativeExecutionRecords.keys()]) {
+    if (key.endsWith(suffix)) authoritativeExecutionRecords.delete(key);
+  }
+}
+
+/** Test seam: how many records are held right now. */
+export function authoritativeExecutionRecordCount(): number {
+  return authoritativeExecutionRecords.size;
 }
 
 function stripUntrustedRecordEnvelope(value: unknown): unknown {

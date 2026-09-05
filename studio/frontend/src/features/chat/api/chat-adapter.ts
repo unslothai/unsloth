@@ -196,6 +196,8 @@ import {
   parseBackendExecutionRecord,
   stripUntrustedExecutionMetadata,
   TOOL_EXECUTION_RECORD_ARG_KEY,
+  type ToolCardState,
+  type ToolExecutionRecord,
   toolExecutionRecordFromCard,
 } from "../types/api";
 import type {
@@ -4406,6 +4408,15 @@ export function createOpenAIStreamAdapter(
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
+      // Launch records are keyed by the same pane+thread scope as live output: local ids
+      // repeat across conversations ("call_0"), so a bare id would let one card wear
+      // another run's protection label.
+      const attachScopedExecutionRecord = <T extends ToolCardState>(
+        card: T,
+        record: ToolExecutionRecord | null,
+      ) => attachAuthoritativeExecutionRecord(card, record, toolOutputPaneScope);
+      const scopedExecutionRecordFromCard = (id: string) =>
+        toolExecutionRecordFromCard(id, toolOutputPaneScope);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       // Which conversation was on screen when this run started; a first turn has no id yet.
@@ -4718,28 +4729,56 @@ export function createOpenAIStreamAdapter(
         OpenAIChatCompletionsRequest,
         "tool_execution_mode" | "tool_ui_session_id" | "limited_grant"
       > = {};
-      if (runsStudioPythonOrTerminal) {
-        const requestedMode = useChatRuntimeStore.getState().toolExecutionMode;
+      if (supportsStudioToolsForThisTurn) {
+        // The isolation decision is read from the run snapshot, never from the live store:
+        // a message queued under Required must not go out as whatever the pill says by the
+        // time the model has loaded. For a send that was not queued the snapshot is the live
+        // state, so nothing changes there.
+        const requestedMode = runtime.toolExecutionMode;
+        const requestedUiSessionId = runtime.toolIsolationUiSessionId;
+        const requestedGrant = runtime.limitedToolGrant;
         if (requestedMode === "full") {
           // Full access predates capability discovery and keeps its existing
           // explicit semantics. The backend still records the launch-time host
           // state; a failed advisory endpoint must not silently redefine Full.
+          // A Full decision revoked while this send waited in the queue wins over
+          // the snapshot: stop instead of sending what the person has since undone.
+          if (useChatRuntimeStore.getState().toolExecutionMode !== "full") {
+            clearSelectedImageEditReference();
+            throw new Error(
+              "Full access was turned off while this message was queued. Review the protection level and send the message again.",
+            );
+          }
           toolIsolationRequestFields = { tool_execution_mode: "full" };
+        } else if (!runsStudioPythonOrTerminal) {
+          // No Python or Terminal was selected here, but `unsloth run --enable-tools` can
+          // still open them server-side, so the request states its mode instead of leaving
+          // the backend to assume one. Only the OS-isolated default is declared this way; a
+          // Limited grant is attached solely by the gated branch below, which proves it is
+          // current first.
+          toolIsolationRequestFields = {
+            tool_execution_mode: "os_isolation_required",
+            tool_ui_session_id: requestedUiSessionId,
+          };
         } else {
           await useChatRuntimeStore
             .getState()
             .refreshToolIsolationCapability();
           const isolation = useChatRuntimeStore.getState();
-          const mode = isolation.toolExecutionMode;
+          const mode = requestedMode;
           const capability = isolation.toolIsolationCapability;
-          const limitedGrant = isolation.limitedToolGrant;
           const currentLimitedGrant = isLimitedGrantCurrent(
-            limitedGrant,
+            requestedGrant,
             capability,
           )
-            ? limitedGrant
+            ? requestedGrant
             : null;
-          if (mode !== requestedMode) {
+          if (
+            isolation.toolExecutionMode !== mode ||
+            isolation.toolIsolationUiSessionId !== requestedUiSessionId
+          ) {
+            // The pill moved, or the auth session rotated, after this send was prepared.
+            // Stop and ask for a fresh send rather than substituting the current state.
             if (capability?.protection_state === "unavailable") {
               isolation.setToolIsolationConsentOpen(true);
             }
@@ -4766,7 +4805,7 @@ export function createOpenAIStreamAdapter(
           }
           toolIsolationRequestFields = {
             tool_execution_mode: mode,
-            tool_ui_session_id: isolation.toolIsolationUiSessionId,
+            tool_ui_session_id: requestedUiSessionId,
             ...(mode === "limited" && currentLimitedGrant
               ? { limited_grant: currentLimitedGrant.grant }
               : {}),
@@ -5395,7 +5434,7 @@ export function createOpenAIStreamAdapter(
       const paintStreamedCard = (partId: string): void => {
         // Provider/model cards are provisional. A provider can reuse a prior
         // call id, so clear any process-local launch record before it paints.
-        discardAuthoritativeExecutionRecord(partId);
+        discardAuthoritativeExecutionRecord(partId, toolOutputPaneScope);
         reservedToolCallIds.add(partId);
         bindStreamedToolCallCard(toolPartIdByBackendId, partId);
       };
@@ -5404,7 +5443,7 @@ export function createOpenAIStreamAdapter(
       const liveArgsTextById = new Map<string, string>();
       // A dropped card gives its id back: holding it makes the next round's mint skip a number it then reuses.
       const releaseStreamedCard = (partId: string): void => {
-        discardAuthoritativeExecutionRecord(partId);
+        discardAuthoritativeExecutionRecord(partId, toolOutputPaneScope);
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
         // A card that took a late id answers to a run-unique part id, so the provider's id is a
@@ -6716,7 +6755,7 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    toolCallParts[idx] = attachAuthoritativeExecutionRecord(
+                    toolCallParts[idx] = attachScopedExecutionRecord(
                       {
                         ...existing,
                         toolName: toolEvent.tool_name as string,
@@ -6731,7 +6770,7 @@ export function createOpenAIStreamAdapter(
                     );
                   } else {
                     toolCallParts.push(
-                      attachAuthoritativeExecutionRecord(
+                      attachScopedExecutionRecord(
                         {
                           type: "tool-call" as const,
                           toolCallId: id,
@@ -6832,7 +6871,7 @@ export function createOpenAIStreamAdapter(
                         : null;
                     const executionRecord =
                       completionExecutionRecord ??
-                      toolExecutionRecordFromCard(id);
+                      scopedExecutionRecordFromCard(id);
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     // A valid MCP image envelope wins; an invalid marker falls through so a sandbox __IMAGES__
                     // suffix still renders.
@@ -6997,7 +7036,7 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    toolCallParts[idx] = attachAuthoritativeExecutionRecord(
+                    toolCallParts[idx] = attachScopedExecutionRecord(
                       {
                         ...existing,
                         args: mergedArgs,
@@ -7400,7 +7439,7 @@ export function createOpenAIStreamAdapter(
                       stablePartId ||
                       mintStreamedCardId(idx ?? toolCallParts.length);
                     if (!stablePartId) paintStreamedCard(callId);
-                    else discardAuthoritativeExecutionRecord(callId);
+                    else discardAuthoritativeExecutionRecord(callId, toolOutputPaneScope);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);

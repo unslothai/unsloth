@@ -223,3 +223,23 @@ def test_effective_enable_tools_honors_secure_policy():
     assert _effective_enable_tools(_Payload(False)) is True
     set_tool_policy(False)
     assert _effective_enable_tools(_Payload(True)) is False
+
+
+def test_fail_closed_tool_result_tells_api_clients_how_to_opt_out():
+    """A pre-isolation API client gets the remediation and the explicit opt-out, once."""
+    message = tools_module._tool_failure_message(
+        os_sandbox.SandboxUnavailableError(
+            "OS_ISOLATION_UNAVAILABLE: no backend qualified. Install bubblewrap."
+        )
+    )
+    assert message.startswith("Execution error: OS_ISOLATION_UNAVAILABLE: no backend qualified.")
+    assert "Install bubblewrap." in message
+    assert 'permission_mode "full"' in message
+    assert "omitted tool_execution_mode means OS isolation is required" in message
+    # Other failures keep their plain shape.
+    plain = tools_module._tool_failure_message(RuntimeError("boom"))
+    assert plain == "Execution error: boom"
+    unrelated = tools_module._tool_failure_message(
+        os_sandbox.SandboxUnavailableError("capability changed")
+    )
+    assert unrelated == "Execution error: capability changed"

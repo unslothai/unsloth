@@ -277,6 +277,8 @@ function makeStream(mintPartIds = false): {
     "resolveToolCallPartId",
     "discardAuthoritativeExecutionRecord",
     "stripUntrustedExecutionMetadata",
+    // The lifted loop files launch records under the run's pane+thread scope.
+    "toolOutputPaneScope",
     js,
   )(
     splitTopLevelJsonObjects,
@@ -287,6 +289,7 @@ function makeStream(mintPartIds = false): {
     resolveToolCallPartId,
     discardAuthoritativeExecutionRecord,
     stripUntrustedExecutionMetadata,
+    "test-pane\u0000test-thread",
   ) as {
     feed: (batch: DeltaCall[], finished?: boolean) => boolean;
     parts: LoopPart[];

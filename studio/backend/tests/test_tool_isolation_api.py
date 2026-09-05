@@ -278,6 +278,11 @@ def test_capability_endpoint_is_ui_only_and_advisory(monkeypatch):
     with _client(via_api_key = True) as client:
         response = client.get("/api/inference/tool-isolation/capability")
     assert response.status_code == 403
+    # The refusal talks about this action, not about MCP servers.
+    assert response.json()["detail"] == (
+        "This action can only be performed from the Unsloth UI, not with an API key."
+    )
+    assert "MCP" not in response.json()["detail"]
     assert calls == [True]
 
 
@@ -346,3 +351,4 @@ def test_grant_endpoint_issues_opaque_session_grant_and_is_ui_only(monkeypatch):
             json = {"ui_session_id": "page-a", "probe_generation": "probe-1"},
         )
     assert forbidden.status_code == 403
+    assert "MCP" not in forbidden.json()["detail"]
