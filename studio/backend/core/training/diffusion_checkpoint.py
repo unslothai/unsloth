@@ -937,8 +937,9 @@ def _write_text(path: Path, text: str) -> None:
     _fsync_file(path)
 
 
-# Windows' _commit needs write access, and network/container filesystems return EINVAL/ENOTSUP for
-# fsync; neither says the data did not make it.
+# errno values that mean this platform or filesystem will not flush that handle, rather than that the
+# data did not make it: Windows' _commit needs write access, and network/container filesystems return
+# EINVAL/ENOTSUP for fsync.
 _FSYNC_UNSUPPORTED = frozenset(
     code
     for code in (
