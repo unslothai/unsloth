@@ -21552,9 +21552,12 @@ async def produce_openai_chat_completions(
                     logger.info(
                         "llama kv swap paused: chat=%s slot=%s saved=%d resident=%d "
                         "budget=%d keep=%s",
-                        _kv_swap_chat_id, slot,
+                        _kv_swap_chat_id,
+                        slot,
                         chat.saved_tokens if chat is not None else -1,
-                        decision.resident, decision.budget, decision.keep,
+                        decision.resident,
+                        decision.budget,
+                        decision.keep,
                     )
                     _swap_started = time.monotonic()
                     try:
@@ -21586,7 +21589,8 @@ async def produce_openai_chat_completions(
                             logger.info(
                                 "llama kv swap gave up waiting: chat=%s after %.1fs; "
                                 "resuming by re-prefill",
-                                _kv_swap_chat_id, time.monotonic() - _swap_started,
+                                _kv_swap_chat_id,
+                                time.monotonic() - _swap_started,
                             )
                             controller.fall_back(_kv_swap_chat_id)
                         _chat_now = controller.get(_kv_swap_chat_id) if _fits else None
@@ -21594,7 +21598,8 @@ async def produce_openai_chat_completions(
                             logger.info(
                                 "llama kv swap resumed: chat=%s slot=%s waited=%.1fs "
                                 "restore=%.1fms swaps=%d",
-                                _kv_swap_chat_id, slot,
+                                _kv_swap_chat_id,
+                                slot,
                                 time.monotonic() - _swap_started,
                                 _chat_now.last_restore_ms if _chat_now is not None else -1.0,
                                 _kv_swap_state["swaps"],

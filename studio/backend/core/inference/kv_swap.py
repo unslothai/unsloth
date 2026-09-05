@@ -109,7 +109,11 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def _int_env(name: str, default: int, minimum: int = 0) -> int:
+def _int_env(
+    name: str,
+    default: int,
+    minimum: int = 0,
+) -> int:
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -165,9 +169,13 @@ def parse_slot_file_tokens(path) -> List[int]:
                 raise KvSwapError(f"slot file {path} is truncated ({len(head)} bytes)")
             magic, version = struct.unpack_from("<II", head, 0)
             if magic != SLOT_FILE_MAGIC:
-                raise KvSwapError(f"slot file {path} has magic 0x{magic:08x}, expected 0x{SLOT_FILE_MAGIC:08x}")
+                raise KvSwapError(
+                    f"slot file {path} has magic 0x{magic:08x}, expected 0x{SLOT_FILE_MAGIC:08x}"
+                )
             if version not in SLOT_FILE_VERSIONS:
-                raise KvSwapError(f"slot file {path} has version {version}, expected one of {SLOT_FILE_VERSIONS}")
+                raise KvSwapError(
+                    f"slot file {path} has version {version}, expected one of {SLOT_FILE_VERSIONS}"
+                )
             (count,) = struct.unpack_from("<I", head, _SLOT_FILE_COUNT_OFFSET)
             if count <= 0:
                 raise KvSwapError(f"slot file {path} reports {count} tokens")
@@ -189,7 +197,7 @@ def resume_prompt_is_valid(saved: Sequence[int], resume: Sequence[int]) -> bool:
     """
     if not saved or len(resume) <= len(saved):
         return False
-    return list(resume[:len(saved)]) == list(saved)
+    return list(resume[: len(saved)]) == list(saved)
 
 
 @dataclass(**_SLOTS)
@@ -276,7 +284,13 @@ class KvSwapController:
         """Cells the chats may share: the context minus the smallest safe reserve."""
         return max(0, self.n_ctx - self.buffer_tokens)
 
-    def admit(self, chat_id: str, *, prompt_tokens: int = 0, slot: Optional[int] = None) -> KvSwapChat:
+    def admit(
+        self,
+        chat_id: str,
+        *,
+        prompt_tokens: int = 0,
+        slot: Optional[int] = None,
+    ) -> KvSwapChat:
         with self._lock:
             chat = self._chats.get(chat_id)
             if chat is None:
@@ -287,8 +301,13 @@ class KvSwapController:
             chat.state = RUNNING
             return chat
 
-    def update(self, chat_id: str, *, prompt_tokens: Optional[int] = None,
-               generated_tokens: Optional[int] = None) -> None:
+    def update(
+        self,
+        chat_id: str,
+        *,
+        prompt_tokens: Optional[int] = None,
+        generated_tokens: Optional[int] = None,
+    ) -> None:
         with self._lock:
             chat = self._chats.get(chat_id)
             if chat is None:
@@ -350,7 +369,12 @@ class KvSwapController:
 
     # ------------------------------------------------------------------- policy
 
-    def plan(self, *, incoming: int = 0, incoming_id: Optional[str] = None) -> KvSwapDecision:
+    def plan(
+        self,
+        *,
+        incoming: int = 0,
+        incoming_id: Optional[str] = None,
+    ) -> KvSwapDecision:
         """Choose who keeps decoding and who is swapped out.
 
         Keep the chat with the most tokens: it is furthest from done and the costliest to
@@ -404,14 +428,17 @@ class KvSwapController:
             chat = self._chats.get(chat_id)
             if chat is None:
                 return False
-            resident = sum(
-                c.resident for c in self._chats.values() if c.chat_id != chat_id
-            )
+            resident = sum(c.resident for c in self._chats.values() if c.chat_id != chat_id)
             return resident + chat.size <= self.budget
 
     # -------------------------------------------------------------------- swaps
 
-    def _post(self, slot: int, action: str, filename: Optional[str] = None):
+    def _post(
+        self,
+        slot: int,
+        action: str,
+        filename: Optional[str] = None,
+    ):
         if self._http_post is None:
             raise KvSwapError("no HTTP transport configured for slot state calls")
         body = {"filename": filename} if filename else {}
@@ -485,9 +512,7 @@ class KvSwapController:
         if n_restored != chat.saved_tokens:
             with self._lock:
                 chat.state = PAUSED
-            raise KvSwapError(
-                f"chat {chat_id} restored {n_restored} of {chat.saved_tokens} tokens"
-            )
+            raise KvSwapError(f"chat {chat_id} restored {n_restored} of {chat.saved_tokens} tokens")
         with self._lock:
             chat.state = RUNNING
             chat.slot = slot

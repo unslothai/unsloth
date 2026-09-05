@@ -36,14 +36,22 @@ from core.inference.kv_swap import (
 
 # --------------------------------------------------------------------------- helpers
 
-def write_slot_file(path, tokens, *, magic = SLOT_FILE_MAGIC, version = 3, count = None,
-                    truncate_tokens = False):
+
+def write_slot_file(
+    path,
+    tokens,
+    *,
+    magic = SLOT_FILE_MAGIC,
+    version = 3,
+    count = None,
+    truncate_tokens = False,
+):
     """Write a slot file in llama-server's ``ggsq`` layout."""
     count = len(tokens) if count is None else count
     blob = struct.pack("<IIIiI I", magic, version, len(tokens) + 4, -1, 1, count)
     body = struct.pack(f"<{len(tokens)}i", *tokens) if tokens else b""
     if truncate_tokens:
-        body = body[:len(body) // 2]
+        body = body[: len(body) // 2]
     path.write_bytes(blob + body + b"\x00" * 64)
     return path
 
@@ -81,6 +89,7 @@ def make_controller(server = None, **kwargs):
 
 
 # ----------------------------------------------------------------- the file header
+
 
 def test_parse_slot_file_returns_exact_tokens(tmp_path):
     tokens = [248045, 846, 198, 814, 20139]
@@ -121,6 +130,7 @@ def test_parse_slot_file_rejects_missing_file(tmp_path):
 
 # ------------------------------------------------------------------- the resume rule
 
+
 def test_resume_prompt_must_strictly_extend_the_save():
     saved = [1, 2, 3, 4]
     # A proper extension is the only shape that lands on the restored cells.
@@ -133,6 +143,7 @@ def test_resume_prompt_must_strictly_extend_the_save():
 
 
 # ------------------------------------------------------------------------- the buffer
+
 
 def test_default_buffer_covers_the_speculative_lead_on_every_slot():
     assert default_buffer_tokens(4, 2) == 4 * (2 + DEFAULT_DRAFT_MARGIN) == 20
@@ -155,6 +166,7 @@ def test_budget_is_context_minus_buffer():
 
 # --------------------------------------------------------------------------- env knobs
 
+
 def test_env_knobs(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_KV_SWAP", raising = False)
     assert kv_swap_enabled() is True
@@ -175,6 +187,7 @@ def test_env_knobs(monkeypatch):
 
 
 # --------------------------------------------------------------------------- accounting
+
 
 def test_resident_counts_prompt_plus_generated_and_drops_when_paused():
     controller = make_controller()
@@ -226,6 +239,7 @@ def test_active_count_arms_chunking_only_above_one():
 
 # ------------------------------------------------------------------------------ policy
 
+
 def _four_chats(controller, sizes):
     for i, (name, size) in enumerate(sizes):
         controller.admit(name, prompt_tokens = size, slot = i)
@@ -241,18 +255,18 @@ def test_plan_does_nothing_while_it_fits():
 
 
 def test_plan_keeps_the_largest_and_swaps_newest_first():
-    controller = make_controller(n_ctx = 1000)   # budget 980
+    controller = make_controller(n_ctx = 1000)  # budget 980
     for i, (name, size) in enumerate([("a", 500), ("b", 300), ("c", 300)]):
         controller.admit(name, prompt_tokens = size, slot = i)
-        controller.get(name).admitted_at = 100.0 + i   # a oldest, c newest
+        controller.get(name).admitted_at = 100.0 + i  # a oldest, c newest
     decision = controller.plan()
-    assert decision.keep == "a"                 # most tokens
-    assert decision.victims == ["c"]            # newest first, and one is enough
+    assert decision.keep == "a"  # most tokens
+    assert decision.victims == ["c"]  # newest first, and one is enough
     assert decision.reason == "pressure"
 
 
 def test_plan_never_swaps_the_last_one_standing():
-    controller = make_controller(n_ctx = 100)   # budget 80, nothing fits
+    controller = make_controller(n_ctx = 100)  # budget 80, nothing fits
     controller.admit("a", prompt_tokens = 500, slot = 0)
     controller.get("a").admitted_at = 1.0
     controller.admit("b", prompt_tokens = 400, slot = 1)
@@ -273,9 +287,9 @@ def test_plan_protects_a_chat_on_a_swap_streak_while_another_candidate_exists():
         controller.get(name).admitted_at = 100.0 + i
     # "streak" is the newest-but-one; make it the one that has been hit repeatedly.
     controller.get("streak").swap_streak = SWAP_STREAK_PROTECT
-    controller.get("streak").admitted_at = 200.0   # newest, so normally chosen first
+    controller.get("streak").admitted_at = 200.0  # newest, so normally chosen first
     decision = controller.plan()
-    assert decision.victims == ["fresh"]           # protection pushed "streak" behind it
+    assert decision.victims == ["fresh"]  # protection pushed "streak" behind it
 
 
 def test_plan_uses_a_protected_chat_when_it_is_the_only_candidate():
@@ -289,12 +303,12 @@ def test_plan_uses_a_protected_chat_when_it_is_the_only_candidate():
 
 
 def test_plan_accounts_for_an_incoming_chat():
-    controller = make_controller(n_ctx = 1000)   # budget 980
+    controller = make_controller(n_ctx = 1000)  # budget 980
     controller.admit("a", prompt_tokens = 500, slot = 0)
     controller.get("a").admitted_at = 1.0
     controller.admit("b", prompt_tokens = 400, slot = 1)
     controller.get("b").admitted_at = 2.0
-    assert controller.plan().victims == []       # 900 fits
+    assert controller.plan().victims == []  # 900 fits
     assert controller.plan(incoming = 300).victims == ["b"]
 
 
@@ -305,10 +319,11 @@ def test_plan_swaps_several_when_one_is_not_enough():
         controller.get(name).admitted_at = 100.0 + i
     decision = controller.plan()
     assert decision.keep == "a"
-    assert decision.victims == ["d", "c"]        # newest first until it fits
+    assert decision.victims == ["d", "c"]  # newest first until it fits
 
 
 # ------------------------------------------------------------------------- swap moves
+
 
 def test_swap_out_saves_then_erases_and_frees_the_slot():
     server = FakeServer()
@@ -322,7 +337,7 @@ def test_swap_out_saves_then_erases_and_frees_the_slot():
     assert chat.slot is None
     assert chat.saved_tokens == 140
     assert chat.swap_streak == 1 and chat.swaps_total == 1
-    assert controller.resident_total() == 0      # the cells are free
+    assert controller.resident_total() == 0  # the cells are free
     assert controller.swaps_out == 1
 
 
@@ -335,7 +350,7 @@ def test_swap_out_does_not_erase_when_the_save_reports_nothing():
     # clears idle slots itself under a unified KV, and pausing then would be pointless.
     with pytest.raises(KvSwapNothingToSave, match = "no cells to free"):
         controller.swap_out("a")
-    assert [c[1] for c in server.calls] == ["save"]     # no erase: content is never lost
+    assert [c[1] for c in server.calls] == ["save"]  # no erase: content is never lost
     assert controller.get("a").state == RUNNING
     assert issubclass(KvSwapNothingToSave, KvSwapError)
 
@@ -363,7 +378,7 @@ def test_swap_in_restores_into_any_free_slot():
     controller = make_controller(server)
     controller.admit("a", prompt_tokens = 100, slot = 2)
     controller.swap_out("a")
-    chat = controller.swap_in("a", 0)            # a different id than it left
+    chat = controller.swap_in("a", 0)  # a different id than it left
     assert server.calls[-1][0] == 0
     assert server.calls[-1][1] == "restore"
     assert chat.state == RUNNING and chat.slot == 0
@@ -375,10 +390,10 @@ def test_swap_in_rejects_a_short_restore_and_stays_paused():
     controller = make_controller(server)
     controller.admit("a", prompt_tokens = 100, slot = 2)
     controller.swap_out("a")
-    server.saved[controller.get("a").filename] = 3     # server came back with fewer cells
+    server.saved[controller.get("a").filename] = 3  # server came back with fewer cells
     with pytest.raises(KvSwapError, match = "restored 3 of 140"):
         controller.swap_in("a", 0)
-    assert controller.get("a").state == PAUSED         # still recoverable via fallback
+    assert controller.get("a").state == PAUSED  # still recoverable via fallback
 
 
 def test_swap_in_keeps_the_checkpoint_when_the_call_raises():
@@ -408,6 +423,7 @@ def test_controller_without_transport_raises_rather_than_silently_skipping():
 
 
 # ---------------------------------------------------------------------------- fallback
+
 
 def test_fall_back_drops_the_checkpoint_and_unlinks_the_file(tmp_path):
     server = FakeServer()
@@ -441,6 +457,7 @@ def test_sweep_unlinks_every_checkpoint(tmp_path):
 
 # ------------------------------------------------------------------- progress + streaks
 
+
 def test_a_full_chunk_without_a_swap_clears_the_streak():
     controller = make_controller()
     controller.admit("a", prompt_tokens = 100, slot = 0)
@@ -457,6 +474,7 @@ def test_note_resume_records_the_prefill_the_resume_cost():
 
 
 # ---------------------------------------------------------------------------- registry
+
 
 def test_registry_reuses_and_updates(monkeypatch):
     reset_kv_swap_controllers()
@@ -482,8 +500,9 @@ def test_snapshot_reports_the_live_shape():
 
 # ------------------------------------------------------------------------ can_resume
 
+
 def test_can_resume_asks_only_whether_this_chat_fits():
-    controller = make_controller(n_ctx = 1020)      # budget 1000
+    controller = make_controller(n_ctx = 1020)  # budget 1000
     controller.admit("big", prompt_tokens = 700, slot = 0)
     controller.admit("me", prompt_tokens = 400, slot = 1)
     controller.swap_out("me")
@@ -522,7 +541,7 @@ def test_finished_chats_do_not_hold_the_budget_down():
     controller = make_controller(n_ctx = 8192)
     for i, name in enumerate(["a", "b", "c", "d"]):
         controller.admit(name, prompt_tokens = 3500, slot = i)
-    assert controller.resident_total() == 14000        # over the pool: the live symptom
+    assert controller.resident_total() == 14000  # over the pool: the live symptom
     for name in ["a", "b", "c"]:
         controller.finish(name)
     assert controller.resident_total() == 3500
