@@ -100,7 +100,15 @@ def test_a_queued_tool_chat_is_armed_once_granted(monkeypatch):
     arms: list[tuple[str, bool]] = []
     real_arm = inference_route._openai_llama_preemption_arm
 
-    def _recording_arm(*, request, llama_backend, reservation, gen_id, signal, loop = None):
+    def _recording_arm(
+        *,
+        request,
+        llama_backend,
+        reservation,
+        gen_id,
+        signal,
+        loop = None,
+    ):
         held = reservation is not None and reservation.lease_nowait() is not None
         arms.append((gen_id, held))
         return real_arm(
@@ -152,9 +160,9 @@ def test_a_queued_tool_chat_is_armed_once_granted(monkeypatch):
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
             await wait_for_frame(queued, task, what = "the admission-wait comment")
-            assert arms and not arms[0][1], (
-                "the arm beside the reservation should have found no lease yet"
-            )
+            assert (
+                arms and not arms[0][1]
+            ), "the arm beside the reservation should have found no lease yet"
             holder.release()
             await wait_for_frame(done, task, what = "the [DONE] frame")
         finally:

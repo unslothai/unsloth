@@ -282,9 +282,9 @@ class TestTheRouteActuallyArmsIt:
         assert (
             source.count("_gguf_preempt_policy_hold.bind(") == 2
         ), "the policy must be bound beside the reservation and again after the wait"
-        assert "if not _gguf_preempt_policy_hold.bound:" in source, (
-            "the second bind must not replace an arm the first already made"
-        )
+        assert (
+            "if not _gguf_preempt_policy_hold.bound:" in source
+        ), "the second bind must not replace an arm the first already made"
 
 
 class TestSpeculativeDraftsAreReserved:
