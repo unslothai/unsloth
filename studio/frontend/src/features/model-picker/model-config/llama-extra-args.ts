@@ -866,7 +866,8 @@ export function diagnoseExtraArgs(
       continue;
     }
     // Before the de-duplication below, because llama.cpp reads the LAST occurrence: in `-ngl 20 -ngl
-    // many` it is the second one the backend refuses.
+    // many` it is the second one the backend parses and refuses, so checking only the first would
+    // leave Load enabled for a request that 400s.
     if (INTEGER_VALUE_FLAGS.has(flag) || VALUE_REQUIRED_FLAGS.has(flag)) {
       const attached = valueIsAttached(token, flag);
       const value = attached ? token.split("=")[1] : tokens[index + 1];

@@ -359,7 +359,8 @@ class TestFriendlyUpstreamError:
 
 
 # =====================================================================
-# ChatMessage — tool role, tool_calls, optional content
+
+# ChatMessage - tool role, tool_calls, optional content
 # =====================================================================
 
 
@@ -527,7 +528,8 @@ class TestChatMessageToolRoles:
 
 
 # =====================================================================
-# ChatCompletionRequest — standard OpenAI tool fields
+
+# ChatCompletionRequest - standard OpenAI tool fields
 # =====================================================================
 
 
@@ -2440,7 +2442,8 @@ class TestChatCompletionRequestToolFields:
 
 
 # =====================================================================
-# anthropic_tool_choice_to_openai — pure translation helper
+
+# anthropic_tool_choice_to_openai - pure translation helper
 # =====================================================================
 
 
@@ -2471,7 +2474,8 @@ class TestAnthropicToolChoiceToOpenAI:
 
 
 # =====================================================================
-# _build_passthrough_payload — tool_choice propagation
+
+# _build_passthrough_payload - tool_choice propagation
 # =====================================================================
 
 
@@ -2779,6 +2783,8 @@ class TestOpenAIPassthroughSSETerminalState:
 
 
 # =====================================================================
+
+# =====================================================================
 # Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
@@ -2889,7 +2895,8 @@ class TestPassthroughReasoningKwargs:
 
 
 # =====================================================================
-# OpenAI API compatibility helpers — verified spec edge cases
+
+# OpenAI API compatibility helpers - verified spec edge cases
 # =====================================================================
 
 
@@ -3453,7 +3460,8 @@ class TestOpenAICompatibilityHelpers:
 
 
 # =====================================================================
-# _friendly_error — httpx transport failures
+
+# _friendly_error - httpx transport failures
 # =====================================================================
 
 
@@ -3479,7 +3487,7 @@ class TestFriendlyErrorHttpx:
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
-        # — a context-size message must still produce "Message too long".
+        # - a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
@@ -10163,6 +10171,8 @@ class TestApiMonitorAudioInput:
 
 
 # =====================================================================
+
+# =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10321,6 +10331,8 @@ class TestResponsesChatTemplateKwargs:
 
         asyncio.run(_run())
 
+
+# =====================================================================
 
 # =====================================================================
 # GGUF chat-template role alternation: coalesce orphaned user turns left

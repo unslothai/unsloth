@@ -1909,8 +1909,10 @@ function VideoGenerator({
   }, [setStatusIfNewest]);
 
   // A generation can be refused because the runtime went away under the page: an idle auto-unload
-  // frees it server-side and the browser hears nothing, so the refusal is the news. Also
-  // clears the state that only means anything while one is resident.
+  // frees it server-side and the browser hears nothing. Without a re-read here Generate stays
+  // enabled off the stale flag and every retry 409s again, so the refusal is the news. Also
+  // clears the state that only means anything while one is resident (the Reapply target, a
+  // replacement load's tracking).
   const resyncAfterGenerateRefusal = useCallback(async () => {
     // A model picked while this read is in flight makes the answer stale rather than wrong:
     // /video/status reports committed state, so it says loaded: false for the load that has just

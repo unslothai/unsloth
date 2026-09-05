@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-# Aliased: this module already has its own `run_pwsh` fragment helper, which now calls the
-# shared runner rather than subprocess.run.
+# Aliased: this module already has its own `run_pwsh` fragment helper, which now calls the shared runner rather than
+# subprocess.run.
 from unsloth_pwsh_runner import run_pwsh as run_pwsh_retrying
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -52,9 +52,8 @@ def run_pwsh(
     run_env["NO_COLOR"] = "1"
     if env:
         run_env.update(env)
-    # The shared runner, not subprocess.run: the PR_FORCE cases below read stdout for the
-    # promoted ref and the fixed ggml-org source, and a pwsh killed at startup yields empty
-    # stdout that looks like setup.ps1 promoting nothing.
+    # The shared runner, not subprocess.run: the PR_FORCE cases below read stdout for the promoted ref and the fixed
+    # ggml-org source, and a pwsh killed at startup yields empty stdout that looks like setup.ps1 promoting nothing.
     # See tests/_shared/unsloth_pwsh_runner.py.
     return run_pwsh_retrying(
         [PWSH, "-NoProfile", "-Command", script],
@@ -65,7 +64,6 @@ def run_pwsh(
     )
 
 
-# Shared bash stubs.
 BASH_STUBS = textwrap.dedent("""\
     step()    { echo "step:$1:$2"; }
     substep() { :; }
@@ -104,7 +102,6 @@ def make_mock_git(tmp_path: Path, *, fail_on: str = "") -> tuple[Path, Path]:
     return mock_bin, log_file
 
 
-# Bash fragment exercising PR_FORCE and fixed _LLAMA_SOURCE resolution.
 def _bash_resolution_fragment(
     llama_pr: str = "",
     llama_pr_force: str = "",
@@ -370,8 +367,8 @@ class TestSourcePatternsSh:
         assert '_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"' in self.content
 
     def test_release_repo_override_removed(self):
-        # No env-based release-repo override, and CPU-only hosts no longer fall
-        # back to ggml-org -- every host now routes to the fork.
+        # No env-based release-repo override, and CPU-only hosts no longer fall back to ggml-org -- every host now
+        # every host now routes to the fork (the CPU-only ggml-org fallback was removed), mirroring setup.sh.
         assert "UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp" not in self.content
         assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in self.content
         assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in self.content
@@ -436,8 +433,8 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
-        # No env-based release-repo override; every host now routes to the fork
-        # (the CPU-only ggml-org fallback was removed), mirroring setup.sh.
+        # No env-based release-repo override; every host now routes to the fork (the CPU-only ggml-org fallback was
+        # removed), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
         assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in self.content
         assert "$HelperReleaseRepo = if (" not in self.content
@@ -528,7 +525,6 @@ class TestPwshPrForcePromotion:
             default_source,
         )
         run_env = {}
-        # Unset env vars by default.
         run_env["UNSLOTH_LLAMA_PR"] = ""
         run_env["UNSLOTH_LLAMA_PR_FORCE"] = ""
         if env:

@@ -751,7 +751,8 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  // Kimi's $web_search builtin mandates thinking=disabled. Both pills stay clickable, but turning
+  // Kimi's $web_search builtin mandates thinking=disabled
+  // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay clickable, but turning
   // one on flips the other off, so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
@@ -1410,7 +1411,8 @@ export function SharedComposer({
         }
         // A pane's OWN saved split is sent instead of being forced to Auto (#7574); the shared Send-time
         // snapshot is not, since its layer count is bounded by another GGUF. Knobs the runner has no
-        // equivalent for stay hard-forced, and an UNCLASSIFIED GGUF is pinned too.
+        // equivalent for (MoE offload, tensor parallel) stay hard-forced, and an UNCLASSIFIED GGUF
+        // is pinned too: see lib/gpu-placement.ts.
         const {
           gpuMemoryMode: effectiveGpuMemoryMode,
           gpuLayers: effectiveGpuLayers,
