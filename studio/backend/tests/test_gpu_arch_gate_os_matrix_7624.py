@@ -770,6 +770,16 @@ class TestArchStringRobustness:
         ) == frozenset({"gfx1030"})
 
 
+def _priced_layout(**fields):
+    """A readable tensor layout: untied embeddings, nothing CPU-pinned, no MTP
+    blocks, unless a test says otherwise."""
+    from core.inference.offload_layout import ModelLayout
+
+    values = {"complete": True, "lm_head_bytes": 1}
+    values.update(fields)
+    return ModelLayout(**values)
+
+
 def _run_auto_load(
     monkeypatch,
     tmp_path,
@@ -785,6 +795,8 @@ def _run_auto_load(
     apu_ram_stub = None,
     host_offload_stub = None,
     backend = None,
+    mmproj_bytes = 0,
+    server_caps = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the real
     ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -817,8 +829,19 @@ def _run_auto_load(
     # model_bytes drives the placement decision: a model no GPU can hold makes
     # _select_gpus return (None, True), so `--fit on` owns placement.
     backend._get_gguf_size_bytes = lambda _path: model_bytes
-    backend._mmproj_vram_bytes = lambda _path: 0
-    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    if mmproj_bytes:
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"GGUF")
+        backend._mmproj_vram_bytes = lambda _path: mmproj_bytes
+        backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+    else:
+        backend._mmproj_vram_bytes = lambda _path: 0
+        backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    # The header-only GGUF has no tensor table, and an unreadable layout prices
+    # nothing (the unified-memory gate fails closed on it). Hand the load a
+    # readable one unless the test brought its own.
+    if "_tensor_spill_layout" not in vars(backend):
+        backend._tensor_spill_layout = lambda _path: _priced_layout()
     # Off by default: the APU RAM preflight is not what most of these cells are
     # about. A test that IS about it passes its own recording stub.
     backend._apu_ram_shortfall_message = apu_ram_stub or (lambda *_args, **_kwargs: None)
@@ -826,7 +849,7 @@ def _run_auto_load(
     backend._host_offload_shortfall_message = host_offload_stub or (lambda *_args, **_kwargs: None)
     backend._find_llama_server_binary = lambda include_denied = False: binary
     backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
-    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    backend.probe_server_capabilities = lambda _binary: {"found": True, **(server_caps or {})}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     # env_extra seeds the child env the way an inherited / user-set variable
@@ -1965,6 +1988,9 @@ class TestUnifiedMemoryOptOut:
         extra_args = None,
         returncode = None,
         output = "",
+        intent_extra = None,
+        mmproj_bytes = 0,
+        server_caps = None,
     ):
         # A forced full offload (manual mode at the picker's maximum, above the
         # block count) is the launch that can only fit with managed pages; under
@@ -1974,6 +2000,7 @@ class TestUnifiedMemoryOptOut:
         intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9}
         if extra_args:
             intent_kwargs["extra_args"] = list(extra_args)
+        intent_kwargs.update(intent_extra or {})
         return _run_auto_load(
             monkeypatch,
             tmp_path,
@@ -1985,6 +2012,8 @@ class TestUnifiedMemoryOptOut:
             model_bytes = model_bytes,
             backend = backend,
             intent_kwargs = intent_kwargs,
+            mmproj_bytes = mmproj_bytes,
+            server_caps = server_caps,
         )
 
     def test_a_forced_full_offload_that_outgrows_the_carve_out_gets_it(
@@ -2154,6 +2183,85 @@ class TestUnifiedMemoryOptOut:
         retries = [(c, e) for c, e in launches if "--spec-default" in c and "draft-mtp" not in c]
         assert retries, [c for c, _e in launches]
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for _c, e in retries)
+
+    def _with_layout(self, **fields):
+        backend = LlamaCppBackend()
+        backend._tensor_spill_layout = lambda _path: _priced_layout(**fields)
+        return backend
+
+    def test_cpu_pinned_embeddings_are_not_priced(self, tmp_path, monkeypatch, probe_env):
+        """40 GiB file, 10 GiB of it token_embd (the PLE table shares that name):
+        dev_input stays on the CPU at full offload, so the 30 GiB on the device fit."""
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_layout(token_embd_bytes = 10 * GIB)
+        )[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_tied_embeddings_still_reach_the_device(self, tmp_path, monkeypatch, probe_env):
+        """No output.weight: llama.cpp duplicates the matrix onto the device."""
+        _cmd, env = self._load(
+            tmp_path,
+            monkeypatch,
+            backend = self._with_layout(token_embd_bytes = 10 * GIB, lm_head_bytes = 0),
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_small_embeddings_leave_an_oversized_base(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(
+            tmp_path, monkeypatch, backend = self._with_layout(token_embd_bytes = 4 * GIB)
+        )[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_an_incomplete_layout_cannot_price_the_file(self, tmp_path, monkeypatch, probe_env):
+        _cmd, env = self._load(tmp_path, monkeypatch, backend = self._with_layout(complete = False))[0]
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    _PROJECTOR_OOM = (
+        "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 4096.00 MiB on "
+        "device 0: cudaMalloc failed: out of memory"
+    )
+
+    def _vision_launches(
+        self,
+        tmp_path,
+        monkeypatch,
+        server_caps = None,
+    ):
+        """30 GiB base plus a 4 GiB projector outgrow the 32 GiB carve-out; the
+        base alone does not. The GPU-projector launch fails on memory."""
+        launches = self._load(
+            tmp_path,
+            monkeypatch,
+            model_bytes = 30 * GIB,
+            mmproj_bytes = 4 * GIB,
+            intent_extra = {"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
+            server_caps = server_caps,
+            returncode = 1,
+            output = self._PROJECTOR_OOM,
+        )
+        first_cmd, first_env = launches[0]
+        assert "--mmproj" in first_cmd and "--no-mmproj-offload" not in first_cmd, first_cmd
+        assert first_env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+        return launches
+
+    def test_the_cpu_projector_retry_reprices_without_its_bytes(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        launches = self._vision_launches(
+            tmp_path, monkeypatch, server_caps = {"supports_no_mmproj_offload": True}
+        )
+        cpu_pinned = [e for c, e in launches if "--no-mmproj-offload" in c]
+        assert cpu_pinned, [c for c, _e in launches]
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for e in cpu_pinned)
+
+    def test_the_text_only_retry_reprices_without_the_projector(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """A build without --no-mmproj-offload goes straight to stripping --mmproj."""
+        launches = self._vision_launches(tmp_path, monkeypatch)
+        text_only = [e for c, e in launches if "--mmproj" not in c]
+        assert text_only, [c for c, _e in launches]
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for e in text_only)
 
     def test_an_unreadable_tensor_table_cannot_price_the_blocks(
         self, tmp_path, monkeypatch, probe_env

@@ -4788,6 +4788,23 @@ def _paravirtual_draft_ngl_flag(server_caps: Mapping[str, object]) -> Optional[s
     return None
 
 
+def _argv_keeps_projector_on_gpu(
+    args: Sequence[str], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether *args* still load a projector onto the device.
+
+    The text-only retry strips ``--mmproj`` and the CPU-projector retry appends
+    ``--no-mmproj-offload``; either leaves the base alone on the carve-out."""
+    tokens = [str(a) for a in args]
+
+    def _flag(token: str) -> str:
+        return token.split("=", 1)[0].replace("_", "-").lower()
+
+    if not any(_flag(a) in ("--mmproj", "-mm") for a in tokens):
+        return False
+    return _resolved_mmproj_offload(tokens, env or {}) is not False
+
+
 def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     """True when --no-mmproj-offload can be emitted, including on an unanswered probe."""
     return bool(
@@ -22923,17 +22940,50 @@ class LlamaCppBackend:
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
                     need = int(model_size)
-                    # Trailing NextN/MTP blocks stay unloaded unless a draft engages
-                    # (offload_layout: an -ot naming them moves nothing), but
-                    # model_size counts them, and a base that fits its carve-out
-                    # must not take managed pages on their account. A table that
-                    # cannot be read cannot price them, so it does not take them.
+                    # The projector was priced onto the device; a retry that pins
+                    # it to the CPU or strips it loads the base alone.
+                    if mmproj_size and not _argv_keeps_projector_on_gpu(run_argv, env):
+                        need -= int(mmproj_size)
+                    # The file overstates the device: dev_input is CPU-pinned even
+                    # at full offload (offload_layout), so token_embd and the
+                    # per-layer table sharing its name never reach the carve-out.
+                    # A tied file duplicates the matrix onto the device instead, so
+                    # only an untied one subtracts it. Trailing NextN/MTP blocks
+                    # stay unloaded unless a draft engages. A table that cannot be
+                    # read cannot price either, so it takes nothing.
+                    layout = self._tensor_spill_layout(model_path)
+                    if layout is None or not getattr(layout, "complete", True):
+                        return None
+                    if int(getattr(layout, "lm_head_bytes", 0) or 0):
+                        need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
                     if not engages and self._nextn_predict_layers:
-                        layout = self._tensor_spill_layout(model_path)
-                        if layout is None:
-                            return None
-                        need -= int(layout.excluded_block_bytes or 0)
+                        need -= int(getattr(layout, "excluded_block_bytes", 0) or 0)
                     return need
+
+                def _unified_withdraw_if_unneeded(
+                    run_cmd,
+                    *,
+                    mtp_engages = None,
+                    why = "",
+                ):
+                    """Drop the variable this launch set once a respawn no longer
+                    needs it; an inherited or opted-in value is left alone."""
+                    nonlocal _unified_env_applied
+                    if not _unified_env_applied:
+                        return
+                    if self._unified_memory_for_launch(
+                        gpu_indices,
+                        _unified_need_now(argv = run_cmd, mtp_engages = mtp_engages),
+                        opted_in = _unified_opt_in,
+                    ):
+                        return
+                    env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
+                    _unified_env_applied = False
+                    logger.info(
+                        "%s no longer needs managed memory; dropped "
+                        "GGML_CUDA_ENABLE_UNIFIED_MEMORY.",
+                        why or "The retry",
+                    )
 
                 _unified_need = _unified_need_now()
                 if _unified_opt_out:
@@ -24419,21 +24469,13 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
-                    # The managed-memory price counted the MTP blocks a draft would
-                    # have loaded; this retry loads none. Re-price the base alone and
-                    # withdraw only what this launch set, so a base the carve-out
-                    # holds does not carry managed pages into the drafterless server.
-                    if _unified_env_applied and not self._unified_memory_for_launch(
-                        gpu_indices,
-                        _unified_need_now(argv = fallback_cmd, mtp_engages = False),
-                        opted_in = _unified_opt_in,
-                    ):
-                        env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
-                        _unified_env_applied = False
-                        logger.info(
-                            "Retry without speculative decoding no longer needs managed "
-                            "memory; dropped GGML_CUDA_ENABLE_UNIFIED_MEMORY."
-                        )
+                    # The price counted the MTP blocks a draft would have loaded;
+                    # this retry loads none.
+                    _unified_withdraw_if_unneeded(
+                        fallback_cmd,
+                        mtp_engages = False,
+                        why = "The retry without speculative decoding",
+                    )
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
@@ -24517,6 +24559,10 @@ class LlamaCppBackend:
                                 "projector on CPU to preserve image input."
                             )
                             cmd = _cpu_projector_cmd
+                            # The projector's bytes leave the device with it.
+                            _unified_withdraw_if_unneeded(
+                                cmd, why = "The retry with the projector on CPU"
+                            )
                             healthy = _spawn_and_wait(cmd, label = "-mmproj-cpu")
                             if healthy:
                                 self._mmproj_fallback_reason = "cpu_offload"
@@ -24590,6 +24636,7 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the
                             # launched-argv snapshot itself -- the zero-offload
                             # classification below must not see the stripped --mmproj.
