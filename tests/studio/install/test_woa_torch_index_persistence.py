@@ -2753,7 +2753,9 @@ class TestAFloorIsPep440AboutPrereleases:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert (done.stdout.strip().splitlines()[-1] == "True") is expected, why
@@ -2766,7 +2768,8 @@ class TestAFloorIsPep440AboutPrereleases:
         for version, floor, expected, why in self.CASES:
             try:
                 reference = specifiers.SpecifierSet(f">={floor}").contains(
-                    version, prereleases = True,
+                    version,
+                    prereleases = True,
                 )
             except Exception:
                 continue  # "nonsense" is not a version; the PowerShell rule stands alone
@@ -2791,7 +2794,9 @@ class TestAFloorIsPep440AboutPrereleases:
         )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "True"
