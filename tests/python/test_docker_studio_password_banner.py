@@ -50,7 +50,12 @@ def _clean_env(bin_dir: Path) -> dict:
     return e
 
 
-def _auth_db(home: Path, *, must_change: int | None, legacy: bool = False) -> None:
+def _auth_db(
+    home: Path,
+    *,
+    must_change: int | None,
+    legacy: bool = False,
+) -> None:
     """auth.db as the backend creates it; None = the file exists but no admin row;
     legacy = the schema from before must_change_password existed."""
     auth = home / "auth"
