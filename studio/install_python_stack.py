@@ -5521,7 +5521,7 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
         rhs = want + (0,) * (width - len(want))
         if wildcard:
             # ==1.2.* / !=1.2.*: only the prefix is compared.
-            prefix = got[:len(want)] + (0,) * max(0, len(want) - len(got))
+            prefix = got[: len(want)] + (0,) * max(0, len(want) - len(got))
             ok = prefix == want
             if op == "==":
                 pass
@@ -5544,7 +5544,7 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
         else:  # ~=X.Y[.Z] is ">=X.Y[.Z], ==X.Y.*" one level up
             if len(want) < 2:
                 return None
-            ok = lhs >= rhs and got[:len(want) - 1] == want[:len(want) - 1]
+            ok = lhs >= rhs and got[: len(want) - 1] == want[: len(want) - 1]
         if not ok:
             return False
     return True

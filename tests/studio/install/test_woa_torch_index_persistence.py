@@ -1590,31 +1590,55 @@ class TestThePurgeKeepsWhatIsNotOurs:
         "var, value, expected, why",
         [
             ("UV_FIND_LINKS", "{home}/woa/wheels", "", "ours alone still goes"),
-            ("UV_FIND_LINKS", "{home}/woa/wheels,/mnt/mirror", "/mnt/mirror",
-             "the caller's mirror survives the comma form"),
-            ("PIP_FIND_LINKS", "{home}/woa/wheels /mnt/mirror", "/mnt/mirror",
-             "and the whitespace form"),
-            ("PIP_FIND_LINKS", "/a {home}/woa/wheels /b", "/a /b",
-             "ours is removed from the middle without disturbing the rest"),
-            ("UV_FIND_LINKS", "/mnt/mirror", "/mnt/mirror",
-             "a value that is entirely the caller's is untouched"),
+            (
+                "UV_FIND_LINKS",
+                "{home}/woa/wheels,/mnt/mirror",
+                "/mnt/mirror",
+                "the caller's mirror survives the comma form",
+            ),
+            (
+                "PIP_FIND_LINKS",
+                "{home}/woa/wheels /mnt/mirror",
+                "/mnt/mirror",
+                "and the whitespace form",
+            ),
+            (
+                "PIP_FIND_LINKS",
+                "/a {home}/woa/wheels /b",
+                "/a /b",
+                "ours is removed from the middle without disturbing the rest",
+            ),
+            (
+                "UV_FIND_LINKS",
+                "/mnt/mirror",
+                "/mnt/mirror",
+                "a value that is entirely the caller's is untouched",
+            ),
             ("UV_OVERRIDE", "{home}/woa/overrides.txt", "", "ours alone still goes"),
-            ("UV_OVERRIDE", "{home}/woa/overrides.txt /etc/ov.txt", "/etc/ov.txt",
-             "a caller's override file survives"),
+            (
+                "UV_OVERRIDE",
+                "{home}/woa/overrides.txt /etc/ov.txt",
+                "/etc/ov.txt",
+                "a caller's override file survives",
+            ),
         ],
     )
     def test_only_the_owned_entries_are_removed(self, var, value, expected, why):
         home = "/home/u/AppData/Local/unsloth"
-        script = "\n".join([
-            f"$StudioHome = '{home}'",
-            "function Get-UvSafePath { param([string]$p) return $p }",
-            f"$env:{var} = '{value.format(home = home)}'",
-            self._purge_block(),
-            f"Write-Output ('[' + $env:{var} + ']')",
-        ])
+        script = "\n".join(
+            [
+                f"$StudioHome = '{home}'",
+                "function Get-UvSafePath { param([string]$p) return $p }",
+                f"$env:{var} = '{value.format(home = home)}'",
+                self._purge_block(),
+                f"Write-Output ('[' + $env:{var} + ']')",
+            ]
+        )
         done = subprocess.run(
             [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
@@ -1629,7 +1653,8 @@ class TestAMalformedHandoffUrlDoesNotCostTheManifest:
     """
 
     @pytest.mark.parametrize(
-        "bad", ["https://[", "https://pypi.nvidia.com:notaport/x", "https://[::1", "://"],
+        "bad",
+        ["https://[", "https://pypi.nvidia.com:notaport/x", "https://[::1", "://"],
     )
     def test_the_manifest_is_still_written(self, tmp_path, bad):
         module = _load_manifest_module()
@@ -1641,7 +1666,8 @@ class TestAMalformedHandoffUrlDoesNotCostTheManifest:
     def test_a_good_url_is_still_persisted(self, tmp_path):
         module = _load_manifest_module()
         written = module.write_manifest(
-            tmp_path, woa_torch_index = "https://pypi.nvidia.com/nvtorch_oot/",
+            tmp_path,
+            woa_torch_index = "https://pypi.nvidia.com/nvtorch_oot/",
         )
         payload = json.loads(pathlib.Path(written).read_text(encoding = "utf-8"))
         assert payload["woa_torch_index"] == "https://pypi.nvidia.com/nvtorch_oot"
@@ -1664,12 +1690,12 @@ class TestAStaleTorchaudioIsRemoved:
     def test_the_removal_is_conditional_on_a_mismatch(self):
         block = self._block()
         assert "Fast-Uninstall torchaudio" in block
-        assert "$_woaAudioMm -ne $_woaTorchMm" in block, (
-            "a matching audio wheel is the one this venv was installed with and stays"
-        )
-        assert "$_woaAudioProbe.Ok" in block, (
-            "a probe that did not answer says nothing; it must not trigger a removal"
-        )
+        assert (
+            "$_woaAudioMm -ne $_woaTorchMm" in block
+        ), "a matching audio wheel is the one this venv was installed with and stays"
+        assert (
+            "$_woaAudioProbe.Ok" in block
+        ), "a probe that did not answer says nothing; it must not trigger a removal"
 
     def test_it_only_runs_where_audio_was_dropped(self):
         block = self._block()
@@ -1681,6 +1707,6 @@ class TestAStaleTorchaudioIsRemoved:
     def test_it_runs_after_the_install_succeeded(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         failed = text.index('Exit-SetupFailure "PyTorch CUDA installation failed')
-        assert text.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed, (
-            "removing audio before knowing torch installed would strip a working venv"
-        )
+        assert (
+            text.index("if ($WinArm64Venv -and $WinArm64NoAudio) {") > failed
+        ), "removing audio before knowing torch installed would strip a working venv"

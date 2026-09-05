@@ -327,8 +327,12 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("0.12.0", "tiktoken>=0.10", False, "a range the hosted wheel satisfies"),
             ("0.9.0", "tiktoken>=0.10", True, "a range it does not"),
             ("0.12.0", "tiktoken", False, "no specifier: nothing to fail"),
-            ("0.12.0", "tiktoken===0.12.0", False,
-             "arbitrary equality is beyond the comparison, so the name-only answer stands"),
+            (
+                "0.12.0",
+                "tiktoken===0.12.0",
+                False,
+                "arbitrary equality is beyond the comparison, so the name-only answer stands",
+            ),
         ],
     )
     def test_the_pin_decides(self, ips, wheelhouse, have, pin, still_skipped, why):
@@ -362,9 +366,9 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
         req = self._req(wheelhouse.parent, "tensorboard==2.21.0\n")
         ips._find_links_wheel_names.cache_clear()
         try:
-            assert "tensorboard" not in ips._windows_arm64_skip_packages(req), (
-                "its only blocker is hosted, and tensorboard itself is pure Python"
-            )
+            assert "tensorboard" not in ips._windows_arm64_skip_packages(
+                req
+            ), "its only blocker is hosted, and tensorboard itself is pure Python"
         finally:
             ips._find_links_wheel_names.cache_clear()
 
