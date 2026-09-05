@@ -1139,8 +1139,9 @@ def plan_rung(
     # keeps a prefix from ending inside a fence, while exceeding the unit loses everything above
     # it and is unbounded, and a percentage bound cannot tell those apart. The DEFAULT path is
     # exempt on purpose, since `STREAM_TAIL_CHARS` is a ceiling the small rungs are legitimately
-    # under (the 1K rung is 4,000 characters in total, less than one tail), and that shortfall is
-    # the rung being small rather than the corpus failing to answer.
+    # under: on that path `tail_target` is capped at `target_chars`, so a rung whose whole budget
+    # is under one tail asks for less than one whatever the ratio, and that shortfall is the rung
+    # being small rather than the corpus failing to answer.
     if stream_tail_chars is not None and tail_target >= source.chars:
         raise _tail_not_deliverable(
             rung,
