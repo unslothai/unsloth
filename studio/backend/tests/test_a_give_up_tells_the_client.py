@@ -130,9 +130,9 @@ class TestThePlainChatPath:
         chunks = _run_plain(recorder.backend, signal = signal, policy = policy)
 
         assert policy.events == ["preempted", "awaited"], "the fixture did not give up"
-        assert "".join(c for c in chunks if isinstance(c, str)) == "", (
-            "this test is only about the empty case; it decoded something"
-        )
+        assert (
+            "".join(c for c in chunks if isinstance(c, str)) == ""
+        ), "this test is only about the empty case; it decoded something"
         notices = _gave_up(chunks)
         assert len(notices) == 1, f"expected exactly one notice, got {notices}"
         assert notices[0]["context_length"] == 4096
@@ -153,9 +153,9 @@ class TestThePlainChatPath:
         assert len(_gave_up(chunks)) == 1
         metadata = _metadata(chunks)
         assert len(metadata) == 1, f"one terminal metadata, got {metadata}"
-        assert metadata[0]["finish_reason"] == "length", (
-            "an incomplete turn reported as anything else tells the client it is done"
-        )
+        assert (
+            metadata[0]["finish_reason"] == "length"
+        ), "an incomplete turn reported as anything else tells the client it is done"
 
     def test_the_notice_comes_before_the_end_of_the_turn(self, monkeypatch):
         """Order. A notice after the terminal metadata is a notice a client that stops
@@ -296,9 +296,7 @@ class TestTheDurableRunPath:
         await asyncio.sleep(0)
 
         payloads = [
-            event["payload"]
-            for event in runs_db.list_events("run-1")
-            if event["type"] == "chunk"
+            event["payload"] for event in runs_db.list_events("run-1") if event["type"] == "chunk"
         ]
         carried = [p for p in payloads if isinstance(p.get("context_truncated"), dict)]
         assert len(carried) == 1, f"the notice was not persisted: {payloads}"
