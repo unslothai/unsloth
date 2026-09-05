@@ -937,9 +937,11 @@ def _write_text(path: Path, text: str) -> None:
     _fsync_file(path)
 
 
-# errno values that mean this platform or filesystem will not flush that handle, rather than that the
-# data did not make it: Windows' _commit needs write access, and network/container filesystems return
-# EINVAL/ENOTSUP for fsync.
+# errno values treated as "this platform or filesystem will not flush that handle": Windows' _commit
+# needs write access, and network/container filesystems return EINVAL/ENOTSUP for fsync. EBADF is the
+# exception and is NOT such a signal -- Windows collapses genuine FlushFileBuffers failures into it
+# too, so it is here as a deliberate tradeoff, not because the data is known to have made it. See
+# _fsync_file for what is left guarding that case.
 _FSYNC_UNSUPPORTED = frozenset(
     code
     for code in (
