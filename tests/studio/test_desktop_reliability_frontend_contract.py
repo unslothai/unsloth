@@ -647,10 +647,15 @@ def _class_expression(open_tag: str) -> str:
     return re.sub(r"//[^\n]*|/\*.*?\*/", "", after[:end], flags = re.DOTALL)
 
 
-# A left inset written on the Tailwind scale, as an arbitrary value, or with the
-# suffix-important form the repo already uses in `pl-2!`.
-_LEFT_INSET = re.compile(r"pl-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?")
+# Everything that sets the left edge: `pl-*`, and the `px-*` and `p-*` shorthands that
+# include it. Written on the Tailwind scale, as an arbitrary value, or with the
+# suffix-important form the repo already uses in `pl-2!`. `pr-*`, `pt-*`, `pb-*` and
+# `py-*` are not left padding and must not match.
+_LEFT_INSET = re.compile(r"(?:px|pl|p)-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?")
 _ZERO = re.compile(r"0(?:\.0+)?|\[0(?:\.0+)?[a-z%]*\]")
+# Class strings are written with any of the three quotes. Template literals carry real
+# classes around their `${...}` holes, and 30 files here use `className={`...`}`.
+_QUOTED = re.compile(r'"([^"]*)"|\'([^\']*)\'|`([^`]*)`', re.DOTALL)
 
 
 def _names_a_left_inset(open_tag: str) -> bool:
@@ -668,8 +673,11 @@ def _names_a_left_inset(open_tag: str) -> bool:
     in exactly the collapsed state this test is named for. Variants do not, since
     `hover:pl-4` leaves the resting state flush, and a literal zero does not either.
     """
-    for token in re.findall(r'"([^"]*)"', _class_expression(open_tag)):
-        for word in token.split():
+    for groups in _QUOTED.findall(_class_expression(open_tag)):
+        for word in "".join(groups).split():
+            # A template literal is captured whole, so a class inside one of its
+            # `${...}` holes still arrives wearing its own quotes.
+            word = word.strip("\"'`")
             if ":" in word:
                 continue
             match = _LEFT_INSET.fullmatch(word)
