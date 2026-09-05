@@ -116,4 +116,12 @@ test("the chat adapter sends compaction fields through the shared helper", () =>
     "utf8",
   );
   assert.match(adapter, /ggufCompactionRequestFields\(/);
+  // The loaded backend is authoritative when a catalog row is absent or stale;
+  // catalog/pre-load identity is only the fallback before status arrives.
+  assert.match(adapter, /loadedIsGguf: runtime\.loadedIsGguf/);
+  assert.match(adapter, /runtime\.loadedIsGguf == null/);
+  assert.match(adapter, /isGguf: isGgufForCompaction/);
+  assert.match(adapter, /isServedByLlamaCpp\(/);
+  // This is the same request object used by multimodal legacy streaming.
+  assert.match(adapter, /image_base64: imageBase64/);
 });

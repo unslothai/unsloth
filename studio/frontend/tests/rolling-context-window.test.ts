@@ -21,7 +21,8 @@ const transport = readFileSync(
 );
 
 test("local chat opts into the rolling context policy", () => {
-  assert.match(adapter, /isGguf === true/);
+  assert.match(adapter, /isGgufForCompaction/);
+  assert.match(adapter, /runtime\.loadedIsGguf/);
   assert.match(adapter, /autoCompactEnabled/);
   assert.match(adapter, /ggufCompactionRequestFields\(/);
   assert.match(adapter, /This conversation was compacted/);
