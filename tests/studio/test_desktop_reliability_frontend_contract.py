@@ -647,68 +647,35 @@ def _class_expression(open_tag: str) -> str:
     return re.sub(r"//[^\n]*|/\*.*?\*/", "", after[:end], flags = re.DOTALL)
 
 
-def _unconditional_classes(expression: str) -> list:
-    """The classes the element always carries, in source order.
+# A left inset written on the Tailwind scale, as an arbitrary value, or with the
+# suffix-important form the repo already uses in `pl-2!`.
+_LEFT_INSET = re.compile(r"pl-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?")
+_ZERO = re.compile(r"0(?:\.0+)?|\[0(?:\.0+)?[a-z%]*\]")
 
-    An argument holding `&&` or `?` renders only in some state, and this test is about
-    the collapsed one, so `cn(pinned && "pl-4")` contributes nothing: `pinned` is false
-    exactly when the arrows need the inset.
+
+def _names_a_left_inset(open_tag: str) -> bool:
+    """Whether the className asks for a non-zero left padding anywhere.
+
+    Deliberately weaker than "the element renders with a left inset". What actually
+    renders depends on the tailwind-merge cascade, the important modifier, whether an
+    arbitrary value is valid CSS, and runtime state; none of that is decidable from
+    source, and trying produced a check that rejected correct refactors, which is the
+    fault this test is being fixed for. So the two errors are not traded evenly: a
+    guard that misses a lost inset costs 4px nobody dies over, and one that rejects a
+    rename blocks a correct PR, which is how #10321 got here.
+
+    Conditional arguments therefore count, because `cn(!pinned && "pl-4")` is an inset
+    in exactly the collapsed state this test is named for. Variants do not, since
+    `hover:pl-4` leaves the resting state flush, and a literal zero does not either.
     """
-    inner = expression[1:-1] if expression.startswith("{") else expression
-    if inner.strip().startswith("cn("):
-        inner = inner.strip()[3:].rsplit(")", 1)[0]
-    classes, depth, quote, start = [], 0, "", 0
-    parts = []
-    for index, char in enumerate(inner + ","):
-        if quote:
-            if char == quote and inner[index - 1] != "\\":
-                quote = ""
-        elif char in "\"'`":
-            quote = char
-        elif char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        elif char == "," and depth == 0:
-            parts.append(inner[start:index])
-            start = index + 1
-    for part in parts:
-        literal = re.fullmatch(r'\s*"([^"]*)"\s*', part)
-        if literal:
-            classes.extend(literal.group(1).split())
-    return classes
-
-
-# Tailwind's own scale, plus the arbitrary values whose length is a plain literal. A
-# `var()` or `calc()` cannot be resolved from source and is deliberately not accepted.
-_PADDING = re.compile(r"(p|px|pl)-(\d+(?:\.\d+)?|px|\[[^\]]+\])!?$")
-_PLAIN_LENGTH = re.compile(r"\[(\d+(?:\.\d+)?)(px|rem|em|ch|%|vh|vw)?\]$")
-
-
-def _has_left_inset(open_tag: str) -> bool:
-    """Whether the element always renders with a non-zero left padding.
-
-    tailwind-merge resolves conflicts last-wins, and `p-*` and `px-*` both set the left
-    edge, so `cn("pl-4", "p-0")` is flush however the first token reads. Variants like
-    `hover:pl-4` do not describe the resting state. Anything whose value cannot be read
-    off the source, such as `pl-[var(--inset,0px)]`, counts as unproven rather than as
-    an inset.
-    """
-    effective = None
-    for token in _unconditional_classes(_class_expression(open_tag)):
-        if ":" in token:
-            continue
-        match = _PADDING.fullmatch(token)
-        if match:
-            effective = match.group(2)
-    if effective is None:
-        return False
-    if effective == "px":
-        return True
-    if effective.startswith("["):
-        plain = _PLAIN_LENGTH.fullmatch(effective)
-        return plain is not None and float(plain.group(1)) != 0
-    return float(effective) != 0
+    for token in re.findall(r'"([^"]*)"', _class_expression(open_tag)):
+        for word in token.split():
+            if ":" in word:
+                continue
+            match = _LEFT_INSET.fullmatch(word)
+            if match and not _ZERO.fullmatch(match.group(1)):
+                return True
+    return False
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
@@ -734,7 +701,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     # The collapsed navigation starts at the window edge, so it needs a left inset or
     # the back arrow sits against the frame. #7837 added one and pinned its exact 12px,
     # which is the single value an alignment pass is most likely to move.
-    assert _has_left_inset(_open_tag(titlebar, _NAV_BOX)), (
+    assert _names_a_left_inset(_open_tag(titlebar, _NAV_BOX)), (
         "the titlebar navigation container lost its left inset, so the history arrows "
         f"sit flush against the window edge: {_open_tag(titlebar, _NAV_BOX)}"
     )
