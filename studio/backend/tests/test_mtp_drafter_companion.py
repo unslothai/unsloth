@@ -755,6 +755,108 @@ def _seed_snapshot(tmp_path, names):
     return snap
 
 
+def _hub_snapshot(tmp_path, names):
+    """A snapshot in the layout _snapshot_dir_of recognises: .../snapshots/<rev>/."""
+    snap = tmp_path / "hub" / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "abc"
+    for rel in names:
+        f = snap / rel
+        f.parent.mkdir(parents = True, exist_ok = True)
+        f.write_bytes(b"x")
+    return snap
+
+
+def _capture_companion_download(backend):
+    captured = {}
+
+    def _fake(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+    ):
+        captured["pick"] = pick
+        captured["near_path"] = near_path
+        return "/downloaded/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+
+    backend._download_companion_gguf = _fake
+    return captured
+
+
+def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path, monkeypatch):
+    """An install that downloaded before the picker changed holds only the
+    borrowing head. The snapshot sibling would hand it straight back and the
+    --fit under-reservation (unsloth#10322) would survive the upgrade, so
+    online a lone shared head falls through to the live listing."""
+    import utils.models.gguf_metadata as gm
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
+    snap = _hub_snapshot(
+        tmp_path,
+        ["UD-IQ1_S/model.gguf", "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"],
+    )
+    b = LlamaCppBackend()
+    captured = _capture_companion_download(b)
+
+    got = b._download_mtp(
+        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+    )
+    assert "pick" in captured, "a lone shared head was reused without consulting the repo"
+    assert got == "/downloaded/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+
+
+def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkeypatch):
+    """The refetch is only for the borrowing form; a self-contained head on disk
+    is exactly what the picker would download, so no listing is needed."""
+    import utils.models.gguf_metadata as gm
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
+    snap = _hub_snapshot(
+        tmp_path,
+        [
+            "UD-IQ1_S/model.gguf",
+            "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+            "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+        ],
+    )
+    b = LlamaCppBackend()
+    captured = _capture_companion_download(b)
+
+    got = b._download_mtp(
+        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+    )
+    assert "pick" not in captured
+    assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+
+
+def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
+    """Offline there is nothing better to fetch, so the borrowing head is still
+    the drafter to launch rather than none at all."""
+    import utils.models.gguf_metadata as gm
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
+    snap = _hub_snapshot(
+        tmp_path,
+        ["UD-IQ1_S/model.gguf", "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"],
+    )
+    b = LlamaCppBackend()
+    captured = _capture_companion_download(b)
+
+    got = b._download_mtp(
+        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+    )
+    assert "pick" not in captured
+    assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+
+
 def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
     import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
@@ -1365,14 +1467,16 @@ def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
 
 def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
     """Candidates collapse to shard 1, so a split copy must be summed or it
-    outranks a smaller single file."""
+    outranks a smaller single file. Same precision on both sides: precision
+    now ranks above size, as it does in the hub picker, so the size rule is
+    only reachable between copies of one tier."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
     sub.mkdir()
     (sub / "mtp-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x" * 90)
     (sub / "mtp-model-Q8_0-00002-of-00002.gguf").write_bytes(b"x" * 90)
-    smaller = sub / "mtp-model-BF16.gguf"
+    smaller = sub / "mtp-model-Q8_0.gguf"
     smaller.write_bytes(b"x" * 100)
 
     assert detect_mtp_file(str(weight)) == str(smaller.resolve())
@@ -1494,8 +1598,10 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
     """Offline reuse must name the file the online picker names.
 
     Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
-    the 7.77 GB slowest head while a fresh install downloaded the 2.79 GB shared
-    Q8_0 one.
+    the 7.77 GB slowest head while a fresh install downloaded the Q8_0 one. Both
+    pickers now take the self-contained Q8_0 over the borrowing shared-Q8_0:
+    llama-server's --fit cannot measure a head that needs its target to load,
+    so it reserved nothing for it and the MTP context OOMed (unsloth#10322).
     """
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1515,7 +1621,7 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
 
     found = backend._cached_repo_mtp_drafter("unsloth/Qwen3.8-Flash-Next-GGUF")
     assert found is not None
-    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", (
+    assert Path(found).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf", (
         f"offline reuse picked {Path(found).name}; the online picker takes "
         f"{llama_cpp_module._pick_mtp(published)}"
     )
@@ -1538,6 +1644,37 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
     )
     backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
     assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+
+def test_local_scan_prefers_the_fit_measurable_head_over_the_smaller_shared_one(tmp_path):
+    """With both forms on disk the self-contained head wins even though it is
+    larger: --fit can measure it, and cannot measure the borrowing one."""
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf").write_bytes(b"x" * 64)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"x" * 128)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+
+
+def test_local_scan_keeps_precision_above_the_borrow_tiebreak(tmp_path):
+    """A self-contained bf16 head must not displace a shared Q8_0 one: the hub
+    picker ranks precision first, and reopening a downloaded model from disk
+    has to launch the same file the download chose."""
+    root = tmp_path / "local"
+    (root / "MTP").mkdir(parents = True)
+    for i in (1, 2, 3):
+        (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-BF16.gguf").write_bytes(b"x" * 512)
+    (root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf").write_bytes(b"x" * 64)
+    found = detect_mtp_file(
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+    )
+    assert found is not None and Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 
 
 def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):

@@ -3269,6 +3269,11 @@ def _is_published_mtp_drafter_name(path: str) -> bool:
     return lower.startswith("mtp-") or stem.endswith("-mtp")
 
 
+def _mtp_head_borrows(path: str) -> bool:
+    """Is this the published ``-shared-`` form, which loads only under its target?"""
+    return "-shared-" in Path(path).name.lower()
+
+
 def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
@@ -14670,7 +14675,18 @@ class LlamaCppBackend:
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, pick)
-            if cached:
+            if cached and _mtp_head_borrows(cached) and not _hf_env_offline():
+                # The snapshot holds only a head the earlier picker chose, the
+                # borrowing form, which llama-server's --fit cannot measure
+                # (unsloth#10322). The live listing ranks the self-contained
+                # head above it, and hf_hub_download reuses this file if the
+                # repo turns out to publish nothing better.
+                logger.info(
+                    "Cached MTP drafter borrows the target's embeddings; checking the "
+                    "repo for a self-contained head: %s",
+                    cached,
+                )
+            elif cached:
                 logger.info("Reusing cached MTP drafter: %s", cached)
                 return cached
 

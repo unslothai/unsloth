@@ -1935,27 +1935,31 @@ def detect_mtp_file(
     def _launchable(candidate: Path) -> bool:
         return _drafter_split_is_complete(candidate)
 
-    def _smallest_first(candidate: Path) -> tuple[int, int, int, str]:
-        # Cheapest compatible copy wins. Size first: a fixed precision list ranked unknown quants
-        # behind BF16, so a small K-quant lost to a far larger BF16. Precision breaks size ties,
-        # name keeps it stable. Split copies collapse to shard 1, so sum across their shards.
-        # MTP prefers Q4_0 where DSpark prefers Q8_0, so the order is its own.
+    def _smallest_first(candidate: Path) -> tuple[int, int, int, int, str]:
+        # The same order the hub picker uses (mtp_preference_key), so a model
+        # reopened from its snapshot launches the head the download chose:
+        # precision first (Q8_0 drafts fastest, bf16 last), then the
+        # self-contained form over the borrowing (-shared-) one, then size,
+        # then name for stability. Split copies collapse to shard 1, so sum
+        # across their shards.
+        # The borrow tiebreak: a head that borrows the target's embeddings
+        # cannot be measured by llama-server's --fit, which loads the draft on
+        # its own; the fit then reserves nothing for it and the MTP context
+        # fails to allocate on a full card (unsloth#10322). It sits after
+        # precision so a self-contained bf16 head never displaces a shared
+        # Q8_0 one.
+        from utils.models.drafters.preference import mtp_precision_rank
+
         name = candidate.name.lower()
-        if "-q4_0" in name:
-            precision = 0
-        elif "-q8_0" in name:
-            precision = 1
-        elif "-bf16" in name or "-f16" in name:
-            precision = 2
-        else:
-            precision = 3
+        borrows = 1 if "-shared-" in name else 0
         # Family first, for the same reason as DSpark: both a base-family and a
         # release-specific sidecar prefix-match, and only the longer one is
         # really this weight's drafter.
         return (
             _drafter_stem_rank(candidate.name, kind = "mtp"),
+            mtp_precision_rank(name),
+            borrows,
             _drafter_total_size(candidate),
-            precision,
             name,
         )
 
