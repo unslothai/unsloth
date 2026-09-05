@@ -1537,12 +1537,14 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
 
     original_replace = INSTALL_LLAMA_PREBUILT.os.replace
 
-    def cross_device_replace(src, dst):
+    # EIO, not EXDEV: a cross-device link is the one rename failure the aside-move
+    # now completes by copy, so it is no longer an example of a move that fails
+    def failing_replace(src, dst):
         if Path(src) == install_dir:
-            raise OSError(errno.EXDEV, "Invalid cross-device link")
+            raise OSError(errno.EIO, "Input/output error")
         return original_replace(src, dst)
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", failing_replace)
 
     with pytest.raises(
         PrebuiltFallback,
@@ -1557,6 +1559,93 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "existing install could not be moved aside; leaving it in place" in output
+
+
+def test_activate_install_tree_copies_the_existing_install_aside_across_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def cross_device_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # a Docker studio build moves the base image's llama.cpp onto a different overlay
+    # layer, where rename cannot reach and the copy fallback has to carry it
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "copy+publish" in output
+
+
+def test_move_install_dir_aside_leaves_no_partial_tree_when_the_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    src = tmp_path / "llama.cpp"
+    src.mkdir()
+    (src / "old.txt").write_text("old install\n")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def failing_copytree(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    # callers read dst.exists() as proof of a COMPLETE tree
+    assert not dst.exists()
+    assert not dst.with_name(dst.name + ".copying").exists()
+    assert (src / "old.txt").read_text() == "old install\n"
+
+
+def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "real-install-elsewhere"
+    target.mkdir()
+    (target / "old.txt").write_text("old install\n")
+
+    src = tmp_path / "llama.cpp"
+    try:
+        src.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
+
+    def cross_device_replace(from_path, to_path):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    # copytree always follows the root, so this would duplicate a checkout the
+    # installer does not own
+    with pytest.raises(OSError, match = "cross-device"):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
+
+    assert not dst.exists()
+    assert src.is_symlink()
+    assert (target / "old.txt").read_text() == "old install\n"
 
 
 def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_lock(
@@ -1731,6 +1820,49 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
 
     captured = capsys.readouterr()
     assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "soname links are a Unix bundle layout")
+@pytest.mark.parametrize("dst_exists", [False, True])
+def test_activate_staged_dir_copy_keeps_soname_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dst_exists: bool
+):
+    """The EXDEV copy must not turn a bundle's soname chain into duplicate libraries.
+
+    A Linux llama.cpp release ships libllama.so -> libllama.so.0 -> libllama.so.0.3.0
+    (10 such links in b10715), and copytree's default symlinks = False dereferences
+    every one of them into a full copy of the shared library.
+    """
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    real = staging_dir / "libllama.so.0.3.0"
+    real.write_bytes(b"\0" * 4096)
+    (staging_dir / "libllama.so.0").symlink_to("libllama.so.0.3.0")
+    (staging_dir / "libllama.so").symlink_to("libllama.so.0")
+    dst = tmp_path / "llama.cpp"
+    if dst_exists:
+        # os.replace also refuses an EMPTY existing dst cross-device, and the copy
+        # still has to complete there
+        dst.mkdir()
+
+    def cross_device_replace(src, dst_arg):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "libllama.so.0.3.0").read_bytes() == b"\0" * 4096
+    for link, target in (("libllama.so.0", "libllama.so.0.3.0"), ("libllama.so", "libllama.so.0")):
+        assert (
+            dst / link
+        ).is_symlink(), f"{link} was dereferenced into a copy of the library it aliases"
+        assert os.readlink(dst / link) == target
+    on_disk = sum(p.lstat().st_size for p in dst.iterdir())
+    assert on_disk < 2 * len(
+        b"\0" * 4096
+    ), f"the activated tree duplicated libraries ({on_disk} bytes)"
+    assert not staging_dir.exists()
 
 
 def test_activate_staged_dir_reraises_non_busy_errors(
@@ -6748,3 +6880,288 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
     host = INSTALL_LLAMA_PREBUILT.detect_host()
     assert host.compute_caps == ["86"]
     assert host.driver_cuda_version == (13, 1)
+
+
+# ── ggml-rpc-server: copied by every allowlist, backfilled, found by spark_cluster ──
+
+_RPC_INSTALL_KINDS = {
+    "linux-cpu": "ggml-rpc-server",
+    "linux-cuda": "ggml-rpc-server",
+    "linux-arm64-cuda": "ggml-rpc-server",
+    "linux-rocm": "ggml-rpc-server",
+    "linux-arm64": "ggml-rpc-server",
+    "linux-vulkan": "ggml-rpc-server",
+    "macos-arm64": "ggml-rpc-server",
+    "macos-x64": "ggml-rpc-server",
+    "windows-cpu": "ggml-rpc-server.exe",
+    "windows-cuda": "ggml-rpc-server.exe",
+    "windows-hip": "ggml-rpc-server.exe",
+    "windows-vulkan": "ggml-rpc-server.exe",
+    "windows-rocm": "ggml-rpc-server.exe",
+    "windows-arm64": "ggml-rpc-server.exe",
+}
+
+
+def _rpc_choice(
+    install_kind: str,
+    *,
+    source_label: str = "published",
+    tag: str = "b10798-mix-659e406",
+):
+    return AssetChoice(
+        repo = "unslothai/llama.cpp" if source_label == "published" else "ggml-org/llama.cpp",
+        tag = tag,
+        name = f"app-{tag}-{install_kind}.tar.gz",
+        url = f"https://example.com/app-{tag}-{install_kind}.tar.gz",
+        source_label = source_label,
+        install_kind = install_kind,
+        expected_sha256 = "a" * 64,
+    )
+
+
+def _macos_host() -> HostInfo:
+    return HostInfo(
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+
+def _load_spark_cluster():
+    path = PACKAGE_ROOT / "studio" / "spark_cluster.py"
+    spec = importlib.util.spec_from_file_location("studio_spark_cluster_for_installer", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(("install_kind", "expected"), sorted(_RPC_INSTALL_KINDS.items()))
+@pytest.mark.parametrize("source_label", ["published", "upstream"])
+def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source_label):
+    """The bundle ships ./ggml-rpc-server beside ./libggml-rpc.so; lib*.so* admits the
+    client library only, so the executable has to be named or a fresh install lacks
+    the peer-side half of the two-Spark layer split. Fork and upstream alike."""
+    patterns = INSTALL_LLAMA_PREBUILT.runtime_patterns_for_choice(
+        _rpc_choice(install_kind, source_label = source_label)
+    )
+    assert expected in patterns
+    # The legacy upstream name rides along so an older upstream tag is served too.
+    legacy = "rpc-server.exe" if expected.endswith(".exe") else "rpc-server"
+    assert legacy in patterns
+    # And the allowlist never admits the whole tool set by accident.
+    import fnmatch
+
+    other_cli = "llama-cli" + expected[len("ggml-rpc-server") :]
+    assert not any(fnmatch.fnmatch(other_cli, pattern) for pattern in patterns)
+
+
+@pytest.mark.parametrize(
+    ("host_factory", "install_kind", "source_label", "runtime_parts", "library"),
+    [
+        (linux_host, "linux-cuda", "published", ("build", "bin"), "libggml-rpc.so"),
+        (linux_host, "linux-arm64", "upstream", ("build", "bin"), "libggml-rpc.so"),
+        (_macos_host, "macos-arm64", "published", ("build", "bin"), "libggml-rpc.dylib"),
+        (_windows_host, "windows-cuda", "published", ("build", "bin", "Release"), "ggml-rpc.dll"),
+    ],
+    ids = ["linux-published", "linux-upstream", "macos-published", "windows-published"],
+)
+def test_rpc_server_backfill_true_when_missing_false_once_present(
+    tmp_path, host_factory, install_kind, source_label, runtime_parts, library
+):
+    """An install made before ggml-rpc-server entered the allowlist has the client
+    library (lib*.so* copied it) but not the executable: owed a re-extract. Once the
+    binary is present the backfill is done and must say so, or it would re-extract
+    on every update."""
+    host = host_factory()
+    tag = "b10798" if source_label == "upstream" else "b10798-mix-659e406"
+    choice = _rpc_choice(install_kind, source_label = source_label, tag = tag)
+    install_dir = tmp_path / "llama.cpp"
+    runtime_dir = install_dir.joinpath(*runtime_parts)
+    runtime_dir.mkdir(parents = True)
+    (runtime_dir / library).write_bytes(b"rpc client library")
+    if source_label == "published":
+        # A fork tree that is otherwise complete, so the shared reason reaches the RPC check.
+        ext = ".exe" if host.is_windows else ""
+        (runtime_dir / f"llama-diffusion-gemma-visual-server{ext}").write_bytes(b"visual server")
+
+    assert INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(install_dir, host, choice) is True
+    assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install_dir, host, choice) == (
+        "is missing ggml-rpc-server"
+    )
+
+    name = "ggml-rpc-server.exe" if host.is_windows else "ggml-rpc-server"
+    (runtime_dir / name).write_bytes(b"rpc server")
+
+    assert INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(install_dir, host, choice) is False
+    assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install_dir, host, choice) is None
+
+
+def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
+    """An upstream tag from before the ggml- prefix installs rpc-server; that is the
+    same executable and spark_cluster accepts it, so it is not owed a re-extract."""
+    host = linux_host()
+    choice = _rpc_choice("linux-cpu", source_label = "upstream", tag = "b9001")
+    runtime_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    runtime_dir.mkdir(parents = True)
+    (runtime_dir / "libggml-rpc.so").write_bytes(b"rpc client library")
+    assert INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice)
+    (runtime_dir / "rpc-server").write_bytes(b"legacy rpc server")
+    assert not INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(
+        tmp_path / "llama.cpp", host, choice
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_label", "tag", "library"),
+    [
+        # Built without GGML_RPC: no client library, so nothing is owed (upstream or fork).
+        ("upstream", "b10798", None),
+        ("published", "b10798-mix-659e406", None),
+        # Fork bundles before b10796 shipped the library without the executable.
+        ("published", "b10795-mix-0123abc", "libggml-rpc.so"),
+        ("published", "b9596-mix-deadbee", "libggml-rpc.so"),
+        # A tag that carries no build number cannot be placed, so it is left alone.
+        ("published", "old-release", "libggml-rpc.so"),
+    ],
+    ids = [
+        "upstream-no-rpc",
+        "published-no-rpc",
+        "published-b10795",
+        "published-b9596",
+        "unparseable",
+    ],
+)
+def test_rpc_server_backfill_is_not_owed_without_evidence(tmp_path, source_label, tag, library):
+    """The thrash guard: a bundle that never ships the executable must not re-extract
+    on every update. Evidence (the always-copied client library, and the fork build
+    number the server first shipped in) decides, not the source label."""
+    host = linux_host()
+    choice = _rpc_choice("linux-cuda", source_label = source_label, tag = tag)
+    runtime_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    runtime_dir.mkdir(parents = True)
+    if library:
+        (runtime_dir / library).write_bytes(b"rpc client library")
+    assert (
+        INSTALL_LLAMA_PREBUILT.rpc_server_backfill_needed(tmp_path / "llama.cpp", host, choice)
+        is False
+    )
+
+
+def test_release_build_number_reads_fork_and_upstream_tags():
+    number = INSTALL_LLAMA_PREBUILT._release_build_number
+    assert number("b10798") == 10798
+    assert number("b10798-mix-659e406") == 10798
+    assert number("b10796-mix-659e406") == INSTALL_LLAMA_PREBUILT.RPC_SERVER_FIRST_PUBLISHED_BUILD
+    assert number("release-1") is None
+    assert number("bx10798") is None
+    assert number("") is None
+    assert number(None) is None
+
+
+def test_every_reuse_path_consults_the_bundle_backfill():
+    """Three places decide the tag-match skip (the primary plan, the fallback plans,
+    and the per-attempt guard in validate_prebuilt_attempts). Each must ask the one
+    shared check, or a backfill added to it is silently skipped on that path."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("bundle_backfill_reason(") == 4  # definition + 3 reuse paths
+    body = source[source.index("def bundle_backfill_reason") : source.index("def _causal_chain")]
+    assert "diffusion_visual_server_backfill_needed(" in body
+    assert "rpc_server_backfill_needed(" in body
+
+
+def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
+    """Layout agreement, pinned on both ends: the names the installer copies are the
+    names spark_cluster searches, the overlay directory for every install kind is one
+    spark_cluster searches, and a real overlay of a tarball whose ggml-rpc-server lost
+    its exec bit (extraction does not keep it) ends up where rpc_server_binary() finds
+    it, executable."""
+    sc = _load_spark_cluster()
+    installer_names = set()
+    for host in (linux_host(), _macos_host(), _windows_host()):
+        installer_names.update(INSTALL_LLAMA_PREBUILT.rpc_server_names_for_host(host))
+    assert installer_names == set(sc._RPC_SERVER_NAMES)
+    searched = {parts for parts in sc._BUNDLE_SUBDIRS}
+    for install_kind in _RPC_INSTALL_KINDS:
+        choice = _rpc_choice(install_kind)
+        host = _windows_host() if install_kind.startswith("windows") else linux_host()
+        overlay = INSTALL_LLAMA_PREBUILT.overlay_directory_for_choice(
+            tmp_path / install_kind, choice, host
+        )
+        assert overlay.relative_to(tmp_path / install_kind).parts in searched, install_kind
+
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+    bundle = archives / "app-b10798-mix-659e406-linux-arm64-cuda13-portable.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in (
+            "ggml-rpc-server",
+            "llama-cli",
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            "libggml-rpc.so",
+            "libllama.so.0",
+            "libggml.so.0",
+        ):
+            payload = b"#!/bin/sh\nexit 0\n" if not name.startswith("lib") else f"{name}\n".encode()
+            member = tarfile.TarInfo("./" + name)
+            member.size = len(payload)
+            member.mode = 0o644
+            archive.addfile(member, io.BytesIO(payload))
+    import hashlib
+    import shutil as _shutil
+
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b10798-mix-659e406",
+        name = bundle.name,
+        url = f"https://example.com/{bundle.name}",
+        source_label = "published",
+        install_kind = "linux-arm64-cuda",
+        runtime_line = "cuda13",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+
+    def fake_download(
+        url,
+        target_path,
+        *,
+        expected_sha256 = None,
+        label = None,
+        **kw,
+    ):
+        _shutil.copy2(bundle, target_path)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file_verified", fake_download)
+    install_from_archives(choice, linux_host(), install, work)
+
+    server = install / "build" / "bin" / "ggml-rpc-server"
+    assert server.is_file()
+    assert os.access(server, os.X_OK)
+    assert (install / "build" / "bin" / "libggml-rpc.so").is_file()
+    assert not (install / "build" / "bin" / "llama-cli").exists()
+    # No root-level link: nothing resolves it there and spark_cluster looks in build/bin first.
+    assert not (install / "ggml-rpc-server").exists()
+
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(install))
+    monkeypatch.setattr(sc.shutil, "which", lambda name: None)
+    assert sc.rpc_server_binary() == str(server)
+    assert sc.llama_bundle_identity(install)["rpc_server"] == str(server)
+    # And the install is complete as far as the backfill is concerned.
+    assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install, linux_host(), choice) is None

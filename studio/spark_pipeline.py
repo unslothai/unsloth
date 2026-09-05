@@ -616,7 +616,7 @@ def warmup_p2p(stage, dist, torch):
 # the mirror {recv<-A, send->A} as ONE group at the same step. Split either side into two
 # groups and it deadlocks even though the per-direction op order still matches perfectly.
 #
-# The corrected model is `/home/nvidianew/pp_order_sim2.py`. It requires MUTUAL readiness
+# The corrected model (a standalone rendezvous simulator, not shipped) requires MUTUAL readiness
 # at a fixed point -- a group completes only if every group it rendezvouses with also
 # completes -- and it reproduces the hardware:
 #
@@ -778,7 +778,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
                across the pair. True, and this schedule now honours it.
       FALSIFIED `batch_isend_irecv` is broken on this stack. It is not: a standalone probe
                runs the batched pattern in 80 ms.
-      FALSIFIED The op sequence is wrong. It is not. `/home/nvidianew/probe_batched_p2p.py`
+      FALSIFIED The op sequence is wrong. It is not. A standalone two-node probe (not shipped),
                CASE5/6/7 replay THIS function's exact group sequence at real tensor shapes,
                with matmul and with autograd between groups, at M=2 and M=8 -- the same M
                that deadlocks in the trainer -- and completes in 0.17 s.

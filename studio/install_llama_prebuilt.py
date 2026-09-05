@@ -541,6 +541,14 @@ _os_error_messages = _core._os_error_messages
 is_busy_lock_error = _core.is_busy_lock_error
 
 
+def is_cross_device_error(exc: BaseException) -> bool:
+    """True for an EXDEV "cross-device link" rename failure, e.g. inside a Docker
+    build where the staging tree and the install dir land on different overlayfs
+    layers. Unlike a busy/in-use error, such a move is safely completed by copy +
+    remove of the (idle) source."""
+    return isinstance(exc, OSError) and exc.errno == errno.EXDEV
+
+
 # Status logs default to stderr so resolver modes keep stdout machine-readable
 # (setup.sh json.load()s the whole stdout). main() flips this for the install
 # path, where PowerShell otherwise renders stderr as NativeCommandError noise.
@@ -4095,15 +4103,35 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
     return []
 
 
+# The ggml RPC server executable, current name first, then the name upstream
+# used before ggml-org renamed the target. studio/spark_cluster.py keeps the
+# same list (with .exe variants) in _RPC_SERVER_NAMES; a test pins the two.
+RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server")
+# First unslothai/llama.cpp release whose bundles ship the executable next to
+# libggml-rpc.so (earlier fork bundles shipped only the client library).
+RPC_SERVER_FIRST_PUBLISHED_BUILD = 10796
+
+
+def rpc_server_names_for_host(host: HostInfo) -> tuple[str, ...]:
+    ext = ".exe" if host.is_windows else ""
+    return tuple(name + ext for name in RPC_SERVER_NAMES)
+
+
 def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # Broad shared-library glob + explicit binary names. Lets upstream
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Unsloth invokes llama-server, llama-quantize, and the
+    # every new file. Unsloth invokes llama-server, llama-quantize, the
     # DiffusionGemma visual-server (when the bundle ships it, for native
-    # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
-    # llama-bench, ...) are skipped.
+    # DiffusionGemma serving), and ggml-rpc-server (the peer-side half of the
+    # two-Spark layer split; studio/spark_cluster.py rpc_server_binary() looks
+    # for it in the bundle first). The RPC server is an executable, so the
+    # lib*.so* glob that admits its libggml-rpc client library does not admit
+    # it: it must be named here or a fresh install silently lacks it. The
+    # legacy ``rpc-server`` name covers upstream tags from before ggml-org
+    # renamed the target. Other CLIs upstream ships (llama-cli, llama-bench,
+    # ...) are skipped.
     if choice.install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -4112,12 +4140,19 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-arm64",
         "linux-vulkan",
     }:
-        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
+        return [
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            *RPC_SERVER_NAMES,
+            "lib*.so*",
+        ]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return [
             "llama-server",
             "llama-quantize",
             "llama-diffusion-gemma-visual-server",
+            *RPC_SERVER_NAMES,
             "lib*.dylib",
         ]
     if choice.install_kind in {
@@ -4132,6 +4167,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
             "llama-server.exe",
             "llama-quantize.exe",
             "llama-diffusion-gemma-visual-server.exe",
+            *(name + ".exe" for name in RPC_SERVER_NAMES),
             "*.dll",
         ]
     raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {choice.install_kind}")
@@ -4465,20 +4501,94 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     ``os.replace`` failure means the directory is genuinely in use, and a
     silent copy + ``rmtree`` could partially delete a live install.
 
-    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
-    else (disk full, cross-device, missing path) re-raises so it cannot leave
-    a partially copied install behind. A copy is preferred over retrying the
-    rename because antivirus scans of large DLLs can outlast any reasonable
-    retry window.
+    Only busy/lock errors (``is_busy_lock_error``) and cross-device links
+    (``is_cross_device_error``, hit when a Docker build lands the staging tree
+    and the install dir on different overlay layers) trigger the copy; anything
+    else (disk full, missing path) re-raises so it cannot leave a partially
+    copied install behind. A copy is preferred over retrying the rename because
+    antivirus scans of large DLLs can outlast any reasonable retry window.
     """
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        if not is_busy_lock_error(exc):
+        # busy/in-use (Windows AV) or cross-device (Docker overlayfs) are both safe to
+        # complete by copy + remove; anything else re-raises
+        if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        # symlinks = True, like the aside-move and rollback-restore copies below. The
+        # default DEREFERENCES every link, so each soname alias is written out as a
+        # full second copy of its library. Measured on the linux-x64-cuda12 bundle
+        # this branch exists for (Docker overlayfs EXDEV): 5 symlinks, 13.1 MiB
+        # duplicated. Not the headline number one might expect -- the 358 MB
+        # libggml-cuda.so is a regular file and is copied once either way -- but it is
+        # wasted bytes and it replaces the link topology the loader resolves against.
+        # dirs_exist_ok stays for the empty-dst case
+        # os.replace also accepts; a NON-empty dst never reaches here on one device
+        # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
+        # behind, os.symlink's FileExistsError fails the activation into the rollback
+        # path instead of silently half-merging two installs.
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
+
+
+def move_install_dir_aside(
+    src: Path,
+    dst: Path,
+    *,
+    busy_retry: bool = False,
+) -> None:
+    """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
+
+    os.replace is the fast path, falling back to copy + remove on EXDEV. A busy/in-use
+    failure is deliberately NOT copy-faked: the source is a live install and a partial
+    copy + rmtree would be worse than failing.
+
+    ``busy_retry`` is opt-in per call site: the aside-move of the *live* install is the
+    one this installer most needs to survive, while the recovery path's move of an
+    already-failed tree has a cheaper answer (drop the tree) than blocking on a scanner.
+
+    Callers treat ``dst.exists()`` as proof of a COMPLETE tree, so the copy goes to a
+    temp sibling and is published with one atomic rename; a copy that dies halfway
+    leaves nothing at ``dst`` and ``src`` untouched.
+    """
+    try:
+        if busy_retry:
+            replace_with_busy_retry(src, dst)
+        else:
+            os.replace(src, dst)
+    except OSError as exc:
+        if not is_cross_device_error(exc):
+            raise
+        if _is_link_or_junction(src):
+            # copytree always follows the ROOT it is given, so copying a linked
+            # install would duplicate a checkout this installer does not own
+            log("install path is a link; not copying it aside")
+            raise
+        copy_tmp = dst.with_name(dst.name + ".copying")
+        counter = 0
+        while copy_tmp.exists():
+            counter += 1
+            copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
+        log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
+        try:
+            # symlinks = True, matching the rollback-restore copy below. The default
+            # DEREFERENCES links inside the tree, and a Linux llama.cpp bundle is full
+            # of soname links (libllama.so.0 -> libllama.so), so the aside copy would
+            # duplicate every shared library and, restored after a failed activation,
+            # replace the install's link topology with independent files. Safe here
+            # only because copy_tmp is a fresh uniquified path: combined with
+            # dirs_exist_ok it raises FileExistsError on any name the destination
+            # already holds, which is why the remaining dirs_exist_ok calls in this
+            # file (which merge into populated trees) cannot simply be given the same
+            # flag. activate_staged_dir can, because a dst os.replace refused is empty
+            # or absent.
+            shutil.copytree(src, copy_tmp, symlinks = True)
+            os.replace(copy_tmp, dst)
+        except BaseException:
+            remove_tree(copy_tmp)
+            raise
+        remove_tree(src)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4491,7 +4601,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            replace_with_busy_retry(install_dir, rollback_dir)
+            move_install_dir_aside(install_dir, rollback_dir, busy_retry = True)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4526,7 +4636,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
                 try:
-                    os.replace(install_dir, failed_dir)
+                    # not a bare os.replace: in a Docker build the failed tree and
+                    # the staging root can sit on different overlay layers, and EXDEV
+                    # there must not cost the retained copy
+                    move_install_dir_aside(install_dir, failed_dir)
                 except Exception as failed_move_exc:
                     failed_dir = None
                     log(f"failed active install could not be moved aside: {failed_move_exc}")
@@ -4792,6 +4905,16 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    # Extraction does not keep the archive's exec bits, and spark_cluster.py
+    # rpc_server_binary() skips a file without X_OK, so the RPC server needs
+    # the same chmod as the two primaries. It stays in build/bin with no root
+    # link: nothing resolves it at the install root (the visual-server has no
+    # root link either) and build/bin is the first place rpc_server_binary()
+    # looks. Optional: an upstream bundle built without GGML_RPC has none.
+    for rpc_name in rpc_server_names_for_host(host):
+        rpc_server = build_bin / rpc_name
+        if rpc_server.is_file():
+            os.chmod(rpc_server, 0o755)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -7349,9 +7472,9 @@ def validate_prebuilt_attempts(
                 choice = attempt,
                 approved_checksums = approved_checksums,
             )
-            # Skip a matching candidate unless it still needs the DiffusionGemma
-            # backfill re-extract (gated per-attempt, not per-plan).
-            and not diffusion_visual_server_backfill_needed(existing_install_dir, host, attempt)
+            # Skip a matching candidate unless it still needs a backfill
+            # re-extract (gated per-attempt, not per-plan).
+            and bundle_backfill_reason(existing_install_dir, host, attempt) is None
         ):
             log(
                 "existing llama.cpp install already matches fallback candidate "
@@ -7749,6 +7872,68 @@ def diffusion_visual_server_backfill_needed(
         if cand.is_file():
             return False
     return True
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    """The upstream build number in a release tag: ``b10798`` and the fork's
+    ``b10798-mix-659e406`` both give 10798; anything else gives None."""
+    match = re.match(r"^b(\d+)(?:$|[-.])", (tag or "").strip())
+    return int(match.group(1)) if match else None
+
+
+def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+    """True when an existing install matches the tag but lacks the ggml-rpc-server
+    the chosen bundle ships. Same shape and same reason as the DiffusionGemma
+    backfill above: an install made before the executable entered the copy
+    allowlist matches on tag yet is missing the binary (only its libggml-rpc
+    client library got through, via lib*.so*), so the tag-match skip never
+    backfills it and the two-Spark layer split finds no RPC server on the peer.
+
+    Not gated to the fork ("published") bundles, unlike the visual-server: upstream
+    ships ggml-rpc-server too (ggml-org's release workflow sets -DGGML_RPC=ON and
+    archives all of build/bin), so a Linux ARM64 host routed to upstream is owed
+    the executable as much as a fork host is. The thrash the visual-server docstring
+    guards against (a bundle that never ships the file would re-extract on every
+    update) is prevented by evidence instead of by source label: a bundle built
+    without GGML_RPC ships neither the library nor the server, and the library is
+    always copied, so no libggml-rpc in the runtime dir means nothing is owed. Fork
+    bundles before RPC_SERVER_FIRST_PUBLISHED_BUILD shipped the library without the
+    server, so those are excluded by build number. Once a re-extract lands the
+    binary this returns False, so it self-limits."""
+    names = rpc_server_names_for_host(host)
+    patterns = runtime_patterns_for_choice(choice)
+    if not any(name in patterns for name in names):
+        return False
+    if choice.source_label == "published":
+        build = _release_build_number(choice.tag)
+        if build is None or build < RPC_SERVER_FIRST_PUBLISHED_BUILD:
+            return False
+    runtime_dir = install_runtime_dir(install_dir, host)
+    rpc_library = (
+        ("ggml-rpc.dll",) if host.is_windows else ("libggml-rpc.so*", "libggml-rpc*.dylib")
+    )
+    if not any(any(runtime_dir.glob(pattern)) for pattern in rpc_library):
+        return False
+    for name in names:
+        for cand in (
+            install_dir / name,
+            install_dir / "build" / "bin" / name,
+            install_dir / "build" / "bin" / "Release" / name,
+        ):
+            if cand.is_file():
+                return False
+    return True
+
+
+def bundle_backfill_reason(install_dir: Path, host: HostInfo, choice: AssetChoice) -> str | None:
+    """Why a tag-matching install must still be re-extracted, or None when it is
+    complete. One check for every reuse path, so a new backfill is consulted
+    everywhere the skip is decided."""
+    if diffusion_visual_server_backfill_needed(install_dir, host, choice):
+        return "is missing the DiffusionGemma visual-server"
+    if rpc_server_backfill_needed(install_dir, host, choice):
+        return "is missing ggml-rpc-server"
+    return None
 
 
 def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
@@ -8172,10 +8357,11 @@ def install_prebuilt(
 
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
-                if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
+                backfill_reason = bundle_backfill_reason(install_dir, host, current.attempts[0])
+                if backfill_reason:
                     log(
-                        f"existing install matches {current.release_tag} but is missing the "
-                        "DiffusionGemma visual-server; re-extracting the bundle to backfill it"
+                        f"existing install matches {current.release_tag} but {backfill_reason}; "
+                        "re-extracting the bundle to backfill it"
                     )
                 else:
                     log(
@@ -8205,12 +8391,12 @@ def install_prebuilt(
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
-                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
+                    backfill_reason = bundle_backfill_reason(install_dir, host, choice)
                     if existing_install_matches_plan(install_dir, host, plan):
-                        if backfill:
+                        if backfill_reason:
                             log(
-                                f"existing install matches fallback {plan.release_tag} but is missing "
-                                "the DiffusionGemma visual-server; re-extracting to backfill it"
+                                f"existing install matches fallback {plan.release_tag} but "
+                                f"{backfill_reason}; re-extracting to backfill it"
                             )
                         else:
                             log(
