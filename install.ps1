@@ -4968,12 +4968,18 @@ exit 0
     $_woaOwnedPrefix = Join-Path $StudioHome "woa"
     $_woaOwnedPrefixes = @($_woaOwnedPrefix, (Get-UvSafePath $_woaOwnedPrefix)) |
         Where-Object { $_ } | Select-Object -Unique
+    # Split with the SAME separator it is joined with, not a shared [,\s] class: uv reads
+    # UV_FIND_LINKS as comma-separated, so "C:\private wheels" is one directory there. A
+    # whitespace split tore it into two fragments and rejoined them with a comma, quietly
+    # dropping an air-gapped user's mirror while claiming to have preserved it.
     $_woaJoinWith = @{ "UV_OVERRIDE" = " "; "UV_FIND_LINKS" = ","; "PIP_FIND_LINKS" = " " }
+    $_woaSplitOn = @{ "UV_OVERRIDE" = '\s+'; "UV_FIND_LINKS" = ','; "PIP_FIND_LINKS" = '\s+' }
     foreach ($_woaResolverVar in 'UV_OVERRIDE', 'UV_FIND_LINKS', 'PIP_FIND_LINKS') {
         $_woaInherited = [Environment]::GetEnvironmentVariable($_woaResolverVar)
         if (-not $_woaInherited) { continue }
+        $_woaSep = $_woaSplitOn[$_woaResolverVar]
         $_woaKept = @()
-        foreach ($_woaEntry in ($_woaInherited -split '[,\s]+')) {
+        foreach ($_woaEntry in ($_woaInherited -split $_woaSep | ForEach-Object { $_.Trim() })) {
             if (-not $_woaEntry) { continue }
             $_woaOwned = $false
             foreach ($_woaPrefix in $_woaOwnedPrefixes) {
@@ -4989,7 +4995,7 @@ exit 0
         }
         if ($_woaKept.Count -eq 0) {
             Remove-Item "Env:$_woaResolverVar" -ErrorAction SilentlyContinue
-        } elseif ($_woaKept.Count -ne @($_woaInherited -split '[,\s]+' | Where-Object { $_ }).Count) {
+        } elseif ($_woaKept.Count -ne @($_woaInherited -split $_woaSep | ForEach-Object { $_.Trim() } | Where-Object { $_ }).Count) {
             Set-Item "Env:$_woaResolverVar" -Value ($_woaKept -join $_woaJoinWith[$_woaResolverVar])
         }
     }

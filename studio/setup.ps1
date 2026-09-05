@@ -3796,6 +3796,48 @@ function Get-PersistedWoaTorchIndex {
     return $value
 }
 
+# The manifest is the durable record of the WoA index, but the dependency pass deletes it
+# before rebuilding it, so a run that dies in between leaves nothing to recover from: the next
+# update finds no handover and no manifest, falls to the driver-derived cu130, and fails on an
+# index with no win_arm64 wheel -- every retry, until the user re-runs install.ps1. This marker
+# lives beside overrides.txt in the woa directory, which nothing in the dependency pass removes.
+#
+# Deliberately the SAME set the manifest persists, checked on write AND on read: only NVIDIA's
+# own channels, so a mirror pinned with a token in its userinfo is not written to disk, and a
+# hand-edited file cannot redirect a torch install.
+function Get-WoaTorchIndexMarkerPath {
+    return (Join-Path (Join-Path $StudioHome "woa") "torch-index.txt")
+}
+
+function Test-WoaPersistableIndex {
+    param([string]$IndexUrl)
+    if (-not $IndexUrl) { return $false }
+    return ($IndexUrl -match '^https://pypi\.nvidia\.com(/[A-Za-z0-9._~/-]*)?$')
+}
+
+function Save-WoaTorchIndexMarker {
+    param([string]$IndexUrl)
+    $value = "$IndexUrl".Trim().TrimEnd('/')
+    if (-not (Test-WoaPersistableIndex $value)) { return }
+    try {
+        $dir = Split-Path -Parent (Get-WoaTorchIndexMarkerPath)
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        # No BOM, and written whole: a partial line would fail the read-side check anyway.
+        [System.IO.File]::WriteAllText(
+            (Get-WoaTorchIndexMarkerPath), $value, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {}
+}
+
+function Get-WoaTorchIndexMarker {
+    $path = Get-WoaTorchIndexMarkerPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return "" }
+    try { $value = ([System.IO.File]::ReadAllText($path)).Trim().TrimEnd('/') } catch { return "" }
+    if (-not (Test-WoaPersistableIndex $value)) { return "" }
+    return $value
+}
+
 # A path with a space has to reach uv by its 8.3 short name. Parity copy of install.ps1's,
 # which refuses the native route outright when that cannot be satisfied.
 function Get-UvSafePath {
@@ -5042,13 +5084,18 @@ $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv) {
     # A direct update runs in a fresh shell with the handover gone; the manifest carries
-    # the same answer across runs. Empty on every other host.
-    Get-PersistedWoaTorchIndex -VenvPath $VenvDir
+    # the same answer across runs, and the marker carries it when a previous run died
+    # after the manifest was dropped. Empty on every other host.
+    $_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir
+    if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }
 } else { "" }
 # Re-exported, not just held locally: install_python_stack.py reads it when it rewrites
 # the manifest, so a fresh-shell update would otherwise erase the index for good.
 if ($WinArm64TorchIndexUrl) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $WinArm64TorchIndexUrl
+    # Written BEFORE the manifest is dropped below, which is the whole point: from here on
+    # an interrupted run still leaves the next one able to find this index.
+    Save-WoaTorchIndexMarker -IndexUrl $WinArm64TorchIndexUrl
 }
 Restore-WoaResolverEnvironment
 
@@ -5232,7 +5279,11 @@ $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "tri
 # The win_arm64 index publishes only torch/vision/audio, so PyPI has to stay reachable for their
 # shared dependencies, and best-match comes with it because torch is on both and uv's first-index
 # default would take PyPI's wheel-less build. Empty on every other host.
-$WinArm64IndexArgs = if ($WinArm64Venv -and $UseUv) {
+# Not gated on $UseUv: when uv cannot be obtained at all, Fast-Install falls back to pip, and
+# pip needs these just as much -- the NVIDIA channel carries only the torch trio, so without
+# --extra-index-url its shared dependencies resolve nowhere. Remove-UvOnlyResolverFlags is what
+# makes that safe: it drops --index-strategy and turns --prerelease=allow into pip's --pre.
+$WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaIndexArgs = @("--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
     # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal,
     # since a mirror of a prerelease-only channel need not say "nightly" anywhere in its address.

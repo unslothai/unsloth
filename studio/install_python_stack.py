@@ -5446,10 +5446,15 @@ def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
     failure the skip list exists to prevent, so the caller checks the pin.
     """
     versions: "dict[str, set[str]]" = {}
-    for value in (os.environ.get("UV_FIND_LINKS"), os.environ.get("PIP_FIND_LINKS")):
-        # The two disagree on a separator (uv: comma, pip: whitespace) and os.pathsep is
-        # what a hand-written value likeliest uses, so accept all three.
-        for entry in re.split(r"[,\s" + re.escape(os.pathsep) + r"]+", value or ""):
+    # Each variable is split the way the tool that reads it splits it. A shared class that
+    # also broke on whitespace tore "C:\\private wheels" -- one directory to uv, which
+    # separates UV_FIND_LINKS on commas -- into two nonexistent paths, so every wheel an
+    # air-gapped user hosted there went unseen and stayed on the skip list.
+    for value, separator in (
+        (os.environ.get("UV_FIND_LINKS"), ","),
+        (os.environ.get("PIP_FIND_LINKS"), r"\s+"),
+    ):
+        for entry in re.split(separator, value or ""):
             entry = entry.strip().strip('"')
             if not entry or "://" in entry:
                 continue  # a URL index cannot be listed cheaply; treat it as unknown

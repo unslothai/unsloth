@@ -1163,12 +1163,40 @@ class TestCallerResolverConfigurationSurvives:
         assert '"$WoaWheelDir,$_woaCallerUvLinks"' in text
         assert '"$_woaCallerUvLinks,$WoaWheelDir"' not in text
 
-    def test_the_python_side_can_read_an_appended_value(self):
+    def test_the_python_side_can_read_an_appended_value(self, tmp_path):
         """install_python_stack.py split find-links on os.pathsep alone, which would have
         read "dirA,dirB" as one unusable path now that appending is possible.
+
+        Asserted as behaviour rather than as a regex, because the separator is now
+        per-variable: a shared class that also broke on whitespace tore a directory whose
+        name contains a space into two paths that do not exist.
         """
-        source = STACK_PY.read_text(encoding = "utf-8")
-        assert 're.split(r"[,\\s" + re.escape(os.pathsep) + r"]+"' in source
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_ips_findlinks_split", STACK_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        first = tmp_path / "a"
+        second = tmp_path / "private wheels"
+        for directory in (first, second):
+            directory.mkdir()
+        (first / "alpha-1.0.0-py3-none-any.whl").write_bytes(b"")
+        (second / "beta-2.0.0-py3-none-any.whl").write_bytes(b"")
+
+        os.environ["UV_FIND_LINKS"] = f"{first},{second}"
+        os.environ.pop("PIP_FIND_LINKS", None)
+        try:
+            module._find_links_wheel_versions.cache_clear()
+            found = module._find_links_wheel_versions()
+        finally:
+            os.environ.pop("UV_FIND_LINKS", None)
+            module._find_links_wheel_versions.cache_clear()
+        assert "alpha" in found, "an appended comma-separated entry is still read"
+        assert "beta" in found, (
+            "a UV_FIND_LINKS directory whose name contains a space was split into "
+            "fragments, so every wheel an air-gapped user hosted there went unseen"
+        )
 
 
 class TestTheProbeAsksForTheInterpretersAbi:
@@ -1481,11 +1509,12 @@ class TestThePurgeKeepsWhatIsNotOurs:
     def test_the_block_works_entry_by_entry(self):
         block = self._purge_block()
         assert "$_woaKept" in block, "entries are kept, not just the whole value dropped"
-        assert "-split '[,\\s]+'" in block, (
-            "every separator the three variables are read with: uv takes UV_FIND_LINKS "
-            "comma-separated and UV_OVERRIDE space-separated, pip splits on whitespace"
+        assert '"UV_FIND_LINKS" = ","' in block, "each is rejoined with its own separator"
+        assert "$_woaSplitOn" in block, (
+            "and SPLIT with that same one: uv takes UV_FIND_LINKS comma-separated, so a "
+            "shared whitespace split tore a path with a space into fragments and then "
+            "rejoined them with commas"
         )
-        assert '"UV_FIND_LINKS" = ","' in block, "and each is rejoined with its own"
 
     @requires_pwsh
     @pytest.mark.parametrize(
@@ -2800,3 +2829,258 @@ class TestAFloorIsPep440AboutPrereleases:
         )
         assert done.returncode == 0, done.stderr
         assert done.stdout.strip().splitlines()[-1] == "True"
+
+
+class TestAFindLinksPathWithASpaceSurvivesThePurge:
+    """UV_FIND_LINKS is comma-separated to uv, so "C:\\private wheels" is ONE directory.
+
+    Splitting it on whitespace as well tore it into two fragments, dropped the managed
+    entry, and rejoined the pieces with commas -- leaving an air-gapped user pointed at two
+    paths that do not exist, with nothing to say the mirror had been lost.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "var, value, expected, why",
+        [
+            (
+                "UV_FIND_LINKS",
+                r"C:\private wheels,{owned}",
+                r"C:\private wheels",
+                "the caller's spaced directory survives whole and ours is dropped",
+            ),
+            (
+                "UV_FIND_LINKS",
+                r"C:\a,C:\b",
+                r"C:\a,C:\b",
+                "two unrelated entries are both kept, unchanged",
+            ),
+            (
+                "PIP_FIND_LINKS",
+                r"C:\a {owned}",
+                r"C:\a",
+                "pip splits on whitespace, so that is how its value is read",
+            ),
+            (
+                "UV_OVERRIDE",
+                r"C:\a.txt {owned}\overrides.txt",
+                r"C:\a.txt",
+                "uv splits UV_OVERRIDE on whitespace, which is why 8.3 exists for it",
+            ),
+        ],
+    )
+    def test_the_purge_reads_each_variable_its_own_way(
+        self, tmp_path, var, value, expected, why
+    ):
+        owned = str(tmp_path / "woa")
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        start = text.index('$_woaOwnedPrefix = Join-Path $StudioHome "woa"')
+        end = text.index("if ($script:WoaNativeCudaTorch) {", start)
+        script = "\n".join(
+            [
+                "function Get-UvSafePath { param([string]$p) return $p }",
+                f"$StudioHome = '{tmp_path}'",
+                f"$env:{var} = '{value.format(owned = owned)}'",
+                text[start:end],
+                f"Write-Output ('[' + [Environment]::GetEnvironmentVariable('{var}') + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        got = done.stdout.strip().splitlines()[-1][1:-1]
+        assert got == expected.format(owned = owned), why
+
+
+class TestThePipFallbackKeepsTheIndexArguments:
+    """When uv cannot be obtained at all, Fast-Install uses pip -- and pip needs these.
+
+    The NVIDIA channel publishes only torch, torchvision and torchaudio, so an install given
+    just --index-url has nowhere to resolve their shared dependencies. Remove-UvOnlyResolverFlags
+    is what makes handing pip the same list safe: it drops --index-strategy and rewrites
+    --prerelease=allow as --pre.
+    """
+
+    def test_the_arguments_are_not_gated_on_uv(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$WinArm64IndexArgs = if ($WinArm64Venv) {" in text, (
+            "gating on $UseUv means the pip fallback gets no --extra-index-url at all"
+        )
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "use_uv, pre, expect_pre",
+        [(True, "1", True), (False, "1", True), (False, "0", False)],
+    )
+    def test_pip_receives_a_translated_list(self, use_uv, pre, expect_pre):
+        """Executed end to end: build the list, then run it through the pip translation."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$WinArm64IndexArgs = if (")
+        end = text.index("} else { @() }", start) + len("} else { @() }")
+        script = "\n".join(
+            [
+                _function_source(text, "Remove-UvOnlyResolverFlags"),
+                "$WinArm64Venv = $true",
+                f"$UseUv = ${str(use_uv).lower()}",
+                "$WinArm64TorchIndexUrl = 'https://pypi.nvidia.com/nvtorch_oot'",
+                "$WinArm64EffectiveTorchIndexUrl = $WinArm64TorchIndexUrl",
+                "$WinArm64HandoffApplies = $true",
+                f"$env:UNSLOTH_WOA_TORCH_PRERELEASE = '{pre}'",
+                text[start:end],
+                "$pipArgs = Remove-UvOnlyResolverFlags -Arguments $WinArm64IndexArgs",
+                "Write-Output ('[' + ($pipArgs -join ' ') + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        got = done.stdout.strip().splitlines()[-1][1:-1]
+        assert "--extra-index-url https://pypi.org/simple" in got, (
+            f"pip cannot resolve the trio's shared dependencies without it: {got!r}"
+        )
+        assert "--index-strategy" not in got, "a uv-only flag would make pip print usage"
+        assert "--prerelease" not in got, "likewise the uv spelling"
+        assert ("--pre" in got) is expect_pre, got
+
+
+class TestTheWoaIndexOutlivesTheManifest:
+    """The dependency pass deletes the manifest before rebuilding it.
+
+    A run that dies in that window used to leave nothing behind: the next update finds no
+    handover and no manifest, falls back to the driver-derived cu130, and fails on an index
+    with no win_arm64 wheel -- on every retry, until install.ps1 is run again by hand.
+    """
+
+    def test_the_marker_is_written_before_the_manifest_is_dropped(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        saved = text.index("Save-WoaTorchIndexMarker -IndexUrl $WinArm64TorchIndexUrl")
+        dropped = text.index("$_ManifestDropped = $true")
+        assert saved < dropped, (
+            "written after the drop, the marker would not survive the very interruption "
+            "it exists for"
+        )
+
+    def test_the_manifest_is_still_preferred(self):
+        """The marker is a fallback, not a replacement: the manifest is rewritten each run."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir" in text
+        assert "if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }" in text
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "url, persisted, why",
+        [
+            ("https://pypi.nvidia.com/nvtorch_oot", True, "NVIDIA's own channel"),
+            ("https://pypi.nvidia.com/nvtorch_oot_nightly", True, "and its nightly"),
+            ("https://mirror.corp.test/simple", False, "a pinned mirror is not persisted"),
+            ("https://user:tok@pypi.nvidia.com/x", False, "userinfo could carry a token"),
+            ("https://pypi.nvidia.com/x?token=abc", False, "nor may a query"),
+            ("https://pypi.nvidia.com/x#f", False, "nor a fragment"),
+            ("http://pypi.nvidia.com/x", False, "https only"),
+            ("https://pypi.nvidia.com.evil.test/x", False, "a lookalike host"),
+        ],
+    )
+    def test_the_marker_persists_only_what_the_manifest_would(self, tmp_path, url, persisted, why):
+        """Same set as write_manifest, so this file cannot become the softer way in."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                _function_source(text, "Get-WoaTorchIndexMarker"),
+                f"Save-WoaTorchIndexMarker -IndexUrl '{url}'",
+                "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        got = done.stdout.strip().splitlines()[-1][1:-1]
+        assert (got == url.rstrip("/")) is persisted, f"{why}: got {got!r}"
+
+    @requires_pwsh
+    def test_a_hand_edited_marker_cannot_redirect_the_install(self, tmp_path):
+        """Checked on read as well as on write, exactly as the manifest is."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        woa = tmp_path / "woa"
+        woa.mkdir()
+        (woa / "torch-index.txt").write_text("https://evil.test/whl", encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Get-WoaTorchIndexMarker"),
+                "Write-Output ('[' + (Get-WoaTorchIndexMarker) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip().splitlines()[-1] == "[]"
+
+    @requires_pwsh
+    def test_the_marker_lives_where_the_dependency_pass_does_not_reach(self, tmp_path):
+        """Beside overrides.txt, which survives the pass for the same reason."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                "Write-Output ('[' + (Get-WoaTorchIndexMarkerPath) + ']')",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        got = done.stdout.strip().splitlines()[-1][1:-1]
+        assert got.endswith("torch-index.txt")
+        assert (tmp_path / "woa").name in got, "the woa directory, not the venv"
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:s3cret@pypi.nvidia.com/nvtorch_oot",
+            "https://pypi.nvidia.com/nvtorch_oot?token=s3cret",
+            "https://mirror.corp.test/simple?token=s3cret",
+        ],
+    )
+    def test_a_credential_never_reaches_the_disk(self, tmp_path, url):
+        """The FILE, not the round-trip: a reader that refuses the value afterwards is no
+        help at all if the token was written out in the first place. This is the guard the
+        manifest already applies, and it has to hold on the write side by itself.
+        """
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                f"$StudioHome = '{tmp_path}'",
+                _function_source(text, "Get-WoaTorchIndexMarkerPath"),
+                _function_source(text, "Test-WoaPersistableIndex"),
+                _function_source(text, "Save-WoaTorchIndexMarker"),
+                f"Save-WoaTorchIndexMarker -IndexUrl '{url}'",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True, text = True, timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        marker = tmp_path / "woa" / "torch-index.txt"
+        written = marker.read_text(encoding = "utf-8") if marker.exists() else ""
+        assert "s3cret" not in written, (
+            f"the marker file holds a credential: {written!r}"
+        )
+        assert written == "", "nothing unpersistable should be written at all"
