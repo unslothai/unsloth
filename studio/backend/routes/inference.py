@@ -2591,6 +2591,10 @@ def _openai_llama_preemption_arm(
         # The cache fails on the next BATCH not fitting, not on being full; see
         # _openai_llama_effective_batch_tokens.
         batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
+        # A llama-server built with --preempt-ram parks slots itself, byte-identically,
+        # and says so on the stream. The controller then keeps its ledger but chooses no
+        # victims, and the buffer is the server's own reserve rather than ours.
+        server_mode = bool(getattr(llama_backend, "server_preempts_kv", False)),
     )
     if not controller.active:
         # The three reasons are worth telling apart: no shared cache, no budget, or the
@@ -2630,6 +2634,7 @@ def _openai_llama_preemption_arm(
     _llama_preemption_log(
         "armed",
         gen_id = gen_id,
+        mode = snapshot.mode,
         charged = charged,
         committed = snapshot.committed,
         budget = snapshot.budget,

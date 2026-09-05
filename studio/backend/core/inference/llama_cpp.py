@@ -2019,6 +2019,32 @@ def _finalize_reasoning_only_cumulative(
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
+# How long a stream may sit silent while llama-server reports a parked slot before the
+# stall timeout fires anyway. A park lasts until the survivor finishes or frees enough
+# cells, which on a big model with long answers is minutes; a hung server never reports
+# `requests_preempted`, so this bound is for a server that parked a slot and then died
+# without closing the socket.
+_SERVER_PARK_STALL_CAP_S = 1800.0  # 30 min
+# SSE comments a swap-capable llama-server (unslothai/llama.cpp#184 with stream notices)
+# writes when it parks a slot in host RAM and when it restores it. Comments are legal SSE
+# and invisible to clients that do not look for them.
+_SERVER_PARKED_COMMENT = ": preempted"
+_SERVER_RESUMED_COMMENT = ": resumed"
+
+
+def _preempt_ram_disabled_in(args) -> bool:
+    """True when the launch line carries `--preempt-ram 0` (or `--preempt-ram=0`), which
+    switches the server's parking off; the last occurrence wins, as llama-server's own
+    parser has it."""
+    disabled = False
+    tokens = [str(a) for a in (args or ())]
+    for i, tok in enumerate(tokens):
+        if tok == "--preempt-ram":
+            value = tokens[i + 1] if i + 1 < len(tokens) else ""
+            disabled = value.strip() == "0"
+        elif tok.startswith("--preempt-ram="):
+            disabled = tok.split("=", 1)[1].strip() == "0"
+    return disabled
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -6691,6 +6717,63 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def server_preempts_kv(self) -> bool:
+        """Whether the running llama-server pauses chats itself when the pool fills.
+
+        True only for a build with `--preempt-ram` (unslothai/llama.cpp#184) launched with
+        a unified cache and the flag not zeroed by hand, and only when
+        `UNSLOTH_LLAMA_PREEMPT_MODE` does not force `studio`. The controller then plans no
+        victims and the stream relays the server's `: preempted` / `: resumed` comments.
+        """
+        if not getattr(self, "_server_preempts_kv", False):
+            return False
+        if not getattr(self, "_kv_cache_unified", False):
+            return False
+        return _preemption.resolve_preempt_mode(True) == _preemption.PREEMPT_MODE_SERVER
+
+    def _server_park_grace(self) -> bool:
+        """Consulted only when the stall timeout would fire: is a slot parked right now?
+
+        A swap build that predates the stream comments (`: preempted`) produces nothing
+        while a slot is parked, so a 120 s stall on such a build is a wait for cells, not
+        a hang. `/metrics` says so (`requests_preempted`), and this reads it exactly then,
+        so an idle stream costs no polling.
+        """
+        try:
+            from core.inference.llama_stats import scrape_llama_metrics
+
+            metrics = scrape_llama_metrics(self.base_url, timeout_s = 3.0)
+        except Exception:
+            return False
+        if not metrics:
+            return False
+        try:
+            return float(metrics.get("requests_preempted", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _server_park_event(line: str, preempt_policy = None) -> Optional[dict]:
+        """A `: preempted` / `: resumed` comment from the server, as the stream event the
+        routes already turn into `: preempt-paused` / `: preempt-resumed` for the GUI.
+
+        The policy is told so the ledger marks the chat PAUSED / DECODING and the epoch
+        ends; a policy without the hooks (a recorder in a test, the null policy) is fine.
+        """
+        parked = line == _SERVER_PARKED_COMMENT
+        if not parked and line != _SERVER_RESUMED_COMMENT:
+            return None
+        hook = getattr(
+            preempt_policy, "on_server_parked" if parked else "on_server_resumed", None
+        )
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                logger.debug("preemption policy raised on a server park notice", exc_info = True)
+        return {"type": "preempt", "state": "paused" if parked else "resumed", "source": "server"}
+
+    @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
         """Bearer header matching the --api-key direct-stream mode uses, else
         None (so unauthenticated llama-server calls don't get a spurious 401)."""
@@ -7948,6 +8031,7 @@ class LlamaCppBackend:
                 "ctx_checkpoints_flag": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
+                "supports_preempt_ram": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
@@ -7995,6 +8079,7 @@ class LlamaCppBackend:
         ctx_checkpoints_flag = None
         supports_no_cache_prompt = False
         supports_metrics = False
+        supports_preempt_ram = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
         supports_load_mode = False
@@ -8206,6 +8291,11 @@ class LlamaCppBackend:
             supports_ctx_checkpoints = ctx_checkpoints_flag is not None
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
+            # Server-side preemption (unslothai/llama.cpp#184): with a unified cache the
+            # server parks a slot in host RAM instead of failing every slot, and tells a
+            # streaming client with SSE comments. When present, Studio hands its own
+            # preemption over; see resolve_preempt_mode.
+            supports_preempt_ram = _is_real("--preempt-ram")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
@@ -8289,6 +8379,7 @@ class LlamaCppBackend:
             "ctx_checkpoints_flag": ctx_checkpoints_flag,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
+            "supports_preempt_ram": supports_preempt_ram,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
@@ -14128,6 +14219,7 @@ class LlamaCppBackend:
         self._cache_type_kv = None
         self._swa_full = False
         self._kv_cache_unified = False
+        self._server_preempts_kv = False
         self._memory_state = None
         self._memory_policy_active = False
         self._memory_mlock_applicable = True
@@ -18860,6 +18952,7 @@ class LlamaCppBackend:
                 raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
             server_caps = _launch_caps(binary)
+            self._server_preempts_kv = bool(server_caps.get("supports_preempt_ram"))
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -21805,6 +21898,7 @@ class LlamaCppBackend:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = _launch_caps(binary)
+                self._server_preempts_kv = bool(server_caps.get("supports_preempt_ram"))
 
                 # Before the extras, like the batch pair: a hand-typed flag still
                 # last-wins over the control. Each is gated on the capability
@@ -24728,6 +24822,10 @@ class LlamaCppBackend:
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
+                # A hand-typed `--preempt-ram 0` switches the server's parking off, and
+                # then the build's flag alone is no reason to stand down.
+                if _preempt_ram_disabled_in(_last_spawn_cmd or cmd):
+                    self._server_preempts_kv = False
                 # Re-derived from the slot count that LAUNCHED, not the one the sizing
                 # pass saw. The drafter drop and the non-MTP retry both hand slots back
                 # after the batch flag is emitted, and this is recorded next to
@@ -25726,6 +25824,7 @@ class LlamaCppBackend:
             self._prompt_cache_disabled = False
             self._swa_full = False
             self._kv_cache_unified = False
+            self._server_preempts_kv = False
             self._memory_state = None
             self._memory_policy_active = False
             self._memory_mlock_applicable = True
@@ -27710,6 +27809,10 @@ class LlamaCppBackend:
             trust_env = False,
         ) as client:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            # A swap-capable server that predates the stream notices is silent while
+            # it holds a slot parked; the read wrapper asks this before calling that
+            # silence a stall. See _server_park_grace. Only when the build can park.
+            stall_grace = self._server_park_grace if self.server_preempts_kv else None
             with self._stream_with_retry(
                 client,
                 url,
@@ -27720,6 +27823,7 @@ class LlamaCppBackend:
                 # Only when set, so an override or test double written against the
                 # old signature keeps working untouched.
                 **({} if preempt_event is None else {"preempt_event": preempt_event}),
+                **({} if stall_grace is None else {"stall_grace": stall_grace}),
             ) as response:
                 if response.status_code != 200:
                     error_body = response.read().decode()
@@ -27903,6 +28007,7 @@ class LlamaCppBackend:
         response: Optional["httpx.Response"] = None,
         poll_s: float = 0.2,
         preempt_event = None,
+        stall_grace: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Wrap the httpcore stream so the reader interrupts its own blocked recv() on cancel.
 
@@ -27915,7 +28020,13 @@ class LlamaCppBackend:
 
         ``preempt_event`` interrupts the same way but means "pause to free KV", not
         "the user stopped this". The read cannot tell them apart, so it aborts on
-        either and the caller decides which exception the abort becomes."""
+        either and the caller decides which exception the abort becomes.
+
+        ``stall_grace`` is asked once each time the read timeout would fire: True means
+        "llama-server has this slot parked and will restore it", and the read waits one
+        more timeout, up to ``_SERVER_PARK_STALL_CAP_S`` of silence in all. It lives HERE
+        and not in the text iterator above, because an httpx body iterator that has
+        raised is finished, so a stall caught up there cannot be waited through."""
         import httpcore
 
         if preempt_event is not None:
@@ -27950,7 +28061,27 @@ class LlamaCppBackend:
                 ):
                     live = _live_read_timeout()
                     effective = live if live is not None else timeout
-                    deadline = None if effective is None else time.monotonic() + effective
+                    started = time.monotonic()
+                    deadline = None if effective is None else started + effective
+
+                    def _parked_by_the_server() -> bool:
+                        # Asked only at the deadline, so an idle stream costs nothing.
+                        if stall_grace is None or effective is None:
+                            return False
+                        if time.monotonic() - started >= _SERVER_PARK_STALL_CAP_S:
+                            return False
+                        try:
+                            parked = bool(stall_grace())
+                        except Exception:
+                            parked = False
+                        if parked:
+                            logger.info(
+                                "llama stream silent for %.0fs with a slot parked by the "
+                                "server; waiting",
+                                time.monotonic() - started,
+                            )
+                        return parked
+
                     while True:
                         if cancel_event.is_set():
                             raise httpcore.ReadError("stream cancelled by user")
@@ -27959,12 +28090,18 @@ class LlamaCppBackend:
                         else:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
+                                if _parked_by_the_server():
+                                    deadline = time.monotonic() + effective
+                                    continue
                                 raise httpcore.ReadTimeout("read operation timed out")
                             step = min(poll_s, remaining)
                         try:
                             return _orig(max_bytes, timeout = step)
                         except httpcore.ReadTimeout:
                             if deadline is not None and time.monotonic() >= deadline:
+                                if _parked_by_the_server():
+                                    deadline = time.monotonic() + effective
+                                    continue
                                 raise
                             continue  # slow but alive: keep reading
 
@@ -27983,6 +28120,7 @@ class LlamaCppBackend:
         headers: Optional[dict] = None,
         first_token_deadline: Optional[float] = None,
         preempt_event = None,
+        stall_grace: Optional[Callable[[], bool]] = None,
     ):
         """Open one streaming POST and let cancel interrupt prefill or reads.
 
@@ -28053,6 +28191,7 @@ class LlamaCppBackend:
                         cancel_event,
                         response,
                         **({} if preempt_event is None else {"preempt_event": preempt_event}),
+                        **({} if stall_grace is None else {"stall_grace": stall_grace}),
                     )
                 if _interrupt is not None and _interrupt.is_set():
                     _raise_interrupt()
@@ -28506,6 +28645,14 @@ class LlamaCppBackend:
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
+                        if line == _SERVER_PARKED_COMMENT or line == _SERVER_RESUMED_COMMENT:
+                            # llama-server parked this slot in host RAM, or restored it. Shown to
+                            # the user as the same pause the Studio-side preemption shows; nothing
+                            # here is torn down, the server resumes the stream itself.
+                            _park_event = self._server_park_event(line, preempt_policy)
+                            if _park_event is not None:
+                                yield _park_event
+                            continue
                         if not line.startswith("data: "):
                             continue
 
@@ -30064,6 +30211,14 @@ class LlamaCppBackend:
                                             }
                                 _stream_done = True
                                 break  # exit inner while
+                            if line == _SERVER_PARKED_COMMENT or line == _SERVER_RESUMED_COMMENT:
+                                # llama-server parked this slot in host RAM, or restored it. Shown to
+                                # the user as the same pause the Studio-side preemption shows; nothing
+                                # here is torn down, the server resumes the stream itself.
+                                _park_event = self._server_park_event(line, preempt_policy)
+                                if _park_event is not None:
+                                    yield _park_event
+                                continue
                             if not line.startswith("data: "):
                                 continue
 
@@ -32935,6 +33090,14 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative}
                                 _stream_done = True
                                 break  # exit inner while
+                            if line == _SERVER_PARKED_COMMENT or line == _SERVER_RESUMED_COMMENT:
+                                # llama-server parked this slot in host RAM, or restored it. Shown to
+                                # the user as the same pause the Studio-side preemption shows; nothing
+                                # here is torn down, the server resumes the stream itself.
+                                _park_event = self._server_park_event(line, preempt_policy)
+                                if _park_event is not None:
+                                    yield _park_event
+                                continue
                             if not line.startswith("data: "):
                                 continue
 
