@@ -162,9 +162,9 @@ def test_images_stay_inline_and_everything_else_downloads():
 
     # One set, two jobs: what the route serves inline and what a tool call reports inline must not
     # drift apart, or a model's photo previews in chat but hides on the tool card (or vice versa).
-    assert set(_SANDBOX_MEDIA_TYPES) == _t._IMAGE_EXTS, (
-        "the route's inline map and the tool-result classifier drifted apart"
-    )
+    assert (
+        set(_SANDBOX_MEDIA_TYPES) == _t._IMAGE_EXTS
+    ), "the route's inline map and the tool-result classifier drifted apart"
 
     for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"):
         assert ext in _SANDBOX_MEDIA_TYPES
