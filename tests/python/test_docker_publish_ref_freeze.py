@@ -468,9 +468,7 @@ def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
     bin_dir = tmp_path / "bin"
     _docker_stub(
         bin_dir,
-        'case "$4" in\n'
-        + _raw_case(FLATTENED)
-        + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        'case "$4" in\n' + _raw_case(FLATTENED) + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
     out = tmp_path / "github_output"
@@ -493,8 +491,6 @@ def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
     )
     assert res.returncode == 0, (
         "the step rejected a merged index that holds every child of this run's "
-        "per-arch indexes, i.e. the manifest buildx actually produces:\n"
-        + res.stdout
-        + res.stderr
+        "per-arch indexes, i.e. the manifest buildx actually produces:\n" + res.stdout + res.stderr
     )
     assert f"digest={THIS_RUN_DIGEST}" in out.read_text(encoding = "utf-8")
