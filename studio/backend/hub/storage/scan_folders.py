@@ -135,6 +135,10 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+    from utils.paths.storage_roots import within_account
+
+    if not within_account(Path(normalized)):
+        raise ValueError("Path is outside this account's workspace")
 
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized

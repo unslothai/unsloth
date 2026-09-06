@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+from utils.paths.storage_roots import within_account
 from utils.paths import (
     normalize_path,
     is_local_path,
@@ -3266,7 +3267,7 @@ def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, st
 
     try:
         for item in outputs_path.iterdir():
-            if item.is_dir():
+            if item.is_dir() and within_account(item):
                 model_type = _detect_training_output_type(item)
                 if model_type is None:
                     continue
@@ -3313,7 +3314,7 @@ def scan_exported_models(
 
     try:
         for run_dir in exports_path.iterdir():
-            if not run_dir.is_dir():
+            if not run_dir.is_dir() or not within_account(run_dir):
                 continue
 
             # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an

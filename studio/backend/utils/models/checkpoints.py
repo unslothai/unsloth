@@ -16,6 +16,7 @@ from utils.training_runs import (
     model_segment_from_default_output_dir_name,
 )
 from utils.paths import outputs_root, resolve_output_dir
+from utils.paths.storage_roots import within_account
 
 logger = get_logger(__name__)
 
@@ -164,6 +165,9 @@ def scan_checkpoints(
     try:
         for item in outputs_path.iterdir():
             if not item.is_dir():
+                continue
+            if not within_account(item):
+                # A link inside the account's outputs pointing elsewhere.
                 continue
 
             config_file = item / "config.json"

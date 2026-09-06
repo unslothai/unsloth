@@ -20,6 +20,7 @@ from hub.schemas.datasets import (
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
 from utils.paths.lazy import LazyPath
+from utils.paths.storage_roots import within_account
 from utils.paths.path_utils import (
     any_not_appledouble_metadata,
     drop_appledouble_metadata,
@@ -137,6 +138,8 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
     for entry in LOCAL_DATASETS_ROOT.iterdir():
         if not entry.is_dir() or not entry.name.startswith("recipe_"):
             continue
+        if not within_account(entry):
+            continue
         parquet_dir = entry / "parquet-files"
         if not parquet_dir.exists() or not any_not_appledouble_metadata(
             parquet_dir.glob("*.parquet")
@@ -174,7 +177,7 @@ def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
     for path in DATASET_UPLOAD_DIR.iterdir():
         if not path.is_file() or path.suffix.lower() not in LOCAL_UPLOAD_EXTS:
             continue
-        if is_appledouble_metadata(path):
+        if is_appledouble_metadata(path) or not within_account(path):
             continue
         try:
             if path.stat().st_size == 0:

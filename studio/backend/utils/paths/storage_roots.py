@@ -481,6 +481,35 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         ) from exc
 
 
+def within_account(path: Path) -> bool:
+    """Whether ``path`` really lives in the acting account's own roots.
+
+    Always true for the owner, whose roots are the install. For a managed
+    account the real path (symlinks followed) must sit under its workspace or
+    its temporary root: a link planted inside the account's tree must not read
+    or list anything outside it.
+    """
+    if is_owner_context():
+        return True
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in (workspace_root(), tmp_root()):
+        try:
+            real.relative_to(Path(os.path.realpath(root)))
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def require_within_account(path: Path) -> Path:
+    if not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
+
+
 def resolve_under_root(
     path_value: str | None,
     *,
@@ -567,7 +596,8 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if _is_absolute_user_path(path):
-        return path
+        # Another drive is the owner's call; a managed account exports inside its own roots.
+        return require_within_account(path)
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -611,7 +641,7 @@ def resolve_dataset_path(path_value: str) -> Path:
         for root_fn in (datasets_root, dataset_uploads_root, recipe_datasets_root):
             try:
                 _assert_contained(path, root_fn())
-                return path
+                return require_within_account(path)
             except ValueError:
                 continue
         raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
@@ -621,10 +651,10 @@ def resolve_dataset_path(path_value: str) -> Path:
         parts = parts[2:]
     if parts and parts[0] == "uploads":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return dataset_uploads_root() / cleaned
+        return require_within_account(dataset_uploads_root() / cleaned)
     if parts and parts[0] == "recipes":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return recipe_datasets_root() / cleaned
+        return require_within_account(recipe_datasets_root() / cleaned)
 
     cleaned = Path(*parts) if parts else Path()
     candidates = [
@@ -636,5 +666,5 @@ def resolve_dataset_path(path_value: str) -> Path:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            return require_within_account(candidate)
     return candidates[0]
