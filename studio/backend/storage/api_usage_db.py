@@ -241,7 +241,8 @@ class ApiUsageWriter:
                             break
                         # record_api_usage already made its bounded fast retries: retain this accepted item at
                         # the head of
-                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it.
+                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it
+                        # so final shutdown drains rather than silently dropping usage.
                         busy_failures += 1
                         if busy_failures == 1 or busy_failures % 20 == 0:
                             logger.warning(

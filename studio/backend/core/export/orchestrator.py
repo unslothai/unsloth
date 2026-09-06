@@ -493,8 +493,8 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
-                    # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
-                    # fails on.
+                    # The old worker is already gone; a stale current_checkpoint would make the Export page claim a
+                    # loaded checkpoint that the next op then fails on with "No export subprocess running".
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False

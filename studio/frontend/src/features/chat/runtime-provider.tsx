@@ -1117,7 +1117,8 @@ function scheduleGenerationRecovery(
       }
       if (followStalled || generationNeedsRecovery(currentMetadata)) {
         // Fence the run before presenting the reply as resumable: settling only in this tab leaves the
-        // row active, and create_run refuses a thread that already has one, so Continue would 409.
+        // row queued/running/cancelling, and create_run refuses a thread that already has an active
+        // generation, so Continue and the next message would both 409.
         // Best effort: a producer wedged inside the engine stays in `cancelling` for the sweeper.
         serverCancel();
         // The follow returned with the run still non-terminal, so its no-progress deadline expired.

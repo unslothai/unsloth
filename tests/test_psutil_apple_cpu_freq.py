@@ -148,9 +148,7 @@ class TestPatchApplication:
         assert psutil.cpu_freq is before
 
     def test_no_op_when_psutil_has_no_cpu_freq(self, monkeypatch, fake_m4):
-        # GitHub's Apple Silicon runners ship exactly this psutil: no cpu_freq
-        # attribute at all. There is nothing to wrap, and adding one would
-        # advertise support psutil deliberately does not claim.
+        # GitHub's Apple Silicon runners ship exactly this psutil: no cpu_freq attribute at all.
         import psutil
 
         monkeypatch.delattr(psutil, "cpu_freq", raising = False)
@@ -168,15 +166,14 @@ class TestPatchApplication:
         monkeypatch.setattr(psutil, "cpu_freq", cpu_freq)
         _fake_ioreg(monkeypatch, [{"voltage-states5-sram": _M4_PERF_TABLE}])
         IF.patch_psutil_cpu_freq()
-        assert psutil.cpu_freq().current == 4512.0  # the supported call still recovers
+        assert psutil.cpu_freq().current == 4512.0
         with pytest.raises(TypeError):
             psutil.cpu_freq(unknown = True)
         with pytest.raises(TypeError):
             psutil.cpu_freq(False, False)
 
     def test_probe_lock_exists_before_any_call(self):
-        # A lazily built lock is two locks when two threads reach it at once,
-        # and then neither excludes the other.
+        # A lazily built lock is two locks when two threads reach it at once, and then neither excludes the other.
         import threading
         assert isinstance(IF._apple_cpu_freq_lock, type(threading.Lock()))
 
@@ -254,7 +251,6 @@ class TestPatchApplication:
         assert psutil.cpu_freq() == value
 
     def test_psutil_exception_is_covered_by_ioreg(self, monkeypatch, fake_m4):
-        # psutil raises on M5, where the table indexes it hardcodes are absent.
         def boom(percpu = False):
             raise RuntimeError("no voltage-states table at the expected index")
 
@@ -270,6 +266,7 @@ class TestPatchApplication:
         import psutil
         import subprocess
 
+        # psutil raises on M5, where the table indexes it hardcodes are absent.
         def boom(percpu = False):
             raise RuntimeError("no voltage-states table at the expected index")
 
@@ -280,8 +277,8 @@ class TestPatchApplication:
             psutil.cpu_freq()
 
     def test_percpu_exception_is_covered_too(self, monkeypatch, fake_m4):
-        # macOS has no per-core clock, so psutil's own percpu answer there is a
-        # one-element list; the stand-in keeps that shape for both call forms.
+        # macOS has no per-core clock, so psutil's own percpu answer there is a one-element list; the stand-in keeps
+        # that shape for both call forms.
         import psutil
 
         def boom(percpu = False):
@@ -405,14 +402,13 @@ class TestOnRealAppleSilicon:
         IF.patch_psutil_cpu_freq()
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
-            # Nothing was wrapped, so there is nothing to assert about. Unsloth's
-            # own helper covers this host, and its test asserts that path.
+            # Nothing was wrapped, so there is nothing to assert about.
             pytest.skip("psutil exposes no cpu_freq on this host")
         try:
             sample = reader()
         except Exception as exception:
-            # psutil declined and the tables were unreadable too, so the wrapper
-            # correctly re-raised rather than inventing a number.
+            # psutil declined and the tables were unreadable too, so the wrapper correctly re-raised rather than
+            # inventing a number.
             pytest.skip(f"no CPU clock available on this host ({exception})")
         if sample is None:
             pytest.skip("psutil reports the clock as undeterminable on this host")

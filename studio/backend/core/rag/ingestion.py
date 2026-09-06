@@ -635,8 +635,10 @@ def job_events(job_id: str):
                 break
             yield event
     finally:
-        # Keep the queue while the worker runs so an early disconnect can reconnect and resume; terminal is
-        # still False at disconnect, since _run writes the DB status before emitting it.
+        # Drop the queue once nothing more will be emitted into it: a terminal exit, or a disconnect after the
+        # job already finished. The UI stops on the terminal event, before [DONE], so terminal is still False
+        # here; the re-read below catches it because _run writes the terminal DB status before emitting it.
+        # Keep the queue only while the worker is still running, so an early disconnect can reconnect and resume.
         if not terminal:
             try:
                 row = get_job_status(job_id)
