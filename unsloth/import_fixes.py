@@ -2526,7 +2526,9 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
             return None
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
-        install_hint = f"`pip install {_index_flag(_TORCHCODEC_ABI_STABLE_CODEC)}'torchcodec>={abi_pin}.0'`"
+        install_hint = (
+            f"`pip install {_index_flag(_TORCHCODEC_ABI_STABLE_CODEC)}'torchcodec>={abi_pin}.0'`"
+        )
     elif codec_minor in allowed:
         return None
     else:

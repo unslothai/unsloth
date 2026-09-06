@@ -973,9 +973,9 @@ def test_a_ceiling_only_request_is_unknown_rather_than_the_excluded_oracle():
     named = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
     assert nv.rule_inst_004_torchcodec_torch(named, colab, "nb.ipynb", 0) == []
     wrong = '!pip install torch==2.9.0 "torchcodec>=0.11.0,<0.12.0"'
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(wrong, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(wrong, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
 
 def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatch):
@@ -1030,9 +1030,7 @@ def test_the_codec_reader_matches_pip_on_names_and_uninstalls():
     assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
 
     # Putting it back incompatibly is still a finding: the uninstall is not a blanket mute.
-    restored = (
-        "!pip uninstall -y torchcodec\n" '!pip install torch==2.12.0 "torchcodec==0.11.1"'
-    )
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(restored, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    restored = "!pip uninstall -y torchcodec\n" '!pip install torch==2.12.0 "torchcodec==0.11.1"'
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(restored, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
