@@ -2,24 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The Downloads overlay is a transient card, not furniture.
+ * The Downloads overlay must unmount when the job list is empty (#9849, which
+ * shipped a permanent corner FAB and was reverted by #10298).
  *
- * #9849 dropped `jobKeys.length === 0` from the early return so the panel would
- * "always be there to open", and defaulted it to its collapsed FAB. The result
- * was a download button pinned to the bottom-right corner of every hub route on
- * a fresh install, with nothing to show. It had to be reverted wholesale by
- * #10298, and nothing in either suite failed while it was on main.
+ * The second consequence is the one that reads as harmless: the rail is a
+ * `flex flex-col gap-2` column, so a panel returning a wrapper instead of
+ * `null` takes a slot and its gap, pushing the loaded models card off the
+ * corner it is meant to hold.
  *
- * Two things go wrong when the guard is weakened, and only the first is
- * obvious. The panel itself becomes permanent; and because the rail in
- * provider.tsx is a `flex flex-col gap-2` column, a panel that returns a
- * wrapper instead of `null` also takes a slot and its gap, pushing the loaded
- * models card - the one overlay that IS meant to sit on the corner - up off it.
- *
- * Read from the source: the node suite has no DOM to render into. The guard is
- * matched through the AST rather than as a string so that reformatting, a
- * rename of `jobKeys`, or an extra clause in the condition do not silently
- * turn this into a test of nothing.
+ * Read from the source: the node suite has no DOM. Matched through the AST, so
+ * reformatting or a rename of `jobKeys` cannot quietly retire it.
  */
 
 import assert from "node:assert/strict";
@@ -43,7 +35,6 @@ const PANEL_PATH = "features/hub/download-manager/download-manager-panel.tsx";
 const panel = parse(PANEL_PATH, "download-manager-panel.tsx");
 const provider = parse("app/provider.tsx", "provider.tsx");
 
-/** The `DownloadManagerPanel` function declaration. */
 function panelComponent(): ts.FunctionDeclaration {
   let found: ts.FunctionDeclaration | null = null;
   const visit = (node: ts.Node): void => {
@@ -60,10 +51,7 @@ function panelComponent(): ts.FunctionDeclaration {
   return found;
 }
 
-/**
- * The local that holds the ordered job keys, found by its initializer rather
- * than by name: a rename must not be able to slip the guard past this file.
- */
+/** The ordered-job-keys local, found by its initializer so a rename cannot slip past. */
 function jobKeysBinding(component: ts.FunctionDeclaration): string {
   let name: string | null = null;
   const visit = (node: ts.Node): void => {
@@ -93,13 +81,9 @@ job list at all, it can no longer know when to unmount.`,
 }
 
 /**
- * Does `condition` contain a test for an empty `jobKeys`?
- *
- * Side matters. An unordered "contains the length and contains zero" match also
- * accepts `0 < jobKeys.length`, which unmounts the panel exactly when there ARE
- * jobs, and `0 <= jobKeys.length`, which is always true. Both would satisfy a
- * test whose whole job is to prove the panel unmounts when the list is empty,
- * so the accepted shapes are spelled out rather than inferred.
+ * Does `condition` test for an empty `jobKeys`? Operand order matters: an
+ * unordered match also accepts `0 < jobKeys.length`, the exact inverse, and the
+ * always-true `0 <= jobKeys.length`. Hence the explicit shapes.
  */
 function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
   const length = `${jobKeys}.length`;
@@ -123,7 +107,6 @@ function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
         ok = true;
       }
     }
-    // !jobKeys.length
     if (
       ts.isPrefixUnaryExpression(node) &&
       node.operator === K.ExclamationToken &&
@@ -137,7 +120,6 @@ function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
   return ok;
 }
 
-/** `return null` directly, or as the only statement of a block. */
 function returnsNull(statement: ts.Statement): boolean {
   const body = ts.isBlock(statement) ? statement.statements : [statement];
   return body.some(
@@ -152,9 +134,7 @@ test("the Downloads overlay unmounts when there are no jobs", () => {
   const jobKeys = jobKeysBinding(component);
   const statements = component.body?.statements ?? ts.factory.createNodeArray();
 
-  // Top level of the component only. A guard nested inside another branch is
-  // not the same promise: it would leave states in which the panel is mounted
-  // with an empty list, which is the whole of what #9849 shipped.
+  // Top level only: a nested guard still leaves mounted-and-empty states.
   const guarded = statements.some(
     (statement) =>
       ts.isIfStatement(statement) &&
@@ -177,9 +157,8 @@ Expected something of the shape:  if (... || ${jobKeys}.length === 0) return nul
 });
 
 test("the rail-facing wrapper can still be squeezed by the rail's cap", () => {
-  // min-h-0 on the non-positioned branch: a flex item's min-height defaults to
-  // auto, so without it a capped rail takes the height out of the update card
-  // above instead of out of this list, and the card clips its own buttons.
+  // min-h-0: without it a flex item floors at auto and the capped rail squeezes
+  // the update card above instead of this list.
   const source = readFileSync(
     new URL(`../src/${PANEL_PATH}`, import.meta.url),
     "utf8",
@@ -204,8 +183,7 @@ squeeze the update card above this list instead of the list`,
 });
 
 test("the Downloads panel sits above the loaded models card in both rails", () => {
-  // The loaded models card is the one overlay meant to hold the corner; the
-  // download panel is deliberately ordered above it because it comes and goes.
+  // The loaded models card holds the corner; this one comes and goes above it.
   const tags: { name: string; at: number }[] = [];
   const visit = (node: ts.Node): void => {
     const opening = openingTag(node);

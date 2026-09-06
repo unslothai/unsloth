@@ -713,10 +713,7 @@ def measure(page, label: str) -> dict:
             facts["gutterIsRail"] is False,
             f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
-    # A floor must not leave unpainted space around a compact card. Every card in
-    # the rail, not a named two: the regression this catches arrived on a card
-    # that had no floor at all the day before, and the rail is a bottom-anchored
-    # column, so one card's dead space lifts every card below it off the corner.
+    # The rail is bottom-anchored, so one card's dead space lifts the rest off the corner.
     cards = facts["railCards"]
     check(
         f"{label}: the rail has cards to judge",
@@ -733,10 +730,8 @@ def measure(page, label: str) -> dict:
             hole["above"] <= 1.0 and hole["below"] <= 1.0,
             f"dead={hole} painted-child={kid['painted']}",
         )
-    # And the stack as a whole still sits on the corner, measured off the card
-    # the reader can see rather than off the rail's own box. Only while the rail
-    # is not scrolling: under the cap the bottom card is where the scroll
-    # position puts it, and the fold is what RAIL_CORNER and REACH cover.
+    # Measured off the card the reader sees. Not while scrolling: under the cap the
+    # bottom card is wherever the scroll position puts it, which REACH covers.
     if cards and not facts["railScrolls"]:
         check(
             f"{label}: the bottom card is on the corner, not floating above it",
@@ -756,9 +751,7 @@ def measure(page, label: str) -> dict:
     return facts
 
 
-# The Downloads overlay is a transient card. #9849 made it always mount, so a
-# fresh install carried a download button on the corner with nothing behind it,
-# and it had to be reverted by #10298. Nothing failed while it was on main.
+# #9849 made the Downloads overlay always mount, and was reverted by #10298.
 DOWNLOADS = """
 () => {
   const rail = document.querySelector('[data-testid="overlay-rail"]');
@@ -792,9 +785,7 @@ def check_downloads_absent(page, label: str, expected_cards: int) -> None:
         f"{seen['panels']} download panel(s) mounted with an empty job list, "
         "which is the permanent corner FAB from #9849",
     )
-    # An exact count, not an absence: an absence also holds when the selector
-    # has rotted or nothing rendered at all, and that is the failure mode this
-    # whole file exists to avoid.
+    # An exact count: a bare absence also holds when the selector has rotted.
     check(
         f"{label}: the rail holds exactly the cards that are up",
         seen["cards"] == expected_cards,
@@ -1055,9 +1046,7 @@ def main() -> int:
                     )
                 measure(page, f"{size} {name} collapsed")
                 if path == "/":
-                    # Both update cards are up here and the models indicator is
-                    # off by default (#8346), so the rail is exactly two cards
-                    # unless something mounted that had nothing to show.
+                    # Both update cards up, indicator off by default (#8346).
                     check_downloads_absent(page, f"{size} {name}", 2)
                 page.screenshot(path = str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
 

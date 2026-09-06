@@ -4,34 +4,19 @@
 /**
  * A card in the bottom-right rail may not reserve height it does not paint.
  *
- * The rail is a bottom-anchored column, so reserved-but-unpainted height inside
- * a card does not disappear: it lifts everything the reader can see off the
- * corner. #10117 copied the desktop updater's
- * `min-h-[calc(117px+93px*var(--ui-font-scale,1))]` onto the llama.cpp banner
- * while making its changelog render only once opened, so the default state
- * reserved 204.2px and painted 147.3px and the whole stack sat 64.9px high.
- * #10229 fixed it.
+ * The rail is bottom-anchored, so dead space inside a card lifts everything
+ * visible off the corner. #10117 put an ungated floor on the llama.cpp banner
+ * whose changelog only renders once opened: 204.2px reserved, 147.3px painted.
+ * Fixed by #10229.
  *
- * Both suites ran on #10117 and both went green, and the reason is worth
- * keeping in mind while reading this file. The source suite of the day asserted
- * that the llama card CARRIED the floor and, in the same commit, that it did
- * not carry `shrink-0` - the bug was pinned as a contract. Any test that only
- * compares one card's class string against another's will agree that two cards
- * are consistent while both are wrong.
+ * The rule pinned here, rather than a spelling: a floor may only be reserved
+ * when the thing it protects is on screen. Two gates satisfy it, the CSS
+ * `has-[[data-slot=...]]:` and a React predicate that also renders the panel.
+ * The suite that missed #10117 asserted the floor was PRESENT, so a spelling
+ * check can be edited into agreement with the bug it should catch.
  *
- * So this file does not check for a spelling. It enumerates the rail's children
- * out of provider.tsx, follows each to its source, and applies one rule:
- *
- *   a floor may only be reserved when the thing it protects is on screen.
- *
- * Two gates satisfy it, and both are in use. `has-[[data-slot=...]]:` makes CSS
- * ask whether the panel rendered; a React predicate works if it is the same
- * predicate that renders the panel. A floor sitting in the `positioned` ternary
- * with no other gate - exactly what #10117 shipped - satisfies neither.
- *
- * Read from the source: the node suite has no DOM to compute styles in. The
- * geometry itself is checked in tests/studio/playwright_update_banner_layout.py,
- * which measures each slot against the surface painted inside it.
+ * Read from the source: the node suite has no DOM. The geometry itself is in
+ * tests/studio/playwright_update_banner_layout.py.
  */
 
 import assert from "node:assert/strict";
@@ -61,15 +46,9 @@ const provider = parse(src("app/provider.tsx"), "provider.tsx");
 const RAIL_ANCHOR = "pointer-events-none fixed bottom-0 right-4";
 
 /**
- * Every component that ends up in a rail, by tag name.
- *
- * Two sources, because neither is complete on its own. Literal children of an
- * anchored rail miss anything the Tauri layer receives through `{children}`,
- * which is how its llama, downloads and loaded-models cards arrive; today those
- * three are also listed literally in the browser rail, but a desktop-only card
- * would be invisible here. `positioned={false}` is the prop that puts a card in
- * a rail rather than on the corner by itself, so it catches those, and the
- * literal scan still catches a card that takes no such prop.
+ * Every component that ends up in a rail. Two sources: literal children of an
+ * anchored rail miss whatever the Tauri layer takes through `{children}`, and
+ * `positioned={false}` misses a card that takes no such prop.
  */
 function railChildren(): string[] {
   const names = new Set<string>();
@@ -82,7 +61,6 @@ function railChildren(): string[] {
       if (className?.getText().includes(RAIL_ANCHOR)) {
         for (const child of node.children) {
           const name = openingTag(child)?.tagName.getText();
-          // A lower-case tag is a plain element, not a card.
           if (name && /^[A-Z]/.test(name)) names.add(name);
         }
       }
@@ -105,10 +83,7 @@ function railChildren(): string[] {
   return [...names].sort();
 }
 
-/**
- * Where `name` is imported from in provider.tsx, resolved to a file on disk.
- * Barrels are followed one hop, which is as far as the rail's children go.
- */
+/** Where `name` is imported from, resolved on disk. Barrels followed one hop. */
 function sourceOf(name: string): { path: URL; label: string } | null {
   let specifier: string | null = null;
   for (const statement of provider.statements) {
@@ -133,7 +108,6 @@ function sourceOf(name: string): { path: URL; label: string } | null {
   const direct = resolve(base);
   if (direct) return { path: direct, label: base };
 
-  // A barrel: find `export { name } from "./x"` and follow it.
   const index = resolve(`${base}/index`);
   if (!index) return null;
   const barrel = readFileSync(index, "utf8");
@@ -147,23 +121,17 @@ function sourceOf(name: string): { path: URL; label: string } | null {
 }
 
 /**
- * Class tokens that reserve a minimum height, in any spelling.
- *
- * Not just `min-h-[calc(`: `min-h-52`, `min-h-[204px]` and a named utility
- * reserve height exactly as well, and a rule that only knows one spelling can
- * be retired by rewriting it. `min-h-0` is the opposite of a floor - it removes
- * the flex default of `auto` - so it is not one.
+ * Any spelling, since a rule that knows only `min-h-[calc(` is retired by
+ * rewriting it. `min-h-0` removes the flex `auto` default, so it is not a floor.
  */
 const FLOOR_TOKEN = /(^|:)min-h-(?!0$)\S+/;
 
-/** Class tokens of a literal. getText() keeps the quotes; they are not classes. */
+/** getText() keeps the quotes, which are not class tokens. */
 const classTokens = (literal: ts.Node): string[] =>
   literal.getText().replace(/["'`]/g, " ").split(/\s+/).filter(Boolean);
 
-/** Does this class token reserve a minimum height? */
 const isFloor = (token: string): boolean => FLOOR_TOKEN.test(token);
 
-/** String literals carrying a floor. */
 function floorLiterals(file: ts.SourceFile): ts.Node[] {
   const found: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
@@ -191,12 +159,9 @@ function gatedByHas(literal: ts.Node): boolean {
 }
 
 /**
- * The conditions this literal is the `whenTrue` branch of, innermost first.
- *
- * Only `whenTrue`. A floor on the other side of a ternary applies when its
- * predicate is FALSE, which is the opposite of a gate: `showFailure ?
- * "shrink-0" : "<floor>"` - the shape #8367 shipped - floors every state
- * except the one state named, including the states with no notes to protect.
+ * `whenTrue` only. A floor in the other branch applies when its predicate is
+ * false, which is no gate at all: `showFailure ? "shrink-0" : "<floor>"`, the
+ * shape #8367 shipped, floors every state except the one named.
  */
 function branchConditions(literal: ts.Node): string[] {
   const conditions: string[] = [];
@@ -213,13 +178,9 @@ function branchConditions(literal: ts.Node): string[] {
 }
 
 /**
- * Does `condition` decide whether the PANEL THE FLOOR PROTECTS renders?
- *
- * Rendering something is not enough. `changelogAvailable` renders the changelog
- * toggle and is true while the panel is still closed, so a floor gated on it
- * reserves the panel's height on every collapsed card - #10117 exactly. The
- * predicate has to turn on with the notes, so the element it renders has to be
- * the notes.
+ * Rendering something is not enough: `changelogAvailable` renders the toggle and
+ * is true while the panel is closed, which is #10117 exactly. It must render the
+ * notes themselves.
  */
 const PROTECTED_PANEL = /(Notes|Changelog)/i;
 
@@ -260,9 +221,7 @@ for (const name of CHILDREN) {
     assert.ok(resolved, `<${name} /> did not resolve`);
     const file = parse(resolved.path, `${name}.tsx`);
     const source = readFileSync(resolved.path, "utf8");
-    // An inline minHeight cannot be gated by a class and is invisible to the
-    // analysis below, so the rail's geometry stays in CSS, as provider.tsx's
-    // own tests already require of the rail itself.
+    // Invisible to the analysis below, and the rail already keeps its geometry in CSS.
     assert.doesNotMatch(
       source,
       /\bminHeight\s*:/,
@@ -301,8 +260,7 @@ Ternary conditions around it: ${branchConditions(literal).join(", ") || "(none)"
       );
     }
 
-    // A gated floor still has to be filled, or the card paints short inside a
-    // slot it legitimately asked for and the gap comes back the other way.
+    // A gated floor still has to be filled, or the gap returns the other way.
     assert.match(
       source,
       /className="relative flex [^"]*\bgrow\b/,
