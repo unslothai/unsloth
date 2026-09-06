@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 """torch / torchcodec ABI guardrails (unslothai/unsloth#7225)."""
 
 from __future__ import annotations
