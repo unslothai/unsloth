@@ -817,12 +817,22 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         "agrees": {},
         "empty_outputs": [i for i, text in enumerate(singles) if not text.strip()],
     }
+    # Per batch size, the rows that came back empty INSIDE the batch. The
+    # singles check above cannot see these, and the agreement check excuses
+    # them for a model listed in KNOWN_BATCHED_GENERATION_BREAKAGE, so without
+    # this an empty batched row on gemma-4 was a pass. That is the #9848 shape
+    # exactly: a left-padded row that attends to nothing decodes to "".
+    empty_batched: dict = {}
     for size in BATCH_SIZES:
         outs: list = []
         for start in range(0, len(prompts), size):
             outs.extend(_gen(prompts[start : start + size]))
         result["batched"][str(size)] = outs
         result["agrees"][str(size)] = outs == singles
+        rows = [i for i, text in enumerate(outs) if not text.strip()]
+        if rows:
+            empty_batched[str(size)] = rows
+    result["empty_batched_outputs"] = empty_batched
     # Read AGAIN, after all the generating. #2138 was a silent override applied
     # inside the inference path, so the value set at the top of this function is
     # not evidence of the value that was used.
@@ -872,6 +882,13 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
             )
     if batch.get("empty_outputs"):
         out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
+    # Never excused by the known-breakage entry: an empty row is not a
+    # disagreement, it is #9848, and the entry only covers #9708.
+    for size, rows in sorted((batch.get("empty_batched_outputs") or {}).items()):
+        out.append(
+            f"batch size {size}: prompts {rows} generated nothing at all inside "
+            f"the batch while their one-at-a-time output was not empty (#9848)"
+        )
     agrees = batch.get("agrees") or {}
     for size, agreed in agrees.items():
         if not agreed and not known:
