@@ -224,6 +224,7 @@ def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fra
     transport faults -- it became a 502 "An internal error occurred", which says nothing
     and suggests the wrong owner.
     """
+
     def boom(*_args, **_kwargs):
         raise exc
 
