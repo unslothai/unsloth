@@ -358,8 +358,14 @@ def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float)
     return round(reserve_hours * (total_hours / basis_hours), 3)
 
 
-def weighted_pick(run_id: str, weights: dict[str, float]) -> tuple[str, float]:
-    """Deterministic weighted choice of account, keyed on the run id ALONE.
+def weighted_pick(key: str, weights: dict[str, float]) -> tuple[str, float]:
+    """Deterministic weighted choice of account, keyed on the COMMIT under test
+    (the run id when no commit is known).
+
+    The commit rather than the run: a second Actions run on one commit (a
+    label added while a sampled run is still out, a forced dispatch) must land
+    on the account already holding that commit's kernel, or the collector on
+    the other account sees nothing in flight and dispatches a duplicate.
 
     Not the attempt, for the same reason `sampled_in` excludes it and a sharper
     one: a re-run of a run whose kernels are still in flight must return to the
@@ -373,7 +379,7 @@ def weighted_pick(run_id: str, weights: dict[str, float]) -> tuple[str, float]:
     """
     ids = sorted(weights)
     total = sum(max(0.0, weights[i]) for i in ids)
-    digest = hashlib.sha256(("account:" + run_id).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(("account:" + key).encode("utf-8")).hexdigest()
     draw = (int(digest[:8], 16) % 1_000_000) / 1_000_000.0
     if not ids or total <= 0:
         return (ids[0] if ids else ""), draw
@@ -664,6 +670,12 @@ def main() -> int:
     )
     ap.add_argument("--run-id", default = os.environ.get("GITHUB_RUN_ID", "0"))
     ap.add_argument("--run-attempt", default = os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    ap.add_argument(
+        "--head-sha",
+        default = "",
+        help = "the commit under test; the account draw is keyed on it so every run of one "
+        "commit lands on the account holding its kernel",
+    )
     ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
     ap.add_argument("--label-name", default = "kaggle-t4-ci")
@@ -862,7 +874,8 @@ def main() -> int:
     # -- the order below still reaches it -- so an unreadable answer costs the
     # account its share of the traffic and not its place in the queue.
     weights = {i: p["total_hours"] for i, p in probes.items() if p.get("total_hours")}
-    sampled_account, account_draw = weighted_pick(args.run_id, weights)
+    account_key = (args.head_sha or "").strip().lower() or str(args.run_id)
+    sampled_account, account_draw = weighted_pick(account_key, weights)
     if weights:
         share = max(0.0, weights.get(sampled_account, 0.0)) / sum(weights.values())
         print(

@@ -283,8 +283,29 @@ def test_the_account_draw_is_salted_apart_from_the_sampling_draw():
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
     picked = source.split("def weighted_pick", 1)[1].split("\ndef ", 1)[0]
     assert (
-        'sha256(("account:" + run_id)' in picked
-    ), "the account draw hashes the bare run id, which is what sampled_in hashes"
+        'sha256(("account:" + key)' in picked
+    ), "the account draw hashes the bare key, which is what sampled_in hashes"
+
+
+def test_every_run_of_one_commit_lands_on_the_same_account():
+    """A label added while a sampled run is still out, or a forced dispatch,
+    starts a second run of the SAME commit with a new run id. Keyed on the run
+    id the draw could pick the other account, whose collector cannot see the
+    first account's kernel, and a duplicate session would be dispatched."""
+    weights = {"1": 60.0, "2": 30.0}
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    assert len({gate.weighted_pick(sha, weights)[0] for _ in range(5)}) == 1
+    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    assert "account_key = (args.head_sha or" in source, "the gate does not key the draw on the commit"
+    for path in (NOTEBOOK_WF, STUDIO_WF):
+        gate_steps = [
+            s
+            for _j, _n, s in _steps(_wf(path))
+            if "gate.py" in (s.get("run") or "") and "--percent" in s["run"]
+        ]
+        assert gate_steps, f"{path.name} has no gate step"
+        for step in gate_steps:
+            assert "--head-sha" in step["run"], f"{path.name}: the gate is not told the commit"
 
 
 def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():

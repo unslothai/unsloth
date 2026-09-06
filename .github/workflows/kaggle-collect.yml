@@ -179,7 +179,7 @@ jobs:
       # artifact outage is not a collection failure, and the statuses are
       # already delivered.
       - name: Upload evidence
-        if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
+        if: always() && hashFiles('kaggle_collected/**') != ''
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -196,8 +196,14 @@ jobs:
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, pathlib
           data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          # Collection runs --no-delete, so `deleted` there is always false; the
+          # release step wrote the real outcome beside it.
+          release = pathlib.Path("kaggle_collected/delete_result.json")
+          released = set(json.loads(release.read_text()).get("deleted") or []) if release.exists() else set()
           print(f"### Kaggle collect: account {data.get('owner') or '?'}\n")
           rows = data.get("kernels") or []
+          for k in rows:
+              k["deleted"] = bool(k.get("deleted")) or k.get("slug") in released
           if not rows:
               print("Nothing of ours was in flight on this account.\n")
           else:
@@ -213,12 +219,3 @@ jobs:
                   if k.get("reason"):
                       print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
           PY
-
-      - name: Upload the collected evidence
-        if: always() && hashFiles('kaggle_collected/**') != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: kaggle-collected-${{ matrix.account_id }}-${{ github.run_id }}
-          path: kaggle_collected
-          if-no-files-found: ignore
-          retention-days: 7

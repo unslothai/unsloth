@@ -739,8 +739,13 @@ def _already_gone(text: str) -> bool:
     return any(marker in text.lower() for marker in GONE_MARKERS)
 
 
-def delete_kernel(slug: str) -> bool:
+def delete_kernel(slug: str, deadline: float | None = None) -> bool:
     """Delete one kernel, and answer whether Kaggle actually deleted it.
+
+    ``deadline`` (absolute ``time.time()``) bounds the whole call: each attempt
+    is clamped to what is left of it and no attempt starts past it, so a
+    release phase that hands every delete the same deadline ends when it says
+    it will rather than three attempts after.
 
     ``subprocess.run`` does not raise on a nonzero exit, so the caller used to
     record every slug as released whatever came back: a refused delete, an
@@ -775,12 +780,19 @@ def delete_kernel(slug: str) -> bool:
     this refuses needs a human, which is what the caller's warning is for.
     """
     for attempt in range(DELETE_ATTEMPTS):
+        timeout = DELETE_SUBPROCESS_TIMEOUT_SEC
+        if deadline is not None:
+            left = deadline - time.time()
+            if left <= 0:
+                _log(f"delete {slug}: budget spent before attempt {attempt + 1}; left for the next pass")
+                return False
+            timeout = min(timeout, left)
         try:
             proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
                 capture_output = True,
                 text = True,
-                timeout = DELETE_SUBPROCESS_TIMEOUT_SEC,
+                timeout = timeout,
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"delete {slug} did not run: {type(exc).__name__}")

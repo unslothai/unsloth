@@ -326,7 +326,7 @@ def collect_one(
                 "not have produced a result"
             )
             if delete:
-                record["deleted"] = launch.delete_kernel(slug)
+                record["deleted"] = launch.delete_kernel(slug, deadline = deadline)
             _log(f"reaped {slug} ({state}, {age:.1f}h)")
             return record
         record["verdict"] = "pending"
@@ -422,7 +422,7 @@ def collect_one(
     record["verdict"] = verdict
     record["reason"] = reason
     if delete:
-        record["deleted"] = launch.delete_kernel(slug)
+        record["deleted"] = launch.delete_kernel(slug, deadline = deadline)
         if not record["deleted"]:
             _log(f"could not delete {slug}; it may keep billing")
     _log(f"collected {slug}: {verdict} ({reason})")
@@ -536,7 +536,7 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
             outcome["kept"].append(slug)
             _log(f"kept {slug}: release budget spent; the next pass releases it")
             continue
-        if launch.delete_kernel(slug):
+        if launch.delete_kernel(slug, deadline = deadline):
             outcome["deleted"].append(slug)
             _log(f"deleted {slug}")
         else:
