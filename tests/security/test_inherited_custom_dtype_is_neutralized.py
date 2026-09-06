@@ -25,13 +25,11 @@ def _import_with(value, marker = None):
     """Imports the module in a fresh process with `value` inherited, returns the env."""
     environment = dict(os.environ)
     environment[_ENV_KEY] = value.format(marker = marker) if marker else value
-    # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host
-    # with no torch accelerator. In-process this file rides on whatever set the
-    # variable earlier in the session -- studio/backend/tests/conftest.py does, with
-    # setdefault -- so whether the child inherited it came down to what else was in
-    # the run. It was not, in Repo tests (CPU), and the child died before reaching
-    # the module under test. Pin it: this test is about the dtype field, and it
-    # should read the same on a runner with a card and on one without.
+    # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host with no torch accelerator.
+    # In-process this file rides on whatever set the variable earlier in the session
+    # (studio/backend/tests/conftest.py does, with setdefault), so whether the child inherited it came down to what
+    # else was in the run. It was not set in Repo tests (CPU), and the child died before reaching the module under
+    # test. Pin it: this test is about the dtype field, and it should read the same with a card and without one.
     environment.setdefault("UNSLOTH_ALLOW_CPU", "1")
     program = (
         "import unsloth.models._custom_dtype as module, os;"
@@ -59,7 +57,6 @@ def test_a_hostile_dtype_field_cannot_reach_an_eval(tmp_path):
     value = seen.strip("'\"")
     field = value.split(";", 4)[1]
     assert field.strip() in DTYPE_ALIASES, field
-    # What the unhardened `unsloth_zoo==2026.8.15` does with that field, verbatim.
     assert eval(field) is None  # noqa: S307 - the point of the test
     assert not marker.exists()
 
