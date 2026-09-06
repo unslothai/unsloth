@@ -1494,20 +1494,22 @@ def test_a_torch_range_is_replayed_before_the_pair_is_judged():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     upgraded = '!pip install "torch>=2.12.0"'
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(upgraded, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(upgraded, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # A floor the image already satisfies moves nothing, so the pair stays as shipped.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0)
+        == []
+    )
     # Removing torch leaves nothing to judge.
     assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
     # An inexact torch cannot pick a row, so the table half stays silent rather than guessing.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch>=2.7,<2.8"', colab, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.7,<2.8"', colab, "nb.ipynb", 0)
+        == []
+    )
 
 
 def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monkeypatch):
