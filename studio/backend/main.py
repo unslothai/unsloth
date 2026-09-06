@@ -2139,6 +2139,54 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
+    def _aggregate_disk_usage(log):
+        """Disk usage across every filesystem that actually stores model data.
+
+        The old shape read only the root filesystem. A user who symlinks
+        ~/.cache/huggingface (or any configured HF cache) onto a secondary
+        drive sees the root drive's usage while the models live elsewhere:
+        the Live Monitor under-reports exactly the storage that matters
+        (#9259). Resolve the HF cache root through its symlinks and report
+        the union — same-filesystem dedup keeps the common one-drive case a
+        single fs, and a cache that still lives under / keeps the shape and
+        numbers identical to before.
+        """
+        try:
+            root = os.path.abspath(os.sep)
+            paths = [root]
+            try:
+                from utils.hf_cache_settings import active_hf_hub_cache
+                cache = active_hf_hub_cache()
+                if cache:
+                    # realpath resolves the symlink chain to the mount that
+                    # actually holds the bytes; statvfs on the symlink itself
+                    # would describe the filesystem the LINK sits on.
+                    paths.append(os.path.realpath(cache))
+            except Exception as e:
+                log.debug(f"Could not resolve the HF cache root for disk usage: {e}")
+
+            by_device: dict = {}
+            for path in paths:
+                usage = psutil.disk_usage(path)
+                key = f"{usage.total}:{usage.free}"
+                if key in by_device:
+                    continue
+                by_device[key] = usage
+
+            total = sum(u.total for u in by_device.values())
+            free = sum(u.free for u in by_device.values())
+            used = total - free
+            percent = (used / total * 100) if total else 0
+            return {
+                "total": total,
+                "free": free,
+                "percent": percent,
+                "filesystems": len(by_device),
+            }
+        except Exception as e:
+            log.debug(f"Failed to get disk usage: {e}")
+            return None
+
     gpu_info, inference_gpu_info = _get_cached_system_gpu_info(logger)
 
     memory = psutil.virtual_memory()
@@ -2146,11 +2194,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
     cpu_freq_mhz = cpu_frequency_mhz()
 
-    try:
-        disk = psutil.disk_usage(os.path.abspath(os.sep))
-    except Exception as e:
-        logger.debug(f"Failed to get disk usage: {e}")
-        disk = None
+    disk = _aggregate_disk_usage(logger)
 
     try:
         current_process = psutil.Process(os.getpid())
