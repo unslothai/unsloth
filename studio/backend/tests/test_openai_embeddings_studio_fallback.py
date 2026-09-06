@@ -883,7 +883,9 @@ def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, mon
     )
     monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
     monkeypatch.setattr(backend, "_server_context", lambda: 8192)
-    monkeypatch.setattr(backend, "_server_props", lambda: {"default_generation_settings": {"n_ctx": 8192}})
+    monkeypatch.setattr(
+        backend, "_server_props", lambda: {"default_generation_settings": {"n_ctx": 8192}}
+    )
     monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
     assert backend.max_tokens() == embed_llama_server._UBATCH_SIZE - 2
     assert "-ub" in backend._build_cmd("llama-server", "m.gguf", 1, use_gpu = False)
@@ -920,7 +922,9 @@ def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):
     assert inference_route._reference_is_decisive(stale) is True
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            inference_route.openai_embeddings(_Request({"input": "alpha", "model": stale}), "tester")
+            inference_route.openai_embeddings(
+                _Request({"input": "alpha", "model": stale}), "tester"
+            )
         )
     assert exc.value.status_code == 503
 
@@ -1269,7 +1273,9 @@ def test_props_probe_never_raises_before_the_server_is_up():
 
     # An un-started server has no port, so the URL itself is invalid: the probe must swallow
     # that and fall back to the batch we launch with rather than propagate.
-    assert embed_llama_server.LlamaServerBackend()._server_batch() == embed_llama_server._UBATCH_SIZE
+    assert (
+        embed_llama_server.LlamaServerBackend()._server_batch() == embed_llama_server._UBATCH_SIZE
+    )
 
 
 def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_embedder):
