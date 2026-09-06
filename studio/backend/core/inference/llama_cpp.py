@@ -8831,11 +8831,15 @@ class LlamaCppBackend:
         if is_vulkan_backend:
             shared = set(shared_gpu_ids or ())
             return bool(shared) and all(idx in shared for idx in devices)
+        # ROCm only, deliberately. The one caller is the Windows full-offload
+        # branch, and an integrated CUDA part (Jetson, DGX Spark, Tegra) is
+        # Linux-only, so _integrated_cuda_gpu_ids() could only ever answer False
+        # here -- at the price of a torch.cuda.get_device_properties() call, which
+        # creates a CUDA primary context in the backend process that it never gives
+        # back (~700 MiB measured, see _get_gpu_memory). _rocm_unified_memory_gpu_ids
+        # returns an empty set on a CUDA torch without touching the device.
         try:
-            unified = (
-                LlamaCppBackend._rocm_unified_memory_gpu_ids()
-                | LlamaCppBackend._integrated_cuda_gpu_ids()
-            )
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
         except Exception:
             return False
         return bool(unified) and all(idx in unified for idx in devices)
@@ -22447,17 +22451,21 @@ class LlamaCppBackend:
                 # Measured cost of getting it wrong on a Strix Halo: one 48.8 h
                 # session spent 44.3 h re-ingesting prompts, 3.38 M prompt tokens
                 # against 72 k generated, on a context it re-read every turn.
-                _shared_memory_offload = self._offload_target_shares_system_memory(
-                    is_vulkan_backend = is_vulkan_backend,
-                    shared_gpu_ids = _shared_gpu_ids,
-                    detected_gpus = _detected_gpus,
-                    gpu_indices = gpu_indices,
-                )
-                if (
+                # Short-circuited behind the platform gate on purpose. The helper
+                # reads torch on the non-Vulkan path, and a Linux, macOS or
+                # partial-offload launch never reaches this block, so asking would
+                # spend a device probe to answer a question with no consumer.
+                _shared_memory_offload = (
                     sys.platform == "win32"
                     and full_offload_tuning_active
-                    and _shared_memory_offload
-                ):
+                    and self._offload_target_shares_system_memory(
+                        is_vulkan_backend = is_vulkan_backend,
+                        shared_gpu_ids = _shared_gpu_ids,
+                        detected_gpus = _detected_gpus,
+                        gpu_indices = gpu_indices,
+                    )
+                )
+                if _shared_memory_offload:
                     logger.info(
                         "Keeping the llama-server prompt cache: this load offloads to a GPU "
                         "that shares system memory, so --cache-ram 0 and --ctx-checkpoints 0 "

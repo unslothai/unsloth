@@ -162,3 +162,40 @@ def test_the_vulkan_shared_set_is_not_read_as_physical_ids(monkeypatch):
         )
         is False
     )
+
+
+def test_a_cuda_host_is_answered_without_touching_the_device(monkeypatch):
+    """The predicate must not create a CUDA primary context to answer.
+
+    ``torch.cuda.get_device_properties`` initialises CUDA in the backend process
+    and never gives the memory back (~700 MiB), which is VRAM the child
+    llama-server then cannot use. On a CUDA host the answer is False either way,
+    so it has to come from ``torch.version.hip`` alone. The fake raises on any
+    device probe, so a reintroduced ``_integrated_cuda_gpu_ids()`` call fails
+    this test rather than merely costing memory in production."""
+
+    class _DeviceProbed(BaseException):
+        """BaseException on purpose: every helper in this family swallows
+        ``Exception`` per device, so an ordinary error would be caught and the
+        test would pass against the very code it exists to catch."""
+
+    def _explode(_ordinal):
+        raise _DeviceProbed("probed the CUDA device to answer a Windows-only question")
+
+    torch = types.ModuleType("torch")
+    torch.version = types.SimpleNamespace(hip = None)
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: 1,
+        get_device_properties = _explode,
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+    assert (
+        _shares(
+            is_vulkan_backend = False,
+            shared_gpu_ids = set(),
+            detected_gpus = [(0, 24000)],
+            gpu_indices = [0],
+        )
+        is False
+    )
