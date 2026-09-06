@@ -4658,9 +4658,14 @@ def _ensure_rocm_torch() -> None:
         # that selected the APU is declined, which install.sh's gate cannot see. The
         # documented UNSLOTH_TORCH_INDEX_URL pin returns above this block.
         if _runtime_gfx in _ROCM_MISCOMPUTING_GFX:
+            # Says what this branch actually does, which is decline to INSTALL ROCm for this
+            # target. It cannot promise CPU torch: whether an already-installed ROCm build is
+            # removed is _ensure_cpu_torch's call, and that asks about the whole host with the
+            # visible-device masks stripped, so a mixed host with a healthy dGPU keeps ROCm on
+            # purpose (test_a_mask_cannot_shrink_the_host_to_its_bad_gpu).
             _safe_print(
                 f"   {_runtime_gfx} computes incorrect results under ROCm "
-                f"(studio/ROCM_RDNA2_APU.md) -- keeping CPU torch.\n"
+                f"(studio/ROCM_RDNA2_APU.md) -- not installing ROCm torch for it.\n"
             )
             return
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
