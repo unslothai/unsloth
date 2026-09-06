@@ -86,7 +86,6 @@ from gpu_assert import (  # noqa: E402
     is_cuda_install,
     offload_verdict,
     parse_compute_apps,
-    count_listed_pids,
     listed_pids,
 )
 from studio_client import (  # noqa: E402
@@ -376,7 +375,7 @@ def attributed_apps(listing: tuple[dict[int, int], set[int]] | None) -> dict[int
         # Processes were listed but none carried a readable figure: WDDM and
         # unified-memory parts report [N/A] for every one, including a -ngl 0
         # server. That cannot attribute anything, so it is the same as not
-        # enumerating, and the device-wide delta decides (see count_listed_pids).
+        # enumerating, and the device-wide delta decides.
         return None
     return apps
 

@@ -918,17 +918,21 @@ mod tests {
         let state = new_update_state();
         state.lock().unwrap().child = Some(child);
 
-        for _ in 0..50 {
-            if child_pid_file.is_file() {
-                break;
+        // Wait for a pid that PARSES, not merely for the path to appear. The shell above
+        // runs `echo $! > "$1"`, and the redirection creates the file before anything is
+        // written to it, so waiting on is_file() can win that race and read "" -- which
+        // panicked here as ParseIntError { kind: Empty } rather than failing an assertion.
+        let mut descendant = None;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&child_pid_file) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    descendant = Some(pid);
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let descendant = std::fs::read_to_string(&child_pid_file)
-            .unwrap()
-            .trim()
-            .parse::<i32>()
-            .unwrap();
+        let descendant = descendant.expect("the test child never wrote a usable descendant pid");
 
         stop_update(&state).unwrap();
 
