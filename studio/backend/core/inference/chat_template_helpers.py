@@ -2706,7 +2706,12 @@ def normalize_reasoning_snapshots(
         yield normalized_output
 
 
-def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
+def detect_think_prefill(
+    prompt: Optional[str],
+    special_tokens = None,
+    *,
+    reply_keeps_special_tokens: bool = False,
+) -> str:
     """Return the trailing open ``<think>`` prefill of a rendered prompt.
 
     Reasoning templates (Qwen3.6, DeepSeek-R1-style) end the generation
@@ -2726,6 +2731,10 @@ def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
     is one, the streamer's skip_special_tokens strips the model's closing tag,
     so re-emitting the open would leave an unclosed block that swallows the
     answer. In that case return ``""`` and fall back to plain text.
+
+    ``reply_keeps_special_tokens`` is the calling path's own answer to whether its rendering
+    keeps them, which is what that suppression turns on: a path streaming the detokenizer's
+    text keeps the closing tag, so the block closes and the open belongs in the reply.
     """
     if not prompt:
         return ""
@@ -2735,7 +2744,7 @@ def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
     tail = prompt[open_idx:]
     if _THINK_CLOSE in tail or tail.strip() != _THINK_OPEN:
         return ""
-    if special_tokens and _THINK_CLOSE in set(special_tokens):
+    if not reply_keeps_special_tokens and special_tokens and _THINK_CLOSE in set(special_tokens):
         return ""
     return tail
 

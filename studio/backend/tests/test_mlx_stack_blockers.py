@@ -382,3 +382,13 @@ def test_uv_missing_never_marks_the_environment(monkeypatch):
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
     assert mr.attempt_mlx_repair() is False
     assert mr._environment_mutated is False
+
+
+def test_a_missing_grammar_engine_names_the_package_instead_of_ignoring_the_schema(monkeypatch):
+    """Here rather than beside the grammar tests, which skip whole on the very install --
+    llguidance absent -- that this refusal exists for."""
+    from core.inference import grammar_constraint as gc
+
+    monkeypatch.setattr(gc, "LLGUIDANCE_AVAILABLE", False)
+    with pytest.raises(gc.ResponseFormatError, match = "llguidance"):
+        gc.constraint_spec_from_response_format({"type": "json_object"})

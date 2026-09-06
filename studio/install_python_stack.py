@@ -6964,6 +6964,8 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not skip_base:
         base_total += 1  # MLX stack, same gate as the step itself
+    if IS_MAC_ARM:
+        base_total += 1  # MLX grammar engine (step 11c), same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
@@ -7353,6 +7355,18 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "diffusers-pin.txt",
     )
+
+    # 11c. Apple Silicon: the grammar engine the MLX chat paths decode response_format with.
+    #      Outside the skip_base branch, which install.sh always takes and which left a fresh
+    #      install refusing every json_schema request for a missing engine.
+    if IS_MAC_ARM:
+        _progress("MLX grammar engine")
+        pip_install(
+            "Installing the MLX grammar engine (llguidance)",
+            "--no-cache-dir",
+            "--upgrade",
+            "llguidance",
+        )
 
     # 12. Patch metadata for single-env compatibility
     _progress("finalizing")

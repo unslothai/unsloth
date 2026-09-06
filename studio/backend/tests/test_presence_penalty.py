@@ -215,6 +215,11 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    # A decoding contract and the reply's reasoning split ride together, and only together.
+    rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
+    with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
+    assert {key: with_rf[key] for key in rf} == rf
+    assert "reasoning_is_extracted" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
@@ -226,8 +231,15 @@ def test_worker_forwards_all_sampling_params_to_backend():
         def __init__(self):
             self.received = None
 
-        def generate_chat_response(self, **kwargs):
-            self.received = kwargs
+        def generate_chat_response(
+            self,
+            *,
+            response_format = None,
+            reasoning_is_extracted = None,
+            **kwargs,
+        ):
+            # Named, not absorbed: the worker gates on the signature declaring it.
+            self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 
     class _FakeQueue:
@@ -242,6 +254,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
         "request_id": "r",
         "messages": [{"role": "user", "content": "hi"}],
         "max_new_tokens": 128,
+        "response_format": {"type": "json_object"},
+        "reasoning_is_extracted": True,
         **_SAMPLING,
     }
     backend = _RecordingBackend()
@@ -250,3 +264,5 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+    assert backend.received["rf"] == {"type": "json_object"}
+    assert backend.received["rie"] is True
