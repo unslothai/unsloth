@@ -369,7 +369,7 @@ def start_ingestion(
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
     the wrong hash, so it is trusted as given and never reverified here."""
     ext = os.path.splitext(stored_path)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
+    if ext not in config.ALL_UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
 
     # Reclaim queues for finished jobs so the registry stays bounded.

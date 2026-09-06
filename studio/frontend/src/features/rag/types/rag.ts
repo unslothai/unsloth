@@ -182,14 +182,54 @@ export interface PreviewTarget {
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
-const ACCEPTED_UPLOAD_EXTS = new Set(
-  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
+export const SOURCE_CODE_EXTENSIONS = [
+  // Programming and scripting languages
+  ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".hh", ".ipp", ".inl", ".cu", ".cuh",
+  ".cs", ".vb", ".vbs", ".fs", ".fsi", ".fsx", ".csproj",
+  ".go", ".rs", ".zig", ".odin", ".nim", ".nims", ".nimble", ".cr", ".d", ".v", ".sv", ".svh", ".vhd", ".vhdl", ".asm", ".s",
+  ".java", ".kt", ".kts", ".scala", ".groovy", ".gradle", ".sbt", ".clj", ".cljs", ".cljc",
+  ".js", ".jsx", ".mjs", ".cjs",
+  ".ts", ".tsx", ".mts", ".cts",
+  ".py", ".pyi", ".pyx", ".pxd", ".ipynb",
+  ".rb", ".php", ".swift", ".lua", ".r", ".pl", ".pm", ".t", ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
+  ".dart", ".ex", ".exs", ".erl", ".hrl", ".hs", ".lhs", ".ml", ".mli",
+  ".sql", ".prc", ".tab",
+  // Stylesheets, web templates, markup
+  ".css", ".scss", ".sass", ".less", ".styl", ".svg", ".vue", ".svelte", ".astro",
+  ".pug", ".jade", ".haml", ".slim", ".ejs", ".erb", ".hbs", ".handlebars", ".mustache", ".njk", ".jinja", ".jinja2", ".j2", ".twig", ".liquid",
+  ".cshtml", ".razor", ".aspx", ".jsp", ".tpl", ".qml",
+  // Structured data and config
+  ".csv", ".tsv", ".psv", ".json", ".jsonl", ".ndjson", ".jsonc", ".json5", ".geojson", ".har", ".avsc",
+  ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".cnf", ".properties", ".plist", ".edn", ".ron", ".cue", ".lock",
+  // Documentation and text
+  ".rst", ".adoc", ".asciidoc", ".org", ".textile", ".wiki", ".tex", ".latex", ".sty", ".cls", ".bib", ".rmd", ".qmd",
+  ".srt", ".vtt", ".sbv", ".ass", ".ssa", ".sub", ".lrc",
+  ".po", ".pot", ".strings", ".resx", ".xliff", ".xlf", ".log",
+];
+
+const KNOWN_EXACT_NAMES = new Set([
+  "dockerfile",
+  "makefile",
+  "gemfile",
+  "rakefile",
+  "procfile",
+  "vagrantfile",
+  "cmakelists.txt",
+]);
+
+export const RAG_SOURCE_UPLOAD_ACCEPT = `${RAG_UPLOAD_ACCEPT},${SOURCE_CODE_EXTENSIONS.join(",")}`;
+
+const ACCEPTED_SOURCE_EXTS = new Set(
+  RAG_SOURCE_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
 );
 
 // `accept` only filters the picker, so a drop can carry anything, including an
 // extension-less folder entry the backend would reject.
 export function isSupportedSourceName(name: string): boolean {
-  const dot = name.lastIndexOf(".");
+  const lower = name.toLowerCase();
+  const base = lower.split(/[\\/]/).pop() ?? lower;
+  if (KNOWN_EXACT_NAMES.has(base)) return true;
+  const dot = base.lastIndexOf(".");
   if (dot <= 0) return false;
-  return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
+  return ACCEPTED_SOURCE_EXTS.has(base.slice(dot));
 }
