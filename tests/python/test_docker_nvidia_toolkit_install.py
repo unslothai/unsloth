@@ -35,8 +35,20 @@ OS_RELEASE = {
 # that reaches for an absent command (dnf gone, systemctl gone) must find nothing,
 # never the runner's own package manager or init.
 _REAL_TOOLS = (
-    "bash", "grep", "sed", "head", "tr", "sort", "mkdir", "cat", "basename", "dirname",
-    "touch", "cut", "rm", "true",
+    "bash",
+    "grep",
+    "sed",
+    "head",
+    "tr",
+    "sort",
+    "mkdir",
+    "cat",
+    "basename",
+    "dirname",
+    "touch",
+    "cut",
+    "rm",
+    "true",
 )
 
 
@@ -104,7 +116,11 @@ def _setup(
             '    case "${DOCKER_HOST:-}" in *docker.sock) echo "name=rootless,name=seccomp" ;; *) echo "name=seccomp" ;; esac; exit 0\n'
             "  fi\n"
             if rootless == "via_sudo_uid"
-            else ('  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n' if rootless else "")
+            else (
+                '  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n'
+                if rootless
+                else ""
+            )
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
@@ -399,7 +415,10 @@ def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
 
 
 def _run_sh_env(
-    tmp_path: Path, *, nvidia_runtime: bool, docker_down: bool = False
+    tmp_path: Path,
+    *,
+    nvidia_runtime: bool,
+    docker_down: bool = False,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -416,8 +435,7 @@ def _run_sh_env(
     )
     _stub(
         bindir / "docker",
-        rec + f'if [ "$1" = info ]; then {info}; fi\n'
-        f'printf "%s\\n" "$@" > {argv}\nexit 0\n',
+        rec + f'if [ "$1" = info ]; then {info}; fi\n' f'printf "%s\\n" "$@" > {argv}\nexit 0\n',
     )
     _stub(bindir / "nvidia-smi", 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
     _stub(bindir / "sudo", rec + "exit 0\n")
