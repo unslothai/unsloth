@@ -216,6 +216,7 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = lambda: [],
+        linux_external_mount_roots = lambda: [],
         macos_volume_roots = lambda: [],
         windows_drive_roots = lambda: [drive_root],
     )
@@ -284,6 +285,7 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = _media_roots,
+        linux_external_mount_roots = _media_roots,
         macos_volume_roots = lambda: [],
         windows_drive_roots = _drive_roots,
     )
