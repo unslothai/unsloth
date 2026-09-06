@@ -24,6 +24,8 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from auth import policy
+from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -717,11 +719,11 @@ def patch_thread(
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
     """Signal workers for active runs captured by the deletion transaction."""
     supervisor = getattr(request.app.state, "research_supervisor", None)
-    if supervisor is None:
+    if supervisor is None and not policy.installation_is_multi_user():
         return
     for run_id in run_ids:
         try:
-            supervisor.cancel(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
         except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
             logger.warning(
                 "chat_history.cancel_deleted_research_failed run_id=%s",
@@ -747,8 +749,10 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
         for run in active:
             try:
                 status = research_runs_db.request_cancel(run["id"])
-                if supervisor is not None and status == "cancelling":
-                    supervisor.cancel(run["id"])
+                if status == "cancelling" and (
+                    supervisor is not None or policy.installation_is_multi_user()
+                ):
+                    cancel_account_run(request, run["id"], supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat_history.cancel_active_research_failed run_id=%s",
@@ -770,9 +774,9 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         # The row is usually already gone here, which makes request_cancel raise:
         # the supervisor is what actually stops the worker, so it is told first
         # and the status update is the best-effort half.
-        if supervisor is not None:
+        if supervisor is not None or policy.installation_is_multi_user():
             try:
-                supervisor.cancel(run_id)
+                cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning("Could not signal research run %s", run_id, exc_info = True)
         try:
@@ -806,17 +810,9 @@ def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
     """Cancel durable producers whose rows were captured before thread cascade."""
     if not run_ids:
         return
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
     for run_id in run_ids:
         try:
-            if supervisor is not None:
-                supervisor.cancel(run_id)
-            else:
-                from routes.inference import _cancel_by_cancel_id_or_stash
-                from state import active_generations
-
-                active_generations.cancel_run(run_id)
-                _cancel_by_cancel_id_or_stash(run_id)
+            cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
         except Exception:  # noqa: BLE001 - deletion must still complete
             logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
 
@@ -1452,6 +1448,19 @@ def record_import_ledger(
     return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
 
 
+def _snapshot_chat_images() -> Optional[set[str]]:
+    """The legacy image registry cannot authorize an account-scoped reap.
+
+    Until the image registry carries ownership, retain thumbnails when multiple
+    accounts exist. Even a client-supplied image ID is not proof of ownership.
+    """
+    if policy.installation_is_multi_user():
+        return set()
+    from core.inference.search_images import snapshot_and_fence_registrations
+
+    return snapshot_and_fence_registrations()
+
+
 @router.delete("")
 async def clear_history(
     request: Request,
@@ -1486,8 +1495,6 @@ async def clear_history(
         every search in every chat for the length of a clear. The window bought back is a few
         instructions wide and its cost is one chat's thumbnails re-fetching. Not worth it.
         """
-        from core.inference.search_images import snapshot_and_fence_registrations
-
         if payload is None:
             cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
                 include_chat_generation_runs = True
@@ -1497,7 +1504,7 @@ async def clear_history(
                 cleared_runs,
                 cleared_chat_runs,
                 False,
-                snapshot_and_fence_registrations(),
+                _snapshot_chat_images(),
             )
         # Answered by the transaction itself: read beforehand it is a guess, and a concurrent retry of the same
         # operation id would replay while believing it cleared.
@@ -1519,7 +1526,7 @@ async def clear_history(
                 True,
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
-        snapshot = snapshot_and_fence_registrations()
+        snapshot = _snapshot_chat_images()
         # Recorded before the reap runs.
         record_clear_operation_reap_scope(payload.operationId, snapshot)
         return cleared, cleared_runs, cleared_chat_runs, False, snapshot
@@ -1553,7 +1560,7 @@ async def clear_history(
     # Search thumbnails are keyed by id, not thread.
     # reapable_image_ids is the original clear's own snapshot off the ledger, so a replay's reap cannot reach a newer
     # chat's images.
-    if not replayed or reapable_image_ids:
+    if (not replayed or reapable_image_ids) and not policy.installation_is_multi_user():
         from core.inference.search_images import clear_cache
         await run_in_threadpool(clear_cache, reapable_image_ids)
         if payload is not None:
