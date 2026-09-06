@@ -126,7 +126,9 @@ def test_managed_child_cannot_read_or_write_other_accounts(tool, tmp_path):
         assert "written" in run("echo written > note.txt && cat note.txt")
     else:
         assert "BOB_PRIVATE" in run("print(open('bob-secret.txt').read())")
-        assert "written" in run("open('note.txt','w').write('written'); print(open('note.txt').read())")
+        assert "written" in run(
+            "open('note.txt','w').write('written'); print(open('note.txt').read())"
+        )
     assert (bob_dir / "note.txt").read_text().strip() == "written"
 
     for name, path in foreign.items():
@@ -180,7 +182,7 @@ def test_confinement_survives_nested_processes(tmp_path):
         BOB,
         tools._bash_exec,
         f"python -c \"import subprocess; print(subprocess.run(['cat', {str(alice)!r}], "
-        "capture_output=True, text=True).stderr)\"",
+        'capture_output=True, text=True).stderr)"',
         session_id = "chat",
     )
     assert "PRIVATE" not in out
@@ -200,7 +202,9 @@ def test_confined_child_keeps_interpreter_and_system_tools(tmp_path):
         session_id = "chat",
     )
     assert '"tmp": true' in out and '"sqlite": true' in out
-    out = run_as(BOB, tools._bash_exec, "ls /usr/bin | head -1; python --version", session_id = "chat")
+    out = run_as(
+        BOB, tools._bash_exec, "ls /usr/bin | head -1; python --version", session_id = "chat"
+    )
     assert "Python" in out
 
 
@@ -221,6 +225,12 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
     alice_root = str((tmp_path / "studio" / "accounts" / "alice-id").resolve())
     assert alice_root in writable
     assert str((tmp_path / "studio").resolve()) not in [p for p, _ in rules]
-    assert all(not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root) for p, _ in rules)
+    assert all(
+        not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root)
+        for p, _ in rules
+    )
     read_only = [p for p, access in rules if access != handled]
-    assert any(p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p) for p in read_only)
+    assert any(
+        p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p)
+        for p in read_only
+    )

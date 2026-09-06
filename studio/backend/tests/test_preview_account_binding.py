@@ -48,9 +48,7 @@ def _managed(username: str) -> AccountContext:
 def _make_run(account: AccountContext, name: str, marker: str) -> Path:
     run = Path(run_as(account, outputs_root)) / name
     run.mkdir(parents = True)
-    (run / "adapter_config.json").write_text(
-        json.dumps({"base_model_name_or_path": marker})
-    )
+    (run / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": marker}))
     return run
 
 

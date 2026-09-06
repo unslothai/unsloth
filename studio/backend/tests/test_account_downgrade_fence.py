@@ -49,7 +49,9 @@ def _legacy(username: str) -> sqlite3.Row:
 def _legacy_lookup(table: str, column: str, digest: str):
     conn = sqlite3.connect(storage.DB_PATH)
     try:
-        return conn.execute(f"SELECT username FROM {table} WHERE {column} = ?", (digest,)).fetchone()
+        return conn.execute(
+            f"SELECT username FROM {table} WHERE {column} = ?", (digest,)
+        ).fetchone()
     finally:
         conn.close()
 
@@ -104,7 +106,9 @@ def test_managed_api_keys_and_refresh_tokens_are_invisible_to_a_plain_lookup(aut
     assert verified is not None and verified[0]["username"] == "alice"
 
     storage.save_refresh_token("alice-refresh", "alice", "2999-01-01T00:00:00+00:00")
-    assert _legacy_lookup("refresh_tokens", "token_hash", storage._hash_token("alice-refresh")) is None
+    assert (
+        _legacy_lookup("refresh_tokens", "token_hash", storage._hash_token("alice-refresh")) is None
+    )
     assert storage.verify_refresh_token("alice-refresh") == ("alice", False)
     consumed = storage.consume_refresh_token("alice-refresh")
     assert consumed is not None and consumed[0] == "alice"
@@ -148,11 +152,22 @@ def test_rows_written_before_the_fence_are_moved_behind_it(auth_db):
         row = conn.execute("SELECT * FROM auth_user WHERE username = 'bob'").fetchone()
         assert row["account_jwt_secret"] == "legacy-secret" and row["jwt_secret"] != "legacy-secret"
         assert row["account_password_hash"] == "h" and row["password_hash"] == "managed-account"
-        assert conn.execute("SELECT key_hash FROM api_keys WHERE username = 'bob'").fetchone()[0] == "account:plainhash"
-        assert conn.execute("SELECT token_hash FROM refresh_tokens WHERE username = 'bob'").fetchone()[0] == "account:plaintoken"
+        assert (
+            conn.execute("SELECT key_hash FROM api_keys WHERE username = 'bob'").fetchone()[0]
+            == "account:plainhash"
+        )
+        assert (
+            conn.execute("SELECT token_hash FROM refresh_tokens WHERE username = 'bob'").fetchone()[
+                0
+            ]
+            == "account:plaintoken"
+        )
         # Idempotent.
         storage._fence_managed_credentials(conn)
-        assert conn.execute("SELECT key_hash FROM api_keys WHERE username = 'bob'").fetchone()[0] == "account:plainhash"
+        assert (
+            conn.execute("SELECT key_hash FROM api_keys WHERE username = 'bob'").fetchone()[0]
+            == "account:plainhash"
+        )
         owner = conn.execute("SELECT * FROM auth_user WHERE username = 'unsloth'").fetchone()
         assert owner["account_jwt_secret"] is None
     finally:

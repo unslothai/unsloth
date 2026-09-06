@@ -60,12 +60,17 @@ def test_owner_keeps_following_links_in_its_own_install(tmp_path):
     uploads = run_as(OWNER, storage_roots.dataset_uploads_root)
     uploads.mkdir(parents = True)
     (uploads / "linked.jsonl").symlink_to(elsewhere)
-    assert run_as(OWNER, storage_roots.resolve_dataset_path, "uploads/linked.jsonl") == uploads / "linked.jsonl"
+    assert (
+        run_as(OWNER, storage_roots.resolve_dataset_path, "uploads/linked.jsonl")
+        == uploads / "linked.jsonl"
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need privileges on Windows")
 def test_scanners_skip_a_linked_run_that_belongs_to_another_account():
-    alice_run = _adapter_run(run_as(ALICE, storage_roots.outputs_root), "alice-run", "ALICE-PRIVATE-BASE")
+    alice_run = _adapter_run(
+        run_as(ALICE, storage_roots.outputs_root), "alice-run", "ALICE-PRIVATE-BASE"
+    )
     alice_export = run_as(ALICE, storage_roots.exports_root) / "alice-export" / "checkpoint-1"
     _adapter_run(alice_export.parent, "checkpoint-1", "ALICE-PRIVATE-BASE")
     bob_outputs = run_as(BOB, storage_roots.outputs_root)
@@ -102,13 +107,19 @@ def test_managed_export_write_dir_stays_inside_its_roots():
 def test_scan_folder_storage_refuses_a_foreign_directory(monkeypatch):
     foreign = run_as(ALICE, storage_roots.outputs_root)
     foreign.mkdir(parents = True)
-    monkeypatch.setattr(scan_folders, "get_connection", lambda: (_ for _ in ()).throw(AssertionError("opened the database")))
+    monkeypatch.setattr(
+        scan_folders,
+        "get_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("opened the database")),
+    )
     with pytest.raises(ValueError, match = "outside this account's workspace"):
         run_as(BOB, scan_folders.add_scan_folder_with_status, str(foreign))
 
 
 def test_monitor_hides_a_foreign_load_row_from_managed_accounts():
-    monitor = api_monitor.ApiMonitor() if hasattr(api_monitor, "ApiMonitor") else api_monitor.api_monitor
+    monitor = (
+        api_monitor.ApiMonitor() if hasattr(api_monitor, "ApiMonitor") else api_monitor.api_monitor
+    )
     entry = api_monitor.ApiMonitorEntry(
         id = "load-1",
         endpoint = "",

@@ -11,7 +11,12 @@ import pytest
 from auth import policy
 
 
-def status(client, *, count: int, full_access: bool | None = None) -> None:
+def status(
+    client,
+    *,
+    count: int,
+    full_access: bool | None = None,
+) -> None:
     response = client.get("/api/auth/status")
     assert response.status_code == 200
     body = response.json()

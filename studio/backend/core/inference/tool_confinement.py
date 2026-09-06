@@ -283,10 +283,7 @@ def _sbpl(path: str) -> str:
 
 
 def macos_profile(
-    *,
-    read_roots: list[str],
-    hidden_roots: list[str],
-    writable_roots: list[str],
+    *, read_roots: list[str], hidden_roots: list[str], writable_roots: list[str]
 ) -> str:
     """A sandbox-exec profile: later rules win, so the account's own roots are
     allowed after the install root and the home directory are denied."""
@@ -301,9 +298,9 @@ def macos_profile(
         "(allow ipc-posix-shm)",
         "(allow network*)",
         "(allow file-read-metadata)",
-        "(allow file-read* file-write* (subpath \"/dev\"))",
-        "(allow file-read* (subpath \"/private/tmp\") (subpath \"/private/var/db\") "
-        "(subpath \"/private/var/folders\") (subpath \"/var/folders\"))",
+        '(allow file-read* file-write* (subpath "/dev"))',
+        '(allow file-read* (subpath "/private/tmp") (subpath "/private/var/db") '
+        '(subpath "/private/var/folders") (subpath "/var/folders"))',
     ]
     for path in read_roots:
         lines.append(f"(allow file-read* (subpath {_sbpl(path)}))")

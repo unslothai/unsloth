@@ -226,9 +226,7 @@ async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request:
     return await _serve_chat(run, None, payload, request)
 
 
-@router.post(
-    "/{run}/{checkpoint}/v1/chat/completions", dependencies = [Depends(_checkpoint_account)]
-)
+@router.post("/{run}/{checkpoint}/v1/chat/completions", dependencies = [Depends(_checkpoint_account)])
 async def preview_chat_checkpoint(
     run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):

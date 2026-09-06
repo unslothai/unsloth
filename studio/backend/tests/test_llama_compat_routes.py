@@ -858,7 +858,9 @@ def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
         assert c.get("/props").json()["chat_template"] == "ALICE_TEMPLATE"
     monkeypatch.setattr(account_access, "managed_account", lambda: False)
     monkeypatch.setattr(
-        account_access, "resident_hidden", lambda *a, **k: (_ for _ in ()).throw(AssertionError("owner path consulted policy"))
+        account_access,
+        "resident_hidden",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("owner path consulted policy")),
     )
     with _client(mod) as c:
         assert c.get("/props").json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"

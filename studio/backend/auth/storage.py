@@ -1703,9 +1703,7 @@ def validate_api_key_with_credential(
     return (verified[0]["username"], verified[1]) if verified else None
 
 
-def validate_api_key_account(
-    raw_key: str, *, touch: bool = True
-) -> Optional[Tuple[dict, str]]:
+def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tuple[dict, str]]:
     """Validate *raw_key* and return ``(account record, jwt_secret)``, or ``None``.
 
     The record carries ``account_id``, ``username``, ``role`` and ``is_active``,
