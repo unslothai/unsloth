@@ -288,9 +288,10 @@ RAIL_CORNER = """
   const rail = card.parentElement;
   const a = rail.getBoundingClientRect();
   // Cards in the rail's own flow. A dragged loaded models card is `fixed`
-  // somewhere else and says nothing about the rail.
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
   const flowed = Array.from(rail.children).filter(
-    (kid) => getComputedStyle(kid).position === 'static',
+    (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position),
   );
   return {
     rail: {top: Math.round(a.top), bottom: Math.round(a.bottom),
@@ -474,9 +475,11 @@ MEASURE = """
   const rail = document.querySelector('[data-testid="overlay-rail"]')
             || (card ? card.parentElement : (llama ? llama.parentElement : null));
   // Cards in the rail's own flow. A dragged loaded models card is `fixed`
-  // somewhere else and says nothing about the rail.
+  // somewhere else and says nothing about the rail; `relative` and `sticky`
+  // still take part in layout, so only the out-of-flow pair is excluded.
   const flowed = rail
-    ? [...rail.children].filter((kid) => getComputedStyle(kid).position === 'static')
+    ? [...rail.children].filter(
+        (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position))
     : [];
   // The clipper is the card's inner surface, the one with overflow-hidden; the
   // rail-facing root above it is overflow-visible and clips nothing.
@@ -767,7 +770,7 @@ DOWNLOADS = """
     // invisible but still takes a flex slot and its gap-2, which pushes the
     // card that is meant to hold the corner up off it.
     cards: [...rail.children].filter(
-      (kid) => getComputedStyle(kid).position === 'static').length,
+      (kid) => !['absolute', 'fixed'].includes(getComputedStyle(kid).position)).length,
   };
 }
 """

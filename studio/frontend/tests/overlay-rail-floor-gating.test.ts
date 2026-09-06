@@ -60,25 +60,44 @@ const provider = parse(src("app/provider.tsx"), "provider.tsx");
 /** The rails, matched on the corner they are anchored to. */
 const RAIL_ANCHOR = "pointer-events-none fixed bottom-0 right-4";
 
-/** Every component rendered directly into a rail, by tag name. */
+/**
+ * Every component that ends up in a rail, by tag name.
+ *
+ * Two sources, because neither is complete on its own. Literal children of an
+ * anchored rail miss anything the Tauri layer receives through `{children}`,
+ * which is how its llama, downloads and loaded-models cards arrive; today those
+ * three are also listed literally in the browser rail, but a desktop-only card
+ * would be invisible here. `positioned={false}` is the prop that puts a card in
+ * a rail rather than on the corner by itself, so it catches those, and the
+ * literal scan still catches a card that takes no such prop.
+ */
 function railChildren(): string[] {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isJsxElement(node)) {
-      const opening = node.openingElement;
-      const className = opening.attributes.properties.find(
+      const className = node.openingElement.attributes.properties.find(
         (p): p is ts.JsxAttribute =>
           ts.isJsxAttribute(p) && p.name.getText() === "className",
       );
       if (className?.getText().includes(RAIL_ANCHOR)) {
         for (const child of node.children) {
-          const tag = openingTag(child);
-          const name = tag?.tagName.getText();
-          // {children} in the Tauri layer is followed to its own rail by the
-          // second match; a lower-case tag is a plain element, not a card.
+          const name = openingTag(child)?.tagName.getText();
+          // A lower-case tag is a plain element, not a card.
           if (name && /^[A-Z]/.test(name)) names.add(name);
         }
       }
+    }
+    const tag = openingTag(node);
+    if (tag && /^[A-Z]/.test(tag.tagName.getText())) {
+      const stacked = tag.attributes.properties.some(
+        (p) =>
+          ts.isJsxAttribute(p) &&
+          p.name.getText() === "positioned" &&
+          p.initializer &&
+          ts.isJsxExpression(p.initializer) &&
+          p.initializer.expression?.kind === ts.SyntaxKind.FalseKeyword,
+      );
+      if (stacked) names.add(tag.tagName.getText());
     }
     ts.forEachChild(node, visit);
   };
@@ -127,7 +146,24 @@ function sourceOf(name: string): { path: URL; label: string } | null {
   return followed ? { path: followed, label: `${base}/${hop[1]}` } : null;
 }
 
-/** Class tokens carrying a `min-h-[calc(...)]` floor, per string literal. */
+/**
+ * Class tokens that reserve a minimum height, in any spelling.
+ *
+ * Not just `min-h-[calc(`: `min-h-52`, `min-h-[204px]` and a named utility
+ * reserve height exactly as well, and a rule that only knows one spelling can
+ * be retired by rewriting it. `min-h-0` is the opposite of a floor - it removes
+ * the flex default of `auto` - so it is not one.
+ */
+const FLOOR_TOKEN = /(^|:)min-h-(?!0$)\S+/;
+
+/** Class tokens of a literal. getText() keeps the quotes; they are not classes. */
+const classTokens = (literal: ts.Node): string[] =>
+  literal.getText().replace(/["'`]/g, " ").split(/\s+/).filter(Boolean);
+
+/** Does this class token reserve a minimum height? */
+const isFloor = (token: string): boolean => FLOOR_TOKEN.test(token);
+
+/** String literals carrying a floor. */
 function floorLiterals(file: ts.SourceFile): ts.Node[] {
   const found: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
@@ -135,7 +171,7 @@ function floorLiterals(file: ts.SourceFile): ts.Node[] {
       (ts.isStringLiteral(node) ||
         ts.isNoSubstitutionTemplateLiteral(node) ||
         ts.isTemplateExpression(node)) &&
-      node.getText().includes("min-h-[calc(")
+      classTokens(node).some(isFloor)
     ) {
       found.push(node);
     }
@@ -147,15 +183,10 @@ function floorLiterals(file: ts.SourceFile): ts.Node[] {
 
 /** Is every floor in `literal` gated by the CSS `:has()` on a rendered slot? */
 function gatedByHas(literal: ts.Node): boolean {
-  const tokens = literal
-    .getText()
-    .split(/\s+/)
-    .filter((token) => token.includes("min-h-[calc("));
+  const tokens = classTokens(literal).filter(isFloor);
   return (
     tokens.length > 0 &&
-    tokens.every((token) =>
-      /has-\[\[data-slot=[^\]]+\]\]:min-h-\[calc\(/.test(token),
-    )
+    tokens.every((token) => /has-\[\[data-slot=[^\]]+\]\]:min-h-/.test(token))
   );
 }
 
@@ -182,20 +213,27 @@ function branchConditions(literal: ts.Node): string[] {
 }
 
 /**
- * Does `condition` also decide whether an element renders?
+ * Does `condition` decide whether the PANEL THE FLOOR PROTECTS renders?
  *
- * The point of the gate is that the floor and the panel it protects turn on
- * together. A condition that only picks between two class strings - `positioned`
- * being the one that mattered - reserves height for a panel it has no opinion
- * about.
+ * Rendering something is not enough. `changelogAvailable` renders the changelog
+ * toggle and is true while the panel is still closed, so a floor gated on it
+ * reserves the panel's height on every collapsed card - #10117 exactly. The
+ * predicate has to turn on with the notes, so the element it renders has to be
+ * the notes.
  */
-function gatesAnElement(source: string, condition: string): boolean {
+const PROTECTED_PANEL = /(Notes|Changelog)/i;
+
+function gatesTheNotes(source: string, condition: string): boolean {
   const name = condition.trim();
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
   const rendered = new RegExp(
-    `\\b${name}\\b[^;{}]{0,160}?(\\?|&&)\\s*\\(?\\s*<[A-Za-z]`,
+    `\\b${name}\\b[^;{}]{0,160}?(\\?|&&)\\s*\\(?\\s*<([A-Za-z][\\w.]*)`,
+    "g",
   );
-  return rendered.test(source);
+  for (const hit of source.matchAll(rendered)) {
+    if (PROTECTED_PANEL.test(hit[2])) return true;
+  }
+  return false;
 }
 
 const CHILDREN = railChildren();
@@ -222,6 +260,17 @@ for (const name of CHILDREN) {
     assert.ok(resolved, `<${name} /> did not resolve`);
     const file = parse(resolved.path, `${name}.tsx`);
     const source = readFileSync(resolved.path, "utf8");
+    // An inline minHeight cannot be gated by a class and is invisible to the
+    // analysis below, so the rail's geometry stays in CSS, as provider.tsx's
+    // own tests already require of the rail itself.
+    assert.doesNotMatch(
+      source,
+      /\bminHeight\s*:/,
+      `${resolved.label}: a floor is set from JS. The rail's cards floor in CSS
+so the gate can be read here and by the browser suite; an inline minHeight is
+reserved unconditionally and nothing checks it.`,
+    );
+
     const literals = floorLiterals(file);
     if (literals.length === 0) return; // No floor, nothing to gate.
 
@@ -229,19 +278,23 @@ for (const name of CHILDREN) {
       const gated =
         gatedByHas(literal) ||
         branchConditions(literal).some((condition) =>
-          gatesAnElement(source, condition),
+          gatesTheNotes(source, condition),
         );
       assert.ok(
         gated,
-        `${resolved.label}: a min-h-[calc(...)] floor is applied without being
-gated on the panel it exists to protect, so the card reserves height it may
-paint none of. In a bottom-anchored rail that dead space lifts every visible
-card off the corner. This is PR #10117, fixed by PR #10229.
+        `${resolved.label}: a min-h floor is applied without being gated on the
+panel it exists to protect, so the card reserves height it may paint none of.
+In a bottom-anchored rail that dead space lifts every visible card off the
+corner. This is PR #10117, fixed by PR #10229.
 
 Gate it one of the two ways already in use:
-  has-[[data-slot=update-release-notes]]:min-h-[calc(...)]   (CSS)
-  changelogPanelOpen ? "min-h-[calc(...)]" : "shrink-0"      (React, using the
-    same predicate that renders the panel)
+  has-[[data-slot=update-release-notes]]:min-h-[...]   (CSS)
+  changelogPanelOpen ? "min-h-[...]" : "shrink-0"      (React, using the same
+    predicate that renders the notes or changelog panel)
+
+A predicate that renders something else does not count: changelogAvailable
+renders the changelog toggle and is true while the panel is still closed, which
+is the state that reserved 64.9px in #10117.
 
 Floor found in: ${literal.getText().slice(0, 200)}
 Ternary conditions around it: ${branchConditions(literal).join(", ") || "(none)"}`,

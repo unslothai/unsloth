@@ -92,29 +92,42 @@ job list at all, it can no longer know when to unmount.`,
   return name;
 }
 
-/** Does `condition` contain a test for an empty `jobKeys`? */
+/**
+ * Does `condition` contain a test for an empty `jobKeys`?
+ *
+ * Side matters. An unordered "contains the length and contains zero" match also
+ * accepts `0 < jobKeys.length`, which unmounts the panel exactly when there ARE
+ * jobs, and `0 <= jobKeys.length`, which is always true. Both would satisfy a
+ * test whose whole job is to prove the panel unmounts when the list is empty,
+ * so the accepted shapes are spelled out rather than inferred.
+ */
 function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
+  const length = `${jobKeys}.length`;
+  const K = ts.SyntaxKind;
+  // [left, operator, right], each meaning "the list is empty".
+  const shapes: [string, ts.SyntaxKind, string][] = [
+    [length, K.EqualsEqualsEqualsToken, "0"],
+    ["0", K.EqualsEqualsEqualsToken, length],
+    [length, K.LessThanToken, "1"],
+    [length, K.LessThanEqualsToken, "0"],
+    ["0", K.GreaterThanEqualsToken, length],
+    ["1", K.GreaterThanToken, length],
+  ];
   let ok = false;
   const visit = (node: ts.Node): void => {
-    // jobKeys.length === 0, jobKeys.length < 1, 0 === jobKeys.length
     if (ts.isBinaryExpression(node)) {
-      const operands = [node.left.getText(), node.right.getText()];
-      const comparesLength = operands.includes(`${jobKeys}.length`);
-      const comparesZero =
-        operands.includes("0") ||
-        (node.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
-          operands.includes("1"));
-      const equality =
-        node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        node.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
-        node.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken;
-      if (comparesLength && comparesZero && equality) ok = true;
+      const left = node.left.getText();
+      const right = node.right.getText();
+      const op = node.operatorToken.kind;
+      if (shapes.some(([l, o, r]) => left === l && op === o && right === r)) {
+        ok = true;
+      }
     }
     // !jobKeys.length
     if (
       ts.isPrefixUnaryExpression(node) &&
-      node.operator === ts.SyntaxKind.ExclamationToken &&
-      node.operand.getText() === `${jobKeys}.length`
+      node.operator === K.ExclamationToken &&
+      node.operand.getText() === length
     ) {
       ok = true;
     }
