@@ -20,8 +20,11 @@ RUN_ID = "matrix-run"
 SERVER_ID = "matrix-server"
 EDITED = "matrix-edited"
 MESSAGE = {
-    "id": MESSAGE_ID, "threadId": THREAD_ID, "role": "user",
-    "content": [{"type": "text", "text": SENTINEL}], "createdAt": 1000,
+    "id": MESSAGE_ID,
+    "threadId": THREAD_ID,
+    "role": "user",
+    "content": [{"type": "text", "text": SENTINEL}],
+    "createdAt": 1000,
 }
 
 
@@ -35,17 +38,31 @@ class Factory:
 
 FACTORIES = {
     "routes.chat_history:GET:/threads/{thread_id}": Factory("chat", fragment = SENTINEL),
-    "routes.chat_history:PATCH:/threads/{thread_id}": Factory("chat", {"title": EDITED}, fragment = EDITED),
+    "routes.chat_history:PATCH:/threads/{thread_id}": Factory(
+        "chat", {"title": EDITED}, fragment = EDITED
+    ),
     "routes.chat_history:GET:/threads/{thread_id}/messages": Factory("chat", fragment = SENTINEL),
-    "routes.chat_history:GET:/threads/{thread_id}/messages/{message_id}": Factory("chat", fragment = SENTINEL),
-    "routes.chat_history:PUT:/threads/{thread_id}/messages/{message_id}": Factory("chat", MESSAGE, fragment = SENTINEL),
-    "routes.chat_history:PUT:/threads/{thread_id}/messages": Factory("chat", {"messages": [MESSAGE]}, fragment = SENTINEL),
+    "routes.chat_history:GET:/threads/{thread_id}/messages/{message_id}": Factory(
+        "chat", fragment = SENTINEL
+    ),
+    "routes.chat_history:PUT:/threads/{thread_id}/messages/{message_id}": Factory(
+        "chat", MESSAGE, fragment = SENTINEL
+    ),
+    "routes.chat_history:PUT:/threads/{thread_id}/messages": Factory(
+        "chat", {"messages": [MESSAGE]}, fragment = SENTINEL
+    ),
     "routes.chat_history:GET:/projects/{project_id}": Factory("project", fragment = SENTINEL),
-    "routes.chat_history:PATCH:/projects/{project_id}": Factory("project", {"name": EDITED}, fragment = EDITED),
+    "routes.chat_history:PATCH:/projects/{project_id}": Factory(
+        "project", {"name": EDITED}, fragment = EDITED
+    ),
     "routes.training_history:GET:/runs/{run_id}": Factory("training", fragment = SENTINEL),
-    "routes.training_history:PATCH:/runs/{run_id}": Factory("training", {"display_name": EDITED}, fragment = EDITED),
+    "routes.training_history:PATCH:/runs/{run_id}": Factory(
+        "training", {"display_name": EDITED}, fragment = EDITED
+    ),
     "routes.auth:DELETE:/api-keys/{key_id}": Factory("api-key"),
-    "routes.mcp_servers:PUT:/{server_id}": Factory("mcp", {"display_name": EDITED}, fragment = EDITED),
+    "routes.mcp_servers:PUT:/{server_id}": Factory(
+        "mcp", {"display_name": EDITED}, fragment = EDITED
+    ),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
 }
 
@@ -94,8 +111,11 @@ def seed_resource(factory: Factory, account) -> dict[str, str]:
             )
         conn.commit()
     params = {
-        "thread_id": THREAD_ID, "message_id": MESSAGE_ID, "project_id": PROJECT_ID,
-        "run_id": RUN_ID, "server_id": SERVER_ID,
+        "thread_id": THREAD_ID,
+        "message_id": MESSAGE_ID,
+        "project_id": PROJECT_ID,
+        "run_id": RUN_ID,
+        "server_id": SERVER_ID,
     }
     if factory.name == "api-key":
         _, row = storage.create_api_key(account.username, name = SENTINEL)
@@ -103,8 +123,14 @@ def seed_resource(factory: Factory, account) -> dict[str, str]:
     if factory.name == "mcp":
         from storage import mcp_servers_db
         run_as(
-            account, mcp_servers_db.create_server, SERVER_ID, SENTINEL, "http://8.8.8.8:9/mcp",
-            headers_json = None, is_enabled = False, use_oauth = False,
+            account,
+            mcp_servers_db.create_server,
+            SERVER_ID,
+            SENTINEL,
+            "http://8.8.8.8:9/mcp",
+            headers_json = None,
+            is_enabled = False,
+            use_oauth = False,
         )
     return params
 

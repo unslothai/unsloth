@@ -1215,7 +1215,9 @@ def register_worker(
             finally:
                 hf_cache_scan.invalidate_hf_cache_scans()
 
-    thread_factory = account_thread if account_access.account_scope() is not None else threading.Thread
+    thread_factory = (
+        account_thread if account_access.account_scope() is not None else threading.Thread
+    )
     thread_factory(target = _watch, name = watch_name, daemon = True).start()
     return True
 

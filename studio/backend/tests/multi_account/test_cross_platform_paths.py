@@ -16,7 +16,14 @@ from utils.paths import storage_roots
 
 ACCOUNT_ID = "0123456789abcdef0123456789abcdef"
 ROOT = PureWindowsPath(r"C:\Users\Research Engineer\AppData\Local\UnslothStudio")
-RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 # Leaves have model, checkpoint, document and tool identifiers of realistic lengths.
 LEAVES = (
     r"studio.db",
@@ -32,7 +39,22 @@ def utf16_units(path: str) -> int:
     return len(path.encode("utf-16-le")) // 2
 
 
-@pytest.mark.parametrize("username", sorted(RESERVED) + ["CON.txt", "aux.", "..", "alice/bob", "alice\\bob", "Élodie", "E\u0301lodie", "Ａｌｉｃｅ", "ALICE", "alice"])
+@pytest.mark.parametrize(
+    "username",
+    sorted(RESERVED)
+    + [
+        "CON.txt",
+        "aux.",
+        "..",
+        "alice/bob",
+        "alice\\bob",
+        "Élodie",
+        "E\u0301lodie",
+        "Ａｌｉｃｅ",
+        "ALICE",
+        "alice",
+    ],
+)
 def test_username_never_becomes_a_windows_storage_component(monkeypatch, username):
     monkeypatch.setattr(storage_roots, "studio_root", lambda: ROOT)
     account = AccountContext(ACCOUNT_ID, username)

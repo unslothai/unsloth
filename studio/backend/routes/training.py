@@ -1177,6 +1177,7 @@ async def start_training(
     """
     if managed_account():
         from utils.paths import tensorboard_root
+
         directory = request.tensorboard_dir
         if not directory or not Path(directory).is_absolute():
             request.tensorboard_dir = str(tensorboard_root() / (directory or ""))
@@ -1883,7 +1884,12 @@ def _build_training_status(
     backend, identity: TrainingStatusIdentitySnapshot, is_active: bool
 ) -> TrainingStatus:
     if job_is_foreign(backend):
-        return TrainingStatus(job_id = "", phase = "idle", is_training_running = False, message = "Busy" if job_busy(backend) else "Ready to train")
+        return TrainingStatus(
+            job_id = "",
+            phase = "idle",
+            is_training_running = False,
+            message = "Busy" if job_busy(backend) else "Ready to train",
+        )
     owner_job_id = identity.current_job_id
     job_id = owner_job_id
     start_request_id = identity.current_start_request_id
@@ -2048,7 +2054,15 @@ async def get_training_metrics(
     Get training metrics (loss, learning rate, steps).
     """
     if job_is_foreign(get_training_backend()):
-        return TrainingMetricsResponse(job_id = "", loss_history = [], lr_history = [], step_history = [], current_loss = None, current_lr = None, current_step = None)
+        return TrainingMetricsResponse(
+            job_id = "",
+            loss_history = [],
+            lr_history = [],
+            step_history = [],
+            current_loss = None,
+            current_lr = None,
+            current_step = None,
+        )
     try:
         backend = get_training_backend()
         job_id = getattr(backend, "current_job_id", "") or ""

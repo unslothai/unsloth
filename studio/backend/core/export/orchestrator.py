@@ -754,6 +754,7 @@ class ExportOrchestrator:
         outputs_dir = outputs_dir if outputs_dir is not None else str(outputs_root())
         validate_job_paths({"output_dir": outputs_dir})
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

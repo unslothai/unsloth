@@ -329,8 +329,14 @@ registry = _registry
 
 
 def retire_account_downloads() -> None:
-    registry = _registry if current_account().is_owner else _account_registries.get(current_account().account_id)
+    registry = (
+        _registry
+        if current_account().is_owner
+        else _account_registries.get(current_account().account_id)
+    )
     if registry is None:
         return
     for job in registry.active_job_refs():
-        download_lifecycle.cancel_worker(registry, job.key, generation = job.generation, label = "dataset", logger = logger)
+        download_lifecycle.cancel_worker(
+            registry, job.key, generation = job.generation, label = "dataset", logger = logger
+        )

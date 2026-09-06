@@ -44,8 +44,12 @@ def test_old_named_column_reads_and_owner_password_write_remain_valid(isolated_a
     assert isolated_auth.get_account("alice") == alice
     assert isolated_auth.get_user_record("alice")["jwt_secret"] == "alice-jwt-secret" * 3
     with closing(sqlite3.connect(home / "studio.db")) as conn:
-        assert conn.execute("SELECT title FROM chat_threads WHERE id=?", (THREAD_ID,)).fetchone() == (SENTINEL,)
-        assert conn.execute("SELECT value_json FROM chat_settings WHERE key='theme'").fetchone() == ('"dark"',)
+        assert conn.execute(
+            "SELECT title FROM chat_threads WHERE id=?", (THREAD_ID,)
+        ).fetchone() == (SENTINEL,)
+        assert conn.execute(
+            "SELECT value_json FROM chat_settings WHERE key='theme'"
+        ).fetchone() == ('"dark"',)
     assert (home / "studio.db").read_bytes() == original["studio.db"]
     assert managed.read_bytes() == b"private-alice-model"
     assert policy.login_mode() == "multi"
@@ -57,7 +61,8 @@ def test_old_auth_read_ignores_deactivation_explicitly(isolated_auth, accounts):
         conn.commit()
         legacy = conn.execute(
             "SELECT password_salt,password_hash,jwt_secret,must_change_password "
-            "FROM auth_user WHERE username=?", ("alice",)
+            "FROM auth_user WHERE username=?",
+            ("alice",),
         ).fetchone()
     assert legacy is not None
     assert isolated_auth.get_user_record("alice")["is_active"] == 0

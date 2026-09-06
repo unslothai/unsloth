@@ -25,13 +25,16 @@ def regressions(results: dict, *, tolerance: float = 0.05) -> list[str]:
         f"{results['base'][endpoint][percentile] * (1 + tolerance):.4f} ms"
         for endpoint in ("status", "history")
         for percentile in ("p50_ms", "p95_ms")
-        if results["head"][endpoint][percentile] > results["base"][endpoint][percentile] * (1 + tolerance)
+        if results["head"][endpoint][percentile]
+        > results["base"][endpoint][percentile] * (1 + tolerance)
     ]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--base-ref", default = None, help = "defaults to the merge base with origin/main")
+    parser.add_argument(
+        "--base-ref", default = None, help = "defaults to the merge base with origin/main"
+    )
     parser.add_argument("--rounds", type = int, default = 3)
     parser.add_argument("--output", type = Path, default = REPO / "artifacts/perf.json")
     args = parser.parse_args()
@@ -53,16 +56,21 @@ def main() -> None:
         series = {"base": [], "head": []}
         for iteration in range(args.rounds):
             # Alternate order to reduce a monotonic machine-load or temperature bias.
-            for label in (("base", "head") if iteration % 2 == 0 else ("head", "base")):
+            for label in ("base", "head") if iteration % 2 == 0 else ("head", "base"):
                 print(f"Round {iteration + 1}/{args.rounds}: {label}", flush = True)
-                series[label].append(run_probe(
-                    base if label == "base" else REPO / "studio/backend",
-                    scratch / f"{label}-{iteration}", mode = "timing",
-                ))
+                series[label].append(
+                    run_probe(
+                        base if label == "base" else REPO / "studio/backend",
+                        scratch / f"{label}-{iteration}",
+                        mode = "timing",
+                    )
+                )
         results = {
             label: {
-                endpoint: {metric: statistics.median(run[endpoint][metric] for run in runs)
-                           for metric in ("samples", "p50_ms", "p95_ms")}
+                endpoint: {
+                    metric: statistics.median(run[endpoint][metric] for run in runs)
+                    for metric in ("samples", "p50_ms", "p95_ms")
+                }
                 for endpoint in ("status", "history")
             }
             for label, runs in series.items()
@@ -84,9 +92,14 @@ def main() -> None:
     args.output.write_text(json.dumps(results, indent = 2) + "\n", encoding = "utf-8")
     for endpoint in ("status", "history"):
         for metric in ("p50_ms", "p95_ms"):
-            base_value, head_value = results["base"][endpoint][metric], results["head"][endpoint][metric]
-            print(f"{endpoint:7} {metric}: base={base_value:.4f} ms head={head_value:.4f} ms "
-                  f"delta={(head_value / base_value - 1) * 100:+.2f}%")
+            base_value, head_value = (
+                results["base"][endpoint][metric],
+                results["head"][endpoint][metric],
+            )
+            print(
+                f"{endpoint:7} {metric}: base={base_value:.4f} ms head={head_value:.4f} ms "
+                f"delta={(head_value / base_value - 1) * 100:+.2f}%"
+            )
     assert not failures, "; ".join(failures)
 
 

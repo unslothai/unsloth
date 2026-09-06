@@ -1199,7 +1199,9 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
     assert (
         "_snapshot_chat_images()" in body
     ), "the snapshot belongs inside the clear's hop, and it carries the registration fence"
-    assert "snapshot_and_fence_registrations()" in inspect.getsource(chat_history._snapshot_chat_images)
+    assert "snapshot_and_fence_registrations()" in inspect.getsource(
+        chat_history._snapshot_chat_images
+    )
 
 
 def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):

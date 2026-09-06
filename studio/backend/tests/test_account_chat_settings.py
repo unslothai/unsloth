@@ -98,7 +98,11 @@ def client(monkeypatch):
         yield test_client
 
 
-def seed_chat(account, thread_id = "private", text = "private text"):
+def seed_chat(
+    account,
+    thread_id = "private",
+    text = "private text",
+):
     def seed():
         studio_db.upsert_chat_thread(
             {
@@ -131,7 +135,11 @@ def seed_chat(account, thread_id = "private", text = "private text"):
     run_as(account, seed)
 
 
-def seed_run(account, run_id = "run", thread_id = "private"):
+def seed_run(
+    account,
+    run_id = "run",
+    thread_id = "private",
+):
     return run_as(
         account,
         chat_generation_runs_db.create_run,

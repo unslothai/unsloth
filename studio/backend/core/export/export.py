@@ -459,6 +459,7 @@ class ExportBackend:
         if outputs_dir is None:
             outputs_dir = str(outputs_root())
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
     def load_checkpoint(

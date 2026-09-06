@@ -120,7 +120,9 @@ def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
     installation-wide callers (shutdown, the arbiter) should ask for.
     """
     with _LOCK:
-        entries = [e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id]
+        entries = [
+            e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
+        ]
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -178,7 +180,8 @@ def cancel_all(account_id: Optional[str] = None) -> int:
     """
     with _LOCK:
         events = [
-            e["event"] for e in _ACTIVE.values()
+            e["event"]
+            for e in _ACTIVE.values()
             if account_id is None or e["account_id"] == account_id
         ]
     for ev in events:
@@ -199,7 +202,8 @@ def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
     scope = account_id or current_account_id()
     with _LOCK:
         events = [
-            e["event"] for e in _ACTIVE.values()
+            e["event"]
+            for e in _ACTIVE.values()
             if e["thread_id"] == thread_id and e["account_id"] == scope
         ]
     for ev in events:
@@ -218,7 +222,8 @@ def cancel_run(run_id: str, account_id: Optional[str] = None) -> int:
     scope = account_id or current_account_id()
     with _LOCK:
         events = [
-            e["event"] for e in _ACTIVE.values()
+            e["event"]
+            for e in _ACTIVE.values()
             if e["run_id"] == run_id and e["account_id"] == scope
         ]
     for ev in events:

@@ -62,6 +62,7 @@ from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
+
 async def _account_provider_storage(_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         await asyncio.to_thread(account_access.ensure_account_schema, providers_db)

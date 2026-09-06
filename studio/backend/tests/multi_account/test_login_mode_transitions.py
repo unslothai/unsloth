@@ -16,8 +16,11 @@ def status(client, *, count: int) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
-        "initialized", "default_username", "requires_password_change",
-        "bootstrap_deadline_seconds", "login_mode",
+        "initialized",
+        "default_username",
+        "requires_password_change",
+        "bootstrap_deadline_seconds",
+        "login_mode",
     }
     assert body["initialized"] == (count > 0)
     assert body["default_username"] == "unsloth"
@@ -65,7 +68,10 @@ def test_concurrent_creation_refreshes_a_warm_single_mode(isolated_auth, account
         for future in futures:
             future.result(timeout = 30)
     assert isolated_auth.count_active_accounts() == 3
-    assert len({isolated_auth.get_account(name).account_id for name in ("unsloth", "alice", "bob")}) == 3
+    assert (
+        len({isolated_auth.get_account(name).account_id for name in ("unsloth", "alice", "bob")})
+        == 3
+    )
     status(account_client, count = 3)
 
 
@@ -113,7 +119,9 @@ def test_invalidation_racing_a_stale_count_does_not_poison_cache(isolated_auth, 
     assert policy.login_mode() == "multi"
 
 
-def test_deactivated_account_cannot_keep_using_a_previously_issued_api_key(isolated_auth, accounts, account_client):
+def test_deactivated_account_cannot_keep_using_a_previously_issued_api_key(
+    isolated_auth, accounts, account_client
+):
     raw_key, _ = isolated_auth.create_api_key("alice", name = "before-deactivation")
     headers = {"Authorization": f"Bearer {raw_key}"}
     assert account_client.get("/account-probe", headers = headers).status_code == 200

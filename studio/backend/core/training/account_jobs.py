@@ -33,7 +33,12 @@ def account_key(value: str):
     return value if account.is_owner else (account.account_id, value)
 
 
-def account_path(value, *, reference: bool = False, shared_cache: bool = False):
+def account_path(
+    value,
+    *,
+    reference: bool = False,
+    shared_cache: bool = False,
+):
     """Validate a supplied local path, resolving symlinks even for new outputs.
 
     Remote Hub ids are allowed only for fields explicitly marked as references.
@@ -134,7 +139,12 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
     require_explicit_credentials(values)
 
 
-def init_job_owner(service, active, cancel, clear = None) -> None:
+def init_job_owner(
+    service,
+    active,
+    cancel,
+    clear = None,
+) -> None:
     service.job_account = None
     service._result_account = OWNER
     service._account_job_lock = threading.RLock()
@@ -429,7 +439,12 @@ def job_busy(service) -> bool:
     return bool(getattr(service, "_account_inflight", 0) or (active and active()))
 
 
-def worker_alive(service, *, process: str = "_proc", pump: str = "_pump_thread") -> bool:
+def worker_alive(
+    service,
+    *,
+    process: str = "_proc",
+    pump: str = "_pump_thread",
+) -> bool:
     """A finalizer still writing the prior result also owns the service slot."""
     proc = getattr(service, process, None)
     thread = getattr(service, pump, None)

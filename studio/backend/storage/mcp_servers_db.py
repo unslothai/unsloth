@@ -68,6 +68,7 @@ def create_server(
     use_oauth: bool = False,
 ) -> None:
     from core.inference.mcp_client import validate_mcp_address
+
     validate_mcp_address(url)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()

@@ -36,9 +36,14 @@ def _record_thread(threads: list[int], result):
 
 def _record(secret: str) -> dict:
     return {
-        "username": SUBJECT, "password_salt": "salt", "password_hash": "hash",
-        "jwt_secret": secret, "must_change_password": 0,
-        "account_id": "acct-test", "role": "user", "is_active": 1,
+        "username": SUBJECT,
+        "password_salt": "salt",
+        "password_hash": "hash",
+        "jwt_secret": secret,
+        "must_change_password": 0,
+        "account_id": "acct-test",
+        "role": "user",
+        "is_active": 1,
     }
 
 

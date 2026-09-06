@@ -182,7 +182,13 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     if job_is_foreign(get_export_backend()):
-        return ExportStatusResponse(current_checkpoint = None, is_vision = False, is_peft = False, is_export_active = bool(get_export_backend().is_export_active()), active_op_kind = "busy" if job_busy(get_export_backend()) else None)
+        return ExportStatusResponse(
+            current_checkpoint = None,
+            is_vision = False,
+            is_peft = False,
+            is_export_active = bool(get_export_backend().is_export_active()),
+            active_op_kind = "busy" if job_busy(get_export_backend()) else None,
+        )
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()

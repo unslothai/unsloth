@@ -206,7 +206,8 @@ async def _bind_for(username: str) -> None:
     record = await run_in_threadpool(get_user_record, username)
     account = (
         AccountContext(record["account_id"], record["username"], record["role"])
-        if record and record.get("is_active", 1) else None
+        if record and record.get("is_active", 1)
+        else None
     )
     if account is None:
         raise HTTPException(
@@ -506,6 +507,7 @@ async def _get_current_credential(
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+
         if credentials.credentials not in APPROVED_DUMMY_BEARERS:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,

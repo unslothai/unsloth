@@ -14,7 +14,12 @@ PASSWORD = "legacy-owner-password"
 SALT = "0123456789abcdef0123456789abcdef"
 JWT_SECRET = "legacy-jwt-secret-that-is-longer-than-32-bytes"
 OLD_AUTH_COLUMNS = (
-    "id", "username", "password_salt", "password_hash", "jwt_secret", "must_change_password"
+    "id",
+    "username",
+    "password_salt",
+    "password_hash",
+    "jwt_secret",
+    "must_change_password",
 )
 OLD_AUTH_SCHEMA = """
 CREATE TABLE auth_user (
@@ -45,7 +50,13 @@ def seed_studio_db(path: Path, *, populated: bool = True) -> None:
             conn.execute(
                 "INSERT INTO chat_messages (id,thread_id,role,content_json,created_at) "
                 "VALUES (?,?,?,?,?)",
-                (MESSAGE_ID, THREAD_ID, "user", json.dumps([{"type": "text", "text": SENTINEL}]), 1000),
+                (
+                    MESSAGE_ID,
+                    THREAD_ID,
+                    "user",
+                    json.dumps([{"type": "text", "text": SENTINEL}]),
+                    1000,
+                ),
             )
             conn.execute(
                 "INSERT INTO chat_settings VALUES (?,?,?)", ("theme", '"dark"', "2026-01-01")
@@ -58,12 +69,17 @@ def seed_studio_db(path: Path, *, populated: bool = True) -> None:
             # AAD b'unsloth-studio-credential\0hf_token\0default', plaintext b'hf_legacy_private'.
             conn.execute(
                 "INSERT INTO credential_secrets VALUES (?,?,?,?,?,?,?)",
-                ("hf_token", "default", 1, bytes(range(12)), bytes.fromhex(CREDENTIAL_HEX),
-                 "2026-01-01", "2026-01-01"),
+                (
+                    "hf_token",
+                    "default",
+                    1,
+                    bytes(range(12)),
+                    bytes.fromhex(CREDENTIAL_HEX),
+                    "2026-01-01",
+                    "2026-01-01",
+                ),
             )
-        conn.execute(
-            "INSERT OR REPLACE INTO chat_attachment_inventory_state VALUES (1,1,0,1000)"
-        )
+        conn.execute("INSERT OR REPLACE INTO chat_attachment_inventory_state VALUES (1,1,0,1000)")
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
@@ -91,9 +107,13 @@ def seed_legacy_install(home: Path) -> dict[str, bytes]:
     rag_path = home / "rag" / "rag.db"
     rag_path.parent.mkdir(parents = True)
     with closing(sqlite3.connect(rag_path)) as conn:
-        conn.execute("CREATE TABLE knowledge_bases (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-                     "description TEXT, embedding_model TEXT, created_at TEXT NOT NULL)")
-        conn.execute("INSERT INTO knowledge_bases VALUES ('legacy-kb',?,NULL,NULL,'2026-01-01')", (SENTINEL,))
+        conn.execute(
+            "CREATE TABLE knowledge_bases (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+            "description TEXT, embedding_model TEXT, created_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO knowledge_bases VALUES ('legacy-kb',?,NULL,NULL,'2026-01-01')", (SENTINEL,)
+        )
         conn.commit()
     for leaf in (
         "outputs/my-finetune/checkpoint-100/adapter_model.safetensors",
@@ -104,7 +124,9 @@ def seed_legacy_install(home: Path) -> dict[str, bytes]:
         path = home / leaf
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_bytes(b"\x00legacy\r\n" + leaf.encode() + b"\xff")
-    return {str(path.relative_to(home)): path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    return {
+        str(path.relative_to(home)): path.read_bytes() for path in home.rglob("*") if path.is_file()
+    }
 
 
 def old_auth_row(path: Path) -> tuple:

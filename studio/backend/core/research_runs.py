@@ -2720,5 +2720,7 @@ def retire_account_research(account) -> None:
     """Cancel this account's in-flight generation without stopping the supervisor."""
     for supervisor in tuple(_supervisors):
         for key, event in list(supervisor._cancel_events.items()):
-            if (isinstance(key, str) and account.is_owner) or (isinstance(key, tuple) and key[0] == account.account_id):
+            if (isinstance(key, str) and account.is_owner) or (
+                isinstance(key, tuple) and key[0] == account.account_id
+            ):
                 event.set()

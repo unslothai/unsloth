@@ -26,7 +26,11 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
 
 
 def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
-    account_path(Path(base_path) / path_value if base_path and not Path(path_value).is_absolute() else path_value)
+    account_path(
+        Path(base_path) / path_value
+        if base_path and not Path(path_value).is_absolute()
+        else path_value
+    )
     try:
         path = Path(path_value)
         candidates: list[Path] = []

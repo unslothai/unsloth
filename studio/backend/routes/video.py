@@ -141,7 +141,9 @@ async def video_download_plan(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, request.base_repo)
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
@@ -250,7 +252,9 @@ async def load_video_model_gated(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, request.base_repo)
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -391,7 +395,10 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
-    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "video", get_video_backend().status().get("repo_id")
+    ):
         return account_access.hidden_resident_response()
     return VideoLoadProgressResponse(**get_video_backend().load_progress())
 
@@ -530,7 +537,10 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
-    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "video", get_video_backend().status().get("repo_id")
+    ):
         return account_access.hidden_resident_response()
     return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
 
@@ -540,7 +550,10 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     if account_access.foreign_work_active() or account_access.resident_hidden("video"):
         return {"cancelled": False}
     from core.inference.video import get_video_backend
-    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "video", get_video_backend().status().get("repo_id")
+    ):
         return {"cancelled": False}
     cancelled = await asyncio.to_thread(get_video_backend().cancel_generate)
     return {"cancelled": cancelled}
@@ -551,6 +564,7 @@ async def video_status(current_subject: str = Depends(get_current_subject)):
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
+
     status_dict = get_video_backend().status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()

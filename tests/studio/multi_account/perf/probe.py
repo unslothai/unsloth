@@ -19,8 +19,11 @@ from unittest.mock import patch
 
 def summarize(samples: list[float]) -> dict:
     ordered = sorted(samples)
-    return {"samples": len(samples), "p50_ms": statistics.median(ordered),
-            "p95_ms": ordered[math.ceil(0.95 * len(ordered)) - 1]}
+    return {
+        "samples": len(samples),
+        "p50_ms": statistics.median(ordered),
+        "p95_ms": ordered[math.ceil(0.95 * len(ordered)) - 1],
+    }
 
 
 def measure_cost(operation) -> dict:
@@ -44,7 +47,10 @@ def measure_cost(operation) -> dict:
         counters["directories_created"] += 1
         return result
 
-    with patch.object(sqlite3, "connect", open_connection), patch.object(os, "mkdir", create_directory):
+    with (
+        patch.object(sqlite3, "connect", open_connection),
+        patch.object(os, "mkdir", create_directory),
+    ):
         operation()
     return dict(counters)
 
@@ -80,6 +86,7 @@ def main() -> None:
     workspace_root = getattr(storage_roots, "workspace_root", storage_roots.studio_root)
     headers = bearer("unsloth")
     with TestClient(make_app()) as client:
+
         def get(path):
             response = client.get(path, headers = headers)
             assert response.status_code == 200, (path, response.status_code, response.text)

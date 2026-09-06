@@ -155,7 +155,10 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     stale = ems._get_stored_state()  # A's loader has read it
     assert stale[1] == "org/a" and stale[4] is True
     ems.set_rag_embedding_model("org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers")
-    ems._cached[("owner", ems.EMBEDDING_RESOLUTION_SETTING_KEY)] = (0.0, stale)  # its 2s snapshot still says A
+    ems._cached[("owner", ems.EMBEDDING_RESOLUTION_SETTING_KEY)] = (
+        0.0,
+        stale,
+    )  # its 2s snapshot still says A
 
     assert ems.clear_stored_download_pending("org/a") is False
     ems._invalidate_cache()

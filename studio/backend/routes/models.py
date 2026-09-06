@@ -2212,10 +2212,16 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
 
         default_models = inference_backend.default_models
         if account_access.managed_account():
-            default_models = [m for m in default_models if await asyncio.to_thread(account_access.model_visible, m)]
+            default_models = [
+                m
+                for m in default_models
+                if await asyncio.to_thread(account_access.model_visible, m)
+            ]
 
         loaded_models = []
-        hide_resident = account_access.resident_hidden("chat", getattr(inference_backend, "active_model_name", None))
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
         for model_name, model_data in inference_backend.models.items():
             if hide_resident:
                 continue
@@ -2239,7 +2245,9 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
-        hide_resident = hide_resident or account_access.resident_hidden("chat", getattr(llama_backend, "model_identifier", None))
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
         if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
             loaded_models.append(
@@ -3018,7 +3026,9 @@ async def scan_diffusion_loras(
             }
             for e in entries
         ],
-        "loras_dir": str(account_access.workspace_root() / "loras/diffusion") if account_access.managed_account() else str(diffusion_lora.loras_dir()),
+        "loras_dir": str(account_access.workspace_root() / "loras/diffusion")
+        if account_access.managed_account()
+        else str(diffusion_lora.loras_dir()),
     }
 
 
@@ -3053,7 +3063,9 @@ async def scan_diffusion_controlnets(
             for e in entries
         ],
         "control_types": list(diffusion_controlnet.CONTROL_TYPES),
-        "controlnets_dir": str(account_access.workspace_root() / "controlnets/diffusion") if account_access.managed_account() else str(diffusion_controlnet.controlnets_dir()),
+        "controlnets_dir": str(account_access.workspace_root() / "controlnets/diffusion")
+        if account_access.managed_account()
+        else str(diffusion_controlnet.controlnets_dir()),
     }
 
 
@@ -5110,10 +5122,12 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                 continue
     # Newest download first; stable repo_id tie-break for equal/missing mtimes.
-    return account_access.filter_model_rows(sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
-    ))
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
+    )
 
 
 def _repo_pipeline_missing_denoiser(repo_info, selected: Optional[Path] = None) -> bool:
@@ -5419,10 +5433,12 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 continue
 
     # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
-    return account_access.filter_model_rows(sorted(
-        seen_lower.values(),
-        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
-    ))
+    return account_access.filter_model_rows(
+        sorted(
+            seen_lower.values(),
+            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+        )
+    )
 
 
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
@@ -5444,6 +5460,7 @@ async def delete_cached_model(
     """Compatibility route backed by the shared multi-cache deletion service."""
     account_access.require_installation_owner()
     from hub.services.models import deletion
+
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 

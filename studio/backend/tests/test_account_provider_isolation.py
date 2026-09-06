@@ -13,11 +13,22 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth import policy
-from auth.authentication import authenticated_via_api_key, get_current_credential, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from hub.services.models import account_access as access
 from routes import mcp_servers, provider_credentials, providers
 from storage import credential_secrets, mcp_servers_db, providers_db
-from utils.account_context import OWNER, AccountContext, arun_as, bind_account, reset_account, run_as
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    arun_as,
+    bind_account,
+    reset_account,
+    run_as,
+)
 from utils.security import remote_code_approvals as approvals
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -32,7 +43,9 @@ def isolated(monkeypatch, tmp_path):
     for module in (credential_secrets, mcp_servers_db, providers_db):
         monkeypatch.setattr(module, "_schema_ready", set())
     monkeypatch.setattr(access, "_schema_paths", set())
-    monkeypatch.setattr(credential_secrets, "get_or_create_credential_encryption_key", lambda: b"k" * 32)
+    monkeypatch.setattr(
+        credential_secrets, "get_or_create_credential_encryption_key", lambda: b"k" * 32
+    )
     monkeypatch.setattr(providers, "current_credential_write", lambda credential: nullcontext())
 
 
@@ -57,20 +70,34 @@ def client_for(account):
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
 def test_provider_object_routes_and_saved_keys_are_private(account, other):
     with client_for(account) as client:
-        created = client.post("/providers/", json = {"provider_type": "openai", "display_name": "Private provider"})
+        created = client.post(
+            "/providers/", json = {"provider_type": "openai", "display_name": "Private provider"}
+        )
         assert created.status_code == 201, created.text
         provider_id = created.json()["id"]
     run_as(account, credential_secrets.save_provider_api_key, provider_id, "private-api-key")
     with client_for(other) as client:
         assert client.get("/providers/").json() == []
-        assert client.put(f"/providers/{provider_id}", json = {"display_name": "stolen"}).status_code == 404
+        assert (
+            client.put(f"/providers/{provider_id}", json = {"display_name": "stolen"}).status_code
+            == 404
+        )
         assert client.delete(f"/providers/{provider_id}").status_code == 404
-        assert client.put(f"/providers/{provider_id}/api-key/migrate", json = {"encrypted_api_key": "ignored"}).status_code == 404
+        assert (
+            client.put(
+                f"/providers/{provider_id}/api-key/migrate", json = {"encrypted_api_key": "ignored"}
+            ).status_code
+            == 404
+        )
         for path in ["/providers/test", "/providers/models"]:
-            response = client.post(path, json = {"provider_type": "openai", "provider_id": provider_id})
+            response = client.post(
+                path, json = {"provider_type": "openai", "provider_id": provider_id}
+            )
             assert response.status_code == 404, response.text
     assert run_as(other, credential_secrets.get_provider_api_key, provider_id) is None
-    assert run_as(account, credential_secrets.get_provider_api_key, provider_id) == "private-api-key"
+    assert (
+        run_as(account, credential_secrets.get_provider_api_key, provider_id) == "private-api-key"
+    )
     with client_for(account) as client:
         assert client.get("/providers/").json()[0]["id"] == provider_id
 
@@ -78,7 +105,14 @@ def test_provider_object_routes_and_saved_keys_are_private(account, other):
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
 def test_mcp_server_ids_are_scoped_before_session_or_tool_access(account, other, monkeypatch):
     with client_for(account) as client:
-        created = client.post("/mcp/", json = {"display_name": "Private MCP", "url": "https://8.8.8.8/mcp", "headers": {"Authorization": "Bearer private"}})
+        created = client.post(
+            "/mcp/",
+            json = {
+                "display_name": "Private MCP",
+                "url": "https://8.8.8.8/mcp",
+                "headers": {"Authorization": "Bearer private"},
+            },
+        )
         assert created.status_code == 201, created.text
         server_id = created.json()["id"]
     calls = []
@@ -98,8 +132,16 @@ def test_same_provider_id_can_hold_different_account_credentials():
         run_as(account, access.ensure_account_schema, credential_secrets)
         run_as(account, credential_secrets.save_provider_api_key, "same-provider-id", secret)
         run_as(account, credential_secrets.save_hf_token, secret)
-    assert run_as(ALICE, provider_credentials.resolve_provider_api_key_or_400, "same-provider-id", None) == "alice-secret"
-    assert run_as(BOB, provider_credentials.resolve_provider_api_key_or_400, "same-provider-id", None) == "bob-secret"
+    assert (
+        run_as(
+            ALICE, provider_credentials.resolve_provider_api_key_or_400, "same-provider-id", None
+        )
+        == "alice-secret"
+    )
+    assert (
+        run_as(BOB, provider_credentials.resolve_provider_api_key_or_400, "same-provider-id", None)
+        == "bob-secret"
+    )
     assert run_as(ALICE, credential_secrets.get_hf_token) == "alice-secret"
     assert run_as(BOB, credential_secrets.get_hf_token) == "bob-secret"
 
@@ -118,7 +160,15 @@ def test_provider_config_locks_do_not_serialize_unrelated_account_ids():
 
 
 def test_remote_code_approvals_are_account_owned_and_survive_renames(tmp_path):
-    run_as(ALICE, approvals.record, "alice", "org/private", commit_sha = "abc", fingerprint = "safe", max_severity = None)
+    run_as(
+        ALICE,
+        approvals.record,
+        "alice",
+        "org/private",
+        commit_sha = "abc",
+        fingerprint = "safe",
+        max_severity = None,
+    )
     assert run_as(ALICE, approvals.lookup, "alice", "org/private") is not None
     assert run_as(BOB, approvals.lookup, "alice", "org/private") is None
     renamed = AccountContext(ALICE.account_id, "new-alice")
@@ -127,8 +177,13 @@ def test_remote_code_approvals_are_account_owned_and_survive_renames(tmp_path):
     assert run_as(replacement, approvals.lookup, "alice", "org/private") is None
     run_as(BOB, approvals.forget, "alice", "org/private")
     assert run_as(ALICE, approvals.lookup, "alice", "org/private") is not None
-    assert run_as(OWNER, approvals._store_path) == tmp_path / "security" / "remote_code_approvals.json"
-    assert run_as(ALICE, approvals._store_path) == tmp_path / "accounts" / ALICE.account_id / "security" / "remote_code_approvals.json"
+    assert (
+        run_as(OWNER, approvals._store_path) == tmp_path / "security" / "remote_code_approvals.json"
+    )
+    assert (
+        run_as(ALICE, approvals._store_path)
+        == tmp_path / "accounts" / ALICE.account_id / "security" / "remote_code_approvals.json"
+    )
 
 
 def test_ambient_hf_credentials_are_never_lent_to_managed_accounts(monkeypatch):

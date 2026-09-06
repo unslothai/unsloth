@@ -193,7 +193,10 @@ def prepare_s3_dataset_download(
 
     owns_temp_dir = dest_dir is None
     account_path(dest_dir)
-    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_", **({"dir": str(ensure_dir(tmp_root()))} if managed_account() else {}))
+    target_dir = dest_dir or tempfile.mkdtemp(
+        prefix = "unsloth_s3_dataset_",
+        **({"dir": str(ensure_dir(tmp_root()))} if managed_account() else {}),
+    )
     try:
         os.makedirs(target_dir, exist_ok = True)
 

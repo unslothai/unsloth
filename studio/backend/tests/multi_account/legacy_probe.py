@@ -61,9 +61,7 @@ def main() -> None:
             "bootstrap_deadline_seconds": None,
             "login_mode": "single",
         }
-        login = client.post(
-            "/api/auth/login", json = {"username": "unsloth", "password": PASSWORD}
-        )
+        login = client.post("/api/auth/login", json = {"username": "unsloth", "password": PASSWORD})
         assert login.status_code == 200, login.text
         assert login.json()["access_token"]
     finally:

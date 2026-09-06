@@ -77,6 +77,7 @@ _inflight_lock = threading.Lock()
 _account_states_lock = threading.Lock()
 _account_states: dict[str, SimpleNamespace] = {}
 
+
 def _account_state():
     """The owner keeps the historical registry; each account gets its own clear fences."""
     if is_owner_context():
@@ -137,7 +138,9 @@ def _names_public_host(url: str) -> bool:
 
 def _prune_registry_locked(now: float) -> None:
     state = _account_state()
-    expired = [key for key, entry in state._registry.items() if now - entry["created"] > _REGISTRY_TTL_S]
+    expired = [
+        key for key, entry in state._registry.items() if now - entry["created"] > _REGISTRY_TTL_S
+    ]
     for key in expired:
         state._registry.pop(key, None)
     if len(state._registry) > _REGISTRY_MAX_ENTRIES:

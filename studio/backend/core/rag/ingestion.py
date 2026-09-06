@@ -572,7 +572,12 @@ def _reap_finished_jobs() -> None:
     forever. Safe while streaming: ``job_events`` holds its queue reference.
     """
     with _jobs_lock:
-        job_ids = [key if isinstance(key, str) else key[1] for key in _jobs if (isinstance(key, str) and current_account().is_owner) or (isinstance(key, tuple) and key[0] == current_account().account_id)]
+        job_ids = [
+            key if isinstance(key, str) else key[1]
+            for key in _jobs
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
     for jid in job_ids:
         row = get_job_status(jid)
         if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
@@ -677,6 +682,11 @@ def get_job_status(job_id: str) -> dict | None:
 def retire_account_ingestions() -> None:
     """Stop renewing this account's jobs; workers check retirement between stages."""
     with _jobs_lock:
-        keys = [key for key in _workers if (isinstance(key, str) and current_account().is_owner) or (isinstance(key, tuple) and key[0] == current_account().account_id)]
+        keys = [
+            key
+            for key in _workers
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
     for key in keys:
         job_leases.release(job_leases.INGESTION, key if isinstance(key, str) else key[1])

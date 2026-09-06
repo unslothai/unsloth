@@ -22,10 +22,15 @@ def load_script(name):
     return module
 
 
-@pytest.mark.parametrize("endpoint,metric", [
-    ("status", "p50_ms"), ("status", "p95_ms"),
-    ("history", "p50_ms"), ("history", "p95_ms"),
-])
+@pytest.mark.parametrize(
+    "endpoint,metric",
+    [
+        ("status", "p50_ms"),
+        ("status", "p95_ms"),
+        ("history", "p50_ms"),
+        ("history", "p95_ms"),
+    ],
+)
 def test_gate_rejects_each_percentile_above_five_percent(endpoint, metric):
     module = load_script("compare")
     baseline = {name: {"p50_ms": 10.0, "p95_ms": 20.0} for name in ("status", "history")}
@@ -50,8 +55,11 @@ def test_io_counter_observes_real_connections_queries_and_mkdirs(tmp_path):
             assert conn.execute("SELECT 1").fetchone() == (1,)
 
     assert module.measure_cost(extra_work) == {
-        "connections": 1, "queries": 1, "statements": 1,
-        "mkdir_calls": 1, "directories_created": 1,
+        "connections": 1,
+        "queries": 1,
+        "statements": 1,
+        "mkdir_calls": 1,
+        "directories_created": 1,
     }
 
 

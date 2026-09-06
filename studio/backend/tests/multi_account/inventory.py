@@ -37,7 +37,11 @@ class RouteCase:
 
 def looks_like_object_id(name: str) -> bool:
     return bool(re.search(r"(^id$|_ids?$|_uuid$|_ref$)", name)) or name in {
-        "filename", "session", "name", "ref", "slug",
+        "filename",
+        "session",
+        "name",
+        "ref",
+        "slug",
     }
 
 
@@ -55,9 +59,12 @@ def walk_router(router, prefix: str = ""):
 def collect_routes() -> tuple[RouteCase, ...]:
     found = {}
     modules = [routes]
-    modules.extend(importlib.import_module(info.name) for info in sorted(
-        pkgutil.walk_packages(routes.__path__, prefix = "routes."), key = lambda info: info.name
-    ))
+    modules.extend(
+        importlib.import_module(info.name)
+        for info in sorted(
+            pkgutil.walk_packages(routes.__path__, prefix = "routes."), key = lambda info: info.name
+        )
+    )
     seen_routers = set()
     for module in modules:
         for router in vars(module).values():
@@ -83,13 +90,31 @@ OBJECT_ROUTES = tuple(case for case in ROUTES if case.object_parameters)
 # Provisional domain numbering until the integrator supplies the other worker prompts.
 WORKERS = {
     "auth": "01",
-    "chat_history": "02", "chat_generation_runs": "02", "prompts": "02", "profile_stats": "02",
-    "providers": "03", "provider_credentials": "03", "openai_codex_auth": "03",
-    "rag": "04", "datasets": "04", "youtube": "04",
-    "training": "05", "training_history": "05", "export": "05", "data_recipe": "05",
-    "inference": "06", "llama": "06", "llama_compat": "06", "video": "06", "whisper": "06",
-    "research_runs": "07", "mcp_servers": "07",
-    "preview": "08", "settings": "08", "models": "08", "training_vram": "05",
+    "chat_history": "02",
+    "chat_generation_runs": "02",
+    "prompts": "02",
+    "profile_stats": "02",
+    "providers": "03",
+    "provider_credentials": "03",
+    "openai_codex_auth": "03",
+    "rag": "04",
+    "datasets": "04",
+    "youtube": "04",
+    "training": "05",
+    "training_history": "05",
+    "export": "05",
+    "data_recipe": "05",
+    "inference": "06",
+    "llama": "06",
+    "llama_compat": "06",
+    "video": "06",
+    "whisper": "06",
+    "research_runs": "07",
+    "mcp_servers": "07",
+    "preview": "08",
+    "settings": "08",
+    "models": "08",
+    "training_vram": "05",
 }
 
 
@@ -122,8 +147,10 @@ def render_inventory() -> str:
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for case in ROUTES:
-        coverage = FACTORIES[case.key].name if case.key in FACTORIES else (
-            "**uncovered**" if case.object_parameters else "no object-like path parameter"
+        coverage = (
+            FACTORIES[case.key].name
+            if case.key in FACTORIES
+            else ("**uncovered**" if case.object_parameters else "no object-like path parameter")
         )
         lines.append(
             f"| {case.module} | {case.method} | `{case.path}` | "

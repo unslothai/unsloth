@@ -29,7 +29,12 @@ def account_home(tmp_path, monkeypatch):
     studio_db.close_wal_keeper()
     profile_stats_db._cache.clear()
     memos = []
-    for name in ("model_memory_settings", "vram_budget_settings", "openai_auto_switch_settings", "embedding_model_settings"):
+    for name in (
+        "model_memory_settings",
+        "vram_budget_settings",
+        "openai_auto_switch_settings",
+        "embedding_model_settings",
+    ):
         module = importlib.import_module(f"utils.{name}")
         for attribute in ("_cache", "_cached", "_generation", "_resolved_gguf_memo"):
             memo = getattr(module, attribute, None)
@@ -43,14 +48,17 @@ def account_home(tmp_path, monkeypatch):
     profile_stats_db._cache.clear()
 
 
-@pytest.mark.parametrize("module_name,table", [
-    ("studio_db", "app_settings"),
-    ("rag_db", "documents"),
-    ("providers_db", "llm_providers"),
-    ("mcp_servers_db", "mcp_servers"),
-    ("credential_secrets", "credential_secrets"),
-    ("chat_generation_runs_db", "chat_generation_runs"),
-])
+@pytest.mark.parametrize(
+    "module_name,table",
+    [
+        ("studio_db", "app_settings"),
+        ("rag_db", "documents"),
+        ("providers_db", "llm_providers"),
+        ("mcp_servers_db", "mcp_servers"),
+        ("credential_secrets", "credential_secrets"),
+        ("chat_generation_runs_db", "chat_generation_runs"),
+    ],
+)
 def test_each_database_gets_its_schema(account_home, module_name, table):
     module = importlib.import_module(f"storage.{module_name}")
     module.reset_schema_state_for_tests()
@@ -70,7 +78,10 @@ def test_each_database_gets_its_schema(account_home, module_name, table):
     for account in ACCOUNTS:
         conn = run_as(account, connect)
         try:
-            assert conn.execute("SELECT account_id FROM account_probe").fetchall()[0][0] == account.account_id
+            assert (
+                conn.execute("SELECT account_id FROM account_probe").fetchall()[0][0]
+                == account.account_id
+            )
         finally:
             conn.close()
     assert len(module._schema_ready) == 3
@@ -95,9 +106,15 @@ def test_wal_keepers_can_close_one_account(account_home):
 
 def _receipt() -> api_usage_db.ApiUsageReceipt:
     return api_usage_db.ApiUsageReceipt(
-        id = "same-receipt", subject = "same-subject", endpoint = "/v1/chat/completions",
-        model = "model", status = "completed", prompt_tokens = 2, completion_tokens = 3,
-        total_tokens = 5, created_at = 1,
+        id = "same-receipt",
+        subject = "same-subject",
+        endpoint = "/v1/chat/completions",
+        model = "model",
+        status = "completed",
+        prompt_tokens = 2,
+        completion_tokens = 3,
+        total_tokens = 5,
+        created_at = 1,
     )
 
 
@@ -132,7 +149,9 @@ def test_usage_writer_retains_account_through_retries(account_home, monkeypatch)
 def test_profile_cache_and_invalidation_are_private(account_home):
     # Empty databases have identical fingerprints; one account's cached object
     # must not be served to another even in that case.
-    values = {account: run_as(account, profile_stats_db.compute_profile_stats) for account in ACCOUNTS}
+    values = {
+        account: run_as(account, profile_stats_db.compute_profile_stats) for account in ACCOUNTS
+    }
     assert values[OWNER] is not values[ALICE]
     assert values[ALICE] is not values[BOB]
     for account in ACCOUNTS:
@@ -143,13 +162,42 @@ def test_profile_cache_and_invalidation_are_private(account_home):
     assert run_as(ALICE, profile_stats_db.compute_profile_stats) is not values[ALICE]
 
 
-@pytest.mark.parametrize("module_name,setter,getter,first,second", [
-    ("model_memory_settings", "set_model_memory_settings", "get_keep_resident", (True, False), (False, False)),
-    ("vram_budget_settings", "set_vram_budget_fraction", "get_vram_budget_fraction", (0.8,), (0.9,)),
-    ("openai_auto_switch_settings", "set_openai_auto_switch", "get_openai_auto_switch_enabled", (True, 0), (False, 0)),
-    ("embedding_model_settings", "set_rag_embedding_model", "get_stored_embedding_model", ("org/one",), ("org/two",)),
-])
-def test_settings_memos_follow_accounts(account_home, monkeypatch, module_name, setter, getter, first, second):
+@pytest.mark.parametrize(
+    "module_name,setter,getter,first,second",
+    [
+        (
+            "model_memory_settings",
+            "set_model_memory_settings",
+            "get_keep_resident",
+            (True, False),
+            (False, False),
+        ),
+        (
+            "vram_budget_settings",
+            "set_vram_budget_fraction",
+            "get_vram_budget_fraction",
+            (0.8,),
+            (0.9,),
+        ),
+        (
+            "openai_auto_switch_settings",
+            "set_openai_auto_switch",
+            "get_openai_auto_switch_enabled",
+            (True, 0),
+            (False, 0),
+        ),
+        (
+            "embedding_model_settings",
+            "set_rag_embedding_model",
+            "get_stored_embedding_model",
+            ("org/one",),
+            ("org/two",),
+        ),
+    ],
+)
+def test_settings_memos_follow_accounts(
+    account_home, monkeypatch, module_name, setter, getter, first, second
+):
     module = importlib.import_module(f"utils.{module_name}")
     monkeypatch.setattr(module, "_CACHE_TTL_S", 3600)
     for account, args in ((OWNER, first), (ALICE, second), (BOB, first)):
@@ -181,13 +229,33 @@ def test_hf_validation_cache_and_budget_are_private(monkeypatch):
 
     validation.reset_hf_token_validation_state()
     calls = []
-    monkeypatch.setattr(validation, "_check_remote", lambda token: calls.append(current_account_id()) or validation.TokenValidationResult(status = "valid"))
+    monkeypatch.setattr(
+        validation,
+        "_check_remote",
+        lambda token: calls.append(current_account_id())
+        or validation.TokenValidationResult(status = "valid"),
+    )
     monkeypatch.setattr(validation, "_MAX_ATTEMPTS", 1)
     try:
         for account in ACCOUNTS:
-            assert run_as(account, validation.validate_hf_token, "same-token", rate_key = "same-client").status == "valid"
-            assert run_as(account, validation.validate_hf_token, "same-token", rate_key = "same-client").status == "valid"
-            assert run_as(account, validation.validate_hf_token, "another-token", rate_key = "same-client").status == "rate_limited"
+            assert (
+                run_as(
+                    account, validation.validate_hf_token, "same-token", rate_key = "same-client"
+                ).status
+                == "valid"
+            )
+            assert (
+                run_as(
+                    account, validation.validate_hf_token, "same-token", rate_key = "same-client"
+                ).status
+                == "valid"
+            )
+            assert (
+                run_as(
+                    account, validation.validate_hf_token, "another-token", rate_key = "same-client"
+                ).status
+                == "rate_limited"
+            )
         assert calls == [account.account_id for account in ACCOUNTS]
     finally:
         validation.reset_hf_token_validation_state()
@@ -196,11 +264,14 @@ def test_hf_validation_cache_and_budget_are_private(monkeypatch):
 def test_hub_reexports_the_canonical_owner_and_account_roots(account_home):
     from hub.utils import paths as hub
     expected = {
-        "studio_root": account_home, "cache_root": account_home / "cache",
-        "assets_root": account_home / "assets", "datasets_root": account_home / "assets/datasets",
+        "studio_root": account_home,
+        "cache_root": account_home / "cache",
+        "assets_root": account_home / "assets",
+        "datasets_root": account_home / "assets/datasets",
         "dataset_uploads_root": account_home / "assets/datasets/uploads",
         "recipe_datasets_root": account_home / "assets/datasets/recipes",
-        "outputs_root": account_home / "outputs", "exports_root": account_home / "exports",
+        "outputs_root": account_home / "outputs",
+        "exports_root": account_home / "exports",
         "tmp_root": roots.tmp_root(),
     }
     for name, owner_path in expected.items():
@@ -222,19 +293,42 @@ def test_lazy_paths_keep_imported_references_live(account_home):
     assert not (account_home / "outputs").exists()
 
 
-@pytest.mark.parametrize("filename,names", [
-    ("hub/services/datasets/local.py", {"LOCAL_DATASETS_ROOT": roots.recipe_datasets_root, "DATASET_UPLOAD_DIR": roots.dataset_uploads_root}),
-    ("core/data_recipe/jobs/worker.py", {"_ARTIFACT_ROOT": roots.recipe_datasets_root}),
-    ("routes/data_recipe/seed.py", {"SEED_UPLOAD_DIR": roots.seed_uploads_root, "UNSTRUCTURED_UPLOAD_ROOT": roots.unstructured_uploads_root}),
-    ("plugins/data-designer-unstructured-seed/src/data_designer_unstructured_seed/chunking.py", {"_CACHE_DIR": roots.unstructured_seed_cache_root}),
-])
+@pytest.mark.parametrize(
+    "filename,names",
+    [
+        (
+            "hub/services/datasets/local.py",
+            {
+                "LOCAL_DATASETS_ROOT": roots.recipe_datasets_root,
+                "DATASET_UPLOAD_DIR": roots.dataset_uploads_root,
+            },
+        ),
+        ("core/data_recipe/jobs/worker.py", {"_ARTIFACT_ROOT": roots.recipe_datasets_root}),
+        (
+            "routes/data_recipe/seed.py",
+            {
+                "SEED_UPLOAD_DIR": roots.seed_uploads_root,
+                "UNSTRUCTURED_UPLOAD_ROOT": roots.unstructured_uploads_root,
+            },
+        ),
+        (
+            "plugins/data-designer-unstructured-seed/src/data_designer_unstructured_seed/chunking.py",
+            {"_CACHE_DIR": roots.unstructured_seed_cache_root},
+        ),
+    ],
+)
 def test_legacy_root_names_resolve_at_use(account_home, filename, names):
     # Load only the root declarations, avoiding optional plugin engine imports.
     import ast
 
     source = Path(__file__).resolve().parents[1] / filename
     tree = ast.parse(source.read_text())
-    assignments = [node for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)]
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)
+    ]
     namespace = {"LazyPath": LazyPath, **{fn.__name__: fn for fn in names.values()}}
     exec(compile(ast.Module(body = assignments, type_ignores = []), str(source), "exec"), namespace)
     for name, root in names.items():
@@ -254,7 +348,12 @@ def test_checkpoint_defaults_resolve_in_the_calling_account(account_home, monkey
 
 
 def test_owner_setting_cache_hits_do_not_query_storage(account_home, monkeypatch):
-    from utils import embedding_model_settings, model_memory_settings, openai_auto_switch_settings, vram_budget_settings
+    from utils import (
+        embedding_model_settings,
+        model_memory_settings,
+        openai_auto_switch_settings,
+        vram_budget_settings,
+    )
 
     getters = (
         model_memory_settings.get_keep_resident,
@@ -327,10 +426,20 @@ def test_scan_checkpoints_default_uses_the_acting_account(account_home, monkeypa
     assert seen == [str(run_as(account, roots.outputs_root)) for account in ACCOUNTS]
 
 
-@pytest.mark.parametrize("module_name", [
-    "studio_db", "rag_db", "providers_db", "mcp_servers_db", "credential_secrets", "chat_generation_runs_db",
-])
-def test_warm_owner_connections_do_not_resolve_database_again(account_home, monkeypatch, module_name):
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "studio_db",
+        "rag_db",
+        "providers_db",
+        "mcp_servers_db",
+        "credential_secrets",
+        "chat_generation_runs_db",
+    ],
+)
+def test_warm_owner_connections_do_not_resolve_database_again(
+    account_home, monkeypatch, module_name
+):
     module = importlib.import_module(f"storage.{module_name}")
     connect = module._connect if module_name == "chat_generation_runs_db" else module.get_connection
     path_name = "rag_db_path" if module_name == "rag_db" else "studio_db_path"
@@ -340,7 +449,9 @@ def test_warm_owner_connections_do_not_resolve_database_again(account_home, monk
     original = Path.resolve
 
     def resolve(candidate, *args, **kwargs):
-        assert candidate != path, "Warm owner connections must not repeat database realpath resolution"
+        assert (
+            candidate != path
+        ), "Warm owner connections must not repeat database realpath resolution"
         return original(candidate, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", resolve)

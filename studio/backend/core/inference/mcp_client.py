@@ -28,7 +28,12 @@ from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
-from utils.account_context import OWNER_ACCOUNT_ID, account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    OWNER_ACCOUNT_ID,
+    account_thread,
+    current_account_id,
+    is_owner_context,
+)
 
 logger = get_logger(__name__)
 
@@ -1263,7 +1268,8 @@ def _evict_lru_locked() -> list:
         return victims
     account_id = current_account_id()
     candidates = {
-        key: session for key, session in _mcp_sessions.items()
+        key: session
+        for key, session in _mcp_sessions.items()
         if (key[3] if len(key) > 3 else OWNER_ACCOUNT_ID) == account_id
     }
     while len(candidates) >= _MAX_SESSIONS:
@@ -1278,7 +1284,10 @@ def _evict_lru_locked() -> list:
 
 
 def close_mcp_sessions(
-    url: Optional[str] = None, headers = _ANY_HEADERS, *, all_accounts: bool = False
+    url: Optional[str] = None,
+    headers = _ANY_HEADERS,
+    *,
+    all_accounts: bool = False,
 ) -> None:
     """Close the acting account's sessions; process shutdown explicitly closes all."""
     global _mcp_close_all_gen
@@ -1286,7 +1295,10 @@ def close_mcp_sessions(
     account_id = current_account_id()
     with _mcp_sessions_lock:
         keys = [
-            k for k in _mcp_sessions if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+            k
+            for k in _mcp_sessions
+            if (url is None or k[0] == url)
+            and (hk is None or k[1] == hk)
             and (all_accounts or (k[3] if len(k) > 3 else OWNER_ACCOUNT_ID) == account_id)
         ]
         sessions = [_mcp_sessions.pop(k) for k in keys]
@@ -1297,7 +1309,9 @@ def close_mcp_sessions(
                 if all_accounts:
                     _mcp_close_all_gen += 1
                 else:
-                    _mcp_account_close_gen[account_id] = _mcp_account_close_gen.get(account_id, 0) + 1
+                    _mcp_account_close_gen[account_id] = (
+                        _mcp_account_close_gen.get(account_id, 0) + 1
+                    )
             elif hk is None:
                 uk = _url_close_key(url)
                 _mcp_url_close_gen[uk] = _mcp_url_close_gen.get(uk, 0) + 1

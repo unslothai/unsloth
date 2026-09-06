@@ -155,7 +155,11 @@ def test_a_managed_account_is_rooted_under_its_id(studio_home):
     assert run_as(ALICE, r.rag_root) == base / "rag"
     assert run_as(ALICE, r.tensorboard_root) == base / "runs"
     assert run_as(ALICE, r.tmp_root).parts[-2:] == ("accounts", ALICE.account_id)
-    assert run_as(ALICE, r.project_workspaces_root).parts[-3:] == ("Accounts", ALICE.account_id, "Projects")
+    assert run_as(ALICE, r.project_workspaces_root).parts[-3:] == (
+        "Accounts",
+        ALICE.account_id,
+        "Projects",
+    )
     # Shared on purpose.
     assert run_as(ALICE, r.cache_root) == studio_home / "cache"
     assert run_as(ALICE, r.auth_db_path) == studio_home / "auth" / "auth.db"
@@ -259,7 +263,9 @@ def test_a_request_is_bound_to_the_account_its_token_names(auth_db):
 
     async def resolve(token):
         creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
-        subject, _gen = await authentication._get_current_credential(creds, allow_password_change = False)
+        subject, _gen = await authentication._get_current_credential(
+            creds, allow_password_change = False
+        )
         return subject, current_account()
 
     subject, bound = asyncio.run(resolve(authentication.create_access_token(subject = "alice")))
@@ -277,7 +283,10 @@ def test_generations_are_scoped_to_their_account():
 
     ag.reset_for_tests()
     ev_a, ev_b = threading.Event(), threading.Event()
-    with run_as(ALICE, ag.ActiveGeneration, ev_a, thread_id = "t1"), run_as(BOB, ag.ActiveGeneration, ev_b, thread_id = "t1"):
+    with (
+        run_as(ALICE, ag.ActiveGeneration, ev_a, thread_id = "t1"),
+        run_as(BOB, ag.ActiveGeneration, ev_b, thread_id = "t1"),
+    ):
         assert ag.count() == 2
         assert ag.count(ALICE.account_id) == 1
         assert ag.foreign_count(ALICE.account_id) == 1

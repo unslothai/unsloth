@@ -28,10 +28,17 @@ def measured_costs():
         shutil.rmtree(scratch, ignore_errors = True)
 
 
-@pytest.mark.parametrize("operation,connections,queries,mkdir_calls", [
-    ("status", 3, 3, 3), ("authenticated_get", 1, 1, 1), ("workspace_1000", 0, 0, 0),
-])
-def test_one_account_adds_no_hot_path_io(measured_costs, operation, connections, queries, mkdir_calls):
+@pytest.mark.parametrize(
+    "operation,connections,queries,mkdir_calls",
+    [
+        ("status", 3, 3, 3),
+        ("authenticated_get", 1, 1, 1),
+        ("workspace_1000", 0, 0, 0),
+    ],
+)
+def test_one_account_adds_no_hot_path_io(
+    measured_costs, operation, connections, queries, mkdir_calls
+):
     baseline, head = measured_costs
     measured = baseline[operation]
     assert measured["connections"] == connections

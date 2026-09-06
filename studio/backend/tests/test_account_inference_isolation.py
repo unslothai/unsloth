@@ -20,7 +20,14 @@ from hub.services.models import account_access as access
 from models.inference import LoadRequest, UnloadRequest
 from routes import inference, models, video
 from state import active_generations
-from utils.account_context import OWNER, AccountContext, arun_as, bind_account, reset_account, run_as
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    arun_as,
+    bind_account,
+    reset_account,
+    run_as,
+)
 
 ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
@@ -63,12 +70,17 @@ def client_for(account):
     return TestClient(app)
 
 
-@pytest.mark.parametrize("modality,paths", [
-    ("chat", ["status", "load-progress"]),
-    ("diffusion", ["images/status", "images/load-progress", "images/generate-progress"]),
-    ("video", ["video/status", "video/load-progress", "video/generate-progress"]),
-])
-def test_resident_identity_and_progress_are_hidden_from_other_accounts(monkeypatch, modality, paths):
+@pytest.mark.parametrize(
+    "modality,paths",
+    [
+        ("chat", ["status", "load-progress"]),
+        ("diffusion", ["images/status", "images/load-progress", "images/generate-progress"]),
+        ("video", ["video/status", "video/load-progress", "video/generate-progress"]),
+    ],
+)
+def test_resident_identity_and_progress_are_hidden_from_other_accounts(
+    monkeypatch, modality, paths
+):
     monkeypatch.setattr(gpu_arbiter, "_owner", modality)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", ALICE.account_id)
     with client_for(BOB) as client:
@@ -80,13 +92,16 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(monkeypat
     assert not run_as(OWNER, access.resident_hidden, modality)
 
 
-@pytest.mark.parametrize("path,body", [
-    ("images/load", {"model_path": "org/public"}),
-    ("video/load", {"model_path": "org/public"}),
-    ("unload", {"model_path": "org/public", "force_cancel_active": True}),
-    ("images/unload", None),
-    ("video/unload", None),
-])
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("images/load", {"model_path": "org/public"}),
+        ("video/load", {"model_path": "org/public"}),
+        ("unload", {"model_path": "org/public", "force_cancel_active": True}),
+        ("images/unload", None),
+        ("video/unload", None),
+    ],
+)
 def test_foreign_generation_returns_retryable_409_without_cancelling_it(path, body):
     event = threading.Event()
     with run_as(BOB, active_generations.ActiveGeneration, event, model = "org/bob-private"):
@@ -102,6 +117,7 @@ def test_foreign_generation_returns_retryable_409_without_cancelling_it(path, bo
 def test_chat_load_and_raw_arbiter_error_use_the_same_retry_response(monkeypatch):
     async def fail(*args, **kwargs):
         raise gpu_arbiter.GpuBusyForAnotherAccountError("video", 1)
+
     monkeypatch.setattr(inference, "load_model_gated", fail)
     with client_for(ALICE) as client:
         response = client.post("/api/inference/load", json = {"model_path": "org/public"})
@@ -113,26 +129,51 @@ def test_chat_load_and_raw_arbiter_error_use_the_same_retry_response(monkeypatch
 
 def test_forced_swap_cancels_only_callers_registrations():
     mine, theirs = threading.Event(), threading.Event()
-    with run_as(ALICE, active_generations.ActiveGeneration, mine), run_as(BOB, active_generations.ActiveGeneration, theirs):
+    with (
+        run_as(ALICE, active_generations.ActiveGeneration, mine),
+        run_as(BOB, active_generations.ActiveGeneration, theirs),
+    ):
         with pytest.raises(HTTPException) as exc:
             run_as(ALICE, inference._raise_or_cancel_active_generations, force = True, action = "Load")
         assert exc.value.detail["error"] == "gpu_busy"
         assert not theirs.is_set()
     with run_as(ALICE, active_generations.ActiveGeneration, mine):
-        assert run_as(ALICE, inference._raise_or_cancel_active_generations, force = True, action = "Load") == 1
+        assert (
+            run_as(ALICE, inference._raise_or_cancel_active_generations, force = True, action = "Load")
+            == 1
+        )
         assert mine.is_set()
 
 
 def test_active_generation_and_cancel_id_routes_are_scoped(monkeypatch):
     monkeypatch.setattr(inference, "_openai_llama_admission_capacity", lambda *a: 2)
     mine, theirs = threading.Event(), threading.Event()
-    with run_as(ALICE, inference._TrackedCancel, mine, "same-id", thread_id = "alice-thread", model = "alice/private"), run_as(BOB, inference._TrackedCancel, theirs, "same-id", thread_id = "bob-thread", model = "bob/private"):
+    with (
+        run_as(
+            ALICE,
+            inference._TrackedCancel,
+            mine,
+            "same-id",
+            thread_id = "alice-thread",
+            model = "alice/private",
+        ),
+        run_as(
+            BOB,
+            inference._TrackedCancel,
+            theirs,
+            "same-id",
+            thread_id = "bob-thread",
+            model = "bob/private",
+        ),
+    ):
         with client_for(ALICE) as client:
             response = client.get("/api/inference/active-generations").json()
             assert response["thread_ids"] == ["alice-thread"]
             assert response["count"] == 1
             assert "bob/private" not in str(response)
-            assert client.post("/api/inference/cancel", json = {"cancel_id": "same-id"}).json() == {"cancelled": 1}
+            assert client.post("/api/inference/cancel", json = {"cancel_id": "same-id"}).json() == {
+                "cancelled": 1
+            }
         assert mine.is_set() and not theirs.is_set()
 
 
@@ -164,19 +205,28 @@ def test_scoped_load_request_ids_use_immutable_accounts():
 
 @pytest.mark.parametrize("path", ["images/generate/cancel", "video/generate/cancel"])
 def test_media_cancel_cannot_stop_foreign_resident(monkeypatch, path):
-    monkeypatch.setattr(gpu_arbiter, "_owner", "diffusion" if path.startswith("images") else "video")
+    monkeypatch.setattr(
+        gpu_arbiter, "_owner", "diffusion" if path.startswith("images") else "video"
+    )
     monkeypatch.setattr(gpu_arbiter, "_owner_account", BOB.account_id)
     with client_for(ALICE) as client:
         assert client.post(f"/api/inference/{path}").json() == {"cancelled": False}
 
 
-@pytest.mark.parametrize("path", [
-    "config/org/private", "check-vision/org/private", "check-embedding/org/private",
-    "loras/org/private/base-model", "cached-model-path?repo_id=org/private",
-    "gguf-variants?repo_id=org/private", "download-progress?repo_id=org/private",
-    "gguf-download-progress?repo_id=org/private&variant=Q4_K_M",
-    "kv-cache-estimate?repo_id=org/private&quant=Q4_K_M",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/org/private",
+        "check-vision/org/private",
+        "check-embedding/org/private",
+        "loras/org/private/base-model",
+        "cached-model-path?repo_id=org/private",
+        "gguf-variants?repo_id=org/private",
+        "download-progress?repo_id=org/private",
+        "gguf-download-progress?repo_id=org/private&variant=Q4_K_M",
+        "kv-cache-estimate?repo_id=org/private&quant=Q4_K_M",
+    ],
+)
 def test_private_model_object_routes_refuse_unguarded_cache_reads(path):
     with client_for(BOB) as client:
         response = client.get(f"/api/models/{path}")
@@ -185,7 +235,14 @@ def test_private_model_object_routes_refuse_unguarded_cache_reads(path):
 
 def test_preview_load_refuses_private_foreign_target_before_gpu_work():
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(arun_as(BOB, inference.load_model_for_preview(LoadRequest(model_path = "org/private"), SimpleNamespace(scope = {}), "bob")))
+        asyncio.run(
+            arun_as(
+                BOB,
+                inference.load_model_for_preview(
+                    LoadRequest(model_path = "org/private"), SimpleNamespace(scope = {}), "bob"
+                ),
+            )
+        )
     assert exc.value.status_code == 404
 
 
@@ -194,13 +251,23 @@ def test_same_public_resident_is_available_without_loading_or_cancelling(monkeyp
     # A caller already naming the resident public repo can pass the shared-model
     # fast path even while another account has a registered stream.
     from utils import openai_auto_switch_settings
-    monkeypatch.setattr(openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False)
+
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
     monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
     monkeypatch.setattr(inference, "_loaded_satisfies", lambda model: True)
     monkeypatch.setattr(inference, "_claim_slot_for_non_preview", lambda request: None)
     event = threading.Event()
     with run_as(BOB, active_generations.ActiveGeneration, event):
-        asyncio.run(arun_as(ALICE, inference._maybe_auto_switch_model("org/public", SimpleNamespace(scope = {}, state = SimpleNamespace()), "alice")))
+        asyncio.run(
+            arun_as(
+                ALICE,
+                inference._maybe_auto_switch_model(
+                    "org/public", SimpleNamespace(scope = {}, state = SimpleNamespace()), "alice"
+                ),
+            )
+        )
     assert not event.is_set()
 
 
@@ -228,7 +295,11 @@ def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     run_as(ALICE, access.note_resident_account, "stt:transformers", "org/private")
     status = {"loaded_model": "org/private"}
     for engine in ["transformers", "gguf", "mtmd"]:
-        status[engine] = {"loaded_model": "org/private", "downloaded_models": ["org/private"], "download": {"model": "org/private", "error": "private error"}}
+        status[engine] = {
+            "loaded_model": "org/private",
+            "downloaded_models": ["org/private"],
+            "download": {"model": "org/private", "error": "private error"},
+        }
     result = run_as(BOB, inference._account_stt_status, status)
     assert result["loaded_model"] is None
     assert "org/private" not in str(result)
@@ -247,27 +318,46 @@ def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch
         is_model_downloaded = lambda model: True,
         cancel_model_download = lambda: calls.append("cancel") or True,
     )
-    run_as(ALICE, inference._start_account_stt_download, module, "transformers", "org/private", "alice-token")
+    run_as(
+        ALICE,
+        inference._start_account_stt_download,
+        module,
+        "transformers",
+        "org/private",
+        "alice-token",
+    )
     assert inference._stt_grant_pending["transformers"].wait(5)
     assert run_as(ALICE, access.repo_visible, "org/private")
     assert not run_as(BOB, access.repo_visible, "org/private")
-    assert run_as(BOB, inference._cancel_account_stt_download, module, "transformers") == {"downloading": False, "cancelled": False}
+    assert run_as(BOB, inference._cancel_account_stt_download, module, "transformers") == {
+        "downloading": False,
+        "cancelled": False,
+    }
     assert "cancel" not in calls
-    assert run_as(ALICE, inference._cancel_account_stt_download, module, "transformers")["cancelled"]
+    assert run_as(ALICE, inference._cancel_account_stt_download, module, "transformers")[
+        "cancelled"
+    ]
 
 
 def test_stt_download_cannot_adopt_another_accounts_job(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {"transformers": ALICE.account_id})
     module = SimpleNamespace(download_status = lambda: {"downloading": True})
     with pytest.raises(HTTPException) as exc:
-        run_as(BOB, inference._start_account_stt_download, module, "transformers", "org/private", False)
+        run_as(
+            BOB, inference._start_account_stt_download, module, "transformers", "org/private", False
+        )
     assert exc.value.status_code == 409
 
 
 def test_openai_catalog_and_advertised_paths_are_account_scoped(monkeypatch):
     from utils.account_context import current_account_id
+
     monkeypatch.setattr(inference, "_classified_catalog", lambda rows: rows)
-    monkeypatch.setattr(models, "collect_local_models", lambda path: [SimpleNamespace(model_id = "same/name", path = current_account_id())])
+    monkeypatch.setattr(
+        models,
+        "collect_local_models",
+        lambda path: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
+    )
 
     async def read(account):
         return await arun_as(account, inference._cached_local_catalog())
@@ -279,7 +369,11 @@ def test_openai_catalog_and_advertised_paths_are_account_scoped(monkeypatch):
 
 
 def test_private_media_index_rows_cannot_bypass_filtered_openai_catalog(monkeypatch):
-    picks = {"text-to-image": [("org/private", SimpleNamespace(model_path = "org/private", gguf_filename = None), True)]}
+    picks = {
+        "text-to-image": [
+            ("org/private", SimpleNamespace(model_path = "org/private", gguf_filename = None), True)
+        ]
+    }
     monkeypatch.setattr(inference, "_validated_media_picks", lambda at: picks)
     monkeypatch.setattr(inference, "_resident_media_status", lambda task: None)
     run_as(ALICE, access.record_model_grant, "org/private")
@@ -289,9 +383,12 @@ def test_private_media_index_rows_cannot_bypass_filtered_openai_catalog(monkeypa
 
 def test_custom_stt_models_are_filtered_before_openai_listing(monkeypatch):
     from core.inference import stt_mtmd_sidecar, stt_sidecar
+
     monkeypatch.setattr(stt_sidecar, "is_available", lambda: True)
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
-    monkeypatch.setattr(stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/private"))
+    monkeypatch.setattr(
+        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/private")
+    )
     monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: False)
     monkeypatch.setattr(inference, "_downloaded_custom_stt_ids", lambda at: ("org/private",))
     run_as(ALICE, access.record_model_grant, "org/private")
@@ -301,17 +398,26 @@ def test_custom_stt_models_are_filtered_before_openai_listing(monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["images", "video"])
-def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unload(monkeypatch, kind):
+def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unload(
+    monkeypatch, kind
+):
     from core.inference import diffusion_engine_router, media_auto_switch
     from core.inference import video as video_engine
+
     backend = SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "org/private"})
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
     monkeypatch.setattr(video_engine, "get_video_backend", lambda: backend)
 
     async def no_switch(*a, **k):
         return None
+
     monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", no_switch)
-    run_as(ALICE, access.note_resident_account, "diffusion" if kind == "images" else "video", "org/private")
+    run_as(
+        ALICE,
+        access.note_resident_account,
+        "diffusion" if kind == "images" else "video",
+        "org/private",
+    )
     with client_for(BOB) as client:
         for path in ["load-progress", "generate-progress"]:
             response = client.get(f"/api/inference/{kind}/{path}")
@@ -333,31 +439,45 @@ def test_model_loader_cannot_cancel_a_different_accounts_generation(path):
 def test_authorized_private_download_progress_is_visible_before_grant_completion(monkeypatch):
     from hub.services import download_lifecycle, snapshot_progress
     from hub.services.models import downloads
+
     registry = SimpleNamespace(active_job_refs = lambda repo: [SimpleNamespace(key = "org/private::")])
     monkeypatch.setattr(downloads, "_registry", registry)
-    monkeypatch.setattr(download_lifecycle, "_job_accounts", {(id(registry), "org/private::"): ALICE.account_id})
+    monkeypatch.setattr(
+        download_lifecycle, "_job_accounts", {(id(registry), "org/private::"): ALICE.account_id}
+    )
 
     async def progress(**kwargs):
         return {"downloaded_bytes": 12}
+
     monkeypatch.setattr(snapshot_progress, "snapshot_progress_response", progress)
     with client_for(ALICE) as client:
-        assert client.get("/api/models/download-progress?repo_id=org/private").json() == {"downloaded_bytes": 12}
+        assert client.get("/api/models/download-progress?repo_id=org/private").json() == {
+            "downloaded_bytes": 12
+        }
     with client_for(BOB) as client:
         assert client.get("/api/models/download-progress?repo_id=org/private").status_code == 404
 
 
 @pytest.mark.parametrize("kind", ["loras", "controlnets"])
-def test_media_adapter_catalogs_and_selection_do_not_reveal_owner_files(monkeypatch, tmp_path, kind):
+def test_media_adapter_catalogs_and_selection_do_not_reveal_owner_files(
+    monkeypatch, tmp_path, kind
+):
     from core.inference import diffusion_lora, diffusion_controlnet
+
     module = diffusion_lora if kind == "loras" else diffusion_controlnet
-    entry = SimpleNamespace(id = "private-adapter", local_path = str(tmp_path / "private-weights"), repo_id = None)
+    entry = SimpleNamespace(
+        id = "private-adapter", local_path = str(tmp_path / "private-weights"), repo_id = None
+    )
     monkeypatch.setattr(module, "list_" + kind, lambda **kwargs: [entry])
     with client_for(BOB) as client:
         response = client.get("/api/models/diffusion-" + kind)
         assert response.status_code == 200, response.text
         assert response.json()[kind] == []
         assert BOB.account_id in response.json()[kind + "_dir"]
-    request = SimpleNamespace(loras = [SimpleNamespace(id = entry.id)] if kind == "loras" else None, controlnet = SimpleNamespace(id = entry.id) if kind == "controlnets" else None)
+    request = SimpleNamespace(
+        loras = [SimpleNamespace(id = entry.id)] if kind == "loras" else None,
+        controlnet = SimpleNamespace(id = entry.id) if kind == "controlnets" else None,
+    )
     with pytest.raises(HTTPException) as exc:
         run_as(BOB, access.require_media_adapters, request)
     assert exc.value.status_code == 404

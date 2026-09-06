@@ -1184,7 +1184,15 @@ class TrainingBackend:
 
     def _clear_account_result(self):
         self._progress = TrainingProgress()
-        for name in ("loss_history", "lr_history", "step_history", "grad_norm_history", "grad_norm_step_history", "eval_loss_history", "eval_step_history"):
+        for name in (
+            "loss_history",
+            "lr_history",
+            "step_history",
+            "grad_norm_history",
+            "grad_norm_step_history",
+            "eval_loss_history",
+            "eval_step_history",
+        ):
             getattr(self, name).clear()
         self.current_job_id = self.current_start_request_id = None
         self._status_start_request_id = self._output_dir = None
@@ -1897,7 +1905,9 @@ class TrainingBackend:
                 return False
 
             # Assign handles and start the pump under the lock, else a poll sees a live _proc with no pump.
-            new_pump = account_thread(target = self._pump_loop, account = self._result_account, daemon = True)
+            new_pump = account_thread(
+                target = self._pump_loop, account = self._result_account, daemon = True
+            )
             with self._lock:
                 self._pump_running = False
                 self._event_queue = event_queue
@@ -2514,7 +2524,9 @@ class TrainingBackend:
                 logger.info(
                     "Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid
                 )
-                new_pump = account_thread(target = self._pump_loop, account = self._result_account, daemon = True)
+                new_pump = account_thread(
+                    target = self._pump_loop, account = self._result_account, daemon = True
+                )
                 with self._lock:
                     self._in_model_load = False
                     self._event_queue = event_queue
@@ -2550,7 +2562,9 @@ class TrainingBackend:
                 "Training event pump thread died while the worker is still running; "
                 "restarting it so progress updates resume."
             )
-            new_pump = account_thread(target = self._pump_loop, account = self._result_account, daemon = True)
+            new_pump = account_thread(
+                target = self._pump_loop, account = self._result_account, daemon = True
+            )
             self._pump_thread = new_pump
             new_pump.start()
         return True
@@ -2640,7 +2654,12 @@ class TrainingBackend:
             output_dir = _output_dir_from_resume_checkpoint(resume_from_checkpoint)
         return str(output_dir) if output_dir else None
 
-    @job_read(lambda self, *args, **kwargs: (None, TrainingProgress(status_message = "Busy" if job_busy(self) else "Ready to train")))
+    @job_read(
+        lambda self, *args, **kwargs: (
+            None,
+            TrainingProgress(status_message = "Busy" if job_busy(self) else "Ready to train"),
+        )
+    )
     def get_training_status(self, theme: str = "light") -> Tuple:
         """Get current training status and loss plot."""
         with self._lock:
@@ -2673,7 +2692,9 @@ class TrainingBackend:
         @property
         def training_progress(self):
             if job_is_foreign(self._backend):
-                return TrainingProgress(status_message = "Busy" if job_busy(self._backend) else "Ready to train")
+                return TrainingProgress(
+                    status_message = "Busy" if job_busy(self._backend) else "Ready to train"
+                )
             return self._backend._progress
 
         @training_progress.setter
@@ -2682,7 +2703,9 @@ class TrainingBackend:
 
         def get_training_progress(self):
             if job_is_foreign(self._backend):
-                return TrainingProgress(status_message = "Busy" if job_busy(self._backend) else "Ready to train")
+                return TrainingProgress(
+                    status_message = "Busy" if job_busy(self._backend) else "Ready to train"
+                )
             return self._backend._progress
 
         def _update_progress(self, **kwargs):

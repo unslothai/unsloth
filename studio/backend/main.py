@@ -1463,7 +1463,11 @@ app.add_middleware(RemoteAccessStopResponseMiddleware)
 # ============ Register API Routes ============
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
-app.include_router(__import__("routes.accounts", fromlist = ["router"]).router, prefix = "/api/accounts", tags = ["accounts"])
+app.include_router(
+    __import__("routes.accounts", fromlist = ["router"]).router,
+    prefix = "/api/accounts",
+    tags = ["accounts"],
+)
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])

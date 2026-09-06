@@ -88,8 +88,12 @@ class Simulator:
     def start(self, account, name):
         event = threading.Event()
         tracker = run_as(
-            account, generations.ActiveGeneration, event,
-            thread_id = "same-client-id", run_id = name, model = self.resident[1],
+            account,
+            generations.ActiveGeneration,
+            event,
+            thread_id = "same-client-id",
+            run_id = name,
+            model = self.resident[1],
         )
         tracker.__enter__()
         self.runs[name] = (tracker, event)
@@ -112,6 +116,7 @@ class Simulator:
             arb.release(arb.VIDEO)
             self.evict()  # stand-in for the later chat teardown
             arb.release(arb.CHAT)
+
         run_as(account, reserve)
 
 
@@ -199,8 +204,11 @@ def test_route_preflight_and_force_respect_accounts(route, sim, force, cancel):
     theirs = sim.start(BOB, "b")
     with pytest.raises(HTTPException) as refused:
         run_as(
-            ALICE, route._raise_or_cancel_active_generations,
-            force = force, cancel = cancel, action = "Replacing the model",
+            ALICE,
+            route._raise_or_cancel_active_generations,
+            force = force,
+            cancel = cancel,
+            action = "Replacing the model",
         )
     assert refused.value.status_code == 409
     assert refused.value.detail["error"] == "gpu_busy"
@@ -226,13 +234,22 @@ def test_route_own_stream_keeps_existing_conflict_and_force_shape(route, sim):
 
 
 @pytest.mark.parametrize("cancel_pending", [False, True])
-def test_wait_refuses_foreign_even_when_counters_miss_it_or_deadline_expires(route, sim, cancel_pending):
+def test_wait_refuses_foreign_even_when_counters_miss_it_or_deadline_expires(
+    route, sim, cancel_pending
+):
     sim.load(ALICE, arb.CHAT, "shared")
     event = sim.start(ALICE, "a")
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(arun_as(BOB, route._wait_for_model_switch_idle(
-            current_request_counted = True, cancel_pending = cancel_pending, timeout_s = 0,
-        )))
+        asyncio.run(
+            arun_as(
+                BOB,
+                route._wait_for_model_switch_idle(
+                    current_request_counted = True,
+                    cancel_pending = cancel_pending,
+                    timeout_s = 0,
+                ),
+            )
+        )
     assert refused.value.detail["error"] == "gpu_busy"
     assert not event.is_set()
     sim.finish("a")
@@ -243,15 +260,25 @@ def test_wait_discounts_only_own_cancellable_work(route, sim, monkeypatch):
     sim.load(ALICE, arb.CHAT, "shared")
     event = sim.start(ALICE, "a")
     monkeypatch.setattr(keepwarm, "_inflight", 1)
-    asyncio.run(arun_as(ALICE, route._wait_for_model_switch_idle(
-        current_request_counted = False, cancel_pending = True,
-    )))
+    asyncio.run(
+        arun_as(
+            ALICE,
+            route._wait_for_model_switch_idle(
+                current_request_counted = False,
+                cancel_pending = True,
+            ),
+        )
+    )
     assert not event.is_set()
     sim.finish("a")
 
 
-@pytest.mark.parametrize("previous,target,active", tuple(itertools.product((None, *BACKENDS), BACKENDS, [False, True])))
-def test_single_account_arbiter_matches_legacy_decisions(sim, monkeypatch, previous, target, active):
+@pytest.mark.parametrize(
+    "previous,target,active", tuple(itertools.product((None, *BACKENDS), BACKENDS, [False, True]))
+)
+def test_single_account_arbiter_matches_legacy_decisions(
+    sim, monkeypatch, previous, target, active
+):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
     if previous:
         sim.load(OWNER, previous, "one")
@@ -259,8 +286,10 @@ def test_single_account_arbiter_matches_legacy_decisions(sim, monkeypatch, previ
         tracker = generations.ActiveGeneration(threading.Event())
         tracker.__enter__()
     try:
+
         def forbidden_retry():
             pytest.fail("Single-account load must not compute a busy hint")
+
         monkeypatch.setattr(admission, "estimate_gpu_retry_after", forbidden_retry)
         sim.load(OWNER, target, "two")
         assert sim.evictions == ([(previous, "one")] if previous else [])
@@ -286,7 +315,9 @@ def test_single_account_cancel_matches_legacy_decisions(route, monkeypatch, acti
             assert refused.value.headers is None
         else:
             assert route._raise_or_cancel_active_generations(
-                force = force, cancel = cancel, action = "Load",
+                force = force,
+                cancel = cancel,
+                action = "Load",
             ) == int(active and force and cancel)
         assert event.is_set() == (active and force and cancel)
     finally:
@@ -297,7 +328,9 @@ def test_single_account_cancel_matches_legacy_decisions(route, monkeypatch, acti
 def test_single_account_wait_keeps_post_cancel_timeout(route, monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
     monkeypatch.setattr(keepwarm, "_inflight", 1)
-    monkeypatch.setattr(generations, "foreign_count", lambda _account: pytest.fail("foreign scan on owner drain"))
+    monkeypatch.setattr(
+        generations, "foreign_count", lambda _account: pytest.fail("foreign scan on owner drain")
+    )
     asyncio.run(route._wait_for_model_switch_idle(current_request_counted = False, timeout_s = 0))
 
 
@@ -376,10 +409,13 @@ def test_real_admission_runs_accounts_concurrently_and_scopes_cancellation(cance
             for event in advance.values():
                 event.set()
             await asyncio.gather(*tasks, return_exceptions = True)
+
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("capacity,count,expected", [(2, 0, 15), (2, 2, 15), (2, 3, 30), (2, 7, 60), (1, 20, 120)])
+@pytest.mark.parametrize(
+    "capacity,count,expected", [(2, 0, 15), (2, 2, 15), (2, 3, 30), (2, 7, 60), (1, 20, 120)]
+)
 def test_retry_hint_tracks_queue_waves_without_creating_queues(capacity, count, expected):
     async def scenario():
         assert admission.estimate_gpu_retry_after() == 15
@@ -395,6 +431,7 @@ def test_retry_hint_tracks_queue_waves_without_creating_queues(capacity, count, 
         finally:
             for reservation in reservations:
                 reservation.cancel()
+
     asyncio.run(scenario())
 
 
@@ -430,34 +467,46 @@ def test_global_idle_clock_follows_last_account_activity(monkeypatch, kind, mult
 @pytest.fixture
 def chat_switch(route, monkeypatch):
     backend = SimpleNamespace(
-        is_loaded = True, model_identifier = "org/one-GGUF", hf_variant = None,
+        is_loaded = True,
+        model_identifier = "org/one-GGUF",
+        hf_variant = None,
         _openai_advertised_id = None,
     )
     loads = []
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
-    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda name: (name, None, name))
+    monkeypatch.setattr(
+        resolver, "resolve_trusted_cached_local_gguf", lambda name: (name, None, name)
+    )
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_args: True)
     monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(route, "_loaded_identity_satisfies", lambda name: backend.model_identifier == name)
+    monkeypatch.setattr(
+        route, "_loaded_identity_satisfies", lambda name: backend.model_identifier == name
+    )
     monkeypatch.setattr(route, "_claim_slot_for_non_preview", lambda *_args: None)
     # Visibility is decided by the account model grants, tested on their own.
-    monkeypatch.setattr(route.account_access, "require_model_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        route.account_access, "require_model_access", lambda *_args, **_kwargs: None
+    )
 
     async def load(request, *_args, **_kwargs):
         loads.append(request.model_path)
         backend.model_identifier = request.model_path
+
     monkeypatch.setattr(route, "_load_model_impl", load)
 
     async def reject(*_args):
         pass
+
     monkeypatch.setattr(route, "_reject_unservable_model", reject)
     return backend, loads
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/messages"])
-def test_chat_auto_switch_keeps_resident_parallel_and_refuses_foreign_swap(route, sim, chat_switch, path):
+def test_chat_auto_switch_keeps_resident_parallel_and_refuses_foreign_swap(
+    route, sim, chat_switch, path
+):
     backend, loads = chat_switch
     sim.load(ALICE, arb.CHAT, "org/one-GGUF")
     event = sim.start(ALICE, "a")
@@ -465,7 +514,9 @@ def test_chat_auto_switch_keeps_resident_parallel_and_refuses_foreign_swap(route
     asyncio.run(arun_as(BOB, route._maybe_auto_switch_model("org/one-GGUF", request, BOB.username)))
     assert loads == []
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username)))
+        asyncio.run(
+            arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username))
+        )
     assert refused.value.status_code == 409
     assert refused.value.detail["error"]["type"] == "conflict_error"
     if path.endswith("completions"):
@@ -486,10 +537,13 @@ def test_chat_auto_switch_rechecks_under_lifecycle_gate(route, sim, chat_switch,
     async def register_during_prepare():
         await acquire()
         sim.start(ALICE, "late")
+
     monkeypatch.setattr(route, "_acquire_swap_gate", register_during_prepare)
     request = SimpleNamespace(scope = {}, url = SimpleNamespace(path = "/v1/chat/completions"))
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username)))
+        asyncio.run(
+            arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username))
+        )
     assert refused.value.detail["error"]["code"] == "gpu_busy"
     assert loads == []
     assert not route._auto_switch_waiters
@@ -501,8 +555,10 @@ def test_chat_auto_switch_rechecks_under_lifecycle_gate(route, sim, chat_switch,
 def media_switch(monkeypatch):
     resident = {"loaded": False}
     backend = SimpleNamespace(
-        status = lambda: dict(resident), loading_repo_ids = lambda: [],
-        generate_progress = lambda: {"active": False}, load_progress = lambda: {"phase": "ready"},
+        status = lambda: dict(resident),
+        loading_repo_ids = lambda: [],
+        generate_progress = lambda: {"active": False},
+        load_progress = lambda: {"phase": "ready"},
     )
     pick = MediaModelPick("org/image", "org/image", model_kind = "diffusers")
     loads = []
@@ -514,33 +570,48 @@ def media_switch(monkeypatch):
     monkeypatch.setattr(media_backends, "load_takes_the_gpu", lambda: True)
     monkeypatch.setattr(media_backends, "other_backend_busy", lambda _owner: False)
     monkeypatch.setattr(media_backends, "chat_busy", lambda *_args: False)
-    monkeypatch.setattr(media_keepwarm, "_TRACKERS", {
-        owner: media_keepwarm._Tracker(owner) for owner in (arb.DIFFUSION, arb.VIDEO)
-    })
+    monkeypatch.setattr(
+        media_keepwarm,
+        "_TRACKERS",
+        {owner: media_keepwarm._Tracker(owner) for owner in (arb.DIFFUSION, arb.VIDEO)},
+    )
 
     async def require_local(*_args, **_kwargs):
         pass
+
     monkeypatch.setattr(media, "_require_local", require_local)
 
     async def load(owner, pick, *_args):
         arb.acquire_for_request(owner, replacing = True)
         loads.append(pick.model_id)
         resident.update(loaded = True, repo_id = pick.model_id, model_kind = "diffusers")
+
     monkeypatch.setattr(media, "_start_load", load)
     return backend, pick, resident, loads
 
 
 @pytest.mark.parametrize("owner", [arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("openai_errors", [False, True])
-def test_media_auto_switch_refuses_foreign_work_with_existing_error_shape(sim, media_switch, owner, openai_errors):
+def test_media_auto_switch_refuses_foreign_work_with_existing_error_shape(
+    sim, media_switch, owner, openai_errors
+):
     _backend, _pick, _resident, loads = media_switch
     sim.load(ALICE, arb.CHAT, "shared")
     event = sim.start(ALICE, "a")
 
     def switch():
-        return asyncio.run(arun_as(BOB, media.maybe_auto_switch_media_model(
-            "org/image", owner = owner, current_subject = BOB.username, openai_errors = openai_errors,
-        )))
+        return asyncio.run(
+            arun_as(
+                BOB,
+                media.maybe_auto_switch_media_model(
+                    "org/image",
+                    owner = owner,
+                    current_subject = BOB.username,
+                    openai_errors = openai_errors,
+                ),
+            )
+        )
+
     with pytest.raises(HTTPException) as refused:
         switch()
     assert refused.value.status_code == 409
@@ -560,10 +631,20 @@ def test_media_already_resident_never_checks_account_or_drains(sim, media_switch
     resident.update(loaded = True, repo_id = "org/image", model_kind = "diffusers")
     sim.load(ALICE, arb.DIFFUSION, "org/image")
     sim.start(ALICE, "a")
-    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: pytest.fail("resident hot path"))
-    asyncio.run(arun_as(BOB, media.maybe_auto_switch_media_model(
-        "org/image", owner = arb.DIFFUSION, current_subject = BOB.username, openai_errors = True,
-    )))
+    monkeypatch.setattr(
+        policy, "installation_is_multi_user", lambda: pytest.fail("resident hot path")
+    )
+    asyncio.run(
+        arun_as(
+            BOB,
+            media.maybe_auto_switch_media_model(
+                "org/image",
+                owner = arb.DIFFUSION,
+                current_subject = BOB.username,
+                openai_errors = True,
+            ),
+        )
+    )
     assert loads == []
     sim.finish("a")
 
@@ -576,11 +657,20 @@ def test_media_final_arbiter_refusal_is_converted_after_drain(sim, media_switch,
     async def late_start(*args):
         sim.start(ALICE, "late")
         return await original(*args)
+
     monkeypatch.setattr(media, "_start_load", late_start)
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(arun_as(BOB, media.maybe_auto_switch_media_model(
-            "org/image", owner = arb.DIFFUSION, current_subject = BOB.username, openai_errors = True,
-        )))
+        asyncio.run(
+            arun_as(
+                BOB,
+                media.maybe_auto_switch_media_model(
+                    "org/image",
+                    owner = arb.DIFFUSION,
+                    current_subject = BOB.username,
+                    openai_errors = True,
+                ),
+            )
+        )
     assert refused.value.detail["error"]["code"] == "model_busy"
     assert refused.value.headers["Retry-After"] == "15"
     assert loads == [] and sim.evictions == []
@@ -592,16 +682,31 @@ def test_cpu_media_drain_does_not_refuse_unrelated_gpu_work(sim, media_switch, m
     sim.load(ALICE, arb.CHAT, "shared")
     sim.start(ALICE, "a")
     monkeypatch.setattr(media_backends, "load_takes_the_gpu", lambda: False)
-    assert asyncio.run(arun_as(BOB, media_backends.drain(
-        arb.DIFFUSION, backend, time.monotonic() + 1,
-    )))
+    assert asyncio.run(
+        arun_as(
+            BOB,
+            media_backends.drain(
+                arb.DIFFUSION,
+                backend,
+                time.monotonic() + 1,
+            ),
+        )
+    )
     sim.finish("a")
 
 
 @pytest.mark.parametrize("owner", [arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("resident_owner", [arb.CHAT, arb.DIFFUSION, arb.VIDEO])
-def test_actual_media_load_routes_refuse_before_engine_activation_or_load(route, sim, monkeypatch, owner, resident_owner):
-    from core.inference import diffusion, diffusion_device, diffusion_engine_router, diffusion_compat, video
+def test_actual_media_load_routes_refuse_before_engine_activation_or_load(
+    route, sim, monkeypatch, owner, resident_owner
+):
+    from core.inference import (
+        diffusion,
+        diffusion_device,
+        diffusion_engine_router,
+        diffusion_compat,
+        video,
+    )
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
     from routes import video as video_route
 
@@ -619,11 +724,17 @@ def test_actual_media_load_routes_refuse_before_engine_activation_or_load(route,
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
     monkeypatch.setattr(video, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video, "assert_video_precision_available", lambda *_a, **_k: None)
-    monkeypatch.setattr(diffusion_device, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = "cuda"))
+    monkeypatch.setattr(
+        diffusion_device, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = "cuda")
+    )
     monkeypatch.setattr(diffusion_engine_router, "predict_engine", lambda *_a, **_k: "diffusers")
     monkeypatch.setattr(diffusion_engine_router, "engine_for", lambda *_a: backend)
     monkeypatch.setattr(diffusion_engine_router, "active_engine_name", lambda: "diffusers")
-    monkeypatch.setattr(diffusion_engine_router, "select_and_activate_engine", lambda *_a, **_k: touched.append("activate") or backend)
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "select_and_activate_engine",
+        lambda *_a, **_k: touched.append("activate") or backend,
+    )
     monkeypatch.setattr(diffusion_compat, "assert_pick_is_not_speech", lambda *_a: None)
     monkeypatch.setattr(route, "_guard_diffusion_load_against_training", lambda: None)
     monkeypatch.setattr(route, "_selected_gpu_ordinal", ordinal)
@@ -647,17 +758,22 @@ def test_actual_media_load_routes_refuse_before_engine_activation_or_load(route,
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/messages", "/api/inference/chat"])
-def test_chat_final_arbiter_refusal_keeps_endpoint_error_shape(route, sim, chat_switch, monkeypatch, path):
+def test_chat_final_arbiter_refusal_keeps_endpoint_error_shape(
+    route, sim, chat_switch, monkeypatch, path
+):
     _backend, loads = chat_switch
     sim.load(ALICE, arb.CHAT, "org/one-GGUF")
 
     async def late_load(*_args, **_kwargs):
         sim.start(ALICE, "late")
         arb.acquire_for_request(arb.CHAT, replacing = True)
+
     monkeypatch.setattr(route, "_load_model_impl", late_load)
     request = SimpleNamespace(scope = {}, url = SimpleNamespace(path = path))
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username)))
+        asyncio.run(
+            arun_as(BOB, route._maybe_auto_switch_model("org/two-GGUF", request, BOB.username))
+        )
     assert refused.value.status_code == 409
     if path.startswith("/v1/"):
         assert refused.value.detail["error"]["type"] == "conflict_error"
@@ -669,7 +785,13 @@ def test_chat_final_arbiter_refusal_keeps_endpoint_error_shape(route, sim, chat_
 
 
 def test_chat_resident_fast_path_adds_no_account_policy_work(route, chat_switch, monkeypatch):
-    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: pytest.fail("resident policy read"))
-    monkeypatch.setattr(generations, "foreign_count", lambda _account: pytest.fail("resident foreign scan"))
+    monkeypatch.setattr(
+        policy, "installation_is_multi_user", lambda: pytest.fail("resident policy read")
+    )
+    monkeypatch.setattr(
+        generations, "foreign_count", lambda _account: pytest.fail("resident foreign scan")
+    )
     request = SimpleNamespace(scope = {}, url = SimpleNamespace(path = "/v1/chat/completions"))
-    asyncio.run(arun_as(OWNER, route._maybe_auto_switch_model("org/one-GGUF", request, OWNER.username)))
+    asyncio.run(
+        arun_as(OWNER, route._maybe_auto_switch_model("org/one-GGUF", request, OWNER.username))
+    )

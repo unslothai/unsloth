@@ -24,7 +24,13 @@ from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 from utils.paths.storage_roots import studio_db_path, workspace_root
 
-from utils.account_context import OWNER, AccountContext, current_account, current_account_id, is_owner_context
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    current_account,
+    current_account_id,
+    is_owner_context,
+)
 
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -75,6 +81,7 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
     if not managed_account():
         return False
     from core.inference import gpu_arbiter
+
     owner = gpu_arbiter.current_owner()
     if owner is not None and (modality is None or owner == modality):
         return gpu_arbiter.owner_account() != current_account_id()
@@ -92,6 +99,7 @@ def gpu_busy_error(path: str | None = None) -> HTTPException:
     """The arbiter's refusal, so every surface carries one shape and one retry hint."""
     from core.inference import gpu_arbiter
     from state import active_generations
+
     account_id = current_account_id()
     error = gpu_arbiter.GpuBusyForAnotherAccountError(
         gpu_arbiter.current_owner() or gpu_arbiter.CHAT,
@@ -114,6 +122,7 @@ def require_resident_control(modality: str, reference: str | None = None) -> Non
 
 def gpu_busy_route(handler):
     """Keep the retry response identical on Studio and OpenAI load surfaces."""
+
     @wraps(handler)
     async def wrapped(*args, **kwargs):
         try:
@@ -125,6 +134,7 @@ def gpu_busy_route(handler):
             if isinstance(exc.detail, dict) and exc.detail.get("error") == "gpu_busy":
                 return JSONResponse(status_code = 409, content = exc.detail, headers = exc.headers)
             raise
+
     return wrapped
 
 
@@ -167,7 +177,11 @@ def _load_public_verdicts() -> dict[str, float]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {name: float(stamp) for name, stamp in data.items() if isinstance(name, str) and isinstance(stamp, (int, float))}
+    return {
+        name: float(stamp)
+        for name, stamp in data.items()
+        if isinstance(name, str) and isinstance(stamp, (int, float))
+    }
 
 
 def _remember_public_verdict(name: str, public: bool) -> None:
@@ -243,9 +257,13 @@ def model_grants() -> set[str]:
         return set()
     try:
         with closing(sqlite3.connect(str(path))) as conn:
-            row = conn.execute("SELECT value_json FROM app_settings WHERE key = 'model_grants'").fetchone()
+            row = conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
+            ).fetchone()
         grants = json.loads(row[0]) if row else []
-        return {key for key in grants if isinstance(key, str)} if isinstance(grants, list) else set()
+        return (
+            {key for key in grants if isinstance(key, str)} if isinstance(grants, list) else set()
+        )
     except (sqlite3.Error, ValueError, TypeError):
         return set()
 
@@ -262,14 +280,20 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
     path = studio_db_path()
     path.parent.mkdir(parents = True, exist_ok = True)
     with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT value_json FROM app_settings WHERE key = 'model_grants'").fetchone()
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
+        ).fetchone()
         try:
             prior = json.loads(row[0]) if row else []
         except (ValueError, TypeError):
             prior = []
-        grants = {key for key in prior if isinstance(key, str)} if isinstance(prior, list) else set()
+        grants = (
+            {key for key in prior if isinstance(key, str)} if isinstance(prior, list) else set()
+        )
         grants.add(_grant_key(repo_id, repo_type))
         conn.execute(
             "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('model_grants', ?, ?) "
@@ -278,7 +302,12 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
         )
 
 
-def repo_visible(repo_id: str, repo_type: str = "model", *, grants: set[str] | None = None) -> bool:
+def repo_visible(
+    repo_id: str,
+    repo_type: str = "model",
+    *,
+    grants: set[str] | None = None,
+) -> bool:
     if not managed_account():
         return True
     if not repo_id:
@@ -291,13 +320,18 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
     for part in reversed(path.parts):
         for prefix, repo_type in (("models--", "model"), ("datasets--", "dataset")):
             if part.startswith(prefix):
-                pieces = part[len(prefix):].split("--")
+                pieces = part[len(prefix) :].split("--")
                 if len(pieces) == 2 and all(pieces):
                     return "/".join(pieces), repo_type
     return None
 
 
-def model_visible(reference: str, *, grants: set[str] | None = None, repo_type: str = "model") -> bool:
+def model_visible(
+    reference: str,
+    *,
+    grants: set[str] | None = None,
+    repo_type: str = "model",
+) -> bool:
     """Apply grants equally to repo ids and cache snapshot/file spellings.
 
     Arbitrary local paths are private to the current workspace. A symlink cannot
@@ -315,6 +349,7 @@ def model_visible(reference: str, *, grants: set[str] | None = None, repo_type: 
             if resolved.is_relative_to(workspace_root().resolve()):
                 return True
             from utils.hf_cache_settings import known_hf_hub_caches
+
             if not any(resolved.is_relative_to(root.resolve()) for root in known_hf_hub_caches()):
                 return False
             cached = _cached_repo(path)
@@ -346,7 +381,11 @@ def filter_model_rows(rows, *, repo_type: str = "model"):
     grants = model_grants()
     visible = []
     for row in rows:
-        get = row.get if isinstance(row, dict) else lambda key, default = None: getattr(row, key, default)
+        get = (
+            row.get
+            if isinstance(row, dict)
+            else lambda key, default = None: getattr(row, key, default)
+        )
         ref = get("path") or get("local_path") or get("repo_id") or get("model_id") or get("id")
         if model_visible(ref, grants = grants, repo_type = repo_type):
             visible.append(row)
@@ -358,6 +397,7 @@ def private_directory(path: str, folder: str) -> str:
     if not managed_account():
         return path
     from utils.paths.storage_roots import studio_root
+
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
     if not target.resolve().is_relative_to(workspace_root().resolve()):
@@ -439,7 +479,10 @@ def require_download_progress_access(registry, repo_id: str) -> None:
     if not managed_account():
         return
     from hub.services import download_lifecycle
-    if not any(download_lifecycle.download_belongs_to_account(registry, ref.key) for ref in registry.active_job_refs(repo_id)):
+    if not any(
+        download_lifecycle.download_belongs_to_account(registry, ref.key)
+        for ref in registry.active_job_refs(repo_id)
+    ):
         require_model_access(repo_id)
 
 

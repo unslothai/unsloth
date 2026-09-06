@@ -60,7 +60,14 @@ def materialize_revision(ref: str, destination: Path) -> Path:
     return destination / "studio/backend"
 
 
-def run_probe(backend: Path, home: Path, *, mode: str, samples: int = 2000, history_samples: int = 200) -> dict:
+def run_probe(
+    backend: Path,
+    home: Path,
+    *,
+    mode: str,
+    samples: int = 2000,
+    history_samples: int = 200,
+) -> dict:
     home = home.resolve()
     assert home.is_relative_to(REPO), "Probe data must stay in this clone"
     home.parent.mkdir(parents = True, exist_ok = True)
@@ -69,19 +76,40 @@ def run_probe(backend: Path, home: Path, *, mode: str, samples: int = 2000, hist
         (runtime / leaf).mkdir(parents = True, exist_ok = True)
     env = dict(os.environ)
     env.update(
-        PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = str(backend),
-        UNSLOTH_STUDIO_HOME = str(home), HF_HOME = str(runtime / "hf"),
-        HF_HUB_CACHE = str(runtime / "hf" / "hub"), HF_HUB_OFFLINE = "1",
-        TMPDIR = str(runtime / "tmp"), XDG_CACHE_HOME = str(runtime / "cache"),
+        PYTHONDONTWRITEBYTECODE = "1",
+        PYTHONPATH = str(backend),
+        UNSLOTH_STUDIO_HOME = str(home),
+        HF_HOME = str(runtime / "hf"),
+        HF_HUB_CACHE = str(runtime / "hf" / "hub"),
+        HF_HUB_OFFLINE = "1",
+        TMPDIR = str(runtime / "tmp"),
+        XDG_CACHE_HOME = str(runtime / "cache"),
         UNSLOTH_STUDIO_DOCUMENTS_HOME = str(runtime / "Documents"),
-        UNSLOTH_ALLOW_CPU = "1", UNSLOTH_IS_PRESENT = "1",
+        UNSLOTH_ALLOW_CPU = "1",
+        UNSLOTH_IS_PRESENT = "1",
         UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE = "1",
         UNSLOTH_DIFFUSION_ATTENTION_INSTALL = "0",
     )
     result = subprocess.run(
-        [sys.executable, str(PROBE), "--backend", str(backend), "--helpers", str(Path(__file__).parent),
-         "--mode", mode, "--samples", str(samples), "--history-samples", str(history_samples)],
-        cwd = backend, env = env, capture_output = True, text = True, timeout = 300,
+        [
+            sys.executable,
+            str(PROBE),
+            "--backend",
+            str(backend),
+            "--helpers",
+            str(Path(__file__).parent),
+            "--mode",
+            mode,
+            "--samples",
+            str(samples),
+            "--history-samples",
+            str(history_samples),
+        ],
+        cwd = backend,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout.splitlines()[-1])

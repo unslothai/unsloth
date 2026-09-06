@@ -36,7 +36,9 @@ def auth_db(tmp_path, monkeypatch):
 
 def add_managed(*, must_change = False):
     storage.create_initial_user(
-        "alice", "alice-password", secrets.token_urlsafe(32),
+        "alice",
+        "alice-password",
+        secrets.token_urlsafe(32),
         must_change_password = must_change,
     )
     return storage.get_account("alice")
@@ -54,9 +56,13 @@ def client():
     async def account(subject = Depends(authentication.get_current_subject)):
         return {"subject": subject, "account_id": current_account_id()}
 
-    @app.get("/owner", dependencies = [
-        Depends(authentication.get_current_subject), Depends(policy.require_owner),
-    ])
+    @app.get(
+        "/owner",
+        dependencies = [
+            Depends(authentication.get_current_subject),
+            Depends(policy.require_owner),
+        ],
+    )
     async def owner():
         return {"account_id": current_account_id()}
 
@@ -106,7 +112,10 @@ def test_desktop_single_response_bytes_and_return_to_single(monkeypatch):
         storage.delete_user("alice")
         assert http.post("/api/auth/desktop-login", json = {"secret": raw}).content == expected
     assert len(minted) == 2
-    assert all(call == {"subject": "unsloth", "desktop": True, "secret": storage.get_jwt_secret("unsloth")} for call in minted)
+    assert all(
+        call == {"subject": "unsloth", "desktop": True, "secret": storage.get_jwt_secret("unsloth")}
+        for call in minted
+    )
 
 
 @pytest.mark.parametrize("desktop", [False, True])
@@ -124,20 +133,37 @@ def test_managed_account_cannot_set_desktop_initial_password(desktop):
     assert storage.get_user_and_secret("alice") == before
 
 
-def request(*, scope = "full", lan = False, headers = None):
+def request(
+    *,
+    scope = "full",
+    lan = False,
+    headers = None,
+):
     address = "192.168.1.2" if lan else "127.0.0.1"
-    app = SimpleNamespace(state = SimpleNamespace(
-        bind_host = address, secure = False, cloudflare_url = None,
-        lan_access_launch_managed = lan,
-        lan_access_launch_addresses = [address] if lan else [],
-        lan_access_port = 8888,
-    ))
-    return Request({
-        "type": "http", "method": "GET", "path": "/v1/models" if scope == "inference" else "/account",
-        "root_path": "", "query_string": b"", "scheme": "http",
-        "server": (address, 8888), "client": ("192.168.1.3" if lan else "127.0.0.1", 55000),
-        "headers": [(b"host", f"{address}:8888".encode()), *(headers or [])], "app": app,
-    })
+    app = SimpleNamespace(
+        state = SimpleNamespace(
+            bind_host = address,
+            secure = False,
+            cloudflare_url = None,
+            lan_access_launch_managed = lan,
+            lan_access_launch_addresses = [address] if lan else [],
+            lan_access_port = 8888,
+        )
+    )
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/models" if scope == "inference" else "/account",
+            "root_path": "",
+            "query_string": b"",
+            "scheme": "http",
+            "server": (address, 8888),
+            "client": ("192.168.1.3" if lan else "127.0.0.1", 55000),
+            "headers": [(b"host", f"{address}:8888".encode()), *(headers or [])],
+            "app": app,
+        }
+    )
 
 
 @pytest.mark.parametrize("scope,lan", [("full", False), ("inference", False), ("inference", True)])
@@ -196,7 +222,8 @@ def test_network_request_uses_account_credentials(subject, credential, transport
     monkeypatch.setattr(keyless, "_read_settings", lambda: ("full", True))
     token = (
         authentication.create_access_token(subject = subject)
-        if credential == "jwt" else storage.create_api_key(subject, "network")[0]
+        if credential == "jwt"
+        else storage.create_api_key(subject, "network")[0]
     )
     headers = {"Authorization": f"Bearer {token}", "Host": "192.168.1.2:8888"}
     if transport == "tunnel":
@@ -206,7 +233,9 @@ def test_network_request_uses_account_credentials(subject, credential, transport
         response = http.get("/account", headers = headers)
         assert response.status_code == 200
         assert response.json() == {"subject": subject, "account_id": expected}
-        assert http.get("/owner", headers = headers).status_code == (200 if subject == "unsloth" else 403)
+        assert http.get("/owner", headers = headers).status_code == (
+            200 if subject == "unsloth" else 403
+        )
         for method in ("GET", "POST"):
             response = http.request(method, "/events", headers = headers)
             assert response.status_code == 200
@@ -276,7 +305,13 @@ def test_timeout_checks_only_owner_even_in_managed_context(owner_pending, monkey
         return owner_pending if username == "unsloth" else True
 
     monkeypatch.setattr(storage, "requires_password_change", pending)
-    result = run_as(alice, enforce_bootstrap_password_deadline, storage, lambda: stopped.append(True), timeout_seconds = 1)
+    result = run_as(
+        alice,
+        enforce_bootstrap_password_deadline,
+        storage,
+        lambda: stopped.append(True),
+        timeout_seconds = 1,
+    )
     assert result is owner_pending
     assert checked == ["unsloth"]
     assert bool(stopped) is owner_pending
@@ -291,12 +326,16 @@ def test_terminal_gate_ignores_managed_setup_and_changes_only_owner(monkeypatch)
     output = io.StringIO()
     monkeypatch.setattr(run.sys, "stderr", output)
     monkeypatch.setattr(run, "_stream_isatty", lambda stream: True)
-    kwargs = dict(tunnel_will_start = True, host = "127.0.0.1", secure = True, api_only = False, frontend_served = True)
+    kwargs = dict(
+        tunnel_will_start = True, host = "127.0.0.1", secure = True, api_only = False, frontend_served = True
+    )
     assert run_as(alice, run._terminal_password_gate, **kwargs) == (True, False)
     assert output.getvalue() == ""
     before = storage.get_user_and_secret("alice")
     with storage.get_connection() as connection:
-        connection.execute("UPDATE auth_user SET must_change_password = 1 WHERE username = 'unsloth'")
+        connection.execute(
+            "UPDATE auth_user SET must_change_password = 1 WHERE username = 'unsloth'"
+        )
     keys = iter("new-owner-password\nnew-owner-password\n")
     monkeypatch.setattr(terminal_prompt, "_getch", lambda: next(keys))
     assert run_as(alice, run._terminal_password_gate, **kwargs) == (True, True)

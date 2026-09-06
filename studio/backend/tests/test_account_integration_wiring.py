@@ -37,14 +37,21 @@ def multi_user(monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
 
 
-def _isolated_auth_db(tmp_path, monkeypatch, *, owner_must_change = False):
+def _isolated_auth_db(
+    tmp_path,
+    monkeypatch,
+    *,
+    owner_must_change = False,
+):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     policy.invalidate_account_cache()
     keyless._reset_scope_cache()
     storage.create_initial_user(
-        "unsloth", "owner-password", secrets.token_urlsafe(32),
+        "unsloth",
+        "owner-password",
+        secrets.token_urlsafe(32),
         must_change_password = owner_must_change,
     )
 
@@ -81,19 +88,32 @@ _FULL_ACCESS = "Full access is unavailable while more than one account exists."
 _REQUESTS = {
     "/v1/chat/completions": {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
     "/v1/responses": {"model": "m", "input": "hi"},
-    "/v1/messages": {"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+    "/v1/messages": {
+        "model": "m",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "hi"}],
+    },
 }
 
 
 @pytest.mark.parametrize("path", sorted(_REQUESTS))
-@pytest.mark.parametrize("flags", [
-    {"bypass_permissions": True}, {"permission_mode": "full"}, {"disable_sandbox": True},
-])
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"bypass_permissions": True},
+        {"permission_mode": "full"},
+        {"disable_sandbox": True},
+    ],
+)
 @pytest.mark.parametrize("account", [OWNER, ALICE], ids = ["owner", "alice"])
-def test_full_access_is_refused_at_the_door_in_multi_mode(multi_user, monkeypatch, path, flags, account):
+def test_full_access_is_refused_at_the_door_in_multi_mode(
+    multi_user, monkeypatch, path, flags, account
+):
     """The refusal arrives as a 400 before any backend is consulted or a stream opens."""
+
     def never(*_args, **_kwargs):
         raise AssertionError("the request reached the backend")
+
     monkeypatch.setattr(inference, "get_llama_cpp_backend", never)
     with _client_for(account) as client:
         response = client.post(path, json = {**_REQUESTS[path], **flags})
@@ -108,6 +128,7 @@ def test_single_account_full_access_passes_the_door(monkeypatch, path):
 
     def backend():
         raise HTTPException(status_code = 503, detail = "no backend in this test")
+
     monkeypatch.setattr(inference, "get_llama_cpp_backend", backend)
     monkeypatch.setattr(inference, "produce_openai_chat_completions", lambda *a, **k: backend())
     with _client_for(OWNER) as client:
@@ -116,7 +137,11 @@ def test_single_account_full_access_passes_the_door(monkeypatch, path):
 
 
 def test_admission_runs_after_the_docstring_and_reads_every_flag():
-    for handler in (inference.openai_chat_completions, inference.openai_responses, inference.anthropic_messages):
+    for handler in (
+        inference.openai_chat_completions,
+        inference.openai_responses,
+        inference.anthropic_messages,
+    ):
         body = inspect.getsource(handler)
         assert "_admit_tool_access(payload)" in body, handler.__name__
     for handler in (inference.openai_responses, inference.anthropic_messages):
@@ -130,15 +155,22 @@ def test_desktop_marker_only_authenticates_the_owner(auth_db):
     storage.create_initial_user("alice", "alice-password", secrets.token_urlsafe(32))
     owner_secret = storage.get_user_record("unsloth")["jwt_secret"]
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
-    owner_token = authentication.create_access_token(subject = "unsloth", desktop = True, secret = owner_secret)
-    alice_token = authentication.create_access_token(subject = "alice", desktop = True, secret = alice_secret)
+    owner_token = authentication.create_access_token(
+        subject = "unsloth", desktop = True, secret = owner_secret
+    )
+    alice_token = authentication.create_access_token(
+        subject = "alice", desktop = True, secret = alice_secret
+    )
     assert authentication.is_desktop_access_token(owner_token)
     assert not authentication.is_desktop_access_token(alice_token)
 
 
 def test_desktop_marker_does_not_bypass_a_managed_password_change(auth_db):
     storage.create_initial_user(
-        "alice", "alice-password", secrets.token_urlsafe(32), must_change_password = True,
+        "alice",
+        "alice-password",
+        secrets.token_urlsafe(32),
+        must_change_password = True,
     )
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
     token = authentication.create_access_token(subject = "alice", desktop = True, secret = alice_secret)
@@ -160,10 +192,15 @@ def test_refresh_drops_the_desktop_marker_for_a_managed_account(auth_db):
     from routes import auth as auth_routes
 
     storage.create_initial_user(
-        "alice", "alice-password", secrets.token_urlsafe(32), must_change_password = True,
+        "alice",
+        "alice-password",
+        secrets.token_urlsafe(32),
+        must_change_password = True,
     )
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
-    refresh = authentication.create_refresh_token(subject = "alice", desktop = True, secret = alice_secret)
+    refresh = authentication.create_refresh_token(
+        subject = "alice", desktop = True, secret = alice_secret
+    )
     app = FastAPI()
     app.include_router(auth_routes.router, prefix = "/api/auth")
     with TestClient(app) as client:
@@ -185,7 +222,9 @@ def test_scan_folders_schema_is_initialised_for_each_account(tmp_path, monkeypat
     run_as(OWNER, scan_folders.add_scan_folder, str(folder))
     # Alice's studio.db is new: the owner's schema pass must not be mistaken for hers.
     assert run_as(ALICE, scan_folders.list_scan_folders) == []
-    assert [row["path"] for row in run_as(OWNER, scan_folders.list_scan_folders)] == [str(folder.resolve())]
+    assert [row["path"] for row in run_as(OWNER, scan_folders.list_scan_folders)] == [
+        str(folder.resolve())
+    ]
     assert len(scan_folders._schema_ready) == 2
 
 
@@ -212,15 +251,25 @@ def test_retirement_drains_jobs_and_sessions_under_the_account(tmp_path, monkeyp
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     calls = []
     monkeypatch.setattr(
-        account_jobs, "retire_account_jobs", lambda account: calls.append(("jobs", account.account_id))
+        account_jobs,
+        "retire_account_jobs",
+        lambda account: calls.append(("jobs", account.account_id)),
     )
     monkeypatch.setattr(
-        mcp_client, "close_mcp_sessions", lambda *a, **k: calls.append(("mcp", current_account_id()))
+        mcp_client,
+        "close_mcp_sessions",
+        lambda *a, **k: calls.append(("mcp", current_account_id())),
     )
     monkeypatch.setattr(
-        mcp_client, "invalidate_tool_cache", lambda *a, **k: calls.append(("tools", current_account_id()))
+        mcp_client,
+        "invalidate_tool_cache",
+        lambda *a, **k: calls.append(("tools", current_account_id())),
     )
     accounts.retire_account_roots(ALICE)
-    assert calls == [("jobs", ALICE.account_id), ("mcp", ALICE.account_id), ("tools", ALICE.account_id)]
+    assert calls == [
+        ("jobs", ALICE.account_id),
+        ("mcp", ALICE.account_id),
+        ("tools", ALICE.account_id),
+    ]
     with pytest.raises(ValueError):
         accounts.retire_account_roots(OWNER)

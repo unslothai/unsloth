@@ -32,7 +32,11 @@ def provider_config_guard(provider_id: str) -> asyncio.Lock:
     """Serialize one provider's routing metadata and installation credential."""
     loop = asyncio.get_running_loop()
     locks = _provider_config_locks.setdefault(loop, {})
-    key = (current_account_id(), provider_id) if account_access.account_scope() is not None else provider_id
+    key = (
+        (current_account_id(), provider_id)
+        if account_access.account_scope() is not None
+        else provider_id
+    )
     return locks.setdefault(key, asyncio.Lock())
 
 

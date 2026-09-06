@@ -91,9 +91,19 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     if account is not None:
         from core.training.account_jobs import run_account_child
         from utils.native_path_leases import run_without_native_path_secret
-        run_without_native_path_secret(run_account_child, account = account, job_module = "core.training.diffusion_training_service", job_target = "_run_diffusion_child", event_queue = event_queue, stop_queue = stop_queue, config = config)
+
+        run_without_native_path_secret(
+            run_account_child,
+            account = account,
+            job_module = "core.training.diffusion_training_service",
+            job_target = "_run_diffusion_child",
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
         return
     from utils.native_path_leases import run_without_native_path_secret
+
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
@@ -659,9 +669,13 @@ class DiffusionTrainingService:
             # Record the config with the fields this family's loop REPLACES set to what it will actually run:
             # the trainer applies the same table in the child, so without this Previous runs described a
             # recipe no step ever used.
-            self._config = {k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}}
+            self._config = {
+                k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
+            }
             self._config.update(train_recipe_overrides(normalized_cfg))
-            self._pump = account_thread(target = self._pump_loop, args = (event_queue, self._proc), daemon = True)
+            self._pump = account_thread(
+                target = self._pump_loop, args = (event_queue, self._proc), daemon = True
+            )
             self._pump.start()
             return job_id
 
@@ -697,7 +711,13 @@ class DiffusionTrainingService:
             self._state["updated_at"] = time.time()
             return True
 
-    @job_read(lambda self: {**_idle_state(), "status": "busy" if job_busy(self) else "idle", "message": "Busy" if job_busy(self) else ""})
+    @job_read(
+        lambda self: {
+            **_idle_state(),
+            "status": "busy" if job_busy(self) else "idle",
+            "message": "Busy" if job_busy(self) else "",
+        }
+    )
     def status(self) -> dict[str, Any]:
         with self._lock:
             snap = dict(self._state)

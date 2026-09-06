@@ -8012,6 +8012,7 @@ async def _maybe_auto_switch_model(
         note_admitted_inference,
         preview_swapped_since_entry,
     )
+
     generation_cancel_event = getattr(
         getattr(fastapi_request, "state", None),
         "generation_cancel_event",
@@ -8437,7 +8438,8 @@ async def _maybe_auto_switch_model(
         # refusal too, including a load retried without stale GPU placement.
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (
-            path and path.startswith("/v1/")
+            path
+            and path.startswith("/v1/")
             and isinstance(exc.detail, dict)
             and exc.detail.get("error") == "gpu_busy"
         ):
@@ -13266,7 +13268,9 @@ async def _run_tracked_load_model_impl(
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = attempt.cancel_event,
         )
-        account_access.note_resident_account("chat", request.model_path, getattr(response, "model", request.model_path))
+        account_access.note_resident_account(
+            "chat", request.model_path, getattr(response, "model", request.model_path)
+        )
         return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
@@ -13410,7 +13414,9 @@ async def _load_model_impl(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -14628,7 +14634,9 @@ async def validate_model(
     NOT load model weights into GPU memory.
     """
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import (
@@ -15757,11 +15765,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
-    account_access.require_resident_control("chat", _loaded_slot_ident() if account_access.managed_account() else None)
+    account_access.require_resident_control(
+        "chat", _loaded_slot_ident() if account_access.managed_account() else None
+    )
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+
     try:
         # Hidden Audio cleanup is cancellation, not a manual eject. Bind it to the
         # exact client load attempt so a delayed request can never stop a newer
@@ -16391,7 +16402,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         return account_access.hidden_resident_response()
     try:
         llama_backend = get_llama_cpp_backend()
-        if account_access.managed_account() and account_access.resident_hidden("chat", _loaded_slot_ident()):
+        if account_access.managed_account() and account_access.resident_hidden(
+            "chat", _loaded_slot_ident()
+        ):
             return account_access.hidden_resident_response()
 
         # The cold subprocess and GitHub probes must not block the event loop or
@@ -16857,7 +16870,9 @@ async def audio_download_plan(
 ):
     """Stage native-audio checkpoints and companion codecs through Download Manager."""
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.native_audio import native_audio_download_plan
@@ -17428,7 +17443,9 @@ def _prepare_runtime_fallback_checkpoint(
         if account_access.account_scope() is None:
             stt_sidecar.start_model_download(model, hf_token)
         else:
-            _start_account_stt_download(stt_sidecar, "transformers", model, account_access.account_hf_token(hf_token))
+            _start_account_stt_download(
+                stt_sidecar, "transformers", model, account_access.account_hf_token(hf_token)
+            )
     except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
         # Another dictation model already downloading is the common case, and the caller
         # is about to report "not downloaded" anyway.
@@ -17480,18 +17497,28 @@ _stt_download_lock = threading.Lock()
 _stt_grant_pending: dict[str, threading.Event] = {}
 
 
-def _start_account_stt_download(module, engine, model, hf_token, revision = None):
+def _start_account_stt_download(
+    module,
+    engine,
+    model,
+    hf_token,
+    revision = None,
+):
     args = (model, hf_token, revision) if engine == "transformers" else (model, hf_token)
     if account_access.account_scope() is None:
         return module.start_model_download(*args)
     with _stt_download_lock:
         if module.download_status().get("downloading"):
             if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
-                raise HTTPException(status_code = 409, detail = {"error": "download_busy", "retry_after": 1})
+                raise HTTPException(
+                    status_code = 409, detail = {"error": "download_busy", "retry_after": 1}
+                )
             return module.start_model_download(*args)
         pending = _stt_grant_pending.get(engine)
         if pending is not None and not pending.is_set():
-            raise HTTPException(status_code = 409, detail = {"error": "download_busy", "retry_after": 1})
+            raise HTTPException(
+                status_code = 409, detail = {"error": "download_busy", "retry_after": 1}
+            )
         repo = _stt_repo_reference(model, engine)
         account_access.authorize_download(repo, "model", hf_token)
         module.start_model_download(*args)
@@ -17512,7 +17539,11 @@ def _start_account_stt_download(module, engine, model, hf_token, revision = None
                     if _stt_download_accounts.get(engine) != account:
                         return
                     downloaded = getattr(module, "is_model_downloaded", None)
-                    complete = downloaded(model) if downloaded is not None else module._cached_model_path(model) is not None
+                    complete = (
+                        downloaded(model)
+                        if downloaded is not None
+                        else module._cached_model_path(model) is not None
+                    )
                     if complete:
                         account_access.record_model_grant(repo)
 
@@ -17524,7 +17555,10 @@ def _start_account_stt_download(module, engine, model, hf_token, revision = None
 
 def _cancel_account_stt_download(module, engine):
     with _stt_download_lock:
-        if account_access.account_scope() is not None and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
+        if (
+            account_access.account_scope() is not None
+            and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id()
+        ):
             return {"downloading": False, "cancelled": False}
         cancelled = module.cancel_model_download()
         return {**module.download_status(), "cancelled": cancelled}
@@ -17532,9 +17566,12 @@ def _cancel_account_stt_download(module, engine):
 
 def _stt_repo_reference(model, engine):
     from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+
     selected = _resolve_serving_stt_engine(engine)
     if selected == "gguf":
-        return stt_ggml_sidecar.GGML_STT_REPOS.get(model or stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL, model)
+        return stt_ggml_sidecar.GGML_STT_REPOS.get(
+            model or stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL, model
+        )
     if selected == "mtmd":
         spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model)
         return spec.repo if spec else model
@@ -17551,7 +17588,8 @@ def _account_stt_status(status):
             if engine == "transformers":
                 status["loaded_model"] = None
         section["downloaded_models"] = [
-            model for model in section.get("downloaded_models", [])
+            model
+            for model in section.get("downloaded_models", [])
             if account_access.model_visible(_stt_repo_reference(model, engine))
         ]
         if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
@@ -17569,7 +17607,9 @@ async def stt_status(
     custom Hugging Face repository beyond the curated defaults.
     """
     if account_access.managed_account() and model:
-        await asyncio.to_thread(account_access.require_model_access, _stt_repo_reference(model, "transformers"))
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(model, "transformers")
+        )
     from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
         DEFAULT_STT_MODEL,
@@ -17689,7 +17729,9 @@ async def stt_download(
                 validated.get("revision"),
             )
         else:
-            await asyncio.to_thread(_start_account_stt_download, module, engine, payload.model, hf_token)
+            await asyncio.to_thread(
+                _start_account_stt_download, module, engine, payload.model, hf_token
+            )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
@@ -17722,7 +17764,9 @@ async def stt_load(
 ):
     """Load the selected STT model after the user starts local dictation."""
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, _stt_repo_reference(payload.model, payload.engine))
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(payload.model, payload.engine)
+        )
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
         SttModelBusyError,
@@ -17820,8 +17864,11 @@ async def stt_unload(
         engines = [_resolve_serving_stt_engine(engine)]
     if account_access.managed_account():
         engines = [
-            candidate for candidate in (engines or ["transformers", "gguf", "mtmd"])
-            if not account_access.resident_hidden(f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model)
+            candidate
+            for candidate in (engines or ["transformers", "gguf", "mtmd"])
+            if not account_access.resident_hidden(
+                f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
+            )
         ]
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
@@ -17869,7 +17916,9 @@ async def _transcribe_audio_result(
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, _stt_repo_reference(model, engine))
+        await asyncio.to_thread(
+            account_access.require_model_access, _stt_repo_reference(model, engine)
+        )
     from core.inference.stt_sidecar import (
         SttAudioDecodeError,
         SttAudioTooLongError,
@@ -20561,6 +20610,7 @@ async def openai_chat_completions(
 ):
     _admit_tool_access(payload)
     from auth.authentication import request_admitted_without_credential
+
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
         request
     ):
@@ -24894,7 +24944,9 @@ def _openai_model_objects() -> list[dict]:
     Shared by the LIST and RETRIEVE handlers so both report the same ids and
     field shape.
     """
-    if account_access.managed_account() and account_access.resident_hidden("chat", _loaded_slot_ident()):
+    if account_access.managed_account() and account_access.resident_hidden(
+        "chat", _loaded_slot_ident()
+    ):
         return []
     models: list[dict] = []
     _created = int(time.time())
@@ -25086,6 +25138,7 @@ def _resident_media_status(task: str) -> Optional[dict]:
     if account_access.resident_hidden(_media_owner(task)):
         return None
     from core.inference.media_keepwarm import engine_if_imported
+
     try:
         engine = engine_if_imported(_media_owner(task))
         status = engine.status() if engine is not None else None
@@ -25174,7 +25227,9 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
     for task in _MEDIA_MODEL_TASKS:
         status = _resident_media_status(task)
         for model_id, pick, local in picks_by_task.get(task, ()):
-            if account_access.managed_account() and not account_access.model_visible(pick.model_path):
+            if account_access.managed_account() and not account_access.model_visible(
+                pick.model_path
+            ):
                 continue
             loaded = bool(status) and satisfied_by(status, model_id, pick)
             if not loaded and not local:
@@ -25342,7 +25397,10 @@ async def _cached_local_catalog() -> list:
         return _account_catalog_cache()["models"]
     async with _catalog_lock():
         now = time.monotonic()
-        if _account_catalog_cache()["at"] and (now - _account_catalog_cache()["at"]) <= _CATALOG_TTL_S:
+        if (
+            _account_catalog_cache()["at"]
+            and (now - _account_catalog_cache()["at"]) <= _CATALOG_TTL_S
+        ):
             return _account_catalog_cache()["models"]
         try:
             from routes.models import collect_local_models
@@ -33459,7 +33517,9 @@ async def diffusion_download_plan(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, request.base_repo)
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -33630,7 +33690,9 @@ async def load_diffusion_model_gated(
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, request.base_repo)
     if account_access.managed_account():
-        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
+        request = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -34325,7 +34387,9 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
     if account_access.managed_account():
-        account_access.require_resident_control("diffusion", get_active_diffusion_engine().status().get("repo_id"))
+        account_access.require_resident_control(
+            "diffusion", get_active_diffusion_engine().status().get("repo_id")
+        )
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
@@ -34343,6 +34407,7 @@ async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import active_status
+
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
@@ -34364,7 +34429,10 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    if account_access.managed_account() and account_access.resident_hidden("diffusion", get_active_diffusion_engine().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "diffusion", get_active_diffusion_engine().status().get("repo_id")
+    ):
         return account_access.hidden_resident_response()
     return DiffusionLoadProgressResponse(**get_active_diffusion_engine().load_progress())
 
@@ -34374,7 +34442,10 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    if account_access.managed_account() and account_access.resident_hidden("diffusion", get_active_diffusion_engine().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "diffusion", get_active_diffusion_engine().status().get("repo_id")
+    ):
         return account_access.hidden_resident_response()
 
     progress = get_active_diffusion_engine().generate_progress()
@@ -34397,7 +34468,10 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     if account_access.foreign_work_active() or account_access.resident_hidden("diffusion"):
         return {"cancelled": False}
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    if account_access.managed_account() and account_access.resident_hidden("diffusion", get_active_diffusion_engine().status().get("repo_id")):
+
+    if account_access.managed_account() and account_access.resident_hidden(
+        "diffusion", get_active_diffusion_engine().status().get("repo_id")
+    ):
         return {"cancelled": False}
 
     cancelled = await asyncio.get_running_loop().run_in_executor(

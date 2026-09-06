@@ -454,7 +454,10 @@ def _public_account(row) -> dict:
 def list_accounts() -> list[dict]:
     conn = get_connection()
     try:
-        return [_public_account(row) for row in conn.execute("SELECT * FROM auth_user ORDER BY created_at, account_id")]
+        return [
+            _public_account(row)
+            for row in conn.execute("SELECT * FROM auth_user ORDER BY created_at, account_id")
+        ]
     finally:
         conn.close()
 
@@ -479,7 +482,9 @@ def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
     )
 
 
-def issue_account_setup_code(*, username: Optional[str] = None, account_id: Optional[str] = None) -> dict:
+def issue_account_setup_code(
+    *, username: Optional[str] = None, account_id: Optional[str] = None
+) -> dict:
     """Create an account or replace its setup credential, returning plaintext once."""
     from auth.hashing import hash_password
     from auth.policy import invalidate_account_cache
@@ -503,8 +508,16 @@ def issue_account_setup_code(*, username: Optional[str] = None, account_id: Opti
                     (username, account_id, role, is_active, created_at, password_salt,
                      password_hash, jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
                     VALUES (?, ?, 'user', 1, ?, ?, ?, ?, 1, ?, ?)""",
-                    (username, account_id, now.isoformat(), salt, pwd_hash,
-                     secrets.token_urlsafe(64), _hash_token(code), expires_at),
+                    (
+                        username,
+                        account_id,
+                        now.isoformat(),
+                        salt,
+                        pwd_hash,
+                        secrets.token_urlsafe(64),
+                        _hash_token(code),
+                        expires_at,
+                    ),
                 )
             else:
                 row = _managed_account(conn, account_id)
@@ -521,7 +534,9 @@ def issue_account_setup_code(*, username: Optional[str] = None, account_id: Opti
     return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
 
 
-def authenticate_account_login(username: str, password: str) -> Optional[Tuple[str, str, str, bool]]:
+def authenticate_account_login(
+    username: str, password: str
+) -> Optional[Tuple[str, str, str, bool]]:
     """Managed login: consume a setup code once, retaining its password hash for setup.
 
     A consumed code cannot log in again: must_change_password without a pending
@@ -535,7 +550,9 @@ def authenticate_account_login(username: str, password: str) -> Optional[Tuple[s
         if row is None or not row["is_active"]:
             return None
         if row["must_change_password"]:
-            if not row["setup_code_hash"] or not hmac.compare_digest(row["setup_code_hash"], _hash_token(password)):
+            if not row["setup_code_hash"] or not hmac.compare_digest(
+                row["setup_code_hash"], _hash_token(password)
+            ):
                 return None
             # Compare-and-swap includes expiry, activity and credential generation.
             # Concurrent logins, resets or regeneration can never spend a code twice.
@@ -544,18 +561,30 @@ def authenticate_account_login(username: str, password: str) -> Optional[Tuple[s
                     """UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
                        WHERE account_id = ? AND setup_code_hash = ? AND jwt_secret = ?
                        AND is_active = 1 AND setup_code_expires_at > ?""",
-                    (row["account_id"], row["setup_code_hash"], row["jwt_secret"], datetime.now(timezone.utc).isoformat()),
+                    (
+                        row["account_id"],
+                        row["setup_code_hash"],
+                        row["jwt_secret"],
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
                 )
                 if cursor.rowcount != 1:
                     return None
         elif not verify_password(password, row["password_salt"], row["password_hash"]):
             return None
-        return row["password_salt"], row["password_hash"], row["jwt_secret"], bool(row["must_change_password"])
+        return (
+            row["password_salt"],
+            row["password_hash"],
+            row["jwt_secret"],
+            bool(row["must_change_password"]),
+        )
     finally:
         conn.close()
 
 
-def update_account_password(username: str, new_password: str, *, expect_password_hash: str, expect_secret: str) -> Optional[str]:
+def update_account_password(
+    username: str, new_password: str, *, expect_password_hash: str, expect_secret: str
+) -> Optional[str]:
     """Complete managed setup/password change without touching owner bootstrap or desktop state."""
     from auth.hashing import hash_password
 
@@ -589,7 +618,10 @@ def set_account_active(account_id: str, is_active: bool) -> dict:
             row = _managed_account(conn, account_id)
             if not is_active:
                 _revoke_account_credentials(conn, row)
-            conn.execute("UPDATE auth_user SET is_active = ? WHERE account_id = ?", (int(is_active), account_id))
+            conn.execute(
+                "UPDATE auth_user SET is_active = ? WHERE account_id = ?",
+                (int(is_active), account_id),
+            )
             result = _public_account(_managed_account(conn, account_id))
     finally:
         conn.close()
@@ -901,8 +933,14 @@ def create_initial_user(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                username, salt, pwd_hash, jwt_secret, int(must_change_password),
-                account_id, role, datetime.now(timezone.utc).isoformat(),
+                username,
+                salt,
+                pwd_hash,
+                jwt_secret,
+                int(must_change_password),
+                account_id,
+                role,
+                datetime.now(timezone.utc).isoformat(),
             ),
         )
         conn.commit()

@@ -21,7 +21,7 @@ def import_time_path_calls(source: str, module: str = "") -> list[tuple[int, str
         if isinstance(node, ast.ImportFrom):
             origin = node.module or ""
             if node.level:
-                origin = ".".join(module.split(".")[:-node.level] + [origin])
+                origin = ".".join(module.split(".")[: -node.level] + [origin])
             for alias in node.names:
                 names[alias.asname or alias.name] = f"{origin}.{alias.name}"
         elif isinstance(node, ast.Import):
@@ -67,13 +67,16 @@ def import_time_path_calls(source: str, module: str = "") -> list[tuple[int, str
     return found
 
 
-@pytest.mark.parametrize("source", [
-    "from utils.paths import outputs_root\nROOT = outputs_root()",
-    "from utils.paths import outputs_root as root\ndef f(p = str(root())): pass",
-    "import utils.paths as p\nclass C: root = p.outputs_root()",
-    "from utils import paths as p\nf = lambda root = p.outputs_root(): root",
-    "from hub.utils.paths import datasets_root\nROOT = datasets_root()",
-])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from utils.paths import outputs_root\nROOT = outputs_root()",
+        "from utils.paths import outputs_root as root\ndef f(p = str(root())): pass",
+        "import utils.paths as p\nclass C: root = p.outputs_root()",
+        "from utils import paths as p\nf = lambda root = p.outputs_root(): root",
+        "from hub.utils.paths import datasets_root\nROOT = datasets_root()",
+    ],
+)
 def test_guard_detects_captured_roots(source):
     assert import_time_path_calls(source)
 

@@ -4875,7 +4875,9 @@ def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) 
 
 @studio_app.command("reset-password")
 def reset_password(
-    username: Optional[str] = typer.Option(None, "--username", help = "Account to reset; required with multiple active accounts."),
+    username: Optional[str] = typer.Option(
+        None, "--username", help = "Account to reset; required with multiple active accounts."
+    ),
 ):
     """Reset an Unsloth account password.
 

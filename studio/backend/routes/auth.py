@@ -445,7 +445,9 @@ def auth_status() -> AuthStatusResponse:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    username = payload.username.casefold() if policy.installation_is_multi_user() else payload.username
+    username = (
+        payload.username.casefold() if policy.installation_is_multi_user() else payload.username
+    )
     key = _bucket_key(request, username)
     unknown_key = _unknown_user_key(request)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))

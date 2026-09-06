@@ -58,7 +58,11 @@ def retire_account_roots(account: AccountContext) -> None:
     run_as(account, invalidate_tool_cache)
     roots = {
         run_as(account, root).absolute()
-        for root in (storage_roots.workspace_root, storage_roots.project_workspaces_root, storage_roots.tmp_root)
+        for root in (
+            storage_roots.workspace_root,
+            storage_roots.project_workspaces_root,
+            storage_roots.tmp_root,
+        )
     }
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     for root in sorted(roots, key = lambda path: len(path.parts), reverse = True):

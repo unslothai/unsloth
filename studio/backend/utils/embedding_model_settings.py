@@ -50,7 +50,9 @@ _lock = threading.Lock()
 # Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
 # seen for each model. The one stored record belongs to whichever model was saved
 # last; see remembered_gguf_repo.
-_resolved_gguf_memo: dict[tuple[str, str], tuple[Optional[str], Optional[str], bool, Optional[list]]] = {}
+_resolved_gguf_memo: dict[
+    tuple[str, str], tuple[Optional[str], Optional[str], bool, Optional[list]]
+] = {}
 
 
 def _invalidate_cache() -> None:
@@ -114,7 +116,12 @@ def get_stored_gguf_repo(model: str) -> str | None:
 def _remember_resolution(model: str, stored: _StoredState) -> None:
     """Keep this process's last resolved repo/backend/pending/files for ``model``."""
     with _lock:
-        _resolved_gguf_memo[(current_account_id(), model)] = (stored[2], stored[3], stored[4], _files_of(stored[5]))
+        _resolved_gguf_memo[(current_account_id(), model)] = (
+            stored[2],
+            stored[3],
+            stored[4],
+            _files_of(stored[5]),
+        )
 
 
 def _remembered(model: str) -> tuple[str | None, str | None, bool, list | None] | None:

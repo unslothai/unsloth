@@ -85,7 +85,9 @@ def run_as(account: AccountContext, target: Callable[..., T], /, *args: Any, **k
     finally:
         reset_account(token)
     if hasattr(result, "__await__"):
-        raise TypeError("run_as was given an awaitable; use arun_as so the binding outlives the await")
+        raise TypeError(
+            "run_as was given an awaitable; use arun_as so the binding outlives the await"
+        )
     return result
 
 

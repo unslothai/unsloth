@@ -117,7 +117,11 @@ def _heartbeat() -> None:
             _wake.clear()
             continue
         for account in {entry[0] for entry in active}:
-            run_as(account, _renew_account, [(kind, job_id) for owner, kind, job_id in active if owner == account])
+            run_as(
+                account,
+                _renew_account,
+                [(kind, job_id) for owner, kind, job_id in active if owner == account],
+            )
         _wake.wait(_HEARTBEAT_SECONDS)
         _wake.clear()
 

@@ -230,6 +230,7 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     """
     hf_token = account_access.account_hf_token(hf_token)
     from utils.paths import is_local_path
+
     try:
         if is_local_path(target) or _env_offline():
             return None

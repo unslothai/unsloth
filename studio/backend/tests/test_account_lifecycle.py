@@ -36,7 +36,9 @@ def auth_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
     monkeypatch.setattr(storage_roots.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "studio" / "auth" / "auth.db")
-    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", storage.DB_PATH.parent / ".bootstrap_password")
+    monkeypatch.setattr(
+        storage, "_BOOTSTRAP_PW_PATH", storage.DB_PATH.parent / ".bootstrap_password"
+    )
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
     storage._reset_api_key_hash_cache()
@@ -86,7 +88,9 @@ def db_rows(table):
 
 
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
-@pytest.mark.parametrize("operation", ["list", "create", "setup-code", "deactivate", "reactivate", "delete"])
+@pytest.mark.parametrize(
+    "operation", ["list", "create", "setup-code", "deactivate", "reactivate", "delete"]
+)
 @pytest.mark.parametrize("target", ["unsloth", "alice", "bob"])
 def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
     client, _, _ = matrix
@@ -100,7 +104,9 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
     elif operation == "setup-code":
         response = client.post(url + "/setup-code", headers = headers(actor))
     elif operation in ("deactivate", "reactivate"):
-        response = client.patch(url, headers = headers(actor), json = {"is_active": operation == "reactivate"})
+        response = client.patch(
+            url, headers = headers(actor), json = {"is_active": operation == "reactivate"}
+        )
     else:
         response = client.delete(url, headers = headers(actor))
     if actor != "unsloth":
@@ -114,28 +120,52 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         assert response.status_code == {"create": 201, "delete": 204}.get(operation, 200)
     if response.status_code == 200 and operation == "list":
         assert {r["username"] for r in response.json()["accounts"]} == {"unsloth", "alice", "bob"}
-        assert all(set(row) == {"account_id", "username", "role", "is_active", "created_at", "setup_code_pending"} for row in response.json()["accounts"])
+        assert all(
+            set(row)
+            == {"account_id", "username", "role", "is_active", "created_at", "setup_code_pending"}
+            for row in response.json()["accounts"]
+        )
 
 
-@pytest.mark.parametrize("method,suffix,payload", [
-    ("GET", "", None), ("POST", "", {"username": "carol"}),
-    ("POST", "/missing/setup-code", None),
-    ("PATCH", "/missing", {"is_active": False}), ("DELETE", "/missing", None),
-])
+@pytest.mark.parametrize(
+    "method,suffix,payload",
+    [
+        ("GET", "", None),
+        ("POST", "", {"username": "carol"}),
+        ("POST", "/missing/setup-code", None),
+        ("PATCH", "/missing", {"is_active": False}),
+        ("DELETE", "/missing", None),
+    ],
+)
 def test_accounts_requires_authentication(auth_env, method, suffix, payload):
     response = auth_env[0].request(method, "/api/accounts" + suffix, json = payload)
     assert response.status_code in (401, 403)
     assert "unsloth" not in response.text and "alice" not in response.text
 
 
-@pytest.mark.parametrize("username,valid,canonical", [
-    ("abc", True, "abc"), ("A_L-I9", True, "a_l-i9"), ("a" * 32, True, "a" * 32),
-    ("ab", False, None), ("a" * 33, False, None), ("", False, None),
-    ("alice ", False, None), (" ali", False, None), ("a.b", False, None),
-    ("a/b", False, None), ("a\\b", False, None), ("álice", False, None),
-    ("a\nb", False, None), ("UNSLOTH", False, None), ("Owner", False, None),
-    ("ADMIN", False, None), ("root", False, None), ("system", False, None),
-])
+@pytest.mark.parametrize(
+    "username,valid,canonical",
+    [
+        ("abc", True, "abc"),
+        ("A_L-I9", True, "a_l-i9"),
+        ("a" * 32, True, "a" * 32),
+        ("ab", False, None),
+        ("a" * 33, False, None),
+        ("", False, None),
+        ("alice ", False, None),
+        (" ali", False, None),
+        ("a.b", False, None),
+        ("a/b", False, None),
+        ("a\\b", False, None),
+        ("álice", False, None),
+        ("a\nb", False, None),
+        ("UNSLOTH", False, None),
+        ("Owner", False, None),
+        ("ADMIN", False, None),
+        ("root", False, None),
+        ("system", False, None),
+    ],
+)
 def test_username_validation(auth_env, username, valid, canonical):
     response = create(auth_env[0], username)
     assert response.status_code == (201 if valid else 422)
@@ -181,13 +211,23 @@ def test_setup_single_use_then_change_password_without_owner_side_effects(auth_e
     assert login(client, username, body["setup_code"]).status_code == 401
     auth_header = {"Authorization": "Bearer " + session["access_token"]}
     assert client.get("/api/auth/api-keys", headers = auth_header).status_code == 403
-    response = client.post("/api/auth/change-password", headers = auth_header, json = {
-        "current_password": body["setup_code"], "new_password": "permanent-password",
-    })
+    response = client.post(
+        "/api/auth/change-password",
+        headers = auth_header,
+        json = {
+            "current_password": body["setup_code"],
+            "new_password": "permanent-password",
+        },
+    )
     assert response.status_code == 200
     assert response.json()["must_change_password"] is False
     assert login(client, username, "permanent-password").status_code == 200
-    assert client.post("/api/auth/refresh", json = {"refresh_token": session["refresh_token"]}).status_code == 401
+    assert (
+        client.post(
+            "/api/auth/refresh", json = {"refresh_token": session["refresh_token"]}
+        ).status_code
+        == 401
+    )
     assert storage.get_user_record("unsloth") == owner_before
     assert storage.validate_desktop_secret(desktop) == "unsloth"
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"owner-bootstrap\n"
@@ -198,10 +238,18 @@ def test_expired_setup_code_is_the_same_generic_401_as_wrong_password(auth_env):
     client, _, _ = auth_env
     body = create(client, "alice").json()
     with storage.get_connection() as conn:
-        conn.execute("UPDATE auth_user SET setup_code_expires_at = ? WHERE account_id = ?", (
-            (datetime.now(timezone.utc) - timedelta(seconds = 1)).isoformat(), body["account"]["account_id"],
-        ))
-    responses = [login(client, "alice", body["setup_code"]), login(client, "alice", "wrong"), login(client, "nobody", "wrong")]
+        conn.execute(
+            "UPDATE auth_user SET setup_code_expires_at = ? WHERE account_id = ?",
+            (
+                (datetime.now(timezone.utc) - timedelta(seconds = 1)).isoformat(),
+                body["account"]["account_id"],
+            ),
+        )
+    responses = [
+        login(client, "alice", body["setup_code"]),
+        login(client, "alice", "wrong"),
+        login(client, "nobody", "wrong"),
+    ]
     assert all(r.status_code == 401 for r in responses)
     assert len({r.content for r in responses}) == 1
 
@@ -240,7 +288,9 @@ def test_multi_login_requires_username(matrix):
 
 
 @pytest.mark.parametrize("must_change", [False, True])
-def test_single_owner_login_response_bytes_and_lookup_cost_are_unchanged(auth_env, monkeypatch, must_change):
+def test_single_owner_login_response_bytes_and_lookup_cost_are_unchanged(
+    auth_env, monkeypatch, must_change
+):
     client, auth, _ = auth_env
     with storage.get_connection() as conn:
         conn.execute("UPDATE auth_user SET must_change_password = ?", (int(must_change),))
@@ -256,17 +306,27 @@ def test_single_owner_login_response_bytes_and_lookup_cost_are_unchanged(auth_en
         return lookup(username)
 
     monkeypatch.setattr(storage, "get_user_and_secret", record_lookup)
-    monkeypatch.setattr(storage, "authenticate_account_login", lambda *_: pytest.fail("owner entered managed login"))
+    monkeypatch.setattr(
+        storage, "authenticate_account_login", lambda *_: pytest.fail("owner entered managed login")
+    )
     response = login(client, "unsloth", "owner-password")
     assert response.status_code == 200
-    assert response.content == b'{"access_token":"access","refresh_token":"refresh","token_type":"bearer","must_change_password":' + (b"true}" if must_change else b"false}")
+    assert (
+        response.content
+        == b'{"access_token":"access","refresh_token":"refresh","token_type":"bearer","must_change_password":'
+        + (b"true}" if must_change else b"false}")
+    )
     assert calls == ["unsloth"]
     assert login(client, "UNSLOTH", "owner-password").status_code == 401
 
 
 def seed_credentials():
     return {
-        name: (authentication.create_access_token(name), authentication.create_refresh_token(name), storage.create_api_key(name, "test")[0])
+        name: (
+            authentication.create_access_token(name),
+            authentication.create_refresh_token(name),
+            storage.create_api_key(name, "test")[0],
+        )
         for name in ("unsloth", "alice", "bob")
     }
 
@@ -296,12 +356,22 @@ def test_regeneration_invalidates_old_setup_and_its_session(auth_env):
     client, _, _ = auth_env
     first = create(client, "alice").json()
     session = login(client, "alice", first["setup_code"]).json()
-    second = client.post(f'/api/accounts/{first["account"]["account_id"]}/setup-code', headers = headers()).json()
+    second = client.post(
+        f'/api/accounts/{first["account"]["account_id"]}/setup-code', headers = headers()
+    ).json()
     assert first["setup_code"] != second["setup_code"]
     assert login(client, "alice", first["setup_code"]).status_code == 401
-    assert client.post("/api/auth/change-password", headers = {"Authorization": "Bearer " + session["access_token"]}, json = {
-        "current_password": first["setup_code"], "new_password": "new-password",
-    }).status_code == 401
+    assert (
+        client.post(
+            "/api/auth/change-password",
+            headers = {"Authorization": "Bearer " + session["access_token"]},
+            json = {
+                "current_password": first["setup_code"],
+                "new_password": "new-password",
+            },
+        ).status_code
+        == 401
+    )
     assert login(client, "alice", second["setup_code"]).status_code == 200
 
 
@@ -322,7 +392,11 @@ def test_delete_retires_all_roots_and_recreated_username_inherits_nothing(matrix
     client, _, _ = matrix
     alice = storage.get_account("alice")
     bob = storage.get_account("bob")
-    roots = (storage_roots.workspace_root, storage_roots.project_workspaces_root, storage_roots.tmp_root)
+    roots = (
+        storage_roots.workspace_root,
+        storage_roots.project_workspaces_root,
+        storage_roots.tmp_root,
+    )
     old_paths = []
     untouched = []
     for account in (OWNER, alice, bob):
@@ -332,8 +406,14 @@ def test_delete_retires_all_roots_and_recreated_username_inherits_nothing(matrix
             (path / "private.txt").write_text(account.username)
             (old_paths if account == alice else untouched).append(path)
     events = {account.username: threading.Event() for account in (OWNER, alice, bob)}
-    with run_as(OWNER, active_generations.ActiveGeneration, events["unsloth"]), run_as(alice, active_generations.ActiveGeneration, events["alice"]), run_as(bob, active_generations.ActiveGeneration, events["bob"]):
-        assert client.delete(f"/api/accounts/{alice.account_id}", headers = headers()).status_code == 204
+    with (
+        run_as(OWNER, active_generations.ActiveGeneration, events["unsloth"]),
+        run_as(alice, active_generations.ActiveGeneration, events["alice"]),
+        run_as(bob, active_generations.ActiveGeneration, events["bob"]),
+    ):
+        assert (
+            client.delete(f"/api/accounts/{alice.account_id}", headers = headers()).status_code == 204
+        )
         assert events["alice"].is_set()
         assert not events["bob"].is_set() and not events["unsloth"].is_set()
     for path in old_paths:
@@ -364,16 +444,28 @@ def test_failed_retirement_leaves_disabled_retryable_account(matrix, monkeypatch
     assert "private host path" not in response.text
     assert storage.get_user_record("alice")["is_active"] == 0
     monkeypatch.setattr(accounts, "retire_account_roots", retire)
-    assert client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
+    assert (
+        client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
+    )
 
 
 def test_managed_password_change_cannot_overwrite_a_rotated_credential(matrix):
     record = storage.get_user_record("alice")
     storage.set_account_active(record["account_id"], False)
     storage.set_account_active(record["account_id"], True)
-    assert storage.update_account_password("alice", "replacement-password", expect_password_hash = record["password_hash"], expect_secret = record["jwt_secret"]) is None
+    assert (
+        storage.update_account_password(
+            "alice",
+            "replacement-password",
+            expect_password_hash = record["password_hash"],
+            expect_secret = record["jwt_secret"],
+        )
+        is None
+    )
     current = storage.get_user_record("alice")
-    assert hashing.verify_password("alice-password", current["password_salt"], current["password_hash"])
+    assert hashing.verify_password(
+        "alice-password", current["password_salt"], current["password_hash"]
+    )
 
 
 @pytest.fixture
@@ -425,14 +517,18 @@ def test_cli_reset_only_target_and_owner_only_desktop_rotation(matrix, reset_cli
     for filename in (studio_cli.BOOTSTRAP_PASSWORD_FILE, studio_cli.DESKTOP_SECRET_FILE):
         (auth_dir / filename).write_text("owner-only")
     before = {name: storage.get_user_record(name) for name in credentials}
-    result = reset_cli.invoke(studio_cli.studio_app, ["reset-password", "--username", target.upper()])
+    result = reset_cli.invoke(
+        studio_cli.studio_app, ["reset-password", "--username", target.upper()]
+    )
     assert result.exit_code == 0, result.output
     assert f"New password for '{target}'" in result.output
     for name, (_, refresh, key) in credentials.items():
         after = storage.get_user_record(name)
         if name == target:
             assert after["jwt_secret"] != before[name]["jwt_secret"]
-            assert hashing.verify_password("reset-password", after["password_salt"], after["password_hash"])
+            assert hashing.verify_password(
+                "reset-password", after["password_salt"], after["password_hash"]
+            )
         else:
             assert after == before[name]
         assert (storage.verify_refresh_token(refresh) is None) == (name == target)
@@ -469,19 +565,30 @@ def test_cli_unknown_target_never_creates_account_or_changes_credentials(matrix,
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
 def test_logout_revokes_only_actor_and_only_owner_clears_bootstrap_state(matrix, actor):
     client, _, _ = matrix
-    tokens = {name: authentication.create_refresh_token(name) for name in ("unsloth", "alice", "bob")}
+    tokens = {
+        name: authentication.create_refresh_token(name) for name in ("unsloth", "alice", "bob")
+    }
     response = client.post("/api/auth/logout", headers = headers(actor))
     assert response.status_code == 204
     for name, token in tokens.items():
         assert (storage.verify_refresh_token(token) is None) == (name == actor)
-    assert client.app.state.bootstrap_password == (None if actor == "unsloth" else "owner-bootstrap")
+    assert client.app.state.bootstrap_password == (
+        None if actor == "unsloth" else "owner-bootstrap"
+    )
 
 
-@pytest.mark.parametrize("method,suffix,payload", [
-    ("POST", "/setup-code", None), ("PATCH", "", {"is_active": False}), ("DELETE", "", None),
-])
+@pytest.mark.parametrize(
+    "method,suffix,payload",
+    [
+        ("POST", "/setup-code", None),
+        ("PATCH", "", {"is_active": False}),
+        ("DELETE", "", None),
+    ],
+)
 def test_unknown_account_id_returns_404(matrix, method, suffix, payload):
-    response = matrix[0].request(method, "/api/accounts/missing" + suffix, headers = headers(), json = payload)
+    response = matrix[0].request(
+        method, "/api/accounts/missing" + suffix, headers = headers(), json = payload
+    )
     assert response.status_code == 404
     assert response.json() == {"detail": "Account not found"}
 
@@ -546,6 +653,11 @@ def test_recreated_account_rejects_late_tokens_from_the_deleted_identity(matrix)
     # A request which verified before deletion may still insert its refresh row.
     late_refresh = authentication.create_refresh_token("alice", secret = old["jwt_secret"])
     assert storage.verify_refresh_token(late_refresh) is None
-    assert client.get("/api/auth/api-keys", headers = {"Authorization": "Bearer " + old_access}).status_code == 401
+    assert (
+        client.get(
+            "/api/auth/api-keys", headers = {"Authorization": "Bearer " + old_access}
+        ).status_code
+        == 401
+    )
     assert login(client, "alice", "alice-password").status_code == 401
     assert login(client, "alice", fresh["setup_code"]).status_code == 200

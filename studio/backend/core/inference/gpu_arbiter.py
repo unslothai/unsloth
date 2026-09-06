@@ -158,7 +158,11 @@ def require_no_foreign_generations(
         raise exc.as_http_exception(path) from exc
 
 
-def acquire_for_request(owner: str, register = None, **kwargs) -> Any:
+def acquire_for_request(
+    owner: str,
+    register = None,
+    **kwargs,
+) -> Any:
     """The request boundary for an arbiter acquisition, including media loads."""
     try:
         return acquire_for(owner, register, **kwargs)

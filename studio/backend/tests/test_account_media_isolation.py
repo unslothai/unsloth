@@ -31,9 +31,17 @@ def isolated(monkeypatch, tmp_path):
 
 def _save(kind):
     meta = {
-        "prompt": "private prompt", "model": "private/model", "created_at": 100.0,
-        "width": 512, "height": 512, "steps": 5, "guidance": 1.0, "seed": 1,
-        "num_frames": 49, "fps": 24, "duration_s": 2.0,
+        "prompt": "private prompt",
+        "model": "private/model",
+        "created_at": 100.0,
+        "width": 512,
+        "height": 512,
+        "steps": 5,
+        "guidance": 1.0,
+        "seed": 1,
+        "num_frames": 49,
+        "fps": 24,
+        "duration_s": 2.0,
     }
     if kind == "images":
         return image_gallery.save(Image.new("RGB", (8, 8)), meta)
@@ -70,21 +78,27 @@ def test_gallery_object_routes_do_not_resolve_another_accounts_ids(kind, account
         assert client.get(f"{root}/{record['id']}/file").status_code == 404
         assert client.patch(f"{root}/{record['id']}", json = {"starred": True}).status_code == 404
         assert client.delete(f"{root}/{record['id']}").status_code == 404
-        assert record['id'] not in client.get(root).text
+        assert record["id"] not in client.get(root).text
         if kind == "video":
             assert client.get(f"{root}/{record['id']}/signed-url").status_code == 404
             assert client.get(f"{root}/{record['id']}/export").status_code == 404
     with _client(account) as client:
         assert client.get(f"{root}/{record['id']}/file").status_code == 200
-        assert record['id'] in client.get(root).text
+        assert record["id"] in client.get(root).text
 
 
-@pytest.mark.parametrize("kind,module", [("images", image_gallery), ("audio", audio_gallery), ("video", video_gallery)])
+@pytest.mark.parametrize(
+    "kind,module", [("images", image_gallery), ("audio", audio_gallery), ("video", video_gallery)]
+)
 def test_clear_and_paths_are_account_scoped(kind, module, tmp_path):
     a = run_as(ALICE, _save, kind)
     b = run_as(BOB, _save, kind)
     assert run_as(ALICE, module.clear) == 1
-    path_fn = {"images": image_gallery.owned_image_path, "audio": audio_gallery.owned_audio_path, "video": video_gallery.owned_video_path}[kind]
+    path_fn = {
+        "images": image_gallery.owned_image_path,
+        "audio": audio_gallery.owned_audio_path,
+        "video": video_gallery.owned_video_path,
+    }[kind]
     assert run_as(ALICE, path_fn, a["id"]) is None
     assert run_as(BOB, path_fn, b["id"]).is_file()
     folder = "videos" if kind == "video" else kind
@@ -99,12 +113,20 @@ def test_signed_links_authorize_only_the_original_account_and_media(kind, module
     token = run_as(ALICE, sign, record["id"])
     root = f"/api/inference/{kind}/gallery"
     with _client(BOB) as client:
-        assert client.get(f"{root}/{record['id']}/file-signed", params = {"token": token}).status_code == 200
+        assert (
+            client.get(f"{root}/{record['id']}/file-signed", params = {"token": token}).status_code
+            == 200
+        )
         assert client.get(f"{root}/guessed/file-signed", params = {"token": token}).status_code == 401
         tampered = token.replace(ALICE.account_id, BOB.account_id)
-        assert client.get(f"{root}/{record['id']}/file-signed", params = {"token": tampered}).status_code == 401
+        assert (
+            client.get(f"{root}/{record['id']}/file-signed", params = {"token": tampered}).status_code
+            == 401
+        )
     # Existing owner clients retain the same token format and verifier result.
-    verify = module._verify_image_link_token if kind == "images" else module._verify_video_link_token
+    verify = (
+        module._verify_image_link_token if kind == "images" else module._verify_video_link_token
+    )
     owner_token = run_as(OWNER, sign, record["id"])
     assert owner_token.split(".")[0] == record["id"]
     assert verify(owner_token) == record["id"]
@@ -128,7 +150,15 @@ def test_search_ids_and_clear_fences_are_private(monkeypatch):
 
 
 def test_openai_video_jobs_are_private_in_memory_and_after_rehydration():
-    job = video._VideoJob(id = "private-job", created_at = 100, prompt = "private", model = "private/model", size = "512x512", seconds = "2", status = "failed")
+    job = video._VideoJob(
+        id = "private-job",
+        created_at = 100,
+        prompt = "private",
+        model = "private/model",
+        size = "512x512",
+        seconds = "2",
+        status = "failed",
+    )
     run_as(ALICE, video._remember_job, job)
     assert run_as(BOB, video._lookup_video, job.id) is None
     assert run_as(BOB, video._all_videos) == []
