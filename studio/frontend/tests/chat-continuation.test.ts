@@ -274,10 +274,13 @@ test("the adapter latches the backend window-exhaustion event", () => {
     /reason: resolveIncompleteReason\([\s\S]{0,400}contextWindowExceeded,\s*\)/,
     "the error path decides a reason without asking what the provider reported",
   );
+  // The provisional reason on every streamed yield is the durability gate's call - a run with a server-side
+  // run to resume from reads as cancelled, a walk-away reads as interrupted - and either guess still goes
+  // through the resolver, so a window the provider reported outranks what the client inferred.
   assert.match(
     adapter,
-    /incomplete: \{\s*reason: resolveIncompleteReason\("cancelled" as const, contextWindowExceeded\),\s*\}/,
-    "an abort saves a bare cancelled again, losing what the provider reported",
+    /incomplete: \{\s*reason: resolveIncompleteReason\(\s*generationDecision === "durable" \?\s*"cancelled"\s*:\s*"interrupted",\s*contextWindowExceeded,\s*\)/,
+    "an abort saves a bare cancelled again, losing the gate that names a walk-away and what the provider reported",
   );
   // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.
   const handler = adapter.slice(
