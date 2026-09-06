@@ -63,7 +63,7 @@ export function useSourceDrop({
       names.length === 1
         ? `Can't add ${names[0]}`
         : `Can't add ${names.length} files`,
-      { description: `Supported types: ${RAG_UPLOAD_ACCEPT}` },
+      { description: `Supported types: ${RAG_UPLOAD_ACCEPT}, source code` },
     );
   }, []);
 

@@ -446,9 +446,11 @@ def parse(path: str, *, want_images: bool = False):
         pages = _docx(path)
         return (pages, []) if want_images else pages
 
-    if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        with open(path, encoding = "utf-8", errors = "replace") as f:
+    if ext in config.TEXT_EXTS:
+        with open(path, encoding = "utf-8-sig", errors = "replace") as f:
             raw = f.read()
+        if "\x00" in raw:
+            raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
         return (pages, []) if want_images else pages
 
