@@ -7378,7 +7378,9 @@ def _shell_is_posix() -> bool:
     return sys.platform != "win32" or _windows_bash() is not None
 
 
-def _get_shell_cmd(command: str, *, os_isolated: bool = False) -> list[str]:
+def _get_shell_cmd(
+    command: str, *, os_isolated: bool = False, script_path: str | None = None
+) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string.
 
     ``os_isolated`` says the launch runs inside the Windows AppContainer. Git for
@@ -7386,7 +7388,10 @@ def _get_shell_cmd(command: str, *, os_isolated: bool = False) -> list[str]:
     ``\\BaseNamedObjects`` at startup, which an AppContainer is denied
     (``NtCreateDirectoryObject: 0xC0000022``), so it can never start there. The
     isolated launch uses cmd and the model is told so by
-    apply_os_isolated_tool_descriptions.
+    apply_os_isolated_tool_descriptions. ``script_path`` names a batch file the
+    caller wrote inside the workdir holding ``command``: cmd /c executes only
+    the first line of a multi-line argument, a batch file runs all of them.
+    ``/d`` skips the AutoRun registry commands, which are host state.
     """
     if sys.platform == "win32":
         # why: the model is told this tool is bash and writes bash. cmd /c runs
@@ -7396,8 +7401,28 @@ def _get_shell_cmd(command: str, *, os_isolated: bool = False) -> list[str]:
         bash = None if os_isolated else _windows_bash()
         if bash:
             return [bash, "-c", command]
+        if script_path:
+            return ["cmd", "/d", "/c", script_path]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+def _write_isolated_batch_script(command: str, workdir: str) -> str:
+    """Write ``command`` as a batch file in the workdir for the isolated cmd launch.
+
+    The AppContainer can read the workdir, so the file is reachable inside the
+    sandbox, and it is registered as this call's scratch so the created-file
+    report skips it. ``@echo off`` keeps cmd from echoing every line into the
+    tool output; CRLF line endings because cmd mis-parses a bare LF at the end
+    of a label or a parenthesised block.
+    """
+    fd, path = tempfile.mkstemp(suffix = ".cmd", prefix = "studio_exec_", dir = workdir)
+    body = "@echo off\r\n" + command.replace("\r\n", "\n").replace("\n", "\r\n")
+    if not body.endswith("\r\n"):
+        body += "\r\n"
+    with os.fdopen(fd, "w", encoding = "utf-8", newline = "") as handle:
+        handle.write(body)
+    return path
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -16870,6 +16895,8 @@ def _bash_exec(
     call_token = None
     prepared_launch = None
     run_marker = None
+    script_path = None
+    _scratch_name = None
     try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
@@ -16884,11 +16911,14 @@ def _bash_exec(
             run_marker = secrets.token_hex(16)
             safe_env = dict(safe_env)
             safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
+        os_isolated = not full_access and effective_execution_mode == "os_isolation_required"
+        if os_isolated and sys.platform == "win32":
+            script_path = _write_isolated_batch_script(command, workdir)
+            _scratch_name = os.path.basename(script_path)
+            with _scratch_lock:
+                _active_scratch.add(_scratch_name)
         launch_argv = tuple(
-            _get_shell_cmd(
-                command,
-                os_isolated = not full_access and effective_execution_mode == "os_isolation_required",
-            )
+            _get_shell_cmd(command, os_isolated = os_isolated, script_path = script_path)
         )
         launch_preexec = (
             _bypass_preexec
@@ -17030,7 +17060,7 @@ def _bash_exec(
             result = "(no output)" + hint + trailer
         # Only for a chat that has an id (see _python_exec).
         if session_id:
-            result += _created_file_sentinels(workdir, _before, None, call_token)
+            result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
         return result
 
     except Exception as e:
@@ -17039,6 +17069,14 @@ def _bash_exec(
         return _truncate(_tool_failure_message(e))
     finally:
         _call_finished(call_token)
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.discard(_scratch_name)
+        if script_path and os.path.exists(script_path):
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
         _forget_tool_pid(locals().get("proc"))
         if run_marker is not None:
             _sweep_marked_descendants(run_marker)
