@@ -71,6 +71,8 @@ from core.inference.context_window import (
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
+    _CACHE_TYPE_K_FLAGS,
+    _CACHE_TYPE_V_FLAGS,
     _DEVICE_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -21725,16 +21727,20 @@ class LlamaCppBackend:
                 # takes a value -- older builds take -fa as a bare boolean and
                 # read a following "on" as a stray positional.
                 if _caps.get("supports_flash_attn", True):
-                    cmd.append("--flash-attn")
-                    if _caps.get("flash_attn_takes_value", True):
-                        cmd.append("on")
+                    if not _extra_args_set_any_flag(extra_args, {"-fa", "--flash-attn"}):
+                        cmd.append("--flash-attn")
+                        if _caps.get("flash_attn_takes_value", True):
+                            cmd.append("on")
                 else:
                     # Only ever reached on an authoritative --help that has no
                     # flash attention to lose, so there is no speed to give up.
                     _flash_attn_known_off = True
                 # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                 if _caps.get("supports_no_context_shift", True):
-                    cmd.append("--no-context-shift")
+                    if not _extra_args_set_any_flag(
+                        extra_args, {"--context-shift", "--no-context-shift"}
+                    ):
+                        cmd.append("--no-context-shift")
                 # A positive context is always passed (in auto-fit, --fit then
                 # optimizes the gpu-layer offload around it). When auto-fit has
                 # no explicit context, omit -c so --fit sizes it to fit VRAM:
@@ -21899,7 +21905,8 @@ class LlamaCppBackend:
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
-                    cmd.append("--metrics")
+                    if not _extra_args_set_any_flag(extra_args, {"--metrics", "--no-metrics"}):
+                        cmd.append("--metrics")
                 self._slot_save_dir = None
                 self._slot_save_binary = None
                 self._prompt_cache_disabled = False
@@ -21978,7 +21985,8 @@ class LlamaCppBackend:
 
                 # Enable Jinja chat template rendering
                 if _caps.get("supports_jinja", True):
-                    cmd.extend(["--jinja"])
+                    if not _extra_args_set_any_flag(extra_args, {"--jinja", "--no-jinja"}):
+                        cmd.extend(["--jinja"])
 
                 # KV cache data type
                 _valid_cache_types = _VALID_CACHE_TYPES
@@ -21992,14 +22000,10 @@ class LlamaCppBackend:
                     and cache_type_kv in _valid_cache_types
                     and not _cache_type_from_env
                 ):
-                    cmd.extend(
-                        [
-                            "--cache-type-k",
-                            cache_type_kv,
-                            "--cache-type-v",
-                            cache_type_kv,
-                        ]
-                    )
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_K_FLAGS):
+                        cmd.extend(["--cache-type-k", cache_type_kv])
+                    if not _extra_args_set_any_flag(extra_args, _CACHE_TYPE_V_FLAGS):
+                        cmd.extend(["--cache-type-v", cache_type_kv])
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
                 else:
