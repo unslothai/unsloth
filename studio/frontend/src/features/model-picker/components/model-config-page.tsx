@@ -75,7 +75,12 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { type MemoryEstimate } from "../api/memory-estimate";
-import { resolveEstimateContext } from "../model-config/estimate-context";
+import {
+  resolveEstimateContext,
+  resolveMlxEstimateContext,
+  resolveMlxServedWindow,
+  shouldRequestMemoryEstimate,
+} from "../model-config/estimate-context";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
@@ -379,6 +384,7 @@ function MaxSeqLengthSetting({
   inputRef,
   isMlx,
   pinned,
+  fittedToMemory,
   windowUnknown,
 }: {
   value: number;
@@ -388,6 +394,7 @@ function MaxSeqLengthSetting({
   inputRef?: Ref<NumericValueInputHandle>;
   isMlx?: boolean;
   pinned?: boolean;
+  fittedToMemory?: boolean;
   windowUnknown?: boolean;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
@@ -401,7 +408,11 @@ function MaxSeqLengthSetting({
           <InfoHint>
             {isMlx
               ? "Tokens of context the model is sized for. Whether it also caps the " +
-                "cache depends on the architecture."
+                "cache depends on the architecture." +
+                (fittedToMemory
+                  ? " This one was fitted to this machine's memory, which is less than " +
+                    "the model's own window. Set a length to ask for a different one."
+                  : "")
               : "Maximum context window size in tokens. Applies when the model loads."}
           </InfoHint>
         </div>
@@ -2627,18 +2638,6 @@ export function ModelConfigPage({
     mlxNativeWindow == null
       ? null
       : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
-  const mlxServedWindow =
-    (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
-    mlxProspectiveWindow;
-  const maxSeqLengthValue =
-    servedWindow(savedContextPin(config)) ??
-    mlxServedWindow ??
-    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  // The slider picks a request, so it stops at the widest a load may make.
-  const maxSeqLengthMax = Math.min(
-    MAX_SEQ_LENGTH_MAX,
-    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
-  );
   // An auto-fit-below-native GGUF shows activeLoadedContext while
   // customContextLength stays null. If the user fixes GPU Layers (Manual) and
   // remembers, pin that shown context so a later fresh load keeps the fitted
@@ -2676,7 +2675,11 @@ export function ModelConfigPage({
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
   const memoryEstimateRequest =
-    target.isGguf && classifiedIsDiffusion === false
+    shouldRequestMemoryEstimate({
+      isGguf: Boolean(target.isGguf),
+      isAppleUnifiedMemory,
+      classifiedIsDiffusion,
+    })
       ? {
           modelPath: target.id,
           ggufVariant: target.ggufVariant ?? null,
@@ -2695,6 +2698,14 @@ export function ModelConfigPage({
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
+          // The pin the Load button sends, not the window the control displays: an unpinned
+          // MLX load names nothing and is fitted to this machine, and the fitted length is
+          // what comes back below.
+          maxSeqLength: target.isGguf
+            ? null
+            : resolveMlxEstimateContext(savedContextPin(config)),
+          // MLX's cache width: a remembered llama.cpp kvCacheDtype does not describe it.
+          mlxKvBits: runtimeConfig.mlxKvBits ?? null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -2720,6 +2731,26 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // Below the estimate on purpose: this reads what the estimate answered, while the request
+  // above deliberately does not. Only MLX reports a fitted window, and only where this
+  // machine holds less than the model offers.
+  const mlxFittedWindow = targetIsMlx
+    ? servedWindow(memoryEstimate.estimate?.contextFitted)
+    : null;
+  const mlxServedWindow = resolveMlxServedWindow(
+    targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,
+    mlxFittedWindow,
+    mlxProspectiveWindow,
+  );
+  const maxSeqLengthValue =
+    servedWindow(savedContextPin(config)) ??
+    mlxServedWindow ??
+    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
+  // The slider picks a request, so it stops at the widest a load may make.
+  const maxSeqLengthMax = Math.min(
+    MAX_SEQ_LENGTH_MAX,
+    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
+  );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only draw on the cards it names, so the verdict is measured against those: judging
@@ -3053,24 +3084,28 @@ export function ModelConfigPage({
       )}
 
       <div className="space-y-3.5">
+        {/* Above Context Length on purpose: that is the control moving this number most, and a
+            readout below it is one you go looking for. Outside the GGUF block because an MLX load
+            has a footprint to show and none of the llama-server controls below it, and keyed off
+            the request so the row appears exactly when something was priced. */}
+        {memoryEstimateRequest != null && (
+          <MemoryEstimateRow
+            estimate={memoryEstimate.estimate}
+            loading={memoryEstimate.loading}
+            stale={memoryEstimate.stale}
+            gpuCapacityGb={memoryGpuCapacityGb}
+            totalCapacityGb={memoryTotalCapacityGb}
+            systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+            freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+            usableSystemRamGb={memoryUsableSystemRamGb}
+            isUnifiedMemory={isAppleUnifiedMemory}
+            singleMemoryPool={singleMemoryPool}
+            expanded={memoryBreakdownOpen}
+            onExpandedChange={setMemoryBreakdownOpen}
+          />
+        )}
         {target.isGguf && (
           <>
-            {/* Above Context Length on purpose: that is the control moving this number most, and a readout
-                below it is one you go looking for. */}
-            <MemoryEstimateRow
-              estimate={memoryEstimate.estimate}
-              loading={memoryEstimate.loading}
-              stale={memoryEstimate.stale}
-              gpuCapacityGb={memoryGpuCapacityGb}
-              totalCapacityGb={memoryTotalCapacityGb}
-              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
-              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              usableSystemRamGb={memoryUsableSystemRamGb}
-              isUnifiedMemory={isAppleUnifiedMemory}
-              singleMemoryPool={singleMemoryPool}
-              expanded={memoryBreakdownOpen}
-              onExpandedChange={setMemoryBreakdownOpen}
-            />
             <div className="space-y-3">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -3183,6 +3218,9 @@ export function ModelConfigPage({
               inputRef={maxSeqLengthInputRef}
               isMlx={targetIsMlx}
               pinned={savedContextPin(config) != null}
+              fittedToMemory={
+                savedContextPin(config) == null && mlxFittedWindow != null
+              }
               windowUnknown={
                 savedContextPin(config) == null && mlxServedWindow == null
               }

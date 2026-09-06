@@ -756,7 +756,9 @@ class EstimateMemoryRequest(BaseModel):
     """Settings a Load-Model panel is about to submit, priced before it submits them.
 
     Every field mirrors the load request it previews, so the estimate answers for the
-    command that would actually run. Header-only: nothing is read, touched or loaded.
+    command that would actually run. No model is loaded and no tensor data is read: a
+    GGUF is priced from its header, an MLX repo from safetensors headers and the shapes
+    of a graph that is built and never evaluated.
     """
 
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -773,6 +775,14 @@ class EstimateMemoryRequest(BaseModel):
         ge = 0,
         description = "Context length to price (--ctx-size). 0 or omitted prices the "
         "model's native context, which is what an Auto load asks for.",
+    )
+    load_in_4bit: bool = Field(
+        True,
+        description = "Quantize an unquantized checkpoint to 4 bits on load, as "
+        "/load does by default. Priced because it is the difference between a "
+        "checkpoint's shards and what those shards go resident as. A checkpoint "
+        "carrying its own quantization is priced at its shards, and asking for 4 "
+        "bits on top can make it unsizable, because the real load refuses that.",
     )
     cache_type_kv: Optional[str] = Field(
         None,
@@ -830,8 +840,25 @@ class EstimateMemoryRequest(BaseModel):
         "-nkvo, --swa-full and the cache-type flags all move this estimate.",
     )
 
+    max_seq_length: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 1048576,
+        description = "Context an MLX load would open at. Separate from n_ctx because "
+        "the two backends take the length from different fields -- /load reads n_ctx "
+        "for GGUF and max_seq_length for everything else -- and pricing one from the "
+        "other quotes a context the load will not use.",
+    )
+    mlx_kv_bits: Optional[int] = Field(
+        None,
+        description = "MLX KV cache width, mirroring /load's own field. Not derived "
+        "from cache_type_kv: that is llama.cpp's setting, it survives in the config of "
+        "a model that never used it, and reading it here would quantize an estimate "
+        "for a load whose cache stays full width.",
+    )
+
     _no_booleans = field_validator(
-        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
     )(LoadRequest._no_booleans.__func__)
 
 
@@ -844,7 +871,12 @@ class EstimateMemoryResponse(BaseModel):
         description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
         "'unsupported_source' or 'unsizable'.",
     )
-    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    weights_bytes: int = Field(
+        0,
+        description = "Resident weights, projector and drafter. The size of the files "
+        "for a GGUF load; for MLX, what those files go resident AS, which is smaller "
+        "wherever the load casts or quantizes them.",
+    )
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
@@ -895,6 +927,13 @@ class EstimateMemoryResponse(BaseModel):
         True, description = "False under --no-kv-offload, which moves the cache to host RAM"
     )
     n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, which is then what n_ctx prices. Null when the load names "
+        "one, when the machine holds the model's own window, or when the footprint of the "
+        "load cannot be described.",
+    )
     cache_type_kv: Optional[str] = Field(
         None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
     )
@@ -992,12 +1031,27 @@ class MemoryEstimate(BaseModel):
     native_context: Optional[int] = Field(
         None, description = "The model's own trained context length, when readable"
     )
-    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = (
+            "KV cache width the estimate priced, in the vocabulary of whichever backend "
+            "would load it: llama.cpp spellings such as f16 or q8_0 for a GGUF load, and "
+            "a dtype abbreviation or an N-bit width for an MLX one. An MLX cache whose "
+            "entries do not all end up at one width names each of them, the one carrying "
+            "the most of the cache first, as in bf16/4-bit"
+        ),
+    )
     n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
     layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, and which n_ctx then prices. Null wherever the served "
+        "window was not chosen for this machine.",
     )
     context_is_pinned: bool = Field(
         True,
@@ -1120,6 +1174,14 @@ class _InferenceRuntimeFields(BaseModel):
             "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
             "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
             "to check, since a model with its own make_cache ignores the requested size."
+        ),
+    )
+    context_length_fitted: Optional[int] = Field(
+        None,
+        description = (
+            "The window MLX fitted to this machine's memory, where that is shorter than the "
+            "model's own and no Context Length was requested. Null means context_length was not "
+            "chosen for this machine: a pin, or the model's own window."
         ),
     )
     supports_reasoning: bool = Field(
