@@ -1565,8 +1565,8 @@ def main() -> int:
         # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`:
         # nothing has run or been asserted, and all this job proved is that
         # Kaggle accepted a push. The real verdict arrives later from collect.py
-        # as a COMMIT STATUS on the sha in the slug, and that status, not this
-        # job, is what branch protection must require.
+        # as a COMMIT STATUS on the sha in the slug; this job's green says
+        # nothing about the code.
         if args.dispatch:
             result["verdict"] = "dispatched"
             result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]

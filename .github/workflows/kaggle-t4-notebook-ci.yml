@@ -1158,8 +1158,9 @@ jobs:
       #
       # This job now succeeds by DISPATCHING and can no longer say whether the
       # GPU tests passed. The verdict arrives later as the `kaggle-t4-notebook`
-      # commit status, and THAT is the context branch protection must require;
-      # requiring this job would require proof that Kaggle accepted a push.
+      # commit status; this job proves only that Kaggle accepted a push. That
+      # context cannot be a REQUIRED check while the gate samples and the
+      # workflow path-filters: a skipped commit never gets one.
       # --commit-sha puts the sha into the slug, the only record outliving this
       # runner.
       - name: Dispatch to Kaggle

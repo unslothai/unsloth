@@ -1330,3 +1330,69 @@ def test_no_kaggle_workflow_checkout_persists_the_job_token():
                 assert (step.get("with") or {}).get(
                     "persist-credentials"
                 ) is False, f"{path.name}: a checkout persists the job token"
+
+
+def test_two_commits_that_merely_share_eight_characters_post_two_statuses():
+    """The reason the slug grew to twelve characters. Merged, one commit would
+    lose its verdict and have its kernel deleted as delivered."""
+    records = [
+        {
+            "slug": "me/unsloth-t4-ci-nabcdef012345-1111",
+            "sha": "abcdef012345",
+            "kind": "notebook",
+            "verdict": "pass",
+            "reason": "ok",
+        },
+        {
+            "slug": "me/unsloth-t4-ci-nabcdef01ffff-2222",
+            "sha": "abcdef01ffff",
+            "kind": "notebook",
+            "verdict": "fail",
+            "reason": "leg red",
+        },
+    ]
+    statuses = collect.statuses_from(records)
+    assert len(statuses) == 2, statuses
+    assert {s["sha"]: s["state"] for s in statuses} == {
+        "abcdef012345": "success",
+        "abcdef01ffff": "failure",
+    }
+    assert all(len(s["slugs"]) == 1 for s in statuses)
+
+
+def test_the_release_phase_stops_at_its_budget_and_keeps_the_rest(tmp_path, monkeypatch):
+    """delete_kernel allows three 180-second attempts per kernel. Unbounded,
+    the release after a full collection could outlive the job and be killed
+    mid-delete; bounded, what is left is released by the next pass."""
+    clock = [1000.0]
+    monkeypatch.setattr(collect.time, "time", lambda: clock[0])
+
+    def _slow_delete(slug):
+        clock[0] += collect.RELEASE_BUDGET_SEC  # one delete eats the whole budget
+        return True
+
+    monkeypatch.setattr(launch, "delete_kernel", _slow_delete)
+    kernels = [
+        {"slug": f"me/unsloth-t4-ci-nabcdef01234{i}-1111", "verdict": "pass"} for i in range(3)
+    ]
+    result = tmp_path / "collect_result.json"
+    result.write_text(json.dumps({"kernels": kernels, "statuses": []}), encoding = "utf-8")
+    posted = tmp_path / "posted.json"
+    posted.write_text(json.dumps({"ok": [], "failed": []}), encoding = "utf-8")
+    assert collect.delete_collected(result, posted) == 0
+    outcome = json.loads((tmp_path / "delete_result.json").read_text())
+    assert len(outcome["deleted"]) == 1 and len(outcome["kept"]) == 2, outcome
+
+
+def test_the_scheduled_collector_timeout_covers_collection_and_release():
+    job = _wf(COLLECT_WF)["jobs"]["collect"]
+    floor = (collect.BUDGET_SEC + collect.RELEASE_BUDGET_SEC) / 60 + 3
+    assert job["timeout-minutes"] >= floor, (job["timeout-minutes"], floor)
+
+
+def test_nothing_tells_the_reader_to_require_a_sampled_context():
+    """The gate samples and the workflows path-filter, so a commit the gate
+    skips never gets a status; a required context that never arrives blocks
+    the merge. The text that said to require it was wrong."""
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF, CI_DIR / "launch.py", CI_DIR / "collect.py"):
+        assert "branch protection must require" not in path.read_text(encoding = "utf-8"), path

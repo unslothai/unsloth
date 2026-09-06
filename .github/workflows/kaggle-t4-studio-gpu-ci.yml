@@ -585,7 +585,8 @@ jobs:
       # PUSH AND EXIT. Waiting here cost 18.7 minutes of runner (run
       # 33486360729). This job now succeeds by dispatching and cannot say
       # whether the Studio smoke passed; the verdict arrives as the
-      # `kaggle-studio-gpu` commit status, which branch protection must require.
+      # `kaggle-studio-gpu` commit status. Not a required check while the gate
+      # samples: a skipped commit never gets one.
       - name: Dispatch to Kaggle
         id: launch
         # GATED ON THE RECHECK, or the recheck is decorative: a step that

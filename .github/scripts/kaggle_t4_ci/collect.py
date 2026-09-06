@@ -462,15 +462,24 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
         # of the same sha) must not race to post last: a failure wins whichever
         # kernel found it, and both are named as owners so the delete step
         # releases both.
-        # Keyed on the eight characters every slug form shares: a kernel pushed
-        # with the old eight-character slug and one with the twelve-character
-        # slug can name the same commit in one pass, and keyed on the full
-        # prefix they would post as two commits, last one landing wins.
-        key = (sha[:8], context)
-        prior = out.get(key)
-        if prior is None:
-            out[key] = status
+        # Merged only with a status whose sha is the same commit: equal, or one
+        # a prefix of the other, which is what an old eight-character slug and
+        # a twelve-character one for one commit look like. Two commits that
+        # merely share eight characters stay apart, or one of them would lose
+        # its verdict and have its kernel deleted as delivered.
+        key = next(
+            (
+                k
+                for k, s in out.items()
+                if k[1] == context
+                and (s["sha"].startswith(sha) or sha.startswith(s["sha"]))
+            ),
+            None,
+        )
+        if key is None:
+            out[(sha, context)] = status
             continue
+        prior = out[key]
         prior["slugs"].append(record["slug"])
         longest = max(prior["sha"], sha, key = len)
         if state == "failure" and prior["state"] != "failure":
@@ -483,6 +492,12 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
 # Verdicts whose kernel is finished with once the status is delivered. `pending`
 # and `gone` own nothing to delete; `None` never got as far as a verdict.
 DELETABLE = {"pass", "fail", "partial", "infra", "reaped"}
+
+# Ceiling on the release phase of one pass. delete_kernel allows three
+# 180-second attempts per kernel, so an unbounded release after a full
+# BUDGET_SEC collection could outlive the job; the kernels left over are
+# released by the next pass, which sees their statuses already posted.
+RELEASE_BUDGET_SEC = 600
 
 
 def delete_collected(result_path: Path, posted_path: Path | None) -> int:
@@ -507,6 +522,7 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
             slug for s in data.get("statuses", []) for slug in s.get("slugs", [])
         }
     outcome = {"deleted": [], "kept": [], "failed_delete": []}
+    deadline = time.time() + RELEASE_BUDGET_SEC
     for record in data.get("kernels") or []:
         slug = record.get("slug")
         if not slug or record.get("verdict") not in DELETABLE:
@@ -516,6 +532,10 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
         if slug in failed:
             outcome["kept"].append(slug)
             _log(f"kept {slug}: its status did not post; the next pass retries")
+            continue
+        if time.time() >= deadline:
+            outcome["kept"].append(slug)
+            _log(f"kept {slug}: release budget spent; the next pass releases it")
             continue
         if launch.delete_kernel(slug):
             outcome["deleted"].append(slug)

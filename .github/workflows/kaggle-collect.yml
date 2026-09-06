@@ -23,9 +23,11 @@
 #
 # A commit status per collected kernel, `kaggle-t4-notebook` or
 # `kaggle-studio-gpu`, against the sha in the kernel's slug. THAT is the check
-# meaning "the GPU tests passed"; the dispatching job succeeds by dispatching,
-# so branch protection must require these contexts instead, or the change
-# trades forty minutes of runner for a check that proves nothing.
+# meaning "the GPU tests passed"; the dispatching job succeeds by dispatching
+# and proves only that Kaggle accepted a push. Neither context can be a
+# REQUIRED check while the GPU workflows sample and path-filter: a commit the
+# gate skips gets no status at all, and a required context that never arrives
+# blocks the merge.
 #
 # ACCOUNTS
 #
@@ -71,9 +73,10 @@ jobs:
   collect:
     name: Collect
     runs-on: ubuntu-latest
-    # Well above collect.py's BUDGET_SEC (900s) plus setup, so its own budget
-    # stops a long pass rather than the job being killed mid-download.
-    timeout-minutes: 25
+    # collect.py's BUDGET_SEC (900s) plus its RELEASE_BUDGET_SEC (600s) plus
+    # setup and posting, so the script's own budgets stop a long pass rather
+    # than the job being killed mid-download or mid-release.
+    timeout-minutes: 30
     permissions:
       contents: read
       # The point of the workflow: without it the verdict reaches nobody.
