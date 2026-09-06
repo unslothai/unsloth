@@ -301,6 +301,12 @@ function Install-UnslothStudio {
     } else {
         "https://huggingface.co/unsloth/windows-arm64-wheels/resolve/main"
     }
+    # Names PyPI supplies a usable win_arm64 wheel of, so staging skipped our copy. These are
+    # AVAILABLE, not missing: the drop list below turns a name it cannot find into
+    # "name ; platform_machine == \"AMD64\"", which would EXCLUDE the package on ARM64 rather
+    # than let PyPI provide it -- the exact opposite of preferring upstream.
+    $script:WoaPyPIProvided = @{}
+    $script:WoaPyPIMatchedVersion = $null
     $script:WoaPyarrowWheel = $null      # local path once provisioned
     $script:WoaPyarrowSource = $null     # "pypi" | "wheelhouse" | "local"
     $script:WoaPyarrowWheelName = $null  # the wheel the pin is written from, staged or on PyPI
@@ -501,6 +507,23 @@ function Install-UnslothStudio {
         return $Line
     }
 
+    # Mirrors _public_pypi_is_reachable in studio/install_python_stack.py, and for the same
+    # reason: what PyPI publishes is only availability if PyPI is where the resolve will look.
+    # UV_INDEX_URL and UV_DEFAULT_INDEX REPLACE the default index (--extra-index-url adds to
+    # it, so an extra leaves PyPI in play and is not consulted here). Offline or pointed at an
+    # exclusive mirror, dropping our wheel would leave the package obtainable from nowhere.
+    function Test-WoaResolveReachesPyPI {
+        foreach ($name in @("UV_OFFLINE", "PIP_NO_INDEX")) {
+            $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
+        }
+        foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
+            $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+            if ($url -and ($url.Trim()) -and ($url -notlike "*pypi.org*")) { return $false }
+        }
+        return $true
+    }
+
     # Exact tags, or a wheel that does not care: cp38-abi3 and py3-none both import on cp313, and
     # the wheelhouse ships one of each (hf_transfer, sqlite_vec). Free-threaded venvs are excluded
     # because abi3 is not offered there, which is why Test-WoaWheelAvailable stays exact.
@@ -510,9 +533,27 @@ function Install-UnslothStudio {
         if (Test-WoaWheelTags -Name $Name -PyTag $PyTag -AbiTag $AbiTag) { return $true }
         $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
         if ($fields.Count -lt 5) { return $false }
+        # Free-threaded CPython has no stable ABI (CPython #111506), so abi3 is not an option there.
         if ($AbiTag -like "*t") { return $false }
         $abiTags = $fields[$fields.Count - 2] -split '\.'
-        return (($abiTags -contains "abi3") -or ($abiTags -contains "none"))
+        $minor = 0
+        if ($PyTag -match '^cp3(\d+)$') { $minor = [int]$Matches[1] }
+        foreach ($pyTag in ($fields[$fields.Count - 3] -split '\.')) {
+            # abi3 is forward compatible from the version it was built against, not from anywhere:
+            # a cp314-abi3 wheel does not import on cp313. Same rule as the staging scan below.
+            if (($abiTags -contains "abi3") -and ($pyTag -match '^cp3(\d+)$')) {
+                if ([int]$Matches[1] -le $minor) { return $true }
+            }
+            if ($abiTags -contains "none") {
+                if ($pyTag -match '^py3(\d*)$') {
+                    if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $minor)) { return $true }
+                }
+                if ($pyTag -match '^cp3(\d+)$') {
+                    if ([int]$Matches[1] -le $minor) { return $true }
+                }
+            }
+        }
+        return $false
     }
 
     # PyPI alone, and no lower than $Floor: the wheelhouse exists for what PyPI has no win_arm64
@@ -535,10 +576,13 @@ function Install-UnslothStudio {
             $fields = ($name -replace '(?i)\.whl$', '') -split '-'
             if ($fields.Count -lt 5) { continue }
             if (($fields[0] -replace '_', '-').ToLowerInvariant() -ne $slug) { continue }
-            if (-not $Floor) { return $true }
+            if (-not $Floor) { $script:WoaPyPIMatchedVersion = $fields[1]; return $true }
             # Published is not enough: published at or above what the wheelhouse would have staged,
             # so the guard can never swap a working wheel for an older upstream one.
-            if (Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor) { return $true }
+            if (Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor) {
+                $script:WoaPyPIMatchedVersion = $fields[1]
+                return $true
+            }
         }
         return $false
     }
@@ -552,6 +596,8 @@ function Install-UnslothStudio {
         if ($Name -notlike "*win_arm64*") { return $false }
         $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
         if ($fields.Count -lt 5) { return $false }
+        # Offline or on an exclusive mirror, PyPI publishing it proves nothing about this resolve.
+        if (-not (Test-WoaResolveReachesPyPI)) { return $false }
         # Only wheels THIS venv could have used: a cp312 wheel sitting in the wheelhouse is not made
         # redundant by a cp313 wheel on PyPI, and dropping it would answer a question nobody asked.
         if (-not (Test-WoaWheelTagsUsable -Name $Name -PyTag $PyTag -AbiTag $AbiTag)) { return $false }
@@ -5201,6 +5247,9 @@ exit 0
                 if ($wheel.Name -like "pyarrow-*") { continue }
                 if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
                 if (Test-WoaWheelhouseWheelIsRedundant -Name $wheel.Name -PyTag $_woaExtraTag -AbiTag $_woaExtraAbi) {
+                    $_woaRedundantKey = (($wheel.Name -split '-')[0] -replace '[-_.]+', '-').ToLowerInvariant()
+                    if (-not $script:WoaPyPIProvided.ContainsKey($_woaRedundantKey)) { $script:WoaPyPIProvided[$_woaRedundantKey] = @() }
+                    $script:WoaPyPIProvided[$_woaRedundantKey] += [string]$script:WoaPyPIMatchedVersion
                     substep "windows on arm: PyPI publishes $($wheel.Name) itself -- taking it from there, not the wheelhouse."
                     continue
                 }
@@ -5227,6 +5276,9 @@ exit 0
                     if ($name -like "pyarrow-*") { continue }
                     if ($name -notlike "*win_arm64*" -and $name -notlike "*-any.whl") { continue }
                     if (Test-WoaWheelhouseWheelIsRedundant -Name $name -PyTag $_woaExtraTag -AbiTag $_woaExtraAbi) {
+                        $_woaRedundantKey = (($name -split '-')[0] -replace '[-_.]+', '-').ToLowerInvariant()
+                        if (-not $script:WoaPyPIProvided.ContainsKey($_woaRedundantKey)) { $script:WoaPyPIProvided[$_woaRedundantKey] = @() }
+                        $script:WoaPyPIProvided[$_woaRedundantKey] += [string]$script:WoaPyPIMatchedVersion
                         substep "windows on arm: PyPI publishes $name itself -- taking it from there, not the wheelhouse."
                         continue
                     }
@@ -5293,6 +5345,14 @@ exit 0
             $_woaWheelKey = ($parts[0] -replace '[-_.]+', '-').ToLowerInvariant()
             if (-not $WoaWheelNames.ContainsKey($_woaWheelKey)) { $WoaWheelNames[$_woaWheelKey] = @() }
             $WoaWheelNames[$_woaWheelKey] += $parts[1]
+        }
+        # A wheel staging skipped because PyPI publishes it is still available for win_arm64, so
+        # it belongs here too. Without this the guard reads as "no wheel anywhere" and the drop
+        # list below excludes the package on ARM64: it would go from "installed from our
+        # wheelhouse" to "not installed at all", which is worse than the duplication it fixes.
+        foreach ($_woaProvided in $script:WoaPyPIProvided.Keys) {
+            if (-not $WoaWheelNames.ContainsKey($_woaProvided)) { $WoaWheelNames[$_woaProvided] = @() }
+            $WoaWheelNames[$_woaProvided] += @($script:WoaPyPIProvided[$_woaProvided] | Where-Object { $_ })
         }
         # None of these has a win_arm64 wheel or a buildable sdist; brotli arrives through
         # httpx[brotli], which negotiates around it when absent.
