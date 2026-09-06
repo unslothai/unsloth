@@ -395,11 +395,11 @@ def test_installer_never_selects_a_torchcodec_built_against_another_torch():
         )
         highest = max(
             (p for p in probes if specifier.contains(p)),
-            key=lambda v: tuple(int(x) for x in v.split(".")),
+            key = lambda v: tuple(int(x) for x in v.split(".")),
         )
-        assert highest.rsplit(".", 1)[0] in allowed, (
-            f"torch {torch_minor}: pip would resolve {spec} to {highest}"
-        )
+        assert (
+            highest.rsplit(".", 1)[0] in allowed
+        ), f"torch {torch_minor}: pip would resolve {spec} to {highest}"
 
 
 def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
