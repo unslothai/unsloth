@@ -203,32 +203,55 @@ def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
 # derived from uv's documented precedence; these are the results of that comparison.
 UV_CONFIG_CASES = [
     # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
-    ("comment_nospace", "uv.toml", 'no-index = true# offline lab\n', False),
+    ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),
     ("value_hash_nospace", "uv.toml", 'index-url = "https://corp.example/simple"#corp\n', False),
     # A quoted key is the same key as the bare spelling.
     ("quoted_key", "uv.toml", '"index-url" = "https://corp.example/simple"\n', False),
     # A dotted key is the same statement as writing the leaf under [pip].
-    ("dotted_no_index", "uv.toml", 'pip.no-index = true\n', False),
+    ("dotted_no_index", "uv.toml", "pip.no-index = true\n", False),
     ("dotted_index_url", "uv.toml", 'pip.index-url = "https://corp.example/simple"\n', False),
-    ("pyproject_dotted", "pyproject.toml", '[tool.uv]\npip.no-index = true\n', False),
+    ("pyproject_dotted", "pyproject.toml", "[tool.uv]\npip.no-index = true\n", False),
     # And the other side of the same scan: a `#` INSIDE a string is not a comment. Cutting at
     # the first one would have turned both of these into a truncated URL or an empty value.
     ("fragment_kept", "uv.toml", 'index-url = "https://corp.example/simple#frag"\n', False),
     ("url_only_in_comment", "uv.toml", '# index-url = "https://corp.example/simple"\n', True),
     # Cases that must keep answering True, so the fix cannot be a blanket "not reachable".
     ("extra_index_only", "uv.toml", 'extra-index-url = "https://corp.example/simple"\n', True),
-    ("index_default_false", "uv.toml", '[[index]]\nurl = "https://corp.example/simple"\ndefault = false\n', True),
+    (
+        "index_default_false",
+        "uv.toml",
+        '[[index]]\nurl = "https://corp.example/simple"\ndefault = false\n',
+        True,
+    ),
     ("explicit_pypi", "uv.toml", 'index-url = "https://pypi.org/simple"\n', True),
-    ("no_index_false", "uv.toml", 'no-index = false\nindex-url = "https://pypi.org/simple"\n', True),
+    (
+        "no_index_false",
+        "uv.toml",
+        'no-index = false\nindex-url = "https://pypi.org/simple"\n',
+        True,
+    ),
     # [pip] outranks the top level, in both directions.
-    ("pip_pypi_beats_top_corp", "uv.toml",
-     'index-url = "https://corp.example/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n', True),
-    ("pip_corp_beats_top_pypi", "uv.toml",
-     'index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://corp.example/simple"\n', False),
+    (
+        "pip_pypi_beats_top_corp",
+        "uv.toml",
+        'index-url = "https://corp.example/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n',
+        True,
+    ),
+    (
+        "pip_corp_beats_top_pypi",
+        "uv.toml",
+        'index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://corp.example/simple"\n',
+        False,
+    ),
     # A host that merely contains the name is not PyPI.
     ("lookalike_host", "uv.toml", 'index-url = "https://pypi.org.evil.com/simple"\n', False),
     # An inline `index = [...]` is not modelled, and unreadable resolves to "not PyPI".
-    ("inline_index_array", "uv.toml", 'index = [{ url = "https://corp.example/simple", default = true }]\n', False),
+    (
+        "inline_index_array",
+        "uv.toml",
+        'index = [{ url = "https://corp.example/simple", default = true }]\n',
+        False,
+    ),
 ]
 
 
@@ -238,7 +261,9 @@ UV_CONFIG_CASES = [
     UV_CONFIG_CASES,
     ids = [case[0] for case in UV_CONFIG_CASES],
 )
-def test_a_uv_config_decides_whether_pypi_is_in_the_resolve(tmp_path, name, filename, text, reaches):
+def test_a_uv_config_decides_whether_pypi_is_in_the_resolve(
+    tmp_path, name, filename, text, reaches
+):
     work = tmp_path / name
     work.mkdir()
     (work / filename).write_text(text, encoding = "utf-8")

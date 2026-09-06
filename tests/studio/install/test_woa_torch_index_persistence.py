@@ -2899,9 +2899,9 @@ class TestAFloorIsPep440AboutPrereleases:
             timeout = 120,
         )
         assert done.returncode == 0, done.stderr
-        assert done.stdout.strip() == "False", (
-            "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
-        )
+        assert (
+            done.stdout.strip() == "False"
+        ), "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
 
     @requires_pwsh
     def test_the_wheel_the_gb10_run_staged_is_still_accepted(self):
