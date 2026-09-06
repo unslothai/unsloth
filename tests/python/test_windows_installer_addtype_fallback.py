@@ -1657,9 +1657,7 @@ _SPLIT_PATH_LITERAL_PARENT = re.compile(
 )
 
 
-@pytest.mark.parametrize(
-    "name", ("install.ps1", "studio/setup.ps1", "scripts/uninstall.ps1")
-)
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1", "scripts/uninstall.ps1"))
 def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
     text = (REPO_ROOT / name).read_text(encoding = "utf-8")
     offenders = [

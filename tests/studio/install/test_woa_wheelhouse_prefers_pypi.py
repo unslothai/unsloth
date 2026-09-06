@@ -38,9 +38,7 @@ def source() -> str:
 
 def _function_body(source: str, name: str) -> str:
     """One nested `    function Name {` block, to its closing `    }`."""
-    match = re.search(
-        r"(?ms)^    function " + re.escape(name) + r"\b.*?^    \}$", source
-    )
+    match = re.search(r"(?ms)^    function " + re.escape(name) + r"\b.*?^    \}$", source)
     assert match, f"install.ps1 no longer defines {name}"
     return match.group(0)
 
@@ -69,9 +67,9 @@ def test_both_staging_branches_skip_what_pypi_publishes(source):
     guard on one of them leaves the other shipping our copy."""
     loop = _staging_loop(source)
     calls = re.findall(r"Test-WoaWheelhouseWheelIsRedundant", loop)
-    assert len(calls) == 2, (
-        f"expected the redundancy guard in both staging branches, found {len(calls)}"
-    )
+    assert (
+        len(calls) == 2
+    ), f"expected the redundancy guard in both staging branches, found {len(calls)}"
 
 
 def test_the_guard_is_version_aware(source):
@@ -106,6 +104,6 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
     body = _function_body(source, "Get-WoaPyarrowSource")
     assert 'return "pypi"' in body
     loop = _staging_loop(source)
-    assert re.search(r'-like "pyarrow-\*"\) \{ continue \}', loop), (
-        "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
-    )
+    assert re.search(
+        r'-like "pyarrow-\*"\) \{ continue \}', loop
+    ), "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
