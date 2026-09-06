@@ -33,7 +33,7 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -92,20 +92,144 @@ def _minimax_lyrics_for_pipeline(lyrics: str) -> str:
     return "\n".join(normalized)
 
 
-_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
-    (
-        "condition_encoder",
-        "language_model",
-        "rvq_depth_decoder",
-        "scheduler",
-        "tokenizer",
-        "transformer",
-        "vocoder",
-    )
-)
+_MINIMAX_COMPONENT_SPECS = {
+    "condition_encoder": ("diffusers", "MiniMaxMusic3ConditionEncoder", "diffusion_pytorch_model"),
+    "language_model": ("transformers", "Qwen3ForCausalLM", "model"),
+    "rvq_depth_decoder": (
+        "diffusers",
+        "MiniMaxMusic3RVQDepthDecoder",
+        "diffusion_pytorch_model",
+    ),
+    "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler", None),
+    "tokenizer": ("transformers", "Qwen2Tokenizer", None),
+    "transformer": (
+        "diffusers",
+        "MiniMaxMusic3Transformer1DModel",
+        "diffusion_pytorch_model",
+    ),
+    "vocoder": ("diffusers", "MiniMaxMusic3Vocoder", "diffusion_pytorch_model"),
+}
+_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(_MINIMAX_COMPONENT_SPECS)
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
 _MAX_AUDIO_METADATA_BYTES = 1_000_000
+_MAX_MINIMAX_TOKENIZER_BYTES = 32 * 1024 * 1024
+
+
+def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
+    """Whether a component has one whole tensor file or a complete shard index."""
+    try:
+        index_path = directory / f"{weight_stem}.safetensors.index.json"
+        indexes = (index_path,) if index_path.is_file() else ()
+    except OSError:
+        return False
+    for index_path in indexes:
+        try:
+            if (
+                index_path.stat().st_size <= 0
+                or index_path.stat().st_size > _MAX_AUDIO_METADATA_BYTES
+            ):
+                continue
+            index = json.loads(index_path.read_text(encoding = "utf-8-sig"))
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict) or not weight_map:
+                continue
+            shards = set(weight_map.values())
+            if not all(isinstance(shard, str) and shard for shard in shards):
+                continue
+            complete = True
+            for shard in shards:
+                posix = PurePosixPath(shard.replace("\\", "/"))
+                windows = PureWindowsPath(shard)
+                if (
+                    posix.is_absolute()
+                    or ".." in posix.parts
+                    or windows.is_absolute()
+                    or windows.drive
+                    or posix.suffix.lower() != ".safetensors"
+                ):
+                    complete = False
+                    break
+                target = directory.joinpath(*posix.parts)
+                if not target.is_file() or target.stat().st_size <= 0:
+                    complete = False
+                    break
+            if complete:
+                return True
+        except (OSError, TypeError, ValueError, RecursionError):
+            continue
+    if indexes:
+        return False
+    try:
+        weights = directory / f"{weight_stem}.safetensors"
+        return weights.is_file() and weights.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
+    """Whether a staged Higgs tokenizer has the files its Transformers load needs."""
+    try:
+        root = Path(codec_path).expanduser()
+        if root.is_file():
+            root = root.parent
+        config = _read_local_audio_metadata(root, "config.json", reject_oversized = True)
+        return str(
+            config.get("model_type") or ""
+        ).lower() == "higgs_audio_v2_tokenizer" and _minimax_component_has_weights(root, "model")
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def minimax_music3_local_components_complete(model_path) -> bool:
+    """Whether a MiniMax modular snapshot contains every load-time component."""
+    try:
+        root = Path(model_path).expanduser()
+        if root.is_file():
+            root = root.parent
+        index = _read_local_audio_metadata(root, "modular_model_index.json")
+        for component in _MINIMAX_DOWNLOAD_COMPONENTS:
+            entry = index.get(component)
+            expected_library, expected_class, weight_stem = _MINIMAX_COMPONENT_SPECS[component]
+            metadata = (
+                next(
+                    (part for part in entry if isinstance(part, dict)),
+                    None,
+                )
+                if isinstance(entry, list)
+                else None
+            )
+            if (
+                not isinstance(entry, list)
+                or len(entry) < 3
+                or entry[:2] != [expected_library, expected_class]
+                or not isinstance(metadata, dict)
+                or metadata.get("subfolder") != component
+            ):
+                return False
+            directory = root / component
+            if weight_stem is not None:
+                if not _read_local_audio_metadata(directory, "config.json", reject_oversized = True):
+                    return False
+                if not _minimax_component_has_weights(directory, weight_stem):
+                    return False
+            elif component == "scheduler":
+                if not _read_local_audio_metadata(
+                    directory, "scheduler_config.json", reject_oversized = True
+                ):
+                    return False
+            elif not _read_local_audio_metadata(
+                directory, "tokenizer_config.json", reject_oversized = True
+            ) or not _read_local_audio_metadata(
+                directory,
+                "tokenizer.json",
+                reject_oversized = True,
+                max_bytes = _MAX_MINIMAX_TOKENIZER_BYTES,
+            ):
+                return False
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 class _AudioMetadataTooLarge(ValueError):
@@ -117,16 +241,17 @@ def _read_local_audio_metadata(
     filename: str,
     *,
     reject_oversized: bool = False,
+    max_bytes: int = _MAX_AUDIO_METADATA_BYTES,
 ) -> dict[str, Any]:
     metadata_path = path / filename
     if not metadata_path.is_file():
         return {}
     with metadata_path.open("rb") as handle:
-        raw = handle.read(_MAX_AUDIO_METADATA_BYTES + 1)
-    if len(raw) > _MAX_AUDIO_METADATA_BYTES:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         if reject_oversized:
             raise _AudioMetadataTooLarge(
-                f"{filename} exceeds the {_MAX_AUDIO_METADATA_BYTES}-byte security inspection limit."
+                f"{filename} exceeds the {max_bytes}-byte security inspection limit."
             )
         return {}
     value = json.loads(raw.decode("utf-8-sig"))
@@ -693,7 +818,9 @@ class NativeAudioBackend:
         self.loading_models: set[str] = set()
 
     @staticmethod
-    def _token_kwargs(hf_token: Optional[str]) -> dict[str, str]:
+    def _token_kwargs(hf_token: Optional[str] | bool) -> dict[str, str | bool]:
+        if hf_token is False:
+            return {"token": False}
         token = str(hf_token or "").strip()
         return {"token": token} if token else {}
 
@@ -972,7 +1099,7 @@ class NativeAudioBackend:
         from diffusers import ModularPipeline
 
         token_kwargs = self._token_kwargs(hf_token)
-        pipeline = ModularPipeline.from_pretrained(source, **token_kwargs)
+        pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
         pipeline.load_components(
             pretrained_model_name_or_path = source,
             dtype = self._dtype(),

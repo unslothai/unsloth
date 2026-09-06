@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from utils.audio_tokens import AUDIO_TOKEN_PATTERNS
 from utils.models.model_config import (
@@ -33,6 +34,25 @@ def test_local_native_audio_model_type_is_detected(tmp_path):
         encoding = "utf-8",
     )
     assert detect_audio_type_checked(str(tmp_path)) == ("moss_tts_nano", True)
+
+
+def test_replacing_local_audio_metadata_invalidates_the_cached_verdict(tmp_path, monkeypatch):
+    from utils.models import model_config
+
+    monkeypatch.setattr(model_config, "_audio_detection_cache", {})
+    config = tmp_path / "config.json"
+    replacement = tmp_path / "replacement.json"
+    config.write_text('{"model_type":"moss_tts_nano"}', encoding = "utf-8")
+    replacement.write_text('{"model_type":"not_audio_xyz"}', encoding = "utf-8")
+    assert config.stat().st_size == replacement.stat().st_size
+    assert model_config.detect_audio_type_checked(str(tmp_path))[0] == "moss_tts_nano"
+
+    original = config.stat()
+    os.replace(replacement, config)
+    os.utime(config, ns = (config.stat().st_atime_ns, original.st_mtime_ns))
+    assert config.stat().st_size == original.st_size
+    assert config.stat().st_mtime_ns == original.st_mtime_ns
+    assert model_config.detect_audio_type_checked(str(tmp_path))[0] is None
 
 
 def _classify(tokens: list[str]) -> str | None:

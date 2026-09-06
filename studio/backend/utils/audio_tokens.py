@@ -35,6 +35,7 @@ VALID_AUDIO_TYPES = (
 
 # Emit speech; a chat turn sent to one comes back as audio, never as text.
 TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
+GGUF_TTS_AUDIO_TYPES = frozenset({"snac", "bicodec", "dac"})
 OUTPUT_AUDIO_TYPES = TTS_AUDIO_TYPES | NATIVE_OUTPUT_AUDIO_TYPES
 
 
@@ -105,6 +106,48 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     for audio_type, check_fn in AUDIO_TOKEN_PATTERNS.items():
         if check_fn(token_contents):
             return audio_type
+    return None
+
+
+# What llama.cpp will actually serve is decided after the load by
+# LlamaCppBackend._detect_audio_type_strict, which probes the live vocabulary with these
+# exact codec tokens in this exact order. A preflight that is any looser accepts a target
+# the loader then refuses, and the switch has already evicted the resident speech model by
+# then -- OuteTTS 0.2 carries the four delimiters below but none of DAC's codebook tokens.
+# Keep the two in step; the GGUF gate reads this from the header instead of a live server.
+SNAC_PROBE_TOKEN_IDS = (128258, 128259)
+
+GGUF_AUDIO_CLASSIFIER_TOKENS = frozenset(
+    {
+        "<|AUDIO|>",
+        "<|audio_eos|>",
+        "<|startoftranscript|>",
+        "<audio_soft_token>",
+        "<|audio|>",
+        "<|bicodec_semantic_0|>",
+        "<|bicodec_global_0|>",
+        "<|c1_0|>",
+        "<|c2_0|>",
+    }
+)
+
+
+def classify_gguf_vocab_audio_type(tokens: set, snac_probe_is_codes: bool) -> Optional[str]:
+    """The audio_type llama.cpp will report for a GGUF whose vocabulary is *tokens*."""
+    if snac_probe_is_codes:
+        return "snac"
+    if "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens:
+        return "csm"
+    if "<|startoftranscript|>" in tokens:
+        return "whisper"
+    # Before the codecs, as in the serving detector: a model carrying both an audio-in
+    # marker and codec tokens takes audio input, and is not something to switch to here.
+    if "<audio_soft_token>" in tokens or "<|audio|>" in tokens:
+        return "audio_vlm"
+    if "<|bicodec_semantic_0|>" in tokens and "<|bicodec_global_0|>" in tokens:
+        return "bicodec"
+    if "<|c1_0|>" in tokens and "<|c2_0|>" in tokens:
+        return "dac"
     return None
 
 

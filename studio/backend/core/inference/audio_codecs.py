@@ -6,11 +6,16 @@ Audio codec loading and decoding for TTS inference.
 Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 """
 
+from __future__ import annotations
+
 import io
+import json
+import os
 import re
 import wave
 import structlog
 from loggers import get_logger
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -26,6 +31,87 @@ from utils.third_party_source import (
 )
 
 logger = get_logger(__name__)
+_SPARK_TTS_REPO = "unsloth/Spark-TTS-0.5B"
+_MAX_SPARK_EXPORT_METADATA_BYTES = 1_000_000
+
+
+def _bicodec_assets_complete(repo_path: Path) -> bool:
+    try:
+        config = repo_path / "BiCodec" / "config.yaml"
+        weights = repo_path / "BiCodec" / "model.safetensors"
+        return (
+            config.is_file()
+            and config.stat().st_size > 0
+            and weights.is_file()
+            and weights.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
+def resolve_bicodec_repo_path(
+    model_repo_path: Optional[str] = None,
+    *,
+    hf_token: Optional[str] | bool = None,
+    local_files_only: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
+) -> str:
+    """Resolve and stage the Spark repository that owns the BiCodec assets."""
+    from huggingface_hub import snapshot_download
+    from utils.hf_cache_settings import active_hf_hub_cache
+    from utils.utils import canonical_model_repo_id, hf_env_offline
+
+    source = str(model_repo_path or _SPARK_TTS_REPO).strip()
+    local = Path(source).expanduser()
+    if local.is_dir():
+        root = local.parent if local.name.lower() == "llm" else local
+        if _bicodec_assets_complete(root):
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+        metadata = local / "export_metadata.json"
+        base_model = None
+        try:
+            if metadata.is_file() and metadata.stat().st_size <= _MAX_SPARK_EXPORT_METADATA_BYTES:
+                value = json.loads(metadata.read_text(encoding = "utf-8-sig"))
+                candidate = value.get("base_model") if isinstance(value, dict) else None
+                if isinstance(candidate, str) and candidate.strip():
+                    base_model = candidate.strip()
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        if base_model is None:
+            raise RuntimeError("The local Spark-TTS model has no complete BiCodec assets")
+        source = base_model
+        local = Path(source).expanduser()
+        if local.is_dir():
+            root = local.parent if local.name.lower() == "llm" else local
+            if not _bicodec_assets_complete(root):
+                raise RuntimeError("The recorded Spark-TTS base has incomplete BiCodec assets")
+            ensure_spark_tts_source(root)
+            return os.path.abspath(root)
+
+    from utils.security import load_scan_target
+
+    repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(source), ())
+    repo_id = repo_id or source
+    root = Path(
+        snapshot_download(
+            repo_id,
+            token = (
+                False
+                if hf_token is False
+                else hf_token.strip()
+                if hf_token and hf_token.strip()
+                else None
+            ),
+            cache_dir = cache_dir or active_hf_hub_cache(),
+            local_files_only = hf_env_offline() if local_files_only is None else local_files_only,
+        )
+    )
+    if not _bicodec_assets_complete(root):
+        raise RuntimeError("The staged Spark-TTS repository has incomplete BiCodec assets")
+    ensure_spark_tts_source(root)
+    return os.path.abspath(root)
 
 
 def _numpy_to_wav_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:
@@ -68,11 +154,11 @@ class AudioCodecManager:
     ) -> None:
         """Load the appropriate codec for the given audio type."""
         if audio_type == "snac":
-            self._load_snac(device)
+            self._load_snac(device, model_repo_path)
         elif audio_type == "bicodec":
             self._load_bicodec(device, model_repo_path)
         elif audio_type == "dac":
-            self._load_dac(device)
+            self._load_dac(device, model_repo_path)
         elif audio_type == "csm":
             pass  # CSM decoding is built into the model (output_audio=True)
         else:
@@ -80,7 +166,11 @@ class AudioCodecManager:
 
     # ── Lazy loaders ─────────────────────────────────────────────
 
-    def _load_snac(self, device: str) -> None:
+    def _load_snac(
+        self,
+        device: str,
+        model_repo_path: Optional[str] = None,
+    ) -> None:
         if self._snac_model is not None:
             return
         from snac import SNAC
@@ -88,7 +178,10 @@ class AudioCodecManager:
 
         # Route weights to the selected cache; this can run in the main process.
         self._snac_model = (
-            SNAC.from_pretrained("hubertsiuzdak/snac_24khz", cache_dir = active_hf_hub_cache())
+            SNAC.from_pretrained(
+                model_repo_path or "hubertsiuzdak/snac_24khz",
+                cache_dir = active_hf_hub_cache(),
+            )
             .to(device)
             .eval()
         )
@@ -116,7 +209,11 @@ class AudioCodecManager:
         self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
-    def _load_dac(self, device: str) -> None:
+    def _load_dac(
+        self,
+        device: str,
+        audio_codec_path: Optional[str] = None,
+    ) -> None:
         if self._dac_audio_codec is not None:
             return
         outetts_code_dir = ensure_outetts_source()
@@ -129,12 +226,12 @@ class AudioCodecManager:
             "outetts.models.config",
             outetts_code_dir,
         ).ModelConfig
-        audio_codec_path = ensure_dac_speech_weights()
+        resolved_audio_codec_path = audio_codec_path or ensure_dac_speech_weights()
 
         dummy_config = OuteTTSModelConfig(
             tokenizer_path = None,
             device = device,
-            audio_codec_path = str(audio_codec_path),
+            audio_codec_path = str(resolved_audio_codec_path),
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec

@@ -633,6 +633,11 @@ def neutralize_tts_prompt_text(text: str, audio_type = None) -> str:
     return _spaced_out(_TTS_MARKUP_BY_CODEC.get(audio_type, _TTS_MARKUP_DEFAULT), text)
 
 
+def build_dac_tts_prompt(text: str) -> str:
+    """Build the speakerless OuteTTS v3 completion prompt."""
+    return f"<|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|>\n"
+
+
 def _neutralize_leaves(
     value,
     rewrite,

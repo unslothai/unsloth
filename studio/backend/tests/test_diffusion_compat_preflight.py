@@ -337,6 +337,60 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
     assert out == [b""]
 
 
+def test_a_large_custom_prefix_keeps_the_interrupting_deadline(monkeypatch):
+    interrupted = threading.Event()
+    ranges = []
+
+    class _Trickle:
+        status_code = 206
+
+        def __init__(self):
+            self.raw = types.SimpleNamespace(shutdown = interrupted.set)
+
+        def iter_content(self, chunk_size = 1):
+            if not interrupted.wait(5):
+                raise AssertionError("the custom prefix read was never interrupted")
+            raise OSError("connection interrupted")
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def _get(
+        _url,
+        headers = None,
+        **_kwargs,
+    ):
+        ranges.append((headers or {}).get("Range"))
+        return _Trickle()
+
+    monkeypatch.setattr(
+        "huggingface_hub.utils.get_session", lambda: types.SimpleNamespace(get = _get)
+    )
+
+    started = time.monotonic()
+    assert (
+        diffusion_compat._read_gguf_header(
+            KLEIN_4B_GGUF,
+            KLEIN_4B_FILE,
+            None,
+            revision = "pinned-sha",
+            max_bytes = 32 * 1024**2,
+            timeout_seconds = 0.1,
+        )
+        == b""
+    )
+
+    assert time.monotonic() - started < 2
+    assert interrupted.is_set()
+    assert ranges == [f"bytes=0-{32 * 1024**2 - 1}"]
+
+
 def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monkeypatch):
     # HTTPResponse.shutdown landed in urllib3 2.3.0. requirements/studio.txt floors it there, but
     # an install that resolved its environment BEFORE that floor keeps whatever it already has,

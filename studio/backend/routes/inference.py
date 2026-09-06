@@ -49,7 +49,7 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, asynccontextmanager, contextmanager
-from dataclasses import fields as dataclass_fields, replace
+from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
 import re as _re
@@ -59,6 +59,7 @@ from urllib.parse import quote as _urlquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import HfTokenArg
@@ -524,6 +525,11 @@ def _tts_max_new_tokens(
     return max(1, budget)
 
 
+def _speech_budget_exhausted(context_length: int, prompt_tokens: int) -> bool:
+    """Whether *prompt_tokens* leaves a context with no room to speak."""
+    return context_length - prompt_tokens - _TTS_PROMPT_FORMAT_RESERVE < _MIN_SPEECH_OUTPUT_TOKENS
+
+
 def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     """400 when the prompt alone consumes the loaded context.
 
@@ -534,8 +540,7 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     context_length = _monitor_context_length()
     if not context_length:
         return
-    remaining = context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
-    if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
+    if _speech_budget_exhausted(context_length, _prompt_token_estimate(text)):
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -543,6 +548,21 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
                 "Shorten it, or load the model with a larger context."
             ),
         )
+
+
+# The only codecs whose generator reads instructions/language; every other backend
+# drops them, so folding them into a budget would refuse a request they never see.
+_EXTRA_PROMPT_FIELD_AUDIO_TYPES = ("higgs_tts2", "moss_tts_local")
+
+
+def _speech_prompt_for_budget(audio_type: Optional[str], budget: dict) -> str:
+    """The string the post-load guard will measure for *audio_type*."""
+    text = budget.get("text") or ""
+    if audio_type not in _EXTRA_PROMPT_FIELD_AUDIO_TYPES:
+        return text
+    return _native_tts_prompt_for_budget(
+        text, audio_type, budget.get("instructions"), budget.get("language")
+    )
 
 
 def _native_tts_prompt_for_budget(
@@ -576,9 +596,16 @@ def _prompt_token_estimate(prompt: str) -> int:
                     return count
     except Exception:  # noqa: BLE001 - an estimate must never fail the request
         pass
-    # subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
-    # conservative upper bound for their byte-level fallbacks; under-counting can overflow
-    # the loaded context, while over-counting only shortens the requested clip.
+    return _byte_fallback_prompt_tokens(prompt)
+
+
+def _byte_fallback_prompt_tokens(prompt: str) -> int:
+    """The count used when no tokenizer is reachable.
+
+    subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
+    conservative upper bound for their byte-level fallbacks; under-counting can overflow
+    the loaded context, while over-counting only shortens the requested clip.
+    """
     return max(1, len(prompt.encode("utf-8")))
 
 
@@ -7086,6 +7113,279 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
+def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
+    """The .gguf the load would open, so a probe reads the same file."""
+    from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
+
+    local_path = os.path.expanduser(load_path)
+    if gguf_variant and Path(local_path).is_dir():
+        return _find_local_gguf_by_variant(local_path, gguf_variant)
+    return detect_gguf_model(local_path)
+
+
+# The sub-configs and field names NativeAudioBackend._context_length walks, in its
+# order: a nested window wins over a top-level one, and the first positive field wins.
+# Kept in step with that method; a shorter lookup here reads a different limit than the
+# guard that runs after the switch, and the difference is paid for with the resident model.
+_NATIVE_CONTEXT_SUBCONFIGS = ("language_config", "qwen3_config", "text_config")
+_NATIVE_CONTEXT_FIELDS = (
+    "max_position_embeddings",
+    "max_sequence_length",
+    "max_seq_length",
+    "n_positions",
+    "seq_length",
+)
+
+
+def _local_config_context_length(load_path: str) -> Optional[int]:
+    """The window a local checkpoint declares in config.json, or None.
+
+    The resolver only yields downloaded targets, so this is a local file read.
+    """
+    import json
+
+    config_path = Path(os.path.expanduser(load_path))
+    if config_path.is_dir():
+        config_path = config_path / "config.json"
+    if not config_path.is_file():
+        return None
+    with open(config_path, encoding = "utf-8") as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        return None
+    for candidate in (*(config.get(name) for name in _NATIVE_CONTEXT_SUBCONFIGS), config):
+        if not isinstance(candidate, dict):
+            continue
+        for field in _NATIVE_CONTEXT_FIELDS:
+            value = _positive_int_or_none(candidate.get(field))
+            if value is not None:
+                return value
+    return None
+
+
+def _target_native_context_length(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+) -> Optional[int]:
+    """The target's own declared context, or None when it cannot be read cheaply.
+
+    GGUF carries it in the header, which the staged UI already reads before a load;
+    a non-GGUF checkpoint declares it in config.json next to the weights.
+    """
+    try:
+        if not is_gguf:
+            return _local_config_context_length(load_path)
+        from utils.models.gguf_metadata import read_gguf_context_length
+
+        gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
+        return read_gguf_context_length(gguf_file) if gguf_file else None
+    except Exception as exc:
+        logger.debug("auto-switch: context probe failed for %s: %s", load_path, exc)
+        return None
+
+
+def _target_effective_context_length(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+    override_id: Optional[str] = None,
+    audio_type: Optional[str] = None,
+    resolved_override: Optional[dict] = None,
+    override_is_resolved: bool = False,
+) -> Optional[int]:
+    """The context the switch will actually ask this target to load with.
+
+    A saved per-model override is reconciled with the target the same way the loader
+    applies it; reading the declared window alone would refuse prompts a larger saved
+    context accepts, while trusting an unclamped native override would admit prompts the
+    model cannot hold. A non-positive resolution means the loader decides, which is not
+    something to refuse on, so it falls back to the declared window.
+    """
+    # NativeAudioBackend._context_length discards the requested value for both MOSS
+    # types and runs at the model's own window, so a saved override is not the limit
+    # there and reading it would refuse or admit against a number nothing applies.
+    # _context_length returns 0 for MiniMax, i.e. no window to measure against, so a
+    # saved override is not a limit there either.
+    if audio_type == "minimax_music3":
+        return None
+    if audio_type in _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES:
+        return _target_native_context_length(load_path, is_gguf, gguf_variant)
+    try:
+        from utils.openai_auto_switch_settings import (
+            resolve_fit_max_seq_length,
+            resolve_override_for_load,
+        )
+
+        if override_is_resolved:
+            override = resolved_override
+        else:
+            _key, override = resolve_override_for_load(load_path, override_id, gguf_variant)
+        configured = _positive_int_or_none(
+            resolve_fit_max_seq_length(override, is_gguf = is_gguf) if override else None
+        )
+        if configured is None and override and is_gguf:
+            # A saved context can also arrive only as a pass-through flag; the mapper
+            # forwards llama_extra_args untouched and resolve_requested_ctx makes that
+            # flag the loader's window. Same parser, so the two read one value.
+            from core.inference.llama_server_args import parse_ctx_override
+            configured = _positive_int_or_none(parse_ctx_override(override.get("llama_extra_args")))
+        if configured is not None:
+            from core.inference.native_audio import NATIVE_AUDIO_TYPES
+            if not is_gguf and audio_type in NATIVE_AUDIO_TYPES:
+                detected = _target_native_context_length(load_path, is_gguf, gguf_variant)
+                return min(configured, detected) if detected else configured
+            return configured
+    except Exception as exc:
+        logger.debug("auto-switch: context override lookup failed for %s: %s", load_path, exc)
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    if not is_gguf and audio_type not in NATIVE_AUDIO_TYPES:
+        # No override, so the switch sends LoadRequest's max_seq_length default of 0, and
+        # InferenceBackend.load_model turns that into 2048 rather than the declared window
+        # (Unsloth crashes on 0). The checkpoint's own number is not what will be loaded:
+        # Orpheus declares 131072 and would run at 2048. llama.cpp and the native-audio
+        # backend both do take the model's default, so this applies to neither.
+        return _STANDARD_LOAD_DEFAULT_CONTEXT
+    return _target_native_context_length(load_path, is_gguf, gguf_variant)
+
+
+def _target_speech_audio_type(
+    load_path: str,
+    is_gguf: bool,
+    gguf_variant: Optional[str] = None,
+) -> Optional[str]:
+    """The codec this target would serve speech with, or None if it would not.
+
+    Returns the audio_type rather than a yes/no so the caller can also apply the
+    request-specific rules the post-load path enforces, and reject before the swap
+    instead of after it.
+    """
+    from core.inference.local_model_resolver import _host_serves_mlx
+    from utils.models.model_config import (
+        _find_local_gguf_by_variant,
+        detect_audio_type,
+        detect_gguf_model,
+    )
+
+    try:
+        if not is_gguf:
+            from core.inference.native_audio import (
+                REMOTE_CODE_AUDIO_TYPES,
+                is_native_audio_model,
+            )
+
+            # Non-GGUF weights go to the worker the device picks. The worker selects the
+            # native-audio backend before the MLX fast path, so those checkpoints still
+            # serve on Apple Silicon (NativeAudioBackend has an MPS path); an ordinary
+            # codec checkpoint does reach MLX, which answers generate_audio with
+            # "not supported", so only that shape is refused here.
+            if _host_serves_mlx() and not is_native_audio_model(load_path):
+                return None
+            audio_type = detect_audio_type(
+                load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
+            )
+            # The switch builds its LoadRequest from the stored override, which carries no
+            # trust_remote_code, and NativeAudioBackend.load_model refuses these three
+            # without it -- after the resident model is already gone. Never accept one.
+            if audio_type in REMOTE_CODE_AUDIO_TYPES:
+                return None
+            return audio_type if audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES else None
+        from utils.models.gguf_metadata import read_gguf_tts_audio_type
+
+        gguf_file = _resolve_target_gguf_file(load_path, gguf_variant)
+        audio_type = read_gguf_tts_audio_type(gguf_file) if gguf_file else None
+        return audio_type if audio_type in _GGUF_TTS_AUDIO_TYPES else None
+    except Exception as exc:
+        logger.debug("auto-switch: speech probe failed for %s: %s", load_path, exc)
+        return None
+
+
+@dataclass(frozen = True)
+class _SpeechCodecPreflightResult:
+    cache_environment: Optional[dict[str, str]] = None
+    codec_path: Optional[str] = None
+
+
+def _preflight_speech_codec_for_switch(
+    audio_type: str,
+    load_path: str,
+    is_gguf: bool,
+    hf_token: Optional[str] = None,
+) -> _SpeechCodecPreflightResult:
+    """Stage codec assets that the post-load speech path otherwise fetches too late."""
+    from utils.utils import hf_env_offline
+
+    offline = hf_env_offline()
+    hub_token = hf_token or False
+    if audio_type == "snac":
+        from huggingface_hub import snapshot_download
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        staged = snapshot_download(
+            "hubertsiuzdak/snac_24khz",
+            token = hub_token,
+            cache_dir = str(cache_paths.hub_cache),
+            local_files_only = offline,
+        )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
+    elif audio_type == "bicodec":
+        from core.inference.audio_codecs import resolve_bicodec_repo_path
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        staged = resolve_bicodec_repo_path(
+            None if is_gguf else load_path,
+            hf_token = hub_token,
+            local_files_only = offline,
+            cache_dir = str(cache_paths.hub_cache),
+        )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
+    elif audio_type == "dac":
+        from utils.third_party_source import ensure_dac_speech_weights, ensure_outetts_source
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        ensure_outetts_source()
+        staged = ensure_dac_speech_weights(
+            hub_cache = cache_paths.hub_cache,
+            hf_token = hub_token,
+        )
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}), str(staged))
+    elif audio_type == "higgs_tts2":
+        from core.inference.native_audio import (
+            higgs_tts2_codec_local_complete,
+            native_audio_security_targets,
+        )
+        from huggingface_hub import snapshot_download
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        cache_paths = get_hf_cache_paths()
+        companions = native_audio_security_targets(load_path, audio_type, hub_token)[1:]
+        if not companions:
+            raise RuntimeError("Higgs TTS 2 exposes no companion audio tokenizer.")
+        for companion in companions:
+            local_companion = Path(companion).expanduser()
+            staged = (
+                str(local_companion)
+                if local_companion.exists()
+                else snapshot_download(
+                    companion,
+                    token = hub_token,
+                    cache_dir = str(cache_paths.hub_cache),
+                    local_files_only = offline,
+                )
+            )
+            if not higgs_tts2_codec_local_complete(staged):
+                raise RuntimeError(f"Higgs TTS 2 companion '{companion}' is incomplete.")
+        # The worker must read from the cache proven complete above. Settings can
+        # change while this request waits for the lifecycle gate, so do not let
+        # spawn re-read the mutable active cache after the resident worker exits.
+        return _SpeechCodecPreflightResult(cache_paths.child_env({}))
+    return _SpeechCodecPreflightResult()
+
+
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
@@ -7433,6 +7733,7 @@ async def _maybe_auto_download_model(
     fastapi_request: Optional[Request],
     *,
     require_vision: bool = False,
+    require_speech: bool = False,
     current_subject: Optional[str] = None,
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
@@ -7456,6 +7757,7 @@ async def _maybe_auto_download_model(
             requested_model,
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
+            require_speech = require_speech,
             subject = current_subject,
             # These endpoints also serve Unsloth's chat on a JWT, so only mark real API traffic.
             via_api_key = _request_used_api_key(fastapi_request),
@@ -7926,6 +8228,8 @@ async def _maybe_auto_switch_model(
     gguf_only: bool = False,
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
+    require_speech: bool = False,
+    speech_budget: Optional[dict] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -7978,6 +8282,7 @@ async def _maybe_auto_switch_model(
         "generation_cancel_event",
         None,
     )
+    caller_hf_token = _auto_download_hf_token(fastapi_request)
 
     def _raise_if_generation_cancelled() -> None:
         if generation_cancel_event is not None and generation_cancel_event.is_set():
@@ -8095,6 +8400,7 @@ async def _maybe_auto_switch_model(
                     # GGUF carries both from one mmproj, so the download guard takes
                     # either need; splitting them here would fetch a text-only repo.
                     require_vision = require_vision or require_audio_input,
+                    require_speech = require_speech,
                     current_subject = current_subject,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
@@ -8252,6 +8558,75 @@ async def _maybe_auto_switch_model(
                     param = "model",
                 ),
             )
+        speech_type = None
+        if require_speech and resolved is not None:
+            speech_type = await asyncio.to_thread(
+                _target_speech_audio_type, target_id, target_is_gguf, variant
+            )
+            if speech_type is None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The requested model is not a text-to-speech model.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
+            from core.inference.native_audio import PYTHON310_AUDIO_TYPES
+
+            if speech_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The requested text-to-speech model requires Python 3.10 or newer in Studio.",
+                        status = 400,
+                        code = "unsupported_runtime",
+                        param = "model",
+                    ),
+                )
+            # Same rule as the post-load check below, applied before the swap: MiniMax
+            # needs a description, and finding that out afterwards costs the resident model.
+            if speech_budget is not None:
+                # The same prompt the post-load guard measures: Higgs and MOSS fold
+                # instructions (and MOSS the language) in with the text, so counting the
+                # text alone would pass a request that then 400s with the model gone.
+                target_context = await asyncio.to_thread(
+                    _target_effective_context_length,
+                    target_id,
+                    target_is_gguf,
+                    variant,
+                    override_id,
+                    speech_type,
+                )
+                prompt_tokens = _byte_fallback_prompt_tokens(
+                    _speech_prompt_for_budget(speech_type, speech_budget)
+                )
+                if target_context and _speech_budget_exhausted(target_context, prompt_tokens):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = openai_error_body(
+                            f"Input is too long for the requested model's "
+                            f"{target_context}-token context. Shorten it, or pick a model "
+                            "with a larger context.",
+                            status = 400,
+                            code = "invalid_value",
+                            param = "input",
+                        ),
+                    )
+            if (
+                speech_type == "minimax_music3"
+                and not str((speech_budget or {}).get("instructions") or "").strip()
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        _MINIMAX_NEEDS_DESCRIPTION,
+                        status = 400,
+                        code = "invalid_value",
+                        param = "instructions",
+                    ),
+                )
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
@@ -8261,6 +8636,36 @@ async def _maybe_auto_switch_model(
             and (target_is_gguf or not require_audio_input)
         ):
             await _preflight_image_for_switch(image_preflight, target_is_gguf)
+        speech_cache_environment = None
+        speech_codec_path = None
+        if speech_type is not None:
+            try:
+                speech_preflight_result = await asyncio.to_thread(
+                    _preflight_speech_codec_for_switch,
+                    speech_type,
+                    target_id,
+                    target_is_gguf,
+                    caller_hf_token,
+                )
+                if isinstance(speech_preflight_result, _SpeechCodecPreflightResult):
+                    speech_cache_environment = speech_preflight_result.cache_environment
+                    speech_codec_path = speech_preflight_result.codec_path
+                elif isinstance(speech_preflight_result, dict):
+                    # Compatibility for narrow test/plugin seams that returned the
+                    # original cache-environment mapping before codec paths were pinned.
+                    speech_cache_environment = speech_preflight_result
+            except Exception:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = openai_error_body(
+                        "The requested model's codec assets are unavailable. Connect this "
+                        "server to the network once to download them, or install them in the "
+                        "active cache before retrying.",
+                        status = 503,
+                        code = "codec_unavailable",
+                        param = "model",
+                    ),
+                ) from None
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -8295,10 +8700,40 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        if require_speech and resolved is not None and speech_budget is not None:
+                            target_context = await asyncio.to_thread(
+                                _target_effective_context_length,
+                                target_id,
+                                target_is_gguf,
+                                variant,
+                                override_id,
+                                speech_type,
+                                override,
+                                True,
+                            )
+                            prompt_tokens = _byte_fallback_prompt_tokens(
+                                _speech_prompt_for_budget(speech_type, speech_budget)
+                            )
+                            if target_context and _speech_budget_exhausted(
+                                target_context, prompt_tokens
+                            ):
+                                raise HTTPException(
+                                    status_code = 400,
+                                    detail = openai_error_body(
+                                        f"Input is too long for the requested model's "
+                                        f"{target_context}-token context. Shorten it, or pick a model "
+                                        "with a larger context.",
+                                        status = 400,
+                                        code = "invalid_value",
+                                        param = "input",
+                                    ),
+                                )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         load_kwargs.update(
                             model_override_load_kwargs(override, is_gguf = target_is_gguf)
                         )
+                        if caller_hf_token:
+                            load_kwargs["hf_token"] = caller_hf_token
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids
@@ -8331,13 +8766,20 @@ async def _maybe_auto_switch_model(
                                 if generation_cancel_event is not None
                                 else {}
                             )
+                            load_internal_kw = dict(durable_cancel_kw)
+                            if speech_cache_environment is not None:
+                                load_internal_kw["cache_environment"] = speech_cache_environment
+                            if speech_codec_path is not None:
+                                load_internal_kw["speech_codec_path"] = speech_codec_path
+                            if speech_type is not None and caller_hf_token is None:
+                                load_internal_kw["anonymous_hf_access"] = True
                             try:
                                 await _load_model_impl(
                                     LoadRequest(**load_kwargs),
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
-                                    **durable_cancel_kw,
+                                    **load_internal_kw,
                                 )
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
@@ -8360,7 +8802,7 @@ async def _maybe_auto_switch_model(
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
-                                    **durable_cancel_kw,
+                                    **load_internal_kw,
                                 )
                             _switch_loaded_ok = True
                             # publish the completed load before a late cancellation is observed.
@@ -13316,6 +13758,9 @@ async def _load_model_impl(
     on_reload_confirmed = None,
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
+    cache_environment: Optional[dict[str, str]] = None,
+    anonymous_hf_access: bool = False,
+    speech_codec_path: Optional[str] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -13655,6 +14100,8 @@ async def _load_model_impl(
                 placement = placement,
                 n_parallel = _n_parallel,
             )
+            if speech_codec_path is not None:
+                gguf_intent = replace(gguf_intent, audio_codec_path = speech_codec_path)
             same_loaded_model = llama_backend.matches_load_source(gguf_intent)
             if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
                 gguf_intent = replace(
@@ -14161,6 +14608,10 @@ async def _load_model_impl(
         # claim is all that stops a second pipeline allocating over a resident model).
         # load_model fires it in between; the post-load release covers a re-taken claim.
         _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
+        anonymous_hf_kw = {"anonymous_hf_access": True} if anonymous_hf_access else {}
+        speech_codec_kw = (
+            {"audio_codec_path": speech_codec_path} if speech_codec_path is not None else {}
+        )
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -14182,6 +14633,9 @@ async def _load_model_impl(
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
+                cache_environment = cache_environment,
+                **anonymous_hf_kw,
+                **speech_codec_kw,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -16536,7 +16990,11 @@ _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
         "minimax_music3",
     )
 )
-_GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
+# NativeAudioBackend._context_length ignores the requested window for these.
+_CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano"))
+# inference.py: load_model raises max_seq_length <= 0 to this before loading.
+_STANDARD_LOAD_DEFAULT_CONTEXT = 2048
+_MINIMAX_NEEDS_DESCRIPTION = "MiniMax Music 3 requires a music description in addition to lyrics."
 
 
 async def _generate_tts_wav(
@@ -16546,23 +17004,33 @@ async def _generate_tts_wav(
     current_subject: str,
     *,
     speech_api_default_max_tokens: bool = False,
+    requested_model: str = _RELOAD_ONLY_MODEL,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
-    _raise_if_prompt_leaves_no_speech_budget(text)
-    # Restore an idle-evicted GGUF before selecting a backend: this path is
-    # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
-    # unload an audio GGUF the next request then failed to restore. Validation
-    # above ran first, so an invalid request never triggers a reload.
-    #
-    # Reload-only on purpose: a local GGUF's audio-input capability is not a cheap
-    # pre-load probe (the companion mmproj signal can't tell an audio projector
-    # from a vision one, and codec-based TTS ships no projector at all), so passing
-    # the client model through the resolver could load a text- or vision-only target
-    # and evict the working audio model before the audio backend check fails. Only
-    # the idle-stash restore runs here; switching TTS models is an explicit /load.
+    # Only when the loaded model is the one that will answer: the budget reads the loaded
+    # context, so judging a request that names a different target measures the wrong model
+    # and would 400 a prompt that fits the target's larger context.
+    if requested_model == _RELOAD_ONLY_MODEL:
+        _raise_if_prompt_leaves_no_speech_budget(text)
     await _maybe_auto_switch_model(
-        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+        requested_model,
+        request,
+        current_subject,
+        claim_resident = False,
+        require_speech = True,
+        # The fields the preflight needs to rebuild the prompt the target will be
+        # measured by; it cannot be counted here, because the codec that decides which
+        # fields count is only known once the target has been probed.
+        speech_budget = (
+            None
+            if requested_model == _RELOAD_ONLY_MODEL
+            else {
+                "text": text,
+                "instructions": payload.audio_instructions,
+                "language": payload.audio_language,
+            }
+        ),
     )
     # Again, now that a context exists to measure against. The check above runs before the
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
@@ -16640,11 +17108,8 @@ async def _generate_tts_wav(
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
-        raise HTTPException(
-            status_code = 400,
-            detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
-        )
-    if audio_type in ("higgs_tts2", "moss_tts_local"):
+        raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
+    if audio_type in _EXTRA_PROMPT_FIELD_AUDIO_TYPES:
         prompt_for_budget = _native_tts_prompt_for_budget(
             text,
             audio_type,
@@ -16783,7 +17248,14 @@ async def generate_audio(
     text = last_user_msg["content"]
 
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-        text, payload, request, current_subject
+        text,
+        payload,
+        request,
+        current_subject,
+        # ``or`` like /v1/audio/speech: an explicitly empty model is accepted by the
+        # request model, and without this it stops the hook at its falsey check before
+        # the idle-stash restore, failing a request the sibling route serves.
+        requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
     )
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
@@ -16925,8 +17397,9 @@ async def openai_audio_speech(
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
     With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed/instructions. Otherwise the loaded model is used: ``model`` is informational,
-    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    model/voice/speed/instructions. Otherwise a downloaded local model named in ``model``
+    is loaded first when model auto-switch is on, else the loaded model is used;
+    ``voice``/``speed`` are ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
         fmt = (body.response_format or "wav").strip().lower()
@@ -16991,6 +17464,7 @@ async def openai_audio_speech(
             request,
             current_subject,
             speech_api_default_max_tokens = body.max_new_tokens is None,
+            requested_model = body.model or _RELOAD_ONLY_MODEL,
         )
         api_monitor.relabel(monitor_id, model_name)
         await asyncio.to_thread(

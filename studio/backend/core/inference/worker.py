@@ -157,6 +157,19 @@ def _clean_token(value: str | None) -> str | None:
     return value if value and value.strip() else None
 
 
+def _config_hf_token(config: dict) -> str | bool | None:
+    """Preserve explicit anonymous access instead of falling back to the host login."""
+    if config.get("anonymous_hf_access"):
+        return False
+    return _clean_token(config.get("hf_token"))
+
+
+def _apply_worker_hf_token_environment(config: dict) -> None:
+    """Apply the request credential policy to this spawned worker's environment."""
+    from hub.utils.hf_tokens import apply_token_to_child_env
+    apply_token_to_child_env(os.environ, _config_hf_token(config))
+
+
 def _build_model_config(config: dict):
     """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
@@ -164,7 +177,7 @@ def _build_model_config(config: dict):
     model_name = config["model_name"]
     mc = ModelConfig.from_identifier(
         model_id = model_name,
-        hf_token = _clean_token(config.get("hf_token")),
+        hf_token = _config_hf_token(config),
         gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
@@ -386,7 +399,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     try:
         mc = _build_model_config(config)
 
-        hf_token = _clean_token(config.get("hf_token"))
+        hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
         # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
@@ -466,6 +479,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": config.get("resolved_gpu_ids"),
             }
+            if config.get("audio_codec_path") is not None:
+                load_kwargs["audio_codec_path"] = config["audio_codec_path"]
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
@@ -1045,6 +1060,9 @@ def run_inference_process(
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
     """
+    # A spawned worker inherits the API process environment. Apply the request's
+    # credential policy before any Hugging Face import can snapshot it.
+    _apply_worker_hf_token_environment(config)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
@@ -1132,7 +1150,7 @@ def run_inference_process(
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name, config.get("hf_token") or None)
+            _activate_transformers_version(model_name, _config_hf_token(config))
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -1328,7 +1346,7 @@ def run_inference_process(
     _ensure_backend_on_path()
     from utils.transformers_version import _remote_lora_base, _resolve_base_model
 
-    _hf_token = _clean_token(config.get("hf_token"))
+    _hf_token = _config_hf_token(config)
     _lora_base = None
     _local_adapter_cfg = Path(model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():

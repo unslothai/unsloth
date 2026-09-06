@@ -1728,6 +1728,187 @@ def test_an_image_request_does_not_download_a_text_only_model(hub):
     assert len(hub["started"]) == 1
 
 
+def test_a_speech_request_does_not_download_a_text_only_model(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        auto_dl,
+        "_probe_remote_gguf_audio_type",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/text-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert "text-to-speech" in refusal.message
+    assert hub["started"] == []
+
+
+def test_a_sidecarless_speech_repo_is_probed_from_the_selected_gguf(hub, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: (None, True),
+    )
+
+    def _probe(*args):
+        seen.append(args)
+        return "bicodec", True
+
+    monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
+    refusal = asyncio.run(auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True))
+
+    assert refusal.code == "model_downloading"
+    assert seen == [
+        (
+            "unsloth/tts-GGUF",
+            "model-Q8_0-00001-of-00002.gguf",
+            None,
+            hub["info"].sha,
+        )
+    ]
+    assert len(hub["started"]) == 1
+
+
+def test_a_stale_positive_sidecar_cannot_admit_a_text_only_selected_gguf(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: ("bicodec", True),
+    )
+    seen = []
+
+    def _probe(*args):
+        seen.append(args)
+        return None, True
+
+    monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
+    refusal = asyncio.run(auto_dl.maybe_auto_download("unsloth/tts-GGUF:Q8_0", require_speech = True))
+
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert seen == [
+        (
+            "unsloth/tts-GGUF",
+            "model-Q8_0-00001-of-00002.gguf",
+            None,
+            hub["info"].sha,
+        )
+    ]
+    assert hub["started"] == []
+
+
+def test_the_remote_gguf_probe_is_bounded_pinned_and_uses_the_caller_token(monkeypatch):
+    import huggingface_hub
+    from core.inference import diffusion_compat
+    from huggingface_hub import utils as hf_utils
+    from utils.models import gguf_metadata
+
+    seen = {}
+
+    class _Response:
+        status_code = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def _url(
+        repo,
+        filename,
+        revision = None,
+    ):
+        seen["url"] = (repo, filename, revision)
+        return "https://example.invalid/model.gguf"
+
+    def _headers(token = None):
+        seen["token"] = token
+        return {"authorization": "Bearer x"}
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_url", _url)
+    monkeypatch.setattr(hf_utils, "build_hf_headers", _headers)
+    monkeypatch.setattr(hf_utils, "get_session", lambda: object())
+
+    def _stream(_session, url, headers):
+        seen["request"] = (url, headers)
+        return _Response()
+
+    monkeypatch.setattr(diffusion_compat, "_ranged_stream", _stream)
+    monkeypatch.setattr(diffusion_compat, "_iter_body", lambda _response, _size: [b"abc", b"def"])
+
+    def _classify(data):
+        seen["prefix"] = data
+        return "bicodec", True
+
+    monkeypatch.setattr(gguf_metadata, "classify_gguf_tts_audio_prefix", _classify)
+
+    assert auto_dl._probe_remote_gguf_audio_type(
+        "org/tts", "model-Q4.gguf", "caller-token", "pinned-sha"
+    ) == ("bicodec", True)
+    assert seen["url"] == ("org/tts", "model-Q4.gguf", "pinned-sha")
+    assert seen["token"] == "caller-token"
+    assert seen["prefix"] == b"abcdef"
+    assert seen["request"][1]["Range"] == (f"bytes=0-{auto_dl._REMOTE_GGUF_SPEECH_PROBE_BYTES - 1}")
+
+
+def test_a_speech_request_does_not_download_an_unsupported_gguf_codec(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: ("csm", True),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/csm-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert "supported text-to-speech GGUF" in refusal.message
+    assert hub["started"] == []
+
+
+def test_a_speech_download_probe_uses_the_caller_identity_and_pinned_revision(hub, monkeypatch):
+    seen = []
+    remote_seen = []
+
+    def _detect(repo_id, **kwargs):
+        seen.append((repo_id, kwargs))
+        return "bicodec", True
+
+    def _probe(*args):
+        remote_seen.append(args)
+        return None, False
+
+    monkeypatch.setattr("utils.models.model_config.detect_audio_type_checked", _detect)
+    monkeypatch.setattr(auto_dl, "_probe_remote_gguf_audio_type", _probe)
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/tts-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.code == "model_downloading"
+    assert seen == [("unsloth/tts-GGUF", {"hf_token": False, "revision": hub["info"].sha})]
+    assert remote_seen == [
+        (
+            "unsloth/tts-GGUF",
+            "model-UD-Q5_K_XL.gguf",
+            None,
+            hub["info"].sha,
+        )
+    ]
+    assert len(hub["started"]) == 1
+
+
+def test_an_inconclusive_speech_probe_fails_closed_without_downloading(hub, monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/tts-GGUF:UD-Q5_K_XL", require_speech = True)
+    )
+    assert refusal.status == 503 and refusal.code == "model_lookup_failed"
+    assert refusal.retry_after
+    assert hub["started"] == []
+
+
 def test_two_models_differing_only_in_case_are_not_the_same_weights(monkeypatch):
     # Lowercasing paths made /srv/models/Foo and /srv/models/foo compare equal, so
     # on a case-sensitive filesystem a request for one was answered by the other.
