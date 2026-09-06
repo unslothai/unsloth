@@ -58,6 +58,7 @@ test("owner creates an account, setup is private, and browser switching clears a
   const { access_token: ownerToken } = await ownerLogin.json();
   const ownerHeaders = { Authorization: `Bearer ${ownerToken}` };
   let created = false;
+  let accountId = "";
   try {
     const initialStatus = await request.get(`${baseURL}/api/auth/status`);
     const initialMode = (await initialStatus.json()).login_mode;
@@ -85,9 +86,11 @@ test("owner creates an account, setup is private, and browser switching clears a
     });
     expect(response.ok()).toBeTruthy();
     created = true;
-    const { setup_code, expires_at } = await response.json();
+    const { account, setup_code, setup_code_expires_at } =
+      await response.json();
+    accountId = account.account_id;
     expect(setup_code).toBeTruthy();
-    expect(Date.parse(expires_at)).toBeGreaterThan(Date.now());
+    expect(Date.parse(setup_code_expires_at)).toBeGreaterThan(Date.now());
     const status = await request.get(`${baseURL}/api/auth/status`);
     expect((await status.json()).login_mode).toBe("multi");
     await logOut(page);
@@ -159,7 +162,7 @@ test("owner creates an account, setup is private, and browser switching clears a
   } finally {
     if (created) {
       const response = await request.delete(
-        `${baseURL}/api/accounts/${encodeURIComponent(username)}`,
+        `${baseURL}/api/accounts/${encodeURIComponent(accountId)}`,
         { headers: ownerHeaders },
       );
       expect(response.ok()).toBeTruthy();

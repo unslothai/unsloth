@@ -62,6 +62,7 @@ function tab(owner = true) {
     },
   ];
   const setup = {
+    account_id: "alice-id",
     username: "alice",
     setup_code: "one-time-secret",
     expires_at: "2026-09-06T13:00:00Z",
@@ -115,16 +116,16 @@ function tab(owner = true) {
         calls.push(`create:${username}`);
         return setup;
       },
-      regenerateSetupCode: async (username: string) => {
-        calls.push(`regenerate:${username}`);
+      regenerateSetupCode: async (accountId: string) => {
+        calls.push(`regenerate:${accountId}`);
         return { ...setup, setup_code: "regenerated-secret" };
       },
-      setAccountActive: async (username: string, active: boolean) => {
-        calls.push(`active:${username}:${active}`);
+      setAccountActive: async (accountId: string, active: boolean) => {
+        calls.push(`active:${accountId}:${active}`);
         accounts[1].is_active = active;
       },
-      deleteAccount: async (username: string) => {
-        calls.push(`delete:${username}`);
+      deleteAccount: async (accountId: string) => {
+        calls.push(`delete:${accountId}`);
         accounts.splice(1);
       },
     },
@@ -204,9 +205,9 @@ test("activation controls follow state and delete requires a named retirement co
   const ui = tab();
   let tree = await ui.initialize();
   await click(tree, "Deactivate");
-  assert.ok(ui.calls.includes("active:alice:false"));
+  assert.ok(ui.calls.includes("active:alice-id:false"));
   await click(ui.render(), "Reactivate");
-  assert.ok(ui.calls.includes("active:alice:true"));
+  assert.ok(ui.calls.includes("active:alice-id:true"));
   await click(ui.render(), "Delete account");
   tree = ui.render();
   assert.ok(!ui.calls.some((call) => call.startsWith("delete:")));
@@ -216,7 +217,7 @@ test("activation controls follow state and delete requires a named retirement co
   const action = nodes(tree).find((node) => node.type === "AlertDialogAction");
   (action?.props.onClick as (event: unknown) => void)({ preventDefault() {} });
   await tick();
-  assert.ok(ui.calls.includes("delete:alice"));
+  assert.ok(ui.calls.includes("delete:alice-id"));
 });
 
 test("Accounts is registered, searchable, and filtered from managed navigation and deferred panels", () => {

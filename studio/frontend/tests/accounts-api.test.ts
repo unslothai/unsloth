@@ -13,7 +13,7 @@ function client(response: () => Response) {
   const api = loadWithStubs<typeof AccountsApi>(
     new URL("../src/features/settings/api/accounts.ts", import.meta.url),
     {
-      "@/features/auth/api": {
+      "@/features/auth": {
         authFetch: async (path: string, init?: RequestInit) => {
           requests.push({ path, init });
           return response();
@@ -44,13 +44,27 @@ test("lists accounts through authenticated fetch", async () => {
   assert.deepEqual(c.requests, [{ path: "/api/accounts", init: undefined }]);
 });
 
+const backendSetup = (setup_code: string) => ({
+  account: {
+    account_id: "alice-id",
+    username: "alice",
+    role: "user",
+    is_active: true,
+    created_at: "2026-09-06T12:00:00Z",
+    setup_code_pending: true,
+  },
+  setup_code,
+  setup_code_expires_at: "2026-09-06T13:00:00Z",
+});
+
 test("creation sends normalized username and returns one-time code and expiry", async () => {
   const setup = {
+    account_id: "alice-id",
     username: "alice",
     setup_code: "one-time-code",
     expires_at: "2026-09-06T13:00:00Z",
   };
-  const c = client(() => Response.json(setup));
+  const c = client(() => Response.json(backendSetup("one-time-code")));
   assert.deepEqual(await c.api.createAccount(" ALICE "), setup);
   assert.deepEqual(c.requests[0], {
     path: "/api/accounts",
@@ -63,14 +77,15 @@ test("creation sends normalized username and returns one-time code and expiry", 
   assert.equal(c.refreshed(), 1);
 });
 
-test("regeneration encodes the username as one path segment", async () => {
+test("regeneration is keyed by the account id, encoded as one path segment", async () => {
   const setup = {
+    account_id: "alice-id",
     username: "alice",
     setup_code: "new-code",
     expires_at: "2026-09-06T13:00:00Z",
   };
-  const c = client(() => Response.json(setup));
-  assert.deepEqual(await c.api.regenerateSetupCode(" A/B? "), setup);
+  const c = client(() => Response.json(backendSetup("new-code")));
+  assert.deepEqual(await c.api.regenerateSetupCode("a/b?"), setup);
   assert.deepEqual(c.requests[0], {
     path: "/api/accounts/a%2Fb%3F/setup-code",
     init: { method: "POST" },
@@ -79,13 +94,18 @@ test("regeneration encodes the username as one path segment", async () => {
 
 test("deactivate, reactivate and delete accept empty success bodies and refresh policy", async () => {
   const c = client(() => new Response(null, { status: 204 }));
-  await c.api.setAccountActive("Alice", false);
-  await c.api.setAccountActive("Alice", true);
-  await c.api.deleteAccount("Alice");
+  await c.api.setAccountActive("alice-id", false);
+  await c.api.setAccountActive("alice-id", true);
+  await c.api.deleteAccount("alice-id");
+  const patch = (active: boolean) => ({
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_active: active }),
+  });
   assert.deepEqual(c.requests, [
-    { path: "/api/accounts/alice/deactivate", init: { method: "POST" } },
-    { path: "/api/accounts/alice/reactivate", init: { method: "POST" } },
-    { path: "/api/accounts/alice", init: { method: "DELETE" } },
+    { path: "/api/accounts/alice-id", init: patch(false) },
+    { path: "/api/accounts/alice-id", init: patch(true) },
+    { path: "/api/accounts/alice-id", init: { method: "DELETE" } },
   ]);
   assert.equal(c.refreshed(), 3);
 });

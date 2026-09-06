@@ -209,7 +209,9 @@ function OwnerAccountsTab() {
                     disabled={busy}
                     onClick={() =>
                       void perform(async () =>
-                        showSetup(await regenerateSetupCode(account.username)),
+                        showSetup(
+                          await regenerateSetupCode(account.account_id),
+                        ),
                       )
                     }
                   >
@@ -222,10 +224,10 @@ function OwnerAccountsTab() {
                     onClick={() =>
                       void perform(async () => {
                         await setAccountActive(
-                          account.username,
+                          account.account_id,
                           !account.is_active,
                         );
-                        if (setup?.username === account.username)
+                        if (setup?.account_id === account.account_id)
                           setSetup(null);
                       })
                     }
@@ -287,8 +289,8 @@ function OwnerAccountsTab() {
                 event.preventDefault();
                 if (!retiring || busy) return;
                 void perform(async () => {
-                  await deleteAccount(retiring.username);
-                  if (setup?.username === retiring.username) setSetup(null);
+                  await deleteAccount(retiring.account_id);
+                  if (setup?.account_id === retiring.account_id) setSetup(null);
                   setRetiring(null);
                 });
               }}

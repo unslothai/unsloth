@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth/api";
+import { authFetch } from "@/features/auth";
 import { fetchAuthStatus } from "@/features/auth/login-client";
 import { normalizeAccountUsername } from "@/lib/account-transition";
 
@@ -13,9 +13,24 @@ export interface StudioAccount {
   created_at: string;
 }
 export interface AccountSetupCode {
+  account_id: string;
   username: string;
   setup_code: string;
   expires_at: string;
+}
+// The backend nests the account and names the expiry after the code it belongs to.
+interface AccountSetupResponse {
+  account: StudioAccount;
+  setup_code: string;
+  setup_code_expires_at: string;
+}
+function toSetupCode(payload: AccountSetupResponse): AccountSetupCode {
+  return {
+    account_id: payload.account.account_id,
+    username: payload.account.username,
+    setup_code: payload.setup_code,
+    expires_at: payload.setup_code_expires_at,
+  };
 }
 
 async function accountsRequest(
@@ -35,8 +50,7 @@ async function accountsRequest(
   }
   return response;
 }
-const accountPath = (username: string) =>
-  `/${encodeURIComponent(normalizeAccountUsername(username))}`;
+const accountPath = (accountId: string) => `/${encodeURIComponent(accountId)}`;
 // Recheck installation policy after mutations; a failed status read must not lose a one-time code.
 async function refreshAccountPolicy(): Promise<void> {
   await fetchAuthStatus().catch(() => undefined);
@@ -54,30 +68,31 @@ export async function createAccount(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: normalizeAccountUsername(username) }),
   });
-  const result = (await response.json()) as AccountSetupCode;
+  const result = toSetupCode((await response.json()) as AccountSetupResponse);
   await refreshAccountPolicy();
   return result;
 }
 export async function regenerateSetupCode(
-  username: string,
+  accountId: string,
 ): Promise<AccountSetupCode> {
   const response = await accountsRequest(
-    `${accountPath(username)}/setup-code`,
+    `${accountPath(accountId)}/setup-code`,
     { method: "POST" },
   );
-  return response.json();
+  return toSetupCode((await response.json()) as AccountSetupResponse);
 }
 export async function setAccountActive(
-  username: string,
+  accountId: string,
   active: boolean,
 ): Promise<void> {
-  await accountsRequest(
-    `${accountPath(username)}/${active ? "reactivate" : "deactivate"}`,
-    { method: "POST" },
-  );
+  await accountsRequest(accountPath(accountId), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_active: active }),
+  });
   await refreshAccountPolicy();
 }
-export async function deleteAccount(username: string): Promise<void> {
-  await accountsRequest(accountPath(username), { method: "DELETE" });
+export async function deleteAccount(accountId: string): Promise<void> {
+  await accountsRequest(accountPath(accountId), { method: "DELETE" });
   await refreshAccountPolicy();
 }
