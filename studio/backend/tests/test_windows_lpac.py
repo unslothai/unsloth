@@ -2991,7 +2991,9 @@ def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch
         command = (
             "sleep 30"
             if isolated_shell.lower().endswith(("bash", "bash.exe"))
-            else "waitfor /t 30 unsloth_cancel_probe"
+            # Letters and digits only: waitfor rejects a signal name with an
+            # underscore ("cannot contain characters other than a-z, A-Z, 0-9").
+            else "waitfor /t 30 unslothcancelprobe"
         )
         cancelled = inference_tools._bash_exec(command, cancel_event = cancel, timeout = 20)
     finally:
