@@ -609,11 +609,12 @@ def keyless_request_allowed(request: Any) -> bool:
 def _keyless_request_allowed_for_scope(request: Any, scope: str) -> bool:
     if scope == KEYLESS_SCOPE_OFF:
         return False
-    from auth.policy import installation_is_multi_user
+    from auth.policy import installation_has_managed_accounts
 
     # Both the middleware (cached settings) and auth dependency use this gate.
-    # Persisted grants become inert as soon as a second account exists.
-    if installation_is_multi_user():
+    # Persisted grants become inert as soon as a managed account exists, and
+    # stay so while a deactivated one's files are still on disk.
+    if installation_has_managed_accounts():
         return False
     asgi_scope = getattr(request, "scope", {})
     method = asgi_scope.get("method", "")
@@ -639,8 +640,8 @@ def request_was_admitted_keyless(request: Any) -> Optional[bool]:
     except Exception:
         return None
     if value is True:
-        from auth.policy import installation_is_multi_user
-        if installation_is_multi_user():
+        from auth.policy import installation_has_managed_accounts
+        if installation_has_managed_accounts():
             return False
     return value if isinstance(value, bool) else None
 

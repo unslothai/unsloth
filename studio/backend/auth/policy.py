@@ -70,6 +70,16 @@ def login_mode() -> str:
     return LOGIN_MODE_MULTI if installation_is_multi_user() else LOGIN_MODE_SINGLE
 
 
+def installation_has_managed_accounts() -> bool:
+    """Whether any managed account exists, active or not.
+
+    The gates that hand out the owner's identity without a credential (keyless
+    API access, full tool access) close on this, not on the login mode: a
+    deactivated account's files are still on disk until it is deleted.
+    """
+    return installation_is_multi_user() or managed_account_count() > 0
+
+
 def full_access_permitted() -> bool:
     """Whether the unsandboxed tool modes may run at all.
 
@@ -81,7 +91,7 @@ def full_access_permitted() -> bool:
     managed account puts the login form back to single mode but does not
     open the host: that account's files are still there until it is deleted.
     """
-    return not installation_is_multi_user() and managed_account_count() == 0
+    return not installation_has_managed_accounts()
 
 
 def _forbid(detail: str) -> HTTPException:
