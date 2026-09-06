@@ -305,7 +305,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
     if (!isLoginMode) {
       // Mirror the disable gate: Enter / autofill can bypass the button.
-      if (currentPassword.length < 8) {
+      // Both must skip the current-password rules on the setup-token path, where
+      // there is no current password to supply and the form never renders a field
+      // for one. Keep the two in step: a gate here that the button does not have
+      // shows an error on a click the UI said was fine, with no request made.
+      if (!setupToken && currentPassword.length < 8) {
         setError(
           currentPassword
             ? "Current password must be at least 8 characters."
@@ -325,7 +329,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         setError("Passwords do not match.");
         return;
       }
-      if (currentPassword === newPassword) {
+      if (!setupToken && currentPassword === newPassword) {
         setError("New password must be different from your current password.");
         return;
       }

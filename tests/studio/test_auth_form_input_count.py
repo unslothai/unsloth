@@ -76,6 +76,33 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     )
 
 
+def test_the_submit_gate_and_the_disable_gate_agree_about_the_setup_token():
+    """Both current-password rules must be skipped on the setup-token path.
+
+    The submit handler re-checks what disables the button, because Enter and
+    autofill can bypass the button. On the setup-token path there is no current
+    password and the form renders no field for one, so a rule that survives in
+    only one of the two places produces the worst possible failure: an enabled
+    button, a click that makes no request at all, and an error about a field the
+    user cannot see. That is a real regression this caught, so it is pinned.
+    """
+    src = AUTH_FORM.read_text(encoding = "utf-8")
+    for rule in (
+        "currentPassword.length < 8",
+        "currentPassword === newPassword",
+    ):
+        occurrences = [
+            line.strip() for line in src.splitlines() if rule in line
+        ]
+        assert occurrences, f"the {rule!r} rule disappeared entirely"
+        for line in occurrences:
+            assert "!setupToken" in line, (
+                f"{line!r} does not exempt the setup-token path. The disable gate "
+                "and the submit gate must agree, or the button enables a submit "
+                "that returns without making a request."
+            )
+
+
 def test_setup_token_is_never_sent_as_a_password():
     """The injected link token is a bearer credential for /link-exchange only.
 
