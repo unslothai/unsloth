@@ -905,7 +905,6 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                # Late frames from a released request must not satisfy this reader.
                 return None
             return resp
 
