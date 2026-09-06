@@ -195,7 +195,10 @@ def worker_in_process(monkeypatch):
     "allow_ambient,caller_token,env_token,disable_implicit,passed",
     [
         (False, None, None, "1", None),
-        (False, "hf_caller", "hf_caller", "0", "hf_caller"),
+        # The caller's own token does NOT go into the environment: this process outlives
+        # the load and the next export command may be someone else's. It travels as an
+        # argument instead, which is what `passed` pins.
+        (False, "hf_caller", None, "1", "hf_caller"),
         (True, None, "hf_operator_secret", None, None),
     ],
 )
@@ -236,6 +239,59 @@ def test_the_worker_environment_matches_the_callers_policy(
         # The operator's aliases go even when the caller supplied its own credential.
         assert seen["HF_HUB_TOKEN"] is None
     assert seen["passed"] == passed
+
+
+def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
+    monkeypatch, worker_in_process
+):
+    """The worker is a singleton: load_checkpoint respawns it, every export command reuses
+    whichever one is alive, from whichever caller. So a credential in its environment is a
+    credential in the ambient position for whoever exports next. An API-key caller's own
+    token must not be left there any more than the operator's."""
+    import os
+
+    import huggingface_hub
+
+    worker = worker_in_process
+    for key in (
+        "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_OIDC_RESOURCE",
+    ):
+        monkeypatch.setenv(key, "hf_operator_secret")
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
+
+    seen: dict = {}
+
+    def _fake_activate(path, token):
+        seen["env"] = {
+            k: os.environ.get(k)
+            for k in (
+                "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+                "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_OIDC_RESOURCE",
+            )
+        }
+        seen["resolved"] = huggingface_hub.get_token()
+        seen["passed"] = token
+        raise SystemExit(0)
+
+    monkeypatch.setattr(worker, "_activate_transformers_version", _fake_activate)
+    with pytest.raises(SystemExit):
+        worker.run_export_process(
+            cmd_queue = MagicMock(),
+            resp_queue = MagicMock(),
+            config = {
+                "checkpoint_path": "/tmp/model",
+                "allow_ambient": False,
+                "hf_token": "hf_caller",
+            },
+        )
+
+    assert seen["env"] == dict.fromkeys(seen["env"], None), seen["env"]
+    # HF_OIDC_RESOURCE is not a token but names one, ahead of HF_TOKEN in get_token().
+    assert seen["resolved"] != "hf_operator_secret"
+    assert seen["resolved"] != "hf_caller"
+    # The caller keeps its own credential; it is passed, not planted.
+    assert seen["passed"] == "hf_caller"
 
 
 def test_an_old_orchestrator_config_keeps_the_previous_behaviour(monkeypatch, worker_in_process):
@@ -537,3 +593,70 @@ def test_offline_tier_detection_is_not_degraded_by_the_sentinel(monkeypatch, tmp
 
     assert _tier(False) == "default", "the sentinel is what breaks the cached tier read"
     assert _tier(None) == "530", "the plain token reads it, as it did before this change"
+
+
+def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
+    """A parameter that can receive ``False`` must say so. ``str | None`` on one of these
+    is an invitation to normalise it back to ``None``, which is the ambient state."""
+    import inspect
+
+    from core.export.export import ExportBackend
+    from core.export.orchestrator import ExportOrchestrator
+    from hub.utils.hf_tokens import HfTokenArg
+
+    offenders = []
+    for owner in (ExportBackend, ExportOrchestrator):
+        for name in (
+            "load_checkpoint", "export_merged_model", "export_base_model",
+            "export_gguf", "export_lora_adapter",
+        ):
+            fn = getattr(owner, name, None)
+            if fn is None:
+                continue
+            param = inspect.signature(fn).parameters.get("hf_token")
+            if param is not None and param.annotation != HfTokenArg:
+                offenders.append(f"{owner.__name__}.{name}: {param.annotation}")
+
+    assert not offenders, "these can receive the sentinel but do not say so: " + "; ".join(offenders)
+
+
+def test_every_hub_write_route_names_the_ambient_policy():
+    """A new export or publish endpoint must not ship ungated by being forgotten. This is
+    the check that would have caught the two routes #10126 reported."""
+    import inspect
+
+    from auth.authentication import allow_ambient_hf_token
+    from routes import export as export_routes
+    from routes.data_recipe import jobs as jobs_routes
+
+    gated = {
+        (export_routes, "load_checkpoint"),
+        (export_routes, "export_merged_model"),
+        (export_routes, "export_base_model"),
+        (export_routes, "export_gguf"),
+        (export_routes, "export_lora_adapter"),
+        (jobs_routes, "publish_job_dataset"),
+    }
+    missing = []
+    for module, name in sorted(gated, key = lambda pair: pair[1]):
+        fn = getattr(module, name)
+        param = inspect.signature(fn).parameters.get("allow_ambient")
+        if param is None or getattr(param.default, "dependency", None) is not allow_ambient_hf_token:
+            missing.append(f"{module.__name__}.{name}")
+
+    assert not missing, "these reach a Hub write without the ambient policy: " + ", ".join(missing)
+
+
+def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
+    """A direct Python call never resolves a FastAPI ``Depends`` default, so each MCP tool
+    that calls a gated route has to pass the policy itself or it silently goes ambient."""
+    import inspect
+    import re
+
+    import mcp_server
+
+    src = inspect.getsource(mcp_server.create_studio_mcp)
+    calls = re.findall(r"await (?:load|export)\(request[^)]*\)", src)
+    assert calls, "the MCP tools no longer call the export routes the way this test reads"
+    for call in calls:
+        assert "allow_ambient = False" in call, f"MCP call goes ambient: {call}"

@@ -570,7 +570,14 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     from hub.utils.hf_tokens import apply_token_to_child_env
 
     if not config.get("allow_ambient", True):
-        apply_token_to_child_env(os.environ, config.get("hf_token") or False)
+        # The sentinel, never the caller's own token. This process outlives the load that
+        # spawned it: load_checkpoint is the only thing that respawns a worker, and every
+        # later export command reuses whichever one is alive, from whichever caller. Granting
+        # HF_TOKEN here would put one caller's credential in the ambient position for the
+        # next, which is the leak this file exists to close, only pointing the other way.
+        # A non-ambient worker therefore holds no credential at all; the caller's own travels
+        # as an argument, and apply_token_to_child_env grants it per child that needs it.
+        apply_token_to_child_env(os.environ, False)
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
