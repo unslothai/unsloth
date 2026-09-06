@@ -963,7 +963,8 @@ class ResearchSupervisor:
         self._lost_leases: set[str] = set()
 
     def start(self) -> None:
-        db.recover_expired()
+        for account in job_accounts():
+            run_as(account, db.recover_expired)
         if self._task is None:
             self._task = asyncio.create_task(self._loop(), name = "research-supervisor")
 

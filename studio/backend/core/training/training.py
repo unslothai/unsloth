@@ -2090,6 +2090,7 @@ class TrainingBackend:
                 return
             watchdog = account_thread(
                 target = self._stop_watchdog_loop,
+                account = self._result_account,
                 args = (proc, cancel, self.current_job_id),
                 kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",

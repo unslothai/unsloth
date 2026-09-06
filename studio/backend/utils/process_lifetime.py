@@ -28,6 +28,8 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import contextvars
+import functools
 import threading
 import time
 from typing import Callable, Optional
@@ -442,7 +444,8 @@ class _Spawner:
     def run(self, spawn: Callable[[], object]) -> object:
         box: list = []
         done = threading.Event()
-        self._jobs.put((spawn, box, done))
+        # The spawner thread has no context of its own; run the spawn in the caller's.
+        self._jobs.put((functools.partial(contextvars.copy_context().run, spawn), box, done))
         done.wait()
         ok, value = box[0]
         if not ok:

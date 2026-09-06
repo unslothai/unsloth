@@ -44,7 +44,7 @@ import json
 import httpx
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
-from utils.account_context import OWNER_ACCOUNT_ID, account_thread, current_account_id, run_as
+from utils.account_context import OWNER_ACCOUNT_ID, account_thread, current_account, current_account_id, run_as
 from loggers import get_logger
 import asyncio
 import contextvars
@@ -6751,7 +6751,7 @@ async def _lease_ollama_model_ref(
         return None
     loop = asyncio.get_running_loop()
     lease_future = loop.run_in_executor(
-        _OLLAMA_LEASE_EXECUTOR, acquire_ollama_model_ref, request.model_path
+        _OLLAMA_LEASE_EXECUTOR, run_as, current_account(), acquire_ollama_model_ref, request.model_path
     )
     try:
         lease = await asyncio.shield(lease_future)
@@ -16429,7 +16429,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # The cold subprocess and GitHub probes must not block the event loop or
         # consume the default executor used by local token streaming.
         _supports_mtp, _freshness = await asyncio.get_running_loop().run_in_executor(
-            _STATUS_PROBE_EXECUTOR, _probe_llama_cpp_status, llama_backend
+            _STATUS_PROBE_EXECUTOR, run_as, current_account(), _probe_llama_cpp_status, llama_backend
         )
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")

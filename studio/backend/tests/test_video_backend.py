@@ -7031,8 +7031,10 @@ def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
         return expected
 
     class _DeferredThread:
-        def __init__(self, *, target, kwargs, daemon):
-            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+        def __init__(self, *, target, args = (), kwargs, daemon):
+            # The worker is pinned to its account: the thread target is run_as and
+            # the real target rides last in args.
+            captured.update(target = args[-1] if args else target, kwargs = kwargs, daemon = daemon)
 
         def start(self):
             return None
@@ -7072,8 +7074,10 @@ def test_a_v1_videos_job_id_stays_out_of_the_replayable_worker_kwargs(monkeypatc
     captured = {}
 
     class _DeferredThread:
-        def __init__(self, *, target, kwargs, daemon):
-            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+        def __init__(self, *, target, args = (), kwargs, daemon):
+            # The worker is pinned to its account: the thread target is run_as and
+            # the real target rides last in args.
+            captured.update(target = args[-1] if args else target, kwargs = kwargs, daemon = daemon)
 
         def start(self):
             return None

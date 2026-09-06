@@ -198,3 +198,25 @@ def test_tool_stream_worker_runs_as_the_calling_account():
         run_as(BOB, storage_roots.studio_db_path)
     )
     assert run_as(OWNER, consume, lambda: current_account().account_id) == OWNER.account_id
+
+
+def test_download_watcher_is_pinned_to_the_requesting_account(monkeypatch):
+    """The account travels with the watcher thread on every install, not only
+    when the multi-user policy happens to be readable at that instant."""
+    from hub.services import download_lifecycle
+    from utils import account_context
+
+    captured = {}
+
+    class _Thread:
+        def __init__(self, *, target, args = (), kwargs = None, **_kw):
+            captured["target"], captured["args"] = target, args
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(account_context.threading, "Thread", _Thread)
+    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
+    run_as(BOB, download_lifecycle.account_thread, target = lambda: None, name = "watch", daemon = True)
+    assert captured["target"] is account_context.run_as
+    assert captured["args"][0] == BOB
