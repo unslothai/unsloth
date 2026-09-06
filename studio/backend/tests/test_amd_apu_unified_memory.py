@@ -420,9 +420,8 @@ _GIB = 1024**3
 
 
 class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
-    """Managed allocation is enabled only when host RAM is the larger pool. Every
-    arm prices weights that outgrow the carve-out, so the pool comparison is the
-    only thing each answer can turn on."""
+    """Managed allocation is enabled only when host RAM is the larger pool. Every arm
+    prices weights that outgrow the carve-out, so only the pools decide."""
 
     def _host(self, monkeypatch, specs, ram_mib):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized(specs))
@@ -497,10 +496,8 @@ class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
 
 
 class TestManagedMemoryIsTakenOnlyWhenTheWeightsOutgrowTheCarveOut:
-    """The second condition. On Linux ROCm managed pages are a measured correctness
-    risk (Qwen3.8-Flash-Next faults in k_set_rows on gfx1151 with the variable set
-    and is clean without it, b10715 and b10798 alike; HF Qwen3.8-Flash-Next-GGUF
-    discussion 30, #10330), so a launch the carve-out can hold never takes them."""
+    """The second condition: managed pages fault in k_set_rows on Linux ROCm gfx1151
+    (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330), so a fitting load never takes them."""
 
     def _strix_halo(
         self,
@@ -531,20 +528,17 @@ class TestManagedMemoryIsTakenOnlyWhenTheWeightsOutgrowTheCarveOut:
         assert LlamaCppBackend._unified_memory_would_help(need_bytes = 64 * _GIB + 1) is True
 
     def test_unpriced_weights_fail_closed(self, monkeypatch):
-        """None is "not priced yet", and a risk is not taken on a guess."""
         self._strix_halo(monkeypatch)
         assert LlamaCppBackend._unified_memory_would_help() is False
         assert LlamaCppBackend._unified_memory_would_help(need_bytes = None) is False
 
     def test_the_pool_comparison_still_comes_first(self, monkeypatch):
-        """Outgrowing a carve-out that is itself larger than host RAM buys nothing."""
         self._strix_halo(monkeypatch, carve_out = 96 * _GIB, ram_mib = 30_000)
         assert LlamaCppBackend._unified_memory_would_help(need_bytes = 120 * _GIB) is False
 
 
 class TestTheEnableSwitch:
-    """UNSLOTH_ENABLE_UNIFIED_MEMORY=1 takes managed allocation on a selected APU
-    even when the weights fit, for the user who has measured their own model."""
+    """UNSLOTH_ENABLE_UNIFIED_MEMORY=1 takes managed allocation even when weights fit."""
 
     @pytest.mark.parametrize(
         "env, expected",
@@ -552,7 +546,7 @@ class TestTheEnableSwitch:
             ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, True),
             ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": " 1 "}, True),
             ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "0"}, False),
-            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "yes"}, False),  # exact "1", like the disable switch
+            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "yes"}, False),
             ({}, False),
         ],
     )
@@ -591,7 +585,6 @@ class TestTheEnableSwitch:
         assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is False
 
     def test_the_switch_refuses_a_mixed_selection(self, monkeypatch):
-        """Process-wide setting: one discrete card in the selection is a veto."""
         monkeypatch.setitem(
             sys.modules,
             "torch",

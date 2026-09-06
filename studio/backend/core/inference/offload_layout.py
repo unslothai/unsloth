@@ -147,9 +147,7 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
     Returns an incomplete layout (``complete = False``) rather than raising when
     anything required is missing, so a surprising GGUF makes the planner abstain
     instead of failing a load that llama.cpp would have handled.
-
-    ``all_shards`` reads a split model's sibling shards too, so the buckets cover
-    the whole file set llama.cpp loads; every shard has to be present.
+    ``all_shards`` reads every sibling shard; all of them must be present.
     """
     try:
         from gguf import GGUFReader

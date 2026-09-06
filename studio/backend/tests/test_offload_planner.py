@@ -1495,9 +1495,7 @@ def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
 
 
 def test_every_shard_handed_over_prices_the_whole_split():
-    """The unified-memory price needs the whole file set: two readers carrying
-    split.count = 2 sum to one complete layout, and token_embd lands in its
-    CPU-pinned bucket whichever shard holds it."""
+    """Two readers summing to one layout, token_embd in its bucket whichever shard holds it."""
     first = _StubReader(
         _shard_fields(**{"split.count": 2, "split.no": 0}),
         _shard_tensors(range(32)) + [_StubTensor("output.weight", GIB)],
@@ -1514,7 +1512,6 @@ def test_every_shard_handed_over_prices_the_whole_split():
 
 
 def test_a_partial_shard_set_still_abstains():
-    """Two of three shards would undercount exactly like one of two."""
     readers = [
         _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32))),
         _StubReader(_shard_fields(**{"split.count": 3}), _shard_tensors(range(32, 64))),
@@ -1533,8 +1530,6 @@ def test_split_shard_paths_follow_llama_cpp_naming():
 
 
 def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, monkeypatch):
-    """Default reads stay one-shard and abstain; all_shards opens every sibling
-    and refuses when one is missing, since llama.cpp would too."""
     import gguf
 
     shards = [tmp_path / f"m-{i:05d}-of-00002.gguf" for i in (1, 2)]

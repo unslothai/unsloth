@@ -4791,12 +4791,8 @@ def _paravirtual_draft_ngl_flag(server_caps: Mapping[str, object]) -> Optional[s
 def _argv_keeps_projector_on_gpu(
     args: Sequence[str], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Whether *args* still load a projector onto the device.
-
-    The text-only retry strips ``--mmproj`` and the CPU-projector retry appends
-    ``--no-mmproj-offload``; either leaves the base alone on the carve-out. An
-    inherited ``LLAMA_ARG_MMPROJ`` / ``LLAMA_ARG_MMPROJ_URL`` outlives the argv
-    strip, and arg.cpp applies it before argv, so that projector still loads."""
+    """Whether *args* still load a projector onto the device. arg.cpp applies
+    ``LLAMA_ARG_MMPROJ(_URL)`` before argv, so the env alone still loads one."""
     tokens = [str(a) for a in args]
     env_map = env or {}
 
@@ -8743,24 +8739,10 @@ class LlamaCppBackend:
     def _unified_memory_would_help(gpu_indices = None, need_bytes = None) -> bool:
         """Whether managed allocation is worth taking for the selected APUs.
 
-        Two conditions, both required. On HIP it draws host RAM instead of the
-        selected APUs' carve-outs, so it pays only when host RAM is the larger
-        pool: available host RAM against the carve-out's TOTAL, deliberately,
-        because a carve-out another process is holding is not credited back to the
-        host side. Over-asking the carve-out returns hipErrorOutOfMemory and the
-        load fails cleanly, while over-asking host RAM is the OOM kill this gate
-        exists to stop.
-
-        And the weights must not fit the carve-out on their own. Managed pages are
-        a measured correctness risk on Linux ROCm: Qwen3.8-Flash-Next faults in
-        k_set_rows on gfx1151 with the variable set and is clean without it, on
-        b10715 and b10798 alike, while the same builds are clean on Windows and on
-        Vulkan (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330). So the swap is
-        taken only when the alternative is a load the carve-out cannot hold.
-        need_bytes is what a forced full offload puts on the device; the caller
-        passes None when the fitter or an explicit partial placement owns the
-        layer count, because a load that spills to the CPU fits without managed
-        pages. None fails closed, as do missing data and mixed-device selections.
+        Host RAM must be the larger pool, against the carve-out's TOTAL (over-asking
+        the carve-out fails cleanly, over-asking host RAM is an OOM kill), AND the
+        weights must not fit that carve-out: managed pages fault in k_set_rows on
+        Linux ROCm gfx1151 (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330).
         """
         try:
             pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
@@ -8918,9 +8900,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _unified_memory_opted_in(env = None) -> bool:
-        """True when UNSLOTH_ENABLE_UNIFIED_MEMORY=1 asks for managed allocation on a
-        selected APU even though the weights fit its carve-out. Exact "1", like the
-        disable switch, which wins when both are set. Fails closed (False)."""
+        """True when UNSLOTH_ENABLE_UNIFIED_MEMORY=1 asks for managed allocation even
+        though the weights fit. Exact "1"; the opt-out wins over it."""
         try:
             source = os.environ if env is None else env
             return str(source.get("UNSLOTH_ENABLE_UNIFIED_MEMORY", "")).strip() == "1"
@@ -8934,11 +8915,8 @@ class LlamaCppBackend:
         *,
         opted_in = False,
     ) -> bool:
-        """The launch-time decision behind GGML_CUDA_ENABLE_UNIFIED_MEMORY: the opt-in
-        takes it when every selected device is a unified-memory APU, otherwise only
-        when it pays and is needed (_unified_memory_would_help). The setting is
-        process-wide and hurts discrete cards, so a mixed selection answers False
-        on both routes."""
+        """The launch-time decision behind GGML_CUDA_ENABLE_UNIFIED_MEMORY. It is
+        process-wide and hurts discrete cards, so a mixed selection is always False."""
         if opted_in and LlamaCppBackend._rocm_selected_pool_mib(gpu_indices) is not None:
             return True
         return LlamaCppBackend._unified_memory_would_help(gpu_indices, need_bytes = need_bytes)
@@ -10391,18 +10369,11 @@ class LlamaCppBackend:
         argv: Iterable[str],
         env: Optional[Mapping[str, str]] = None,
     ) -> bool:
-        """Whether the child puts every layer on a GPU whatever the fitter says.
-
-        ``_argv_offloads_every_layer`` defers to an active fitter, which is right
-        for crediting VRAM: the fitter may lower llama.cpp's default ``-1``. It
-        cannot lower a count the user fixed (common/fit.cpp throws "n_gpu_layers
-        already set by user" and the caller downgrades it to a warning, see
-        ``_env_fixes_gpu_layers``), so a concrete count above the block count, or an
-        inherited LLAMA_ARG_N_GPU_LAYERS that says so, is a forced full offload even
-        under ``--fit on``. So is no count at all once the fitter is off: llama.cpp's
-        default is ``-1``, every layer, and nothing is left to lower it. An unknown
-        block count for a concrete count, or CPU placement, answers False.
-        """
+        """Whether the child puts every layer on a GPU whatever the fitter says. The
+        fitter cannot lower a count the user fixed (common/fit.cpp "n_gpu_layers
+        already set by user", downgraded to a warning), so a count above the block
+        count stands under ``--fit on``, as does no count at all with the fitter off
+        (llama.cpp's default is ``-1``)."""
         args = [str(a) for a in argv or ()]
         if self._argv_offloads_every_layer(args, env):
             return True
@@ -10423,13 +10394,10 @@ class LlamaCppBackend:
             except ValueError:
                 return False
         if requested is None:
-            # No count anywhere: the default -1 stands, so only an active fitter
-            # can make this anything but a full offload.
             return not fit_is_effectively_on(args, env)
         n_layers = self.n_layers
         if not n_layers:
             return False
-        # -1 is the default the fitter is free to lower; a concrete count stands.
         return requested > n_layers
 
     @staticmethod
@@ -19154,8 +19122,8 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                _mtp_will_engage = False  # set in the fit try; read by the unified-memory price
-                _separate_draft_launches = False  # same; a sidecar displaces an embedded head
+                _mtp_will_engage = False
+                _separate_draft_launches = False  # a sidecar displaces an embedded head
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -22932,26 +22900,14 @@ class LlamaCppBackend:
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 _unified_opt_in = self._unified_memory_opted_in(env)
-                # The selection the setting was priced for. The arch gate and the
-                # arch-crash retry re-select without rebinding gpu_indices, and a
-                # later respawn must re-price against what the child actually sees.
+                # The arch gate and arch-crash retry re-select without rebinding gpu_indices.
                 _unified_gpu_indices = gpu_indices
 
-                # Price only what a forced full offload puts on the device. With the
-                # fitter or an explicit partial placement owning the layer count, the
-                # load fits by spilling, so the whole-file size would overstate the
-                # need and take managed pages for a launch the carve-out holds.
                 def _unified_need_now(argv = None, mtp_engages = None):
-                    """Bytes a forced full offload puts on the device, or None.
-
-                    ``argv`` is the command about to be spawned (``cmd`` by default)
-                    and ``mtp_engages`` whether a draft will load the trailing MTP
-                    blocks (``_mtp_will_engage`` by default); a retry that drops the
-                    drafter passes both."""
+                    """Bytes a forced full offload puts on the device, or None."""
                     run_argv = cmd if argv is None else argv
                     # The trailing blocks load only when the EMBEDDED head drafts: a
-                    # sidecar wins over it (llama.cpp loads the draft model on
-                    # has_dft()), whichever device the sidecar lands on.
+                    # sidecar wins over it (llama.cpp has_dft()), wherever it lands.
                     if mtp_engages is None:
                         engages = _mtp_will_engage and not _separate_draft_launches
                     else:
@@ -22959,17 +22915,10 @@ class LlamaCppBackend:
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
                     need = int(model_size)
-                    # The projector was priced onto the device; a retry that pins
-                    # it to the CPU or strips it loads the base alone.
                     if mmproj_size and not _argv_keeps_projector_on_gpu(run_argv, env):
                         need -= int(mmproj_size)
-                    # The file overstates the device: dev_input is CPU-pinned even
-                    # at full offload (offload_layout), so token_embd and the
-                    # per-layer table sharing its name never reach the carve-out.
-                    # A tied file duplicates the matrix onto the device instead, so
-                    # only an untied one subtracts it. Trailing NextN/MTP blocks
-                    # stay unloaded unless a draft engages. A table that cannot be
-                    # read cannot price either, so it takes nothing.
+                    # dev_input is CPU-pinned even at full offload, so token_embd never
+                    # reaches the device; a tied file duplicates the matrix onto it instead.
                     layout = self._tensor_spill_layout(model_path, all_shards = True)
                     if layout is None or not getattr(layout, "complete", True):
                         return None
@@ -22985,8 +22934,7 @@ class LlamaCppBackend:
                     mtp_engages = None,
                     why = "",
                 ):
-                    """Drop the variable this launch set once a respawn no longer
-                    needs it; an inherited or opted-in value is left alone."""
+                    """Drop the variable THIS launch set once a respawn stops needing it."""
                     nonlocal _unified_env_applied
                     if not _unified_env_applied:
                         return
@@ -24490,8 +24438,6 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
-                    # The price counted the MTP blocks a draft would have loaded;
-                    # this retry loads none.
                     _unified_withdraw_if_unneeded(
                         fallback_cmd,
                         mtp_engages = False,
@@ -24580,7 +24526,6 @@ class LlamaCppBackend:
                                 "projector on CPU to preserve image input."
                             )
                             cmd = _cpu_projector_cmd
-                            # The projector's bytes leave the device with it.
                             _unified_withdraw_if_unneeded(
                                 cmd, why = "The retry with the projector on CPU"
                             )
