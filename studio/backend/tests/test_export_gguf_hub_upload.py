@@ -84,7 +84,6 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
-            # Mirror filter_repo_objects: case-sensitive fnmatchcase over repo-relative paths.
             root = Path(folder_path)
             paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
@@ -165,7 +164,6 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
     assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
     assert "model.Q4_K_M.gguf" in seen["uploaded"]
     assert "Modelfile" in seen["uploaded"]
-    # Studio-local, and push_to_hub_gguf never published it.
     assert "export_metadata.json" not in seen["uploaded"]
     assert Path(output_path, "export_metadata.json").is_file()
     assert "`model.Q4_K_M.gguf`" in seen["card"]
@@ -185,7 +183,6 @@ def test_gguf_hub_export_uploads_only_the_export_artifacts(tmp_path, monkeypatch
     save_dir.mkdir()
     (save_dir / "notes.txt").write_text("unrelated")
     (save_dir / "dataset.jsonl").write_text('{"a": 1}')
-    # A relocation failure keeps the merged checkpoint behind, by design.
     leftover = save_dir / "_tmp_model_earlier" / "model"
     leftover.mkdir(parents = True)
     (leftover / "model-00001-of-00002.safetensors").write_bytes(b"weights")
@@ -241,7 +238,6 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
 
     save_dir = tmp_path / "llama-3[8b]"
     save_dir.mkdir()
-    # An earlier export's file, named so a bare "a*.gguf" pattern would sweep it in.
     (save_dir / "a-previous-quant.gguf").write_bytes(b"GGUF")
 
     calls: list[str] = []
@@ -337,10 +333,8 @@ def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, mo
     assert seen["uploaded"] == ["Modelfile", "model.Q4_K_M.gguf"]
     assert "some-other-model.Q8_0.gguf" not in seen["card"]
     assert (Path(output_path) / "some-other-model.Q8_0.gguf").is_file()
-    # config.json comes from the merged directory, deleted before the upload.
     assert seen["config.json"] == b'{"model_type": "llama"}'
     assert not (Path(output_path) / "config.json").exists()
-    # The card advertises the files, so it must land after them.
     assert calls.index("model_card") > calls.index("upload_folder")
 
 
@@ -365,7 +359,6 @@ def test_gguf_hub_export_leaves_a_stale_modelfile_behind(tmp_path, monkeypatch):
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            # This conversion produces no Modelfile.
 
         def push_to_hub_gguf(self, *args, **kwargs):
             calls.append("push_to_hub_gguf")
@@ -494,7 +487,6 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
         .strip()
         .endswith("vision-language-model" if is_vlm else "unsloth")
     )
-    # The Hub filters on the exact string, so both spellings must ship.
     tags = [line[2:] for line in seen["card"].split("---")[1].strip().splitlines()[1:]]
     assert "llama.cpp" in tags
     assert "llama-cpp" in tags
@@ -506,7 +498,6 @@ def _visibility_backend(
     name,
     gguf_names = ("model.Q4_K_M.gguf",),
 ):
-    """A backend wired to the Hub doubles, for the visibility and failure-path tests."""
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(name, "core/export/export.py", monkeypatch)
 
@@ -521,7 +512,6 @@ def _visibility_backend(
             produced = []
             for gguf_name in gguf_names:
                 gguf = output / gguf_name
-                # A "._" name is only Finder metadata if it carries the magic too.
                 gguf.write_bytes(b"\x00\x05\x16\x07" if gguf_name.startswith("._") else b"GGUF")
                 produced.append(str(gguf))
             return {"gguf_files": produced}
@@ -576,7 +566,6 @@ def test_gguf_hub_export_refuses_to_upload_when_privacy_cannot_be_confirmed(tmp_
         raise RuntimeError("403 Forbidden: write:repo_settings missing")
 
     monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
-    # repo_info reports a public repo, so the refusal stands.
     seen["repo_info_result"] = types.SimpleNamespace(private = False)
 
     success, message, output_path = backend.export_gguf(
@@ -715,7 +704,6 @@ def test_gguf_hub_export_fails_when_only_appledouble_companions_were_produced(
     """A run that produced only Finder metadata has produced nothing publishable."""
     save_dir = tmp_path / "export"
     save_dir.mkdir(parents = True)
-    # An earlier export of a different model, which the directory-wide gate would pass on.
     (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
 
     _module, backend, calls, seen = _visibility_backend(
@@ -823,7 +811,6 @@ def test_gguf_hub_export_reads_config_from_the_directory_the_exporter_reports(
             output.mkdir(parents = True)
             gguf = output / "model.Q4_K_M.gguf"
             gguf.write_bytes(b"GGUF")
-            # Deliberately no config.json under model_save_path.
             return {"gguf_files": [str(gguf)], "save_directory": str(elsewhere)}
 
         def push_to_hub_gguf(self, *args, **kwargs):
@@ -850,7 +837,6 @@ def test_gguf_hub_export_reads_config_from_the_directory_the_exporter_reports(
 
     assert success is True, message
     assert seen["config.json"] == b'{"model_type": "qwen2"}'
-    # Still not written into the export folder: _is_model_dir would read it as a checkpoint.
     assert not Path(output_path, "config.json").exists()
 
 
@@ -1006,7 +992,7 @@ def test_gguf_hub_export_falls_back_to_studios_own_vlm_detection(tmp_path, monke
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            return None  # what the MLX exporter returns
+            return None
 
         def push_to_hub_gguf(self, *args, **kwargs):
             calls.append("push_to_hub_gguf")
@@ -1086,8 +1072,6 @@ def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, 
     """shutil.move would put the file inside it and the allow-list would match nothing."""
     save_dir = tmp_path / "export"
     save_dir.mkdir(parents = True)
-    # A reused folder holding a directory named like the file this run produces, plus a
-    # stale .gguf so the directory-wide success gate would still pass.
     (save_dir / "model.Q4_K_M.gguf").mkdir()
     (save_dir / "an-earlier-export.Q8_0.gguf").write_bytes(b"GGUF")
 
@@ -1107,7 +1091,6 @@ def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, 
     assert success is False
     assert "a directory of that name" in message
     assert "upload_folder" not in calls
-    # The new file is not buried inside the directory, and the stale one is untouched.
     assert list((save_dir / "model.Q4_K_M.gguf").iterdir()) == []
     assert (save_dir / "an-earlier-export.Q8_0.gguf").is_file()
 
@@ -1155,9 +1138,7 @@ def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, 
         private = False,
     )
 
-    # The GGUFs landed, so the optional Modelfile must not fail the export...
     assert success is True, message
     assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
-    # ...and it is published from memory rather than silently dropped or nested.
     assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
     assert list((Path(output_path) / "Modelfile").iterdir()) == []

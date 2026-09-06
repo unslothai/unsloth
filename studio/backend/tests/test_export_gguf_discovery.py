@@ -58,8 +58,6 @@ def _backend(
 
 
 def _hub_doubles(export_mod, monkeypatch, calls: dict):
-    """Record the Hub leg: token, repo creation and the folder uploaded."""
-
     class _RepoUrl(str):
         repo_id = "org/model"
 

@@ -437,9 +437,7 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 
 
 def _ensure_hub_repo_private(hf_api, repo_id):
-    """Make an existing repo private before uploading, or refuse: create_repo only applies
-    `private` on creation, and repo_info covers a token without `write:repo_settings`.
-    """
+    """Tighten an existing repo to private: create_repo sets `private` only at creation."""
     try:
         hf_api.update_repo_settings(repo_id = repo_id, private = True, repo_type = "model")
         return
@@ -1266,8 +1264,7 @@ class ExportBackend:
                             )
                         dest = os.path.join(abs_save_dir, src.name)
                         if os.path.isdir(dest):
-                            # move would put the file INSIDE it and we would record the
-                            # directory, so the allow-list would match neither.
+                            # move would nest the file, and the allow-list would match neither.
                             raise RuntimeError(
                                 f"Cannot relocate {src.name}: a directory of that name is "
                                 f"already in {abs_save_dir}"
@@ -1287,12 +1284,10 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
-                    # The exporter wins when it says anything; the MLX binding returns None.
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
                     )
-                    # Kept in memory: the temp root is deleted before the upload, and a config.json
-                    # in the export folder would make _is_model_dir read it as a checkpoint.
+                    # In memory: the temp root goes, and a config.json here reads as a checkpoint.
                     merged_config = (
                         Path(reported.get("save_directory") or _model_tmp) / "config.json"
                     )
@@ -1306,13 +1301,10 @@ class ExportBackend:
                                 "GGUF conversion produced a symlinked Modelfile, "
                                 f"refusing to relocate it: {modelfile}"
                             )
-                        # Optional artifact: a locked or read-only destination must not fail an
-                        # export whose GGUFs all landed. It is published from memory instead.
+                        # Optional: a blocked destination publishes from memory, never fails.
                         modelfile_dest = os.path.join(abs_save_dir, "Modelfile")
                         try:
                             if os.path.isdir(modelfile_dest):
-                                # move would nest it at Modelfile/Modelfile, which the
-                                # allow-list never matches.
                                 raise OSError(
                                     f"a directory named Modelfile is already in {abs_save_dir}"
                                 )
@@ -1321,7 +1313,6 @@ class ExportBackend:
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         except OSError as exception:
                             logger.warning(f"Could not relocate the Modelfile: {exception}")
-                            # Keep the bytes before the `finally` below removes the temp root.
                             try:
                                 exported_modelfile_bytes = modelfile.read_bytes()
                             except OSError as read_exception:
@@ -1383,15 +1374,13 @@ class ExportBackend:
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
                 if output_path and Path(output_path).is_dir():
-                    # push_to_hub_gguf would re-run the whole merge + convert + quantize.
+                    # These are already built; push_to_hub_gguf would convert the model again.
                     hf_api = HfApi(token = hf_token)
                     repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     repo_id = getattr(repo_url, "repo_id", repo_id)
-                    # Tightening only: unticking private is not a request to open a repo.
                     if private:
                         _ensure_hub_repo_private(hf_api, repo_id)
-                    # Allow-list, not the folder: the user-picked directory can hold unrelated
-                    # files. glob.escape keeps a name like "model[v2].gguf" a literal.
+                    # Allow-list, not the folder; glob.escape keeps "model[v2].gguf" a literal.
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
@@ -1417,8 +1406,7 @@ class ExportBackend:
                             repo_type = "model",
                             commit_message = "Unsloth Ollama Modelfile",
                         )
-                    # Last, because the card advertises the files. Best-effort: RepoCard.push_to_hub
-                    # validates against a hardcoded huggingface.co a private HF_ENDPOINT cannot serve.
+                    # Last (advertises the files), best-effort: RepoCard hardcodes huggingface.co.
                     try:
                         ModelCard(
                             GGUF_MODEL_CARD.format(
