@@ -451,13 +451,34 @@ def test_isolated_batch_script_carries_every_line_with_echo_off(tmp_path):
     # Reserving the name must not create the file: it is written only after the
     # sandbox is prepared, so that it inherits the container's ACE.
     assert not os.path.exists(path)
-    tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path)
+    assert tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path) is None
     with open(path, "rb") as handle:
         body = handle.read()
     assert body == b"@echo off\r\necho one\r\necho two\r\nexit /b 3\r\n"
     # Exclusive creation: the name is never reused over an existing file.
     with pytest.raises(FileExistsError):
         tools._write_isolated_batch_script("echo again", path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "CreateFileW sharing is Windows only")
+def test_the_isolated_batch_script_is_unwritable_while_the_launch_holds_it(tmp_path):
+    # Creating and locking are one operation, so there is no window in which a
+    # concurrent call in the same chat workdir can swap the script under cmd.
+    path = tools._reserve_isolated_batch_script(str(tmp_path))
+    handle = tools._write_isolated_batch_script("echo held", path)
+    assert handle is not None
+    try:
+        # A reader (cmd) is admitted, every writer and the delete are refused.
+        with open(path, "rb") as reader:
+            assert reader.read() == b"@echo off\r\necho held\r\n"
+        with pytest.raises(PermissionError):
+            open(path, "wb").close()
+        with pytest.raises(PermissionError):
+            os.remove(path)
+    finally:
+        tools._release_batch_script(handle)
+    # Released with the launch: the caller can clean the file up afterwards.
+    os.remove(path)
 
 
 def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch):
@@ -491,17 +512,18 @@ def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch
 
 
 def test_batch_script_lock_is_windows_only_and_never_raises(tmp_path, monkeypatch):
-    # The lock keeps a concurrent call in the same workdir from swapping the script
-    # between the write and cmd opening it. Off Windows it is a no-op, and a host
-    # where the API is unavailable still runs the launch.
-    script = tmp_path / "studio_exec_x.cmd"
-    script.write_text("@echo off\r\necho hi\r\n", newline = "")
+    # Creating the script and denying every writer is one operation, and it is
+    # fail-closed: a host where the API refuses raises rather than running a
+    # script anyone could swap. Releasing a handle never raises, since it runs
+    # in the launch's finally.
     monkeypatch.setattr(tools.sys, "platform", "linux")
-    assert tools._lock_batch_script_for_reading(str(script)) is None
     tools._release_batch_script(None)
+    tools._release_batch_script(object())
     monkeypatch.setattr(tools.sys, "platform", "win32")
-    monkeypatch.setattr(tools.ctypes, "WinDLL", _raise_oserror, raising = False)
-    assert tools._lock_batch_script_for_reading(str(script)) is None
+    monkeypatch.setattr(tools, "_create_locked_batch_script", _raise_oserror)
+    with pytest.raises(OSError):
+        tools._write_isolated_batch_script("echo hi", str(tmp_path / "studio_exec_x.cmd"))
+    assert not list(tmp_path.iterdir())
     tools._release_batch_script(object())
 
 

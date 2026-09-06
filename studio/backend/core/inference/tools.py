@@ -7417,50 +7417,78 @@ def _get_shell_cmd(
 
 
 _GENERIC_READ_ACCESS = 0x80000000
+_GENERIC_WRITE_ACCESS = 0x40000000
 _FILE_SHARE_READ = 0x00000001
-_OPEN_EXISTING = 3
+_CREATE_NEW = 1
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _INVALID_HANDLE_VALUE = -1
 
 
-def _lock_batch_script_for_reading(path: str) -> "object | None":
-    """Hold the script open so nothing can rewrite it before cmd reads it.
+def _create_locked_batch_script(path: str, body: str) -> object:
+    """Create the batch file and keep it unwritable for as long as the launch runs.
 
-    The file lives in the session workdir, which the sandboxed process may also
-    write, so a concurrent tool call in the same chat could otherwise replace the
-    script between the write and cmd opening it. A handle opened with
-    ``FILE_SHARE_READ`` only lets cmd read the file and refuses every open that
-    asks for write or delete access for as long as the launch lasts. Returns the
-    handle to close afterwards, or None when the API is unavailable (the launch
-    still runs; the window is small and inside one sandbox).
+    Creation and locking are one operation on purpose. Writing the file, closing
+    it and reopening it to lock leaves a window in which a concurrent tool call
+    in the same chat workdir, which the sandboxed process can write, replaces
+    the script between the two opens and gets its own command run instead.
+    ``CREATE_NEW`` refuses an existing name, ``FILE_SHARE_READ`` lets cmd read
+    the file and refuses every open asking for write or delete, and the handle
+    is held until the launch is over.
+
+    Raises OSError when the file cannot be created this way, so an isolated
+    launch never falls back to a script anyone could swap.
     """
-    if sys.platform != "win32":
-        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    handle = kernel32.CreateFileW(
+        path,
+        _GENERIC_READ_ACCESS | _GENERIC_WRITE_ACCESS,
+        _FILE_SHARE_READ,
+        None,
+        _CREATE_NEW,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-        kernel32.CreateFileW.argtypes = [
-            ctypes.c_wchar_p,
-            ctypes.c_uint32,
-            ctypes.c_uint32,
+        payload = body.encode("utf-8")
+        kernel32.WriteFile.argtypes = [
             ctypes.c_void_p,
-            ctypes.c_uint32,
-            ctypes.c_uint32,
+            ctypes.c_char_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
             ctypes.c_void_p,
         ]
-        kernel32.CreateFileW.restype = ctypes.c_void_p
-        handle = kernel32.CreateFileW(
-            path,
-            _GENERIC_READ_ACCESS,
-            _FILE_SHARE_READ,
-            None,
-            _OPEN_EXISTING,
-            _FILE_ATTRIBUTE_NORMAL,
-            None,
-        )
-    except (OSError, AttributeError):
-        return None
-    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
-        return None
+        written = wintypes.DWORD(0)
+        if not kernel32.WriteFile(
+            ctypes.c_void_p(handle), payload, len(payload), ctypes.byref(written), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if written.value != len(payload):
+            raise OSError(f"batch script short write: {written.value} of {len(payload)} bytes")
+        # cmd opens the file by name, so the bytes must be on disk, not in this
+        # handle's buffer, before the child starts.
+        kernel32.FlushFileBuffers(ctypes.c_void_p(handle))
+    except BaseException:
+        _release_batch_script(handle)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
     return handle
 
 
@@ -7468,8 +7496,10 @@ def _release_batch_script(handle: "object | None") -> None:
     if handle is None or sys.platform != "win32":
         return
     try:
+        import ctypes
+
         ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(ctypes.c_void_p(handle))
-    except (OSError, AttributeError):
+    except (OSError, AttributeError, ImportError):
         pass
 
 
@@ -7481,13 +7511,13 @@ def _reserve_isolated_batch_script(workdir: str) -> str:
     after that inherits it at creation time; a file created before is left with
     the parent's ACEs as they stood, which on a workdir whose own DACL carries
     no inheritable entries means the container cannot read it at all. That is
-    the "Access is denied." cmd printed on the hosted runners. Nothing else is
-    reserved here, so a failed preparation leaves no file behind.
+    the "Access is denied." cmd printed on the hosted runners. Nothing is
+    created here, so a failed preparation leaves no file behind.
     """
     return os.path.join(workdir, f"studio_exec_{secrets.token_hex(12)}.cmd")
 
 
-def _write_isolated_batch_script(command: str, path: str) -> None:
+def _write_isolated_batch_script(command: str, path: str) -> "object | None":
     """Write ``command`` as the batch file for the isolated cmd launch.
 
     Called only after prepare_tool_launch, see _reserve_isolated_batch_script.
@@ -7495,17 +7525,22 @@ def _write_isolated_batch_script(command: str, path: str) -> None:
     sandbox, and it is registered as this call's scratch so the created-file
     report skips it. ``@echo off`` keeps cmd from echoing every line into the
     tool output; CRLF line endings because cmd mis-parses a bare LF at the end
-    of a label or a parenthesised block. Exclusive creation, so a name that
-    somehow already exists is an error rather than a silent overwrite of
-    someone else's file. The caller holds the file open for reading while the
-    launch runs, see _lock_batch_script_for_reading.
+    of a label or a parenthesised block.
+
+    On Windows the file is created through a handle that denies every writer
+    for the life of the launch, and that handle is returned for the caller to
+    release; see _create_locked_batch_script. Elsewhere (only the unit tests
+    reach this) an exclusive create is enough and None is returned.
     """
     body = "@echo off\r\n" + command.replace("\r\n", "\n").replace("\n", "\r\n")
     if not body.endswith("\r\n"):
         body += "\r\n"
+    if sys.platform == "win32":
+        return _create_locked_batch_script(path, body)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8", newline = "") as handle:
         handle.write(body)
+    return None
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -17048,10 +17083,10 @@ def _bash_exec(
         if script_path is not None:
             # After preparation on purpose: the workdir now carries the
             # container's inheritable ACE, so the file gets it at creation.
-            _write_isolated_batch_script(command, script_path)
-            # Held until the finally: a concurrent call in the same chat workdir
-            # cannot swap the script under cmd.
-            script_handle = _lock_batch_script_for_reading(script_path)
+            # The handle is held until the finally: created and locked in one
+            # operation, so no concurrent call in the same chat workdir can swap
+            # the script under cmd.
+            script_handle = _write_isolated_batch_script(command, script_path)
         if effective_execution_mode == "limited" and sys.platform != "win32":
             _limited_resource_limits()
 
