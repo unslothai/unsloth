@@ -520,3 +520,257 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
     finally:
         _restore_patch_targets(saved)
+
+
+# Spawn-boundary guard. ``python script.py`` is never scanned by the host, so
+# without a runtime check a guarded child can fork an unguarded grandchild.
+# Real subprocesses: the guard only exists once the shim loads as sitecustomize.
+
+_GRANDCHILD = "import boto3\nprint('REACHED', boto3.__version__)\n"
+
+_ESCAPE_PAYLOADS = {
+    "subprocess_site_flag": (
+        "import subprocess, sys\nsubprocess.run([sys.executable, '-E', 'grand.py'])\n"
+    ),
+    "environ_stripped": (
+        "import os, subprocess, sys\n"
+        "os.environ.pop('PYTHONPATH', None)\n"
+        "subprocess.run([sys.executable, 'grand.py'])\n"
+    ),
+    "explicit_empty_env": (
+        "import subprocess, sys\nsubprocess.run([sys.executable, 'grand.py'], env = {})\n"
+    ),
+    "os_system_site_flag": "import os, sys\nos.system(sys.executable + ' -E grand.py')\n",
+    "shell_true_site_flag": (
+        "import subprocess, sys\nsubprocess.run(sys.executable + ' -E grand.py', shell = True)\n"
+    ),
+}
+
+
+def _run_child(
+    tmp_path,
+    source,
+    site_dir,
+    sandboxed = True,
+):
+    import subprocess
+    import sys
+
+    script = tmp_path / "payload.py"
+    script.write_text(source)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(site_dir)
+    if sandboxed:
+        env["UNSLOTH_STUDIO_SANDBOXED"] = "1"
+    else:
+        env.pop("UNSLOTH_STUDIO_SANDBOXED", None)
+    done = subprocess.run(
+        [sys.executable, str(script)],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        cwd = tmp_path,
+    )
+    return done.stdout + done.stderr
+
+
+def _run_sandboxed(tmp_path, source):
+    return _run_child(tmp_path, source, _SHIM.parent)
+
+
+@pytest.mark.parametrize("payload", sorted(_ESCAPE_PAYLOADS))
+def test_unguarded_python_grandchild_is_blocked(tmp_path, payload):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(tmp_path, _ESCAPE_PAYLOADS[payload])
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_guarded_python_child_still_runs(tmp_path):
+    # A guard-inheriting child is ordinary work; its own shim denies the import.
+    (tmp_path / "grand.py").write_text("print('child ran')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "print(subprocess.run([sys.executable, 'grand.py'],"
+        " capture_output = True, text = True).stdout.strip())\n",
+    )
+    assert "child ran" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_non_python_child_is_untouched(tmp_path):
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess\n"
+        "print(subprocess.run(['echo', 'hi'], capture_output = True, text = True).stdout.strip())\n",
+    )
+    assert "hi" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_guard_helpers_cannot_be_rebound_by_sandbox_code(tmp_path):
+    # The check is closure state, so rebinding module helpers cannot disarm it.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import sitecustomize, subprocess, sys\n"
+        "sitecustomize._make_child_process_guard = lambda: (lambda *a, **k: False)\n"
+        "sitecustomize._CHILD_PROCESS_AUDIT_EVENTS = frozenset()\n"
+        "subprocess.run([sys.executable, '-E', 'grand.py'])\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_full_access_bypass_does_not_install_the_spawn_guard(tmp_path):
+    # Full access keeps the path remap but none of the guards.
+    (tmp_path / "grand.py").write_text("print('child ran')\n")
+    output = _run_child(
+        tmp_path,
+        "import subprocess, sys\nsubprocess.run([sys.executable, '-E', 'grand.py'])\n",
+        _SHIM.parent.parent / "bypass_site",
+        sandboxed = False,
+    )
+    assert "child ran" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_spoofed_argv0_with_real_python_executable_is_blocked(tmp_path):
+    # subprocess executable= runs the real interpreter; argv[0] is spoofable.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "subprocess.run(['alias', '-S', 'grand.py'], executable = sys.executable)\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_os_execv_path_over_spoofed_argv0_is_blocked(tmp_path):
+    # os.exec* runs the path argument, not argv[0].
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import os, sys\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.execv(sys.executable, ['x', '-S', 'grand.py'])\n"
+        "os.waitpid(pid, 0)\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_non_python_executable_is_untouched(tmp_path):
+    # A real non-Python executable behind a spoofed argv[0] must still run.
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess\n"
+        "print(subprocess.run(['py'], executable = '/bin/echo',"
+        " capture_output = True, text = True).returncode)\n",
+    )
+    assert "runtime guard" not in output, output
+
+
+def test_zipimport_blocked_module_is_denied(tmp_path):
+    # zipimporter.load_module runs an archive entry directly, skipping __import__.
+    import zipfile
+
+    archive = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("boto3.py", "print('REACHED via zipimport')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        f"import zipimport\nzipimport.zipimporter({str(archive)!r}).load_module('boto3')\n",
+    )
+    assert "REACHED" not in output, output
+    assert "Blocked: low-level network module" in output, output
+
+
+def test_zipimport_benign_module_still_loads(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "ok.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("mymod.py", "print('benign zip ok')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        f"import sys, zipimport\n"
+        f"sys.path.insert(0, {str(archive)!r})\n"
+        f"zipimport.zipimporter({str(archive)!r}).load_module('mymod')\n",
+    )
+    assert "benign zip ok" in output, output
+    assert "Blocked" not in output, output
+
+
+def test_env_wrapper_launching_python_is_blocked(tmp_path):
+    # env -i drops PYTHONPATH, so the wrapped interpreter starts guard-free.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "subprocess.run(['/usr/bin/env', '-i', sys.executable, 'grand.py'])\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    ["['nice', {py}, '-S', 'grand.py']", "['timeout', '5', {py}, '-S', 'grand.py']"],
+)
+def test_plain_wrappers_are_unwrapped(tmp_path, wrapper):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        f"import subprocess, sys\nsubprocess.run({wrapper.format(py = 'sys.executable')})\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo python -S",
+        "echo 'run python -S to skip site'",
+        "ls -la | grep python",
+    ],
+)
+def test_benign_shell_mentioning_python_is_allowed(tmp_path, command):
+    # A python token that is an argument to echo/grep is not a launch.
+    output = _run_sandboxed(tmp_path, f"import os\nos.system({command!r})\nprint('DONE')\n")
+    assert "DONE" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_shell_actually_launching_unguarded_python_is_blocked(tmp_path):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(tmp_path, "import os\nos.system('python3 -S grand.py')\n")
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_relative_pythonpath_is_resolved_against_child_cwd(tmp_path):
+    # A relative PYTHONPATH that resolves to the site dir from the PARENT cwd but
+    # not the child's must not be trusted: the child starts without the guard.
+    site_dir = str(_SHIM.parent)
+    work = tmp_path / "work"
+    other = tmp_path / "other"
+    work.mkdir()
+    other.mkdir()
+    os.symlink(site_dir, work / "guard")
+    (work / "grand.py").write_text(_GRANDCHILD)
+    output = _run_child(
+        work,
+        "import subprocess, sys, os\n"
+        "subprocess.run([sys.executable, os.path.join(os.getcwd(), 'grand.py')],\n"
+        "  env = {'PYTHONPATH': 'guard', 'UNSLOTH_STUDIO_SANDBOXED': '1'},\n"
+        f"  cwd = {str(other)!r})\n",
+        site_dir,
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
