@@ -25839,9 +25839,7 @@ def _public_embedding_identity(identity: str, model_name: str, label: str) -> st
         return identity
     repo = effective_gguf_repo_for_embedding_model(model_name)
     public = {model_name: label, repo: _public_embedding_name(repo)}
-    segments = [
-        _unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")
-    ]
+    segments = [_unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")]
     redacted = [_escape_identity_segment(public.get(s, s)) for s in segments]
     return ":".join([tag, *redacted])
 

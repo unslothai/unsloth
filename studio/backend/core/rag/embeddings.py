@@ -199,7 +199,11 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         return ()
 
 
-def _guard_model_security(name: str, local_only: bool = False, display: str | None = None) -> None:
+def _guard_model_security(
+    name: str,
+    local_only: bool = False,
+    display: str | None = None,
+) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable

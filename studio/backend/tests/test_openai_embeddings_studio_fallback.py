@@ -209,8 +209,9 @@ def test_identity_redaction_leaves_the_backend_tag_alone(tmp_path, monkeypatch):
     (tmp_path / "transformers").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        inference_route, "_public_embedding_name", lambda name: "transformers-deadbeef"
-        if name == "transformers" else name
+        inference_route,
+        "_public_embedding_name",
+        lambda name: "transformers-deadbeef" if name == "transformers" else name,
     )
     monkeypatch.setattr(
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: "transformers-GGUF"
@@ -229,8 +230,11 @@ def test_identity_redaction_covers_the_gguf_repo_segment(monkeypatch):
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: "/models/bge-GGUF"
     )
     monkeypatch.setattr(
-        inference_route, "_public_embedding_name",
-        lambda name: {"/models/bge": "bge-1111", "/models/bge-GGUF": "bge-GGUF-2222"}.get(name, name),
+        inference_route,
+        "_public_embedding_name",
+        lambda name: {"/models/bge": "bge-1111", "/models/bge-GGUF": "bge-GGUF-2222"}.get(
+            name, name
+        ),
     )
     public = inference_route._public_embedding_identity(
         "llama-server:%2Fmodels%2Fbge:%2Fmodels%2Fbge-GGUF".replace("%2F", "/"),
@@ -313,12 +317,12 @@ def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch
 
 def test_guard_model_security_names_the_configured_model_not_the_snapshot(monkeypatch):
     """The scan needs the snapshot path; the message must not carry it."""
-    monkeypatch.setattr(
-        rag_embeddings, "_ambient_hf_token", lambda: None
-    )
+    monkeypatch.setattr(rag_embeddings, "_ambient_hf_token", lambda: None)
     import utils.security as security
+
     monkeypatch.setattr(
-        security, "evaluate_file_security",
+        security,
+        "evaluate_file_security",
         lambda *a, **k: SimpleNamespace(blocked = True),
     )
     monkeypatch.setattr(security, "security_load_subdirs", lambda *a, **k: ())
@@ -765,14 +769,17 @@ def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkey
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
     monkeypatch.setattr(backend, "_spawn", lambda model_name = None: None)
     monkeypatch.setattr(
-        embed_llama_server.config, "effective_gguf_repo_for_embedding_model",
+        embed_llama_server.config,
+        "effective_gguf_repo_for_embedding_model",
         lambda model: "unsloth/bge-small-en-v1.5-GGUF",
     )
     monkeypatch.setattr(
-        embed_llama_server.config, "effective_embedding_model",
+        embed_llama_server.config,
+        "effective_embedding_model",
         lambda: "unsloth/bge-small-en-v1.5",
     )
     import utils.llama_cpp_path_settings as path_settings
+
     monkeypatch.setattr(path_settings, "custom_llama_cpp_path_revision", lambda: 2)
 
     backend._ensure_ready()
