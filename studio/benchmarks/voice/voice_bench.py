@@ -50,6 +50,7 @@ Run with the Studio venv python so the token bootstrap can import auth.storage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import ipaddress
 import json
@@ -390,28 +391,41 @@ def _read_fixture_meta(meta_path: Path) -> Optional[dict]:
     return meta if isinstance(meta, dict) and isinstance(meta.get("text"), str) else None
 
 
-def _write_fixture_meta(meta_path: Path, text: str, source: str) -> None:
-    meta_path.write_text(json.dumps({"text": text, "source": source}), encoding = "utf-8")
+def _wav_digest(wav: bytes) -> str:
+    return hashlib.sha256(wav).hexdigest()
+
+
+def _write_fixture_meta(meta_path: Path, text: str, source: str, wav: bytes) -> None:
+    meta = {"text": text, "source": source, "sha256": _wav_digest(wav)}
+    meta_path.write_text(json.dumps(meta), encoding = "utf-8")
 
 
 def ensure_fixture(client: StudioClient, turn: dict) -> tuple[bytes, float, bool]:
     """Return (wav_bytes, duration_s, generated?). Prefer a real recording on disk.
 
     The cache is keyed on the turn id, so the sidecar records which utterance the
-    wav was made for: a synthesized fixture whose text changed (another
-    --conversation, or an edited turn) is re-synthesized; a hand-supplied recording
-    is never overwritten and instead raises FixtureMismatch."""
+    wav was made for and the sha256 of the bytes it described: a synthesized
+    fixture whose text changed (another --conversation, or an edited turn) is
+    re-synthesized; a hand-supplied recording, including a synthesized one that
+    was later replaced in place (the hash no longer matches), is never
+    overwritten and instead raises FixtureMismatch."""
     FIXTURES.mkdir(parents = True, exist_ok = True)
     wav_path, meta_path = fixture_paths(turn["id"])
     text = turn["text"]
     if wav_path.exists():
+        wav = wav_path.read_bytes()
         meta = _read_fixture_meta(meta_path)
-        if meta is None:
-            # Dropped in by hand with no sidecar: adopt it, pinned to the current text.
-            _write_fixture_meta(meta_path, text, "supplied")
+        if meta is None or (meta.get("sha256") and meta["sha256"] != _wav_digest(wav)):
+            # Dropped in by hand (no sidecar), or not the bytes the sidecar describes
+            # (replaced in place): adopt the recording, pinned to the current text.
+            _write_fixture_meta(meta_path, text, "supplied", wav)
             meta = {"text": text, "source": "supplied"}
+        elif not meta.get("sha256"):
+            # A sidecar from before hashes were recorded: pin the bytes now, so a
+            # later replacement is detectable. It cannot tell whether one already
+            # happened, which is why the README says to delete the sidecar in that case.
+            _write_fixture_meta(meta_path, meta["text"], meta.get("source", "supplied"), wav)
         if meta["text"] == text:
-            wav = wav_path.read_bytes()
             _mirror_to_downloads(turn["id"], wav)
             return wav, wav_duration_seconds(wav), False
         if meta.get("source") == "supplied":
@@ -424,7 +438,7 @@ def ensure_fixture(client: StudioClient, turn: dict) -> tuple[bytes, float, bool
     # (Orpheus) and cache it, so STT input is byte-identical on every later run.
     wav, _ = client.speak(text)
     wav_path.write_bytes(wav)
-    _write_fixture_meta(meta_path, text, "synthesized")
+    _write_fixture_meta(meta_path, text, "synthesized", wav)
     _mirror_to_downloads(turn["id"], wav)
     return wav, wav_duration_seconds(wav), True
 

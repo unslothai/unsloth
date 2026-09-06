@@ -88,14 +88,19 @@ that is checked before any model request.
 Fixed `--seed 42`, `--temperature 0` (greedy) for the LLM, and the **input audio
 is cached** to `audio_fixtures/turn_N.wav` on first run (and mirrored to
 `~/Downloads/voice_bench_fixtures/`), so every later run feeds identical bytes.
-A `turn_N.json` sidecar pins each wav to the utterance it was made for, so the
-cache cannot serve stale audio when a turn's text changes (an edited
-`conversation.json`, or another `--conversation` reusing the same turn ids): a
-synthesized fixture is re-synthesized automatically. Delete a `turn_N.wav` to
-regenerate it, or drop in your own real recording with that name to benchmark
-against authentic speech instead of synthesized input; a supplied recording is
-adopted (sidecar written on first use) and never overwritten, so if its text
-later changes the run stops with `FixtureMismatch` until you replace or delete it.
+A `turn_N.json` sidecar pins each wav to the utterance it was made for and to
+the SHA-256 of its bytes, so the cache cannot serve stale audio when a turn's
+text changes (an edited `conversation.json`, or another `--conversation` reusing
+the same turn ids): a synthesized fixture is re-synthesized automatically.
+Delete a `turn_N.wav` to regenerate it, or drop in your own real recording with
+that name (a new file, or written over the synthesized one) to benchmark against
+authentic speech instead of synthesized input; a recording whose bytes are not
+the ones the sidecar describes is adopted as supplied (sidecar rewritten on
+first use) and never overwritten, so if its text later changes the run stops
+with `FixtureMismatch` until you replace or delete it. A sidecar written before
+hashes were recorded (no `sha256` field) cannot tell whether its wav was already
+replaced; if you did that, delete the sidecar so the recording is adopted on the
+next run.
 
 The **LLM is fully deterministic** here (greedy + seed): turn 1 is run twice and
 must come back `IDENTICAL`. The same `--seed` is sent as `seed` on every

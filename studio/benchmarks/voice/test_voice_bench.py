@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -337,6 +338,7 @@ class FixtureTests(unittest.TestCase):
         self._saved = (vb.FIXTURES, vb.DOWNLOADS)
         vb.FIXTURES, vb.DOWNLOADS = root / "fixtures", root / "downloads"
         self.wav = _wav()
+        self.digest = hashlib.sha256(self.wav).hexdigest()
         self.spoken: list[str] = []
         test = self
 
@@ -358,7 +360,7 @@ class FixtureTests(unittest.TestCase):
         self.assertAlmostEqual(dur, 0.1)
         self.assertEqual(
             json.loads((vb.FIXTURES / "turn_1.json").read_text()),
-            {"text": "hello", "source": "synthesized"},
+            {"text": "hello", "source": "synthesized", "sha256": self.digest},
         )
         self.assertTrue((vb.DOWNLOADS / "turn_1.wav").exists())
 
@@ -377,12 +379,55 @@ class FixtureTests(unittest.TestCase):
         self.assertFalse(generated)
         self.assertEqual(
             json.loads((vb.FIXTURES / "turn_2.json").read_text()),
-            {"text": "mine", "source": "supplied"},
+            {"text": "mine", "source": "supplied", "sha256": self.digest},
         )
         with self.assertRaises(vb.FixtureMismatch):
             vb.ensure_fixture(self.client, {"id": 2, "text": "someone else's line"})
         self.assertEqual(self.spoken, [])
         self.assertEqual((vb.FIXTURES / "turn_2.wav").read_bytes(), self.wav)
+
+    def test_synthesized_fixture_replaced_in_place_becomes_supplied(self):
+        # README flow: run once, then overwrite turn_N.wav with a real recording
+        # without touching the sidecar. The stale "synthesized" marker must not let
+        # a later text edit overwrite the recording.
+        vb.ensure_fixture(self.client, {"id": 4, "text": "same words"})
+        real = _wav(seconds = 0.25)
+        self.assertNotEqual(real, self.wav)
+        (vb.FIXTURES / "turn_4.wav").write_bytes(real)
+
+        wav, dur, generated = vb.ensure_fixture(self.client, {"id": 4, "text": "same words"})
+        self.assertFalse(generated)
+        self.assertEqual(wav, real)
+        self.assertAlmostEqual(dur, 0.25)
+        self.assertEqual(
+            json.loads((vb.FIXTURES / "turn_4.json").read_text()),
+            {
+                "text": "same words",
+                "source": "supplied",
+                "sha256": hashlib.sha256(real).hexdigest(),
+            },
+        )
+        with self.assertRaises(vb.FixtureMismatch):
+            vb.ensure_fixture(self.client, {"id": 4, "text": "edited words"})
+        self.assertEqual(self.spoken, ["same words"])
+        self.assertEqual((vb.FIXTURES / "turn_4.wav").read_bytes(), real)
+
+    def test_hashless_sidecar_is_backfilled_and_still_pins_the_text(self):
+        vb.FIXTURES.mkdir(parents = True)
+        (vb.FIXTURES / "turn_5.wav").write_bytes(self.wav)
+        (vb.FIXTURES / "turn_5.json").write_text(
+            json.dumps({"text": "old run", "source": "synthesized"})
+        )
+        _, _, generated = vb.ensure_fixture(self.client, {"id": 5, "text": "old run"})
+        self.assertFalse(generated)
+        self.assertEqual(
+            json.loads((vb.FIXTURES / "turn_5.json").read_text()),
+            {"text": "old run", "source": "synthesized", "sha256": self.digest},
+        )
+        # Still a synthesized fixture, so a text change re-synthesizes it.
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, _, generated = vb.ensure_fixture(self.client, {"id": 5, "text": "new run"})
+        self.assertTrue(generated)
 
     def test_corrupt_sidecar_is_treated_as_supplied(self):
         vb.FIXTURES.mkdir(parents = True)
