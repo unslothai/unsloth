@@ -459,7 +459,7 @@ def test_audio_extras_carry_the_python_ceiling_their_codec_line_has():
     0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14.
     """
     markers = pytest.importorskip("packaging.markers")
-    text = PYPROJECT.read_text(encoding="utf-8")
+    text = PYPROJECT.read_text(encoding = "utf-8")
 
     # extra -> the first interpreter that must NOT select it, and one that must.
     expected = {
@@ -479,12 +479,12 @@ def test_audio_extras_carry_the_python_ceiling_their_codec_line_has():
             "platform_system": "Linux",
             "os_name": "posix",
         }
-        assert not marker.evaluate({**env, "python_version": too_new}), (
-            f"{extra} still selects torchcodec on Python {too_new}, which has no wheel"
-        )
-        assert marker.evaluate({**env, "python_version": supported}), (
-            f"{extra} stopped selecting torchcodec on Python {supported}, which does"
-        )
+        assert not marker.evaluate(
+            {**env, "python_version": too_new}
+        ), f"{extra} still selects torchcodec on Python {too_new}, which has no wheel"
+        assert marker.evaluate(
+            {**env, "python_version": supported}
+        ), f"{extra} stopped selecting torchcodec on Python {supported}, which does"
 
 
 def test_compat_matrix_matches_the_published_upstream_table():
@@ -658,14 +658,14 @@ def test_a_codec_range_is_read_in_order_and_only_when_unconditional():
         '!pip install "torchcodec<0.12.0"\n'
         "!pip install torch==2.12.0"
     )
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(ordered, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"], "the later cap has to win over the earlier floor"
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(ordered, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ], "the later cap has to win over the earlier floor"
 
     marked = "!pip install torch==2.12.0 \"torchcodec>=0.12.0; python_version < '3.10'\""
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(marked, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"], "a marked requirement must not raise the effective codec"
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(marked, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ], "a marked requirement must not raise the effective codec"
 
     # The unconditional forms this reader exists for still resolve.
     for cell in (
