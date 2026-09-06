@@ -92,6 +92,7 @@ export const fr = {
       hub: "Hub de modèles",
       projects: "Projets",
       train: "Entraîner",
+      notebooks: "Notebooks",
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
@@ -2512,6 +2513,54 @@ export const fr = {
       dataset: "Jeu de données",
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
+    },
+  },
+  notebooks: {
+    routeTitle: "Notebooks",
+    title: "Notebooks Unsloth",
+    subtitle:
+      "Recettes officielles de fine-tuning issues de unslothai/notebooks. Ouvrez-les dans Colab ou préremplissez Fine-tuning Studio.",
+    searchPlaceholder: "Rechercher des notebooks…",
+    pickerPlaceholder: "Recherchez et choisissez un notebook…",
+    pickerEmpty: "Aucun notebook ne correspond à votre recherche.",
+    pickedSection: "Notebook sélectionné",
+    resultsCount: "{count} notebooks",
+    allCategories: "Tout",
+    featured: "À la une",
+    featuredSection: "Notebooks à la une",
+    allSection: "Tous les notebooks",
+    loading: "Chargement des notebooks…",
+    loadFailed: "Échec du chargement des notebooks",
+    emptyTitle: "Aucun notebook trouvé",
+    emptyDescription:
+      "Essayez une autre recherche ou un autre filtre de catégorie.",
+    useInStudio: "Utiliser dans Studio",
+    openInColab: "Ouvrir dans Colab",
+    viewOnGitHub: "GitHub",
+    studioModelReady: "Préremplit Studio : {model}",
+    studioManualConfigure:
+      "Ouvre Fine-tuning Studio — choisissez un modèle correspondant à ce notebook.",
+    studioOpenedWithoutModel:
+      "Fine-tuning Studio est ouvert. Sélectionnez un modèle correspondant à ce notebook.",
+    studioDisabled: {
+      mlxUnavailable:
+        "L'entraînement nécessite MLX. Exécutez `unsloth studio update` pour activer Utiliser dans Studio.",
+      intelMac:
+        "L'entraînement nécessite Apple Silicon ou un GPU. Les Mac Intel sont limités au chat.",
+      noGpu: "L'entraînement nécessite un GPU NVIDIA ou AMD.",
+      generic: "L'entraînement n'est pas disponible sur cet appareil.",
+    },
+    categories: {
+      sft: "Fine-tuning",
+      vision: "Vision",
+      grpo: "GRPO / RL",
+      audio: "Audio / TTS",
+      embedding: "Embedding",
+      reasoning: "Raisonnement",
+      code: "Code",
+      inference: "Inférence",
+      raft: "RAFT",
+      classification: "Classification",
     },
   },
   modelMemory: {
