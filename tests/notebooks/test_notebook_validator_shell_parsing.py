@@ -1864,3 +1864,13 @@ def test_a_cell_that_only_mentions_pip_is_not_an_install_cell():
     assert nv.install_cells(nb) == [(0, mention)]
     # But it parses to no invocation, which is what the compat rules key off now.
     assert list(nv.iter_pip_invocations(mention)) == []
+
+
+def test_notebooks_ci_watches_the_oracle_that_feeds_marker_evaluation():
+    """_marker_environment reads the image's Python out of colab_os_info.gpu.txt, so an
+    OS-only rotation changes which requirements the validator replays. Without the path
+    filter entry that PR would not run the lint and smoke jobs the change affects."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    paths = workflow.split("paths:", 1)[1].split("jobs:", 1)[0]
+    assert "'scripts/data/colab_os_info.gpu.txt'" in paths
+    assert "'scripts/data/colab_pip_freeze.gpu.txt'" in paths

@@ -26,6 +26,9 @@ on:
       - 'scripts/notebook_validator.py'
       - 'scripts/notebook_to_python.py'
       - 'scripts/data/colab_pip_freeze.gpu.txt'
+      # Rule-bearing since _marker_environment started reading the image's Python out of it:
+      # an OS-only rotation changes which requirements the validator replays.
+      - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
       - 'tests/_zoo_aggressive_cuda_spoof.py'
