@@ -11,12 +11,20 @@ const ownerPassword = process.env.STUDIO_E2E_OWNER_PASSWORD;
 
 async function login(page: Page, username: string, password: string) {
   await page.goto(`${baseURL}/login`);
+  // The form follows the server's login_mode; wait for the layout that mode
+  // implies rather than sampling visibility before the page has settled.
+  const status = await page.request.get(`${baseURL}/api/auth/status`);
+  const { login_mode: mode } = (await status.json()) as { login_mode?: string };
   const usernameField = page.getByRole("textbox", {
     name: "Username",
     exact: true,
   });
-  if (username !== "unsloth") await expect(usernameField).toBeVisible();
-  if (await usernameField.isVisible()) await usernameField.fill(username);
+  if (mode === "multi") {
+    await expect(usernameField).toBeVisible();
+    await usernameField.fill(username);
+  } else {
+    await expect(usernameField).toHaveCount(0);
+  }
   await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "Login", exact: true }).click();
 }
@@ -45,6 +53,8 @@ test("owner creates an account, setup is private, and browser switching clears a
   context,
   request,
 }) => {
+  // Three logins and a password change against a real backend.
+  test.setTimeout(120_000);
   test.skip(
     !ownerPassword,
     "Requires a disposable Studio server and owner password.",
