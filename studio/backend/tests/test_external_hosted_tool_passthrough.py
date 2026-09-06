@@ -334,6 +334,37 @@ def test_a_codex_declares_no_hosted_tools():
 # ── Task 1: what an omitted permission_mode means ────────────────────
 
 
+def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """mcp_enabled arms the confirm gate on intent, but with no MCP tool enabled the
+    selection is empty and the loop is skipped, so a headerless stream has no prompt to
+    find a channel for. Refusing on intent would 400 a request that proxies straight
+    through, so the check waits for the selected catalog."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(mcp_enabled = True)
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(
+            payload, headerless, current_subject = "t"
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    # No LoopEntered and no HTTPException: the request proxies through.
+    assert _drive(go())
+
+
 def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     """`permission_mode` unset on a streaming request resolves to "auto" with
     the confirm gate ON, so high-risk calls still prompt."""

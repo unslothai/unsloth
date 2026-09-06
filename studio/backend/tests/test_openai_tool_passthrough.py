@@ -4350,6 +4350,41 @@ class TestGgufVisionToolRouting:
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
+    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(
+        self, monkeypatch
+    ):
+        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery here finds
+        # no MCP tool, so the selection is empty and the loop is skipped. Refusing on
+        # intent would 400 a request that answers fine without ever prompting.
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        async def _no_tools(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(inf_mod, "_select_request_tools", _no_tools)
+
+        def _generate(**_kwargs):
+            yield "hi"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {
+                "stream": True,
+                "mcp_enabled": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+        assert "".join(d.get("content", "") for d in deltas) == "hi"
+
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):
             yield "<thi"

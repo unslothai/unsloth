@@ -3970,6 +3970,28 @@ def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
     return _confirm_gate_needs_stream(payload)
 
 
+def _reject_confirm_gate_without_channel(payload, ui_events: bool) -> None:
+    """Refuse a request whose confirm gate would have nowhere to ask.
+
+    Called with the SELECTED catalog in hand, never on intent: mcp_enabled with no MCP
+    tools enabled, or a selection filtered down to nothing, leaves the loop skipped, and
+    refusing there would 400 a request that proxies straight through.
+    """
+    if not _confirm_gate_has_no_channel(payload, ui_events):
+        return
+    raise HTTPException(
+        status_code = 400,
+        detail = openai_error_body(
+            "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
+            'header for local tool execution; set permission_mode to "off" to '
+            "run tools without confirmation.",
+            status = 400,
+            code = "invalid_request_error",
+            param = "confirm_tool_calls",
+        ),
+    )
+
+
 def _anthropic_reasoning_args(payload) -> dict:
     """Reasoning kwargs for /v1/messages generators.
 
@@ -19351,20 +19373,6 @@ async def _proxy_to_external_provider(
     # the same per-request answer (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
     _drop_keepalive = _DroppedFrameKeepalive()
-    # The loop's approval handshake rides those frames, so a caller that hid them has
-    # nowhere to be asked -- the streaming twin of the non-streaming refusal below.
-    if studio_tool_loop and _confirm_gate_has_no_channel(payload, _ui_events):
-        raise HTTPException(
-            status_code = 400,
-            detail = openai_error_body(
-                "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
-                'header for local tool execution; set permission_mode to "off" to '
-                "run tools without confirmation.",
-                status = 400,
-                code = "invalid_request_error",
-                param = "confirm_tool_calls",
-            ),
-        )
     # Unsloth's UI asks for the gate by permission_mode, not by confirm_tool_calls,
     # so reading the raw flag admits the exact request the local routes reject: a
     # non-streaming permission_mode="ask" with the flag omitted proxies through
@@ -19598,6 +19606,10 @@ async def _proxy_to_external_provider(
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
             )
+            if studio_tool_payloads:
+                # The loop runs iff the catalog is non-empty (policy below), and its
+                # approval handshake rides the control frames.
+                _reject_confirm_gate_without_channel(payload, _ui_events)
             # The Unsloth loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
@@ -19918,6 +19930,10 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    if run_studio_tool_loop:
+        # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves
+        # this empty and skips the loop, so there is no prompt to find a channel for.
+        _reject_confirm_gate_without_channel(payload, _ui_events)
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
@@ -20633,11 +20649,18 @@ async def produce_openai_chat_completions(
         _studio_local_tool_loop = bool(_use_tools_intent) and (
             _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
         )
-        if (_confirm_gate_has_no_channel(payload, _ui_events) and _studio_local_tool_loop) or (
-            payload.confirm_tool_calls is True
-            and _client_tool_passthrough
-            and not payload.bypass_permissions
-            and not (payload.stream and _ui_events)
+        # Non-streaming only: this runs before the model switch, so it only has the
+        # request's intent, and mcp_enabled with no MCP tools enabled selects an empty
+        # catalogue and skips the loop. The per-backend guards below refuse a stream that
+        # hid the frames, with the selection in hand. A switch before that refusal is
+        # cheaper than 400ing a request that would have run.
+        if (
+            not payload.bypass_permissions
+            and not payload.stream
+            and (
+                (_confirm_gate_needs_stream(payload) and _studio_local_tool_loop)
+                or (payload.confirm_tool_calls is True and _client_tool_passthrough)
+            )
         ):
             raise HTTPException(
                 status_code = 400,
