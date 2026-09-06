@@ -7955,10 +7955,7 @@ async def _resolve_last_local_model_for_cold_start(
 
 
 def _request_names_local_target(
-    requested_model: str,
-    target_id: str,
-    variant: Optional[str],
-    override_id: str,
+    requested_model: str, target_id: str, variant: Optional[str], override_id: str
 ) -> bool:
     """Whether *requested_model* names this resolved local target.
 
@@ -8202,8 +8199,7 @@ async def _maybe_auto_switch_model(
                 elif cold_start and keyless_caller:
                     last_local = await _resolve_last_local_model_for_cold_start(current_subject)
                     if last_local is not None and (
-                        reload_only
-                        or _request_names_local_target(requested_model, *last_local)
+                        reload_only or _request_names_local_target(requested_model, *last_local)
                     ):
                         resolved = last_local
                 if resolved is None:
