@@ -436,7 +436,7 @@ def _decode_link_payload(payload_b64: str) -> Optional[dict]:
         return None
 
 
-def create_link_token(subject: str) -> str:
+def create_link_token(subject: str, *, expires_in: Optional[int] = None) -> str:
     """Mint a one-time, short-TTL HMAC-signed link token bound to *subject*.
 
     The token is ``<payload_b64>.<sig_b64>`` where the payload carries the
@@ -446,12 +446,19 @@ def create_link_token(subject: str) -> str:
 
     SECURITY: the returned value is a bearer credential. NEVER log it, and only
     ever place it on the private same-tab URL, never on a shared/public link.
+
+    ``expires_in`` overrides the default TTL in seconds. The default suits a URL
+    handoff, which is redeemed within seconds of being issued. The setup token
+    embedded in the served page is a different shape: it is minted when the page
+    loads and redeemed only when the operator submits the form, which may be a
+    while later, so main._inject_bootstrap widens it to the bootstrap deadline.
     """
     key = _link_token_key(subject)
     if key is None:
         raise RuntimeError(f"Cannot mint a link token for unknown subject {subject!r}")
     jti = secrets.token_urlsafe(24)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds = LINK_TOKEN_EXPIRE_SECONDS)
+    ttl = LINK_TOKEN_EXPIRE_SECONDS if expires_in is None else max(1, int(expires_in))
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds = ttl)
     expires_iso = expires_at.isoformat()
     save_link_token(jti, subject, expires_iso)
     payload = {"sub": subject, "jti": jti, "exp": expires_iso}

@@ -100,6 +100,30 @@ def test_two_page_loads_get_independent_tokens():
     assert first != second
 
 
+def test_setup_token_outlives_the_time_an_operator_takes_to_type(monkeypatch):
+    """The page token is minted on LOAD and redeemed on SUBMIT.
+
+    The default link-token TTL suits a URL handoff redeemed in seconds. Reusing
+    it here would expire under anyone who opened Studio, was interrupted, and
+    came back a few minutes later, turning a first login that works today into
+    an error. It is bound to the bootstrap deadline instead: Studio shuts down
+    at that point anyway, so the token cannot outlive the window in which the
+    seed it replaces would have been usable.
+    """
+    from datetime import datetime, timezone
+
+    _seed_admin()
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    studio_main._inject_bootstrap(_HTML, _App())
+
+    row = storage.get_connection().execute("SELECT expires_at FROM link_tokens").fetchone()
+    remaining = (datetime.fromisoformat(row[0]) - datetime.now(timezone.utc)).total_seconds()
+    assert remaining > authentication.LINK_TOKEN_EXPIRE_SECONDS, (
+        "the setup token fell back to the short URL-handoff TTL; an operator who "
+        "leaves the setup page open would get an error instead of a first login"
+    )
+
+
 def test_nothing_is_injected_once_a_password_is_set():
     _seed_admin(must_change_password = False)
     out, nonce = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
