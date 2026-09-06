@@ -183,6 +183,15 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "scp",
         "sftp",
         "rsync",
+        # macOS escape hatches: `open` and `osascript` hand work to LaunchServices
+        # or AppleScript outside the sandbox, `security` reads the Keychain,
+        # `launchctl` starts a job that outlives the call. The Seatbelt profile
+        # denies these binaries too; this is the same rule for the tiers that have
+        # no OS boundary.
+        "open",
+        "osascript",
+        "security",
+        "launchctl",
         "eval",
         "source",
         # `.` is the POSIX synonym for `source`: `. ./script.sh` runs the file's

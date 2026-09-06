@@ -1775,11 +1775,30 @@ _MACOS_TLS_TRUST_PATHS = (
     "/Library/Preferences/com.apple.security.plist",
     "/Library/Preferences/com.apple.security.revocation.plist",
 )
+# Certificate evaluation only. com.apple.SecurityServer is deliberately absent:
+# with it a sandboxed tool can query the login Keychain through Security.framework
+# even though /usr/bin/security is exec-denied (the escape PR 5468 removed in its
+# fourth review round). Python's OpenSSL verifies through the trust store bound
+# above and needs none of these; they are here for curl and Foundation clients.
 _MACOS_TLS_MACH_SERVICES = (
-    "com.apple.SecurityServer",
     "com.apple.trustd",
     "com.apple.trustd.agent",
     "com.apple.ocspd",
+)
+# Homebrew and /usr/local: PATH inside the sandbox carries /usr/local/bin, so a
+# tool found through PATH would fail process-exec without these. Read-only, and
+# only the trees that exist on the host.
+_MACOS_OPTIONAL_READ_ROOTS = (
+    "/usr/local/bin",
+    "/usr/local/lib",
+    "/usr/local/sbin",
+    "/usr/local/opt",
+    "/usr/local/Cellar",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/lib",
+    "/opt/homebrew/sbin",
+    "/opt/homebrew/opt",
+    "/opt/homebrew/Cellar",
 )
 _developer_paths_cache: tuple[str, ...] | None = None
 _developer_paths_lock = threading.Lock()
@@ -1977,6 +1996,7 @@ def _macos_seatbelt_profile(
 ) -> str:
     readable_paths = (
         *_MACOS_READ_ROOTS,
+        *_MACOS_OPTIONAL_READ_ROOTS,
         *_macos_developer_paths(),
         *((*_MACOS_TLS_TRUST_PATHS, *tls_trust_paths()) if proxy_port else ()),
         *_MACOS_DEVICES,

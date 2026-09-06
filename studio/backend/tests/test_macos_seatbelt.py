@@ -667,3 +667,34 @@ def test_live_twenty_seatbelt_startup_samples(live_seatbelt_backend, tmp_path, r
     record_property("macos_seatbelt_startup_median_ms", f"{median:.3f}")
     record_property("macos_seatbelt_startup_p95_ms", f"{p95:.3f}")
     print(f"Seatbelt startup over 20 launches: median={median:.3f}ms p95={p95:.3f}ms")
+
+
+def test_profile_keeps_keychain_and_launchservices_out_of_reach(tmp_path):
+    """The Mach services a TLS client needs, and no more.
+
+    com.apple.SecurityServer would let a tool read the login Keychain through
+    Security.framework, and the LaunchServices pair would let it hand a URL to a
+    browser outside the sandbox; PR 5468 removed both for that reason.
+    """
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    private_tmp = tmp_path / "us-seatbelt-y"
+    private_tmp.mkdir()
+    profile = os_sandbox._macos_seatbelt_profile(
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (),
+        proxy_port = 44321,
+    )
+    for service in (
+        "com.apple.SecurityServer",
+        "com.apple.coreservices.launchservicesd",
+        "com.apple.lsd.mapdb",
+    ):
+        assert service not in profile
+    assert "com.apple.trustd" in profile
+    # The deny-exec filter keeps only paths that exist, so on a Linux test host
+    # the list is empty; on macOS all three are present.
+    for binary in ("/usr/bin/open", "/usr/bin/osascript", "/usr/bin/security"):
+        assert (binary in profile) is os.path.exists(binary)
+        assert binary in os_sandbox._MACOS_DENIED_EXECUTABLES
