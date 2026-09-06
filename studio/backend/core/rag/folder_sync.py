@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Durable, sequential reconciliation for linked local RAG folders."""
+"""Durable, bounded-pipeline reconciliation for linked local RAG folders."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import closing
 import weakref
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -56,6 +58,22 @@ class _LeaseLost(Exception):
 
 class _FolderChanged(RuntimeError):
     pass
+
+
+@dataclass
+class _IngestionResult:
+    document_id: str | None = None
+    ingestion_job: str | None = None
+    error: Exception | None = None
+
+
+@dataclass
+class _PendingIngestion:
+    relative_path: str
+    snapshot: str
+    metadata: dict
+    content_hash: str
+    future: Future["_IngestionResult"]
 
 
 def _folder_lock(folder_id: str) -> threading.RLock:
@@ -1307,6 +1325,84 @@ def _failure_summary(failures: list[str]) -> str | None:
     return f"{len(failures)} file(s) could not be indexed ({named})"
 
 
+def _ingest_folder_document(
+    job_id: str,
+    stop_event: threading.Event,
+    folder: dict,
+    relative_path: str,
+    snapshot: str,
+    content_hash: str,
+    embedding_model: str,
+) -> _IngestionResult:
+    """Run one document through the existing durable ingestion lifecycle.
+
+    Folder state stays owned by the coordinator, but the expensive parse/chunk/embed
+    work can run in a bounded pool. Copy the coordinator's worker state into this
+    thread so lease loss and shutdown are still observed at the same lifecycle
+    boundaries as a serial pass.
+    """
+    missing = object()
+    previous_job_id = getattr(_worker_state, "job_id", missing)
+    previous_stop_event = getattr(_worker_state, "stop_event", missing)
+    document_id = None
+    ingestion_job = None
+    _worker_state.job_id = job_id
+    _worker_state.stop_event = stop_event
+    try:
+        _check_running()
+        document_id, ingestion_job = ingestion.start_ingestion(
+            folder["scope"],
+            folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
+            None,
+            relative_path,
+            snapshot,
+            project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
+            model_name = embedding_model,
+            content_hash = content_hash,
+            dedupe = False,
+            linked_folder_id = folder["id"],
+            linked_relative_path = relative_path,
+            background = False,
+        )
+        result = ingestion.get_job_status(ingestion_job)
+        if result is None:
+            raise RuntimeError("Ingestion job disappeared")
+        if result["status"] != "completed":
+            raise RuntimeError(result.get("error") or "Ingestion failed")
+        _check_running()
+        return _IngestionResult(document_id, ingestion_job)
+    except Exception as exc:  # noqa: BLE001 - coordinator classifies per-file failures
+        return _IngestionResult(document_id, ingestion_job, exc)
+    finally:
+        if previous_job_id is missing:
+            try:
+                del _worker_state.job_id
+            except AttributeError:
+                pass
+        else:
+            _worker_state.job_id = previous_job_id
+        if previous_stop_event is missing:
+            try:
+                del _worker_state.stop_event
+            except AttributeError:
+                pass
+        else:
+            _worker_state.stop_event = previous_stop_event
+
+
+def _cleanup_pending_ingestion(pending: _PendingIngestion, result: _IngestionResult) -> None:
+    """Remove an uninstalled document, or its snapshot if admission never completed."""
+    if result.document_id is not None:
+        _discard_document(result.document_id)
+    else:
+        _remove_snapshot(pending.snapshot)
+
+
+def _folder_ingest_workers() -> int:
+    """Return a bounded worker count for document-level pipeline overlap."""
+    return max(1, min(4, config.FOLDER_INGEST_WORKERS))
+
+
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
     _check_running()
@@ -1390,111 +1486,192 @@ def _reconcile_folder(job_id: str) -> None:
     added = changed_count = 0
     failures: list[str] = []
     withheld: set[str] = set()
-    for index, rel in enumerate(work):
-        snapshot = None
-        document_id = None
-        ingestion_job = None
-        try:
-            _check_running()
-            metadata = current[rel]
-            snapshot = _snapshot(folder["path"], metadata)
-            content_hash = _hash_file(snapshot)
-            _check_running()
-            if not rebuild and rel in changed and content_hash == known[rel].get("content_hash"):
-                _check_root_identity(folder["path"], scanned_identity)
-                _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
-                _remove_snapshot(snapshot)
-                snapshot = None
-                _set_job(job_id, progress = (index + 1) / max(total, 1))
-                continue
-            if not rebuild and rel in new:
-                rename_key = (content_hash, os.path.splitext(rel)[1].lower())
-                rename_candidates = missing_by_content.get(rename_key)
-                if rename_candidates:
-                    old_rel = rename_candidates.pop(0)
-                    missing.discard(old_rel)
-                    _check_root_identity(folder["path"], scanned_identity)
-                    _rename_mapping(folder["id"], old_rel, rel)
-                    _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
-                    _remove_snapshot(snapshot)
-                    snapshot = None
-                    renamed += 1
-                    _set_job(
-                        job_id,
-                        renamed = renamed,
-                        progress = (index + 1) / max(total, 1),
-                    )
-                    continue
-            document_id, ingestion_job = ingestion.start_ingestion(
-                folder["scope"],
-                folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
-                None,
-                rel,
-                snapshot,
-                project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
-                dedupe = False,
-                linked_folder_id = folder["id"],
-                linked_relative_path = rel,
-                model_name = embedding_model,
-                background = False,
-                content_hash = content_hash,
-            )
-            result = ingestion.get_job_status(ingestion_job)
-            if result is None:
-                raise RuntimeError("Ingestion job disappeared")
-            if result["status"] != "completed":
-                raise RuntimeError(result.get("error") or "Ingestion failed")
-            _check_running()
-            _check_root_identity(folder["path"], scanned_identity)
-            _install_mapping(
-                folder,
-                rel,
-                metadata,
-                document_id,
-                content_hash,
-            )
-            if rel in new:
-                added += 1
-            else:
-                changed_count += 1
-        except (_SyncStopped, _LeaseLost):
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-            raise
-        except _FolderChanged:
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-            raise
-        except Exception:
-            failures.append(rel)
-            # a failed file may be a rename or copy of a vanished path, so grant one pass
-            withheld.update(missing - already_withheld)
-            logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-        finally:
-            if ingestion_job:
-                try:
-                    ingestion.delete_terminal_job(ingestion_job)
-                except Exception:
-                    logger.warning(
-                        "failed to prune linked-folder ingestion job %s",
-                        ingestion_job,
-                        exc_info = True,
-                    )
+    processed = 0
+    stop_event = getattr(_worker_state, "stop_event", _stop)
+    workers = _folder_ingest_workers()
+    in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
+
+    def update_progress() -> None:
         _set_job(
             job_id,
             added = added,
             changed = changed_count,
             failed = len(failures),
-            progress = (index + 1) / max(total, 1),
+            renamed = renamed,
+            progress = processed / max(total, 1),
         )
+
+    def prune_ingestion_job(result: _IngestionResult) -> None:
+        if result.ingestion_job is None:
+            return
+        try:
+            ingestion.delete_terminal_job(result.ingestion_job)
+        except Exception:
+            logger.warning(
+                "failed to prune linked-folder ingestion job %s",
+                result.ingestion_job,
+                exc_info = True,
+            )
+
+    def finish_pending(pending: _PendingIngestion) -> None:
+        nonlocal added, changed_count, processed
+        result = _IngestionResult()
+        try:
+            try:
+                result = pending.future.result()
+            except Exception as exc:  # noqa: BLE001 - classify unexpected worker failures
+                result = _IngestionResult(error = exc)
+
+            if result.error is not None:
+                if isinstance(result.error, (_SyncStopped, _LeaseLost, _FolderChanged)):
+                    _cleanup_pending_ingestion(pending, result)
+                    raise result.error
+                failures.append(pending.relative_path)
+                # A failed file may be a rename or copy of a vanished path, so grant one pass.
+                withheld.update(missing - already_withheld)
+                logger.warning(
+                    "linked-folder ingestion failed for %s",
+                    pending.relative_path,
+                    exc_info = (type(result.error), result.error, result.error.__traceback__),
+                )
+                _cleanup_pending_ingestion(pending, result)
+            else:
+                try:
+                    _check_running()
+                    _check_root_identity(folder["path"], scanned_identity)
+                    _install_mapping(
+                        folder,
+                        pending.relative_path,
+                        pending.metadata,
+                        result.document_id,
+                        pending.content_hash,
+                    )
+                except (_SyncStopped, _LeaseLost, _FolderChanged):
+                    _cleanup_pending_ingestion(pending, result)
+                    raise
+                except Exception as exc:  # noqa: BLE001 - preserve per-file failure behavior
+                    failures.append(pending.relative_path)
+                    withheld.update(missing - already_withheld)
+                    logger.warning(
+                        "linked-folder ingestion failed for %s",
+                        pending.relative_path,
+                        exc_info = (type(exc), exc, exc.__traceback__),
+                    )
+                    _cleanup_pending_ingestion(pending, result)
+                else:
+                    if pending.relative_path in new:
+                        added += 1
+                    else:
+                        changed_count += 1
+        finally:
+            prune_ingestion_job(result)
+        processed += 1
+        update_progress()
+
+    def drain_one() -> None:
+        if not in_flight:
+            return
+        completed, _ = wait(tuple(in_flight), return_when = FIRST_COMPLETED)
+        for future in completed:
+            pending = in_flight.pop(future)
+            finish_pending(pending)
+
+    def abort_in_flight() -> None:
+        pending_items = list(in_flight.items())
+        for future, _ in pending_items:
+            future.cancel()
+        for future, pending in pending_items:
+            in_flight.pop(future, None)
+            if future.cancelled():
+                result = _IngestionResult()
+            else:
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001 - best-effort abort cleanup
+                    result = _IngestionResult(error = exc)
+            try:
+                _cleanup_pending_ingestion(pending, result)
+            except Exception:
+                logger.warning(
+                    "failed to clean up aborted linked-folder ingestion for %s",
+                    pending.relative_path,
+                    exc_info = True,
+                )
+            prune_ingestion_job(result)
+
+    with ThreadPoolExecutor(
+        max_workers = workers,
+        thread_name_prefix = "rag-folder-ingest",
+    ) as executor:
+        try:
+            for rel in work:
+                if len(in_flight) >= workers:
+                    drain_one()
+                snapshot = None
+                try:
+                    _check_running()
+                    metadata = current[rel]
+                    snapshot = _snapshot(folder["path"], metadata)
+                    content_hash = _hash_file(snapshot)
+                    _check_running()
+                    if (
+                        not rebuild
+                        and rel in changed
+                        and content_hash == known[rel].get("content_hash")
+                    ):
+                        _check_root_identity(folder["path"], scanned_identity)
+                        _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
+                        _remove_snapshot(snapshot)
+                        snapshot = None
+                    elif not rebuild and rel in new:
+                        rename_key = (content_hash, os.path.splitext(rel)[1].lower())
+                        rename_candidates = missing_by_content.get(rename_key)
+                        if rename_candidates:
+                            old_rel = rename_candidates.pop(0)
+                            missing.discard(old_rel)
+                            _check_root_identity(folder["path"], scanned_identity)
+                            _rename_mapping(folder["id"], old_rel, rel)
+                            _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
+                            _remove_snapshot(snapshot)
+                            snapshot = None
+                            renamed += 1
+                    else:
+                        future = executor.submit(
+                            _ingest_folder_document,
+                            job_id,
+                            stop_event,
+                            folder,
+                            rel,
+                            snapshot,
+                            content_hash,
+                            embedding_model,
+                        )
+                        in_flight[future] = _PendingIngestion(
+                            relative_path = rel,
+                            snapshot = snapshot,
+                            metadata = metadata,
+                            content_hash = content_hash,
+                            future = future,
+                        )
+                        snapshot = None
+                except (_SyncStopped, _LeaseLost, _FolderChanged):
+                    _remove_snapshot(snapshot)
+                    raise
+                except Exception:
+                    failures.append(rel)
+                    # A failed file may be a rename or copy of a vanished path, so grant one pass.
+                    withheld.update(missing - already_withheld)
+                    logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
+                    _remove_snapshot(snapshot)
+                if any(pending.relative_path == rel for pending in in_flight.values()):
+                    continue
+                processed += 1
+                update_progress()
+            while in_flight:
+                drain_one()
+        except Exception:
+            abort_in_flight()
+            raise
 
     deleted = 0
     for rel in sorted(missing - withheld):
