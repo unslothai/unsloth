@@ -17,12 +17,14 @@
 #   UNSLOTH_OS_RELEASE         alternative os-release file (tests only)
 #   UNSLOTH_PROC_VERSION       alternative /proc/version file (tests only)
 #   UNSLOTH_RUN_USER_DIR       alternative /run/user (tests only)
+#   UNSLOTH_WSL_LIB_DIR        alternative /usr/lib/wsl/lib (tests only)
 set -euo pipefail
 
 DESTDIR="${UNSLOTH_DESTDIR:-}"
 OS_RELEASE="${UNSLOTH_OS_RELEASE:-/etc/os-release}"
 PROC_VERSION="${UNSLOTH_PROC_VERSION:-/proc/version}"
 RUN_USER_DIR="${UNSLOTH_RUN_USER_DIR:-/run/user}"
+WSL_LIB_DIR="${UNSLOTH_WSL_LIB_DIR:-/usr/lib/wsl/lib}"
 BASE="https://nvidia.github.io/libnvidia-container"
 
 say()  { printf '%s\n' "$*"; }
@@ -46,7 +48,12 @@ if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
 fi
 
 # 3. a CLI pointed at another machine: everything below edits THIS machine
-endpoint="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)}"
+# DOCKER_CONTEXT overrides DOCKER_HOST, which overrides the selected context
+if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
+    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+else
+    endpoint="$DOCKER_HOST"
+fi
 case "$endpoint" in
     ""|unix://*|npipe://*) ;;
     *) fail "the Docker CLI talks to a remote daemon (${endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
@@ -77,14 +84,18 @@ if [[ "$(id -u)" != 0 ]]; then
     fail "run this as root: pipe it into 'sudo -E bash', or 'sudo -E bash docker/install_nvidia_toolkit.sh'." 2
 fi
 
-if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+# On WSL 2 the Windows driver provides nvidia-smi under /usr/lib/wsl/lib, which
+# sudo's secure_path drops, so look there as well as on PATH.
+NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
+[[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
+if [[ -z "$NVSMI" ]] || ! "$NVSMI" -L 2>/dev/null | grep -q '^GPU'; then
     fail "no NVIDIA driver found (nvidia-smi lists no GPU). Install the driver first, with your
        distribution's packages (Ubuntu: 'sudo ubuntu-drivers install'; RHEL/Fedora: the
        nvidia-driver module from the CUDA repository), reboot, then run this again.
        Unsloth images need driver 570.26 or newer." 2
 fi
 MIN_DRIVER=570.26
-DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')"
+DRIVER="$("$NVSMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')"
 driver_ok() {
     [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
 }
@@ -109,19 +120,25 @@ else
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg2 >/dev/null
             mkdir -p "${DESTDIR}/usr/share/keyrings" "${DESTDIR}/etc/apt/sources.list.d"
-            curl -fsSL "${BASE}/gpgkey" \
-                | gpg --dearmor --yes -o "${DESTDIR}/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+            # staged, then renamed: a failed download must not leave a truncated
+            # keyring or source list behind on a rerun
+            keyring="${DESTDIR}/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+            list="${DESTDIR}/etc/apt/sources.list.d/nvidia-container-toolkit.list"
+            curl -fsSL "${BASE}/gpgkey" | gpg --dearmor --yes -o "${keyring}.tmp"
+            mv -f "${keyring}.tmp" "$keyring"
             curl -fsSL "${BASE}/stable/deb/nvidia-container-toolkit.list" \
                 | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-                > "${DESTDIR}/etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                > "${list}.tmp"
+            mv -f "${list}.tmp" "$list"
             apt-get update -qq
             apt-get install -y -qq nvidia-container-toolkit
             ;;
         *" rhel "*|*" fedora "*|*" centos "*|*" amzn "*|*" rocky "*|*" almalinux "*)
             command -v curl >/dev/null 2>&1 || { command -v dnf >/dev/null 2>&1 && dnf install -y curl || yum install -y curl; }
             mkdir -p "${DESTDIR}/etc/yum.repos.d"
-            curl -fsSL "${BASE}/stable/rpm/nvidia-container-toolkit.repo" \
-                > "${DESTDIR}/etc/yum.repos.d/nvidia-container-toolkit.repo"
+            repo="${DESTDIR}/etc/yum.repos.d/nvidia-container-toolkit.repo"
+            curl -fsSL "${BASE}/stable/rpm/nvidia-container-toolkit.repo" > "${repo}.tmp"
+            mv -f "${repo}.tmp" "$repo"
             if command -v dnf >/dev/null 2>&1; then
                 say "Installing nvidia-container-toolkit with dnf."
                 dnf install -y nvidia-container-toolkit

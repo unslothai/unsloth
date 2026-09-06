@@ -46,6 +46,7 @@ _REAL_TOOLS = (
     "basename",
     "dirname",
     "touch",
+    "mv",
     "cut",
     "rm",
     "true",
@@ -108,7 +109,7 @@ def _setup(
     _stub(
         bindir / "docker",
         rec
-        + 'if [ "$1" = context ]; then echo "unix:///var/run/docker.sock"; exit 0; fi\n'
+        + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         + (
@@ -140,7 +141,7 @@ def _setup(
         bindir / "curl",
         rec + 'case "$*" in\n'
         '  *gpgkey) printf "FAKE-ARMORED-KEY\\n" ;;\n'
-        '  *.list) printf "deb https://nvidia.github.io/libnvidia-container/stable/deb/\\$(ARCH) /\\n" ;;\n'
+        '  *.list) if [ -e "$LIST_DOWNLOAD_FAILS" ]; then echo "curl: (22) 503" >&2; exit 22; fi; printf "deb https://nvidia.github.io/libnvidia-container/stable/deb/\\$(ARCH) /\\n" ;;\n'
         '  *.repo) printf "[nvidia-container-toolkit]\\nbaseurl=https://nvidia.github.io/libnvidia-container/stable/rpm/\\$basearch\\n" ;;\n'
         "esac\n",
     )
@@ -161,12 +162,15 @@ def _setup(
     env = dict(os.environ)
     env["PATH"] = _isolated_path(tmp_path, bindir)
     env["UNSLOTH_DESTDIR"] = str(root)
+    env["LIST_DOWNLOAD_FAILS"] = str(tmp_path / "list-download-fails")
     env["UNSLOTH_OS_RELEASE"] = str(osr)
     env["UNSLOTH_PROC_VERSION"] = str(procv)
     env["UNSLOTH_RUN_USER_DIR"] = str(tmp_path / "run-user")
+    env["UNSLOTH_WSL_LIB_DIR"] = str(tmp_path / "wsl-lib")
     env.pop("UNSLOTH_TOOLKIT_VERIFY", None)
     env.pop("SUDO_UID", None)
     env.pop("DOCKER_HOST", None)
+    env.pop("DOCKER_CONTEXT", None)
     return root, log, env
 
 
@@ -320,6 +324,42 @@ def test_without_docker_the_script_says_so(tmp_path: Path):
     assert res.returncode == 2
     assert "docker is not installed" in res.stderr
     assert _calls(log) == []
+
+
+def test_docker_context_wins_over_a_local_docker_host(tmp_path: Path):
+    _, log, env = _setup(tmp_path, uid = 1000)
+    env["DOCKER_HOST"] = "unix:///var/run/docker.sock"
+    env["DOCKER_CONTEXT"] = "remote-gpu"
+    res = _run(env)
+    assert res.returncode == 2
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    assert not any(c.startswith(("sudo", "apt-get")) for c in _calls(log))
+
+
+def test_nvidia_smi_is_found_in_the_wsl_library_dir_after_sudo(tmp_path: Path):
+    """secure_path drops /usr/lib/wsl/lib even with sudo -E, where the Windows
+    driver keeps nvidia-smi on a WSL 2 distro running its own Docker Engine."""
+    _, log, env = _setup(tmp_path, wsl = True)
+    smi = tmp_path / "bin" / "nvidia-smi"
+    wsl_lib = tmp_path / "wsl-lib"
+    wsl_lib.mkdir()
+    smi.rename(wsl_lib / "nvidia-smi")
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "nvidia-ctk runtime configure --runtime=docker" in _calls(log)
+    assert "meets the 570.26 minimum" in res.stdout
+
+
+def test_a_failed_source_list_download_keeps_the_existing_file(tmp_path: Path):
+    root, log, env = _setup(tmp_path, distro = "ubuntu")
+    lst = root / "etc/apt/sources.list.d/nvidia-container-toolkit.list"
+    lst.parent.mkdir(parents = True)
+    lst.write_text("deb [signed-by=/usr/share/keyrings/x.gpg] https://old /\n", encoding = "utf-8")
+    (tmp_path / "list-download-fails").write_text("", encoding = "utf-8")
+    res = _run(env)
+    assert res.returncode != 0
+    assert lst.read_text(encoding = "utf-8").startswith("deb [signed-by=/usr/share/keyrings/x.gpg] https://old")
+    assert not any(c.startswith("nvidia-ctk") for c in _calls(log))
 
 
 def test_a_remote_docker_endpoint_is_refused(tmp_path: Path):
@@ -504,6 +544,12 @@ def test_run_sh_does_not_offer_an_install_when_docker_itself_is_unreachable(tmp_
     assert "Container Toolkit is not set up" not in res.stderr
     assert not any(c.startswith("sudo") for c in _calls(log))
     assert argv.exists()
+
+
+def test_run_sh_uses_no_scratch_file_for_the_daemon_probe():
+    text = RUN_SH.read_text(encoding = "utf-8")
+    assert "unsloth-docker-info" not in text and "mktemp" not in text
+    assert 'DOCKER_INFO="$(docker info 2>&1)"' in text
 
 
 def test_run_sh_is_quiet_when_the_runtime_is_present(tmp_path: Path):

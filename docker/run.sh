@@ -102,10 +102,8 @@ fi
 DOCKER_INFO=""
 DOCKER_ERR=""
 if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
-    if ! DOCKER_INFO="$(docker info 2>"${TMPDIR:-/tmp}/unsloth-docker-info.$$")"; then
-        DOCKER_ERR="$(cat "${TMPDIR:-/tmp}/unsloth-docker-info.$$" 2>/dev/null)"
-    fi
-    rm -f "${TMPDIR:-/tmp}/unsloth-docker-info.$$"
+    # stderr folded in: on failure the captured text IS the daemon's error
+    DOCKER_INFO="$(docker info 2>&1)" || { DOCKER_ERR="$DOCKER_INFO"; DOCKER_INFO=""; }
 fi
 if [[ -n "$DOCKER_ERR" ]]; then
     # no daemon, or no permission on its socket: an install offer would be the wrong
