@@ -16,7 +16,14 @@ from unsloth.registry._llama import register_llama_models
 from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
-from unsloth.registry.registry import MODEL_REGISTRY, QUANT_TAG_MAP, QuantType
+from unsloth.registry._llama import LlamaModelInfo
+from unsloth.registry.registry import (
+    MODEL_REGISTRY,
+    QUANT_TAG_MAP,
+    ModelInfo,
+    QuantType,
+    register_model,
+)
 
 MODEL_NAMES = [
     "llama",
@@ -101,6 +108,39 @@ def test_all_model_registration():
     registered_models = MODEL_REGISTRY.keys()
     missing_models = _test_model_uploaded(registered_models)
     assert not missing_models, f"Missing following models: {missing_models}"
+
+
+def test_unquantized_default_quant_type_is_usable():
+    # quant_type is optional on append_quant_type, on ModelInfo and on register_model,
+    # and all three default to None. QUANT_TAG_MAP is keyed by QuantType, so the default
+    # used to raise KeyError: None and the unquantized path was unreachable without
+    # naming QuantType.NONE explicitly.
+    assert ModelInfo.append_quant_type("Llama-3.1-8B") == "Llama-3.1-8B"
+    assert ModelInfo.append_quant_type("Llama-3.1-8B", None) == "Llama-3.1-8B"
+
+    # QuantType.NONE already meant no tag, and a real quant type still gets one.
+    assert ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.NONE) == "Llama-3.1-8B"
+    assert (
+        ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.BNB)
+        == "Llama-3.1-8B-" + QUANT_TAG_MAP[QuantType.BNB]
+    )
+
+    info = LlamaModelInfo(
+        org = "unsloth", base_name = "Llama", version = "3.1", size = 8, instruct_tag = "Instruct"
+    )
+    assert info.quant_type is None
+    assert info.model_path == "unsloth/Llama-3.1-8B-Instruct"
+
+
+def test_register_model_defaults_to_no_quantization():
+    key = "unsloth/Llama-9.9-1B"
+    MODEL_REGISTRY.pop(key, None)
+    try:
+        register_model(LlamaModelInfo, org = "unsloth", base_name = "Llama", version = "9.9", size = 1)
+        assert key in MODEL_REGISTRY
+        assert MODEL_REGISTRY[key].quant_type is None
+    finally:
+        MODEL_REGISTRY.pop(key, None)
 
 
 def test_quant_type():
