@@ -666,6 +666,35 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     return installed + [0] * (width - len(installed)) == wanted + [0] * (width - len(wanted))
 
 
+def _verb_scoped_requirements(install_cell: str) -> "list[tuple[bool, list[str]]]":
+    """`(is_uninstall, requirements)` for every pip command, in the order pip runs them.
+
+    One logical line can chain several commands with different verbs, and this branch has no
+    shell splitter, so `pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y
+    torchaudio` arrives as ONE invocation carrying every package. A single verb for the whole
+    line is wrong in both directions: the line's first verb threw away a reinstall on the
+    right of the `&&`, and its last verb cleared torch and the codec because a third package
+    was the one removed. Each command therefore takes the packages that appear inside its own
+    span, which runs to the next pip verb.
+    """
+    out: list[tuple[bool, list[str]]] = []
+    for invocation in iter_pip_invocations(install_cell):
+        verbs = list(_PIP_VERB_RE.finditer(invocation.raw))
+        if not verbs:
+            out.append((False, list(invocation.packages)))
+            continue
+        for i, match in enumerate(verbs):
+            stop = verbs[i + 1].start() if i + 1 < len(verbs) else len(invocation.raw)
+            span = invocation.raw[match.end():stop]
+            out.append(
+                (
+                    match.group(1).lower() == "uninstall",
+                    [r for r in invocation.packages if r in span],
+                )
+            )
+    return out
+
+
 def _requested_bounds(
     install_cell: str, package: str
 ) -> list[tuple[str, str, str, str, bool, bool, list[str]]]:
@@ -690,19 +719,12 @@ def _requested_bounds(
     version, which is what it was judged on before this function existed.
     """
     sequence: list[tuple[str, str, str, str, bool, bool, list[str]]] = []
-    for invocation in iter_pip_invocations(install_cell):
-        # The LAST pip verb on the line decides. One logical line can chain both --
-        # `pip uninstall -y torchcodec && pip install torchcodec==0.10.0` is a single
-        # invocation here -- and matching `uninstall` anywhere marked the whole thing a
-        # removal, so the reinstall on the right of the `&&` was thrown away and the rule
-        # skipped a codec the cell demonstrably ends with.
-        _verbs = _PIP_VERB_RE.findall(invocation.raw)
-        uninstall = bool(_verbs) and _verbs[-1].lower() == "uninstall"
+    for uninstall, _requirements in _verb_scoped_requirements(install_cell):
         current_exact = current_floor = current_ceiling = current_cap = ""
         current_exclusions: list[str] = []
         floor_excludes_itself = False
         named = False
-        for requirement in invocation.packages:
+        for requirement in _requirements:
             if ";" in requirement:
                 continue
             spec = parse_spec(requirement)

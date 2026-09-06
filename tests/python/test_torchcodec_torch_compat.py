@@ -1562,3 +1562,35 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     assert "--index-url $env:UNSLOTH_PYTORCH_MIRROR/cu128" in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
+
+
+def test_each_pip_command_owns_the_packages_it_names():
+    """A chained line can carry several verbs, and this branch has no shell splitter, so the
+    whole line arrives as one invocation. A single verb for it is wrong both ways: the first
+    verb threw away a reinstall after an uninstall, and the last verb cleared torch and the
+    codec when a THIRD package was the one removed."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    # The uninstall names torchaudio, so the incompatible pair the install leaves stands.
+    other_package = (
+        "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
+    )
+    assert nv._effective_requested_version(other_package, "torchcodec", "0.11.0") == (
+        "0.12.0",
+        True,
+    )
+    assert nv._effective_requested_version(other_package, "torch", "2.11.0") == ("2.10.0", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(other_package, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    # A reinstall after an uninstall of the SAME package still lands.
+    reinstalled = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
+    assert nv._effective_requested_version(reinstalled, "torchcodec", "0.11.0") == ("0.10.0", True)
+
+    # ...and an uninstall that really does come last still clears it.
+    removed = "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec"
+    assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == ("", True)
+    assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
