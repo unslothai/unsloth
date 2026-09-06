@@ -1810,7 +1810,9 @@ def test_the_os_oracle_is_documented_as_feeding_marker_evaluation():
     The workflow has to refresh it with the pip snapshot; asserted here so the two cannot
     drift apart silently again.
     """
-    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
+        encoding = "utf-8"
+    )
     assert "refresh-colab \\\n              --all --snapshot-dir" in workflow
     assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt \\\n            ||" not in workflow
 
@@ -1872,7 +1874,9 @@ def test_notebooks_ci_watches_the_oracle_that_feeds_marker_evaluation():
     """_marker_environment reads the image's Python out of colab_os_info.gpu.txt, so an
     OS-only rotation changes which requirements the validator replays. Without the path
     filter entry that PR would not run the lint and smoke jobs the change affects."""
-    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
+        encoding = "utf-8"
+    )
     paths = workflow.split("paths:", 1)[1].split("jobs:", 1)[0]
     assert "'scripts/data/colab_os_info.gpu.txt'" in paths
     assert "'scripts/data/colab_pip_freeze.gpu.txt'" in paths
@@ -1906,7 +1910,9 @@ def test_the_cron_refreshes_both_oracles_not_just_the_packages():
     """The scheduled job linted with a freshly refreshed pip snapshot against a stale
     os-info, so after a Colab Python rotation it judged the new packages with the old
     interpreter. The PR-time step already uses --all; this one has to match."""
-    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
+        encoding = "utf-8"
+    )
     assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt" not in workflow
     assert workflow.count("--all --snapshot-dir unsloth/scripts/data") >= 2
 
@@ -2102,7 +2108,9 @@ def test_the_cron_lint_job_installs_packaging():
     without packaging silently replays every environment-marked requirement -- including the
     ones Colab's pip skips, which is the question the Python-version oracle exists to answer.
     A bare setup-python environment does not provide it."""
-    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
+        encoding = "utf-8"
+    )
 
     install_steps = [
         line.strip()
