@@ -2346,6 +2346,30 @@ test("a per-node cut does not hand back half a grapheme", () => {
   assert.equal(findMatches(index, "after", 10).length, 1);
 });
 
+test("a cut inside a run reads back to an anchor, not to a fixed window", () => {
+  // Regional indicators pair off from the START of their run, so a fixed window is not the text
+  // the segmenter would see: the last 32 code units of an ODD run read as an even one, and the
+  // next indicator looks like a fresh flag instead of the back half of this one. Reading back to
+  // a character below U+0300 fixes it, and where there is none the junction is unknown.
+  const ri = (n: number) => String.fromCodePoint(0x1f1e6 + n);
+  const [a, b, c] = [ri(0), ri(1), ri(2)];
+  const node = `x${a.repeat(49_998)}${b}${c}tail`;
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text(node), text(" next")])]),
+  );
+  assert.equal(index.truncated, true);
+  // The cut lands right after b, and c is dropped -- but the page pairs them.
+  assert.equal(index.text.codePointAt(MAX_NODE_CHARS - 3), 0x1f1e7);
+  assert.deepEqual(findMatches(index, b, 5), []);
+  // An anchor a few characters back is still read exactly, so an ordinary cut still decides.
+  const plain = buildTextIndex(
+    el("DIV", [
+      el("P", [text(`${"z".repeat(MAX_NODE_CHARS - 1)}Q tail`), text(" next")]),
+    ]),
+  );
+  assert.equal(findMatches(plain, "Q", 5).length, 1);
+});
+
 test("the end of a truncated index is not a boundary by default", () => {
   // The ceiling is reached between a letter and the mark that joins it. `at === text.length` is
   // the one offset with nothing after it to read, so it used to be accepted unconditionally.

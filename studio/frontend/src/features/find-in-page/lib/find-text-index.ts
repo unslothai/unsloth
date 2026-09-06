@@ -725,8 +725,27 @@ function segmenterSeeksBoundaries(platform: {
   return seeksBoundaries;
 }
 
-/** How much context a junction is decided on. A cluster longer than this is one nobody typed. */
+/** How far back a junction is read for an anchor. A cluster longer than this is one nobody typed,
+ *  and a run longer than it cannot be read from here at all. */
 const JOIN_CONTEXT = 32;
+
+/**
+ * As much of the end of `before` as can be read on its own, or null when none of it can.
+ *
+ * A window cut at an arbitrary offset is not the same text the segmenter would see. Parity is the
+ * case that proves it: a run of regional indicators pairs off from its START, so the last 32 code
+ * units of an odd run read as an even one and the next indicator looks like a fresh flag. Reading
+ * back to a character below U+0300 fixes that, because such a character can neither extend nor be
+ * extended -- the sweep in the tests checks every one of them -- so it always begins a cluster and
+ * the window from it segments exactly as the whole string does.
+ */
+function exactTail(before: string): string | null {
+  const from = Math.max(0, before.length - JOIN_CONTEXT);
+  for (let at = before.length - 1; at >= from; at -= 1) {
+    if (before.charCodeAt(at) < 0x300) return before.slice(at);
+  }
+  return null;
+}
 
 /** The first whole code point of `text`, or "" when there is none. */
 function firstPointOf(text: string): string {
@@ -738,7 +757,7 @@ function firstPointOf(text: string): string {
 /**
  * Whether the grapheme `before` ends on runs on into `point`.
  *
- * The one question a cut has to answer, asked of the platform over a short window rather than
+ * The one question a cut has to answer, asked of the platform over an anchored window rather than
  * derived from a table of ranges. False without a segmenter, which leaves the cut a boundary and
  * so leaves the search where it is today.
  */
@@ -746,7 +765,10 @@ function joinsAcross(before: string, point: string): boolean {
   if (before.length === 0 || point.length === 0) return false;
   const platform = graphemeSegmenter();
   if (platform === null) return false;
-  const window = before.slice(-JOIN_CONTEXT);
+  const window = exactTail(before);
+  // Nothing to anchor on, so the junction is unknown rather than open: a match is not allowed to
+  // end on it. Costs the one occurrence that ends exactly at a cut inside an unbroken run.
+  if (window === null) return true;
   const at = window.length;
   const body = window + point;
   if (segmenterSeeksBoundaries(platform)) {
