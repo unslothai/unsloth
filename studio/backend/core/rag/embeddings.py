@@ -21,6 +21,7 @@ in a child and falls back to CPU without changing the embedding space.
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_hf_token, account_path, managed_account
 import logging
 import os
 import re
@@ -147,6 +148,8 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    if managed_account():
+        return False
     try:
         from huggingface_hub import get_token
         return get_token()
@@ -183,7 +186,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
                 local = hf_hub_download(
                     name,
                     "modules.json",
-                    token = token or None,
+                    token = account_hf_token(token or None),
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
@@ -404,6 +407,7 @@ def _st_accepts_local_files_only(st_cls) -> bool:
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
     accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
+    account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
     # Capture offline state once so the gate and the load agree.
@@ -432,6 +436,8 @@ def _get(model_name: str | None = None):
                 # answers by swapping the whole process to llama-server.
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
+            if managed_account():
+                st_kwargs["token"] = False
             load_target = name
             from utils.paths import is_local_path
             from utils.utils import cached_st_source, hf_cache_snapshot_dir

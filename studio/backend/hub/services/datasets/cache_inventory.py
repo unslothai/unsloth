@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import managed_account
 import asyncio
 import math
 import os
@@ -661,6 +662,8 @@ async def list_cached_datasets_response() -> dict:
 
 async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str] = None) -> dict:
     """Remove a cached dataset repo from the HF cache."""
+    if managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the installation owner can delete shared dataset caches")
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 

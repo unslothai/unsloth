@@ -16,6 +16,12 @@ Credentials are read once to build the client and never logged or persisted.
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_path,
+    managed_account,
+    require_explicit_credentials,
+)
+from utils.paths import ensure_dir, tmp_root
 import logging
 import os
 import shutil
@@ -68,6 +74,7 @@ def _build_s3_client(s3_config: dict):
     Uses explicit access keys when provided, otherwise falls back to the
     default credential chain (IAM role / instance profile / env / shared creds).
     """
+    require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
     region = s3_config.get("region") or "us-east-1"
@@ -185,7 +192,8 @@ def prepare_s3_dataset_download(
     _validate_single_extension_family(keys)
 
     owns_temp_dir = dest_dir is None
-    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_")
+    account_path(dest_dir)
+    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_", **({"dir": str(ensure_dir(tmp_root()))} if managed_account() else {}))
     try:
         os.makedirs(target_dir, exist_ok = True)
 

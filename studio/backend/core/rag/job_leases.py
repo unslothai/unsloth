@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+from utils.account_context import OWNER, account_thread, current_account, run_as
+from core.training.account_jobs import account_is_retired
 import logging
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ FOLDER_SYNC = "folder_sync"
 _OWNER_ID = str(uuid.uuid4())
 _LEASE_SECONDS = 30
 _HEARTBEAT_SECONDS = 5
-_active: set[tuple[str, str]] = set()
+_active: set[tuple[object, str, str]] = set()
 _lock = threading.Lock()
 _wake = threading.Event()
 _thread: threading.Thread | None = None
@@ -74,14 +76,14 @@ def activate(kind: str, job_id: str) -> None:
     """Renew a committed claim until the local worker releases it."""
     global _thread
     with _lock:
-        _active.add((kind, job_id))
+        _active.add((current_account(), kind, job_id))
         if _thread is None or not _thread.is_alive():
             try:
-                _thread = threading.Thread(target = _heartbeat, daemon = True)
+                _thread = account_thread(target = _heartbeat, account = OWNER, daemon = True)
                 _thread.start()
             except Exception:
                 _thread = None
-                _active.discard((kind, job_id))
+                _active.discard((current_account(), kind, job_id))
                 raise
     _wake.set()
 
@@ -89,7 +91,9 @@ def activate(kind: str, job_id: str) -> None:
 def release(kind: str, job_id: str) -> None:
     """Stop renewal and remove this process's persisted claim."""
     with _lock:
-        _active.discard((kind, job_id))
+        _active.discard((current_account(), kind, job_id))
+    if account_is_retired():
+        return
     try:
         conn = rag_db.get_connection()
         try:
@@ -112,20 +116,27 @@ def _heartbeat() -> None:
             _wake.wait()
             _wake.clear()
             continue
-        try:
-            conn = rag_db.get_connection()
-            try:
-                deadline = _deadline()
-                for kind, job_id in active:
-                    conn.execute(
-                        "UPDATE rag_job_leases SET expires_at=? "
-                        "WHERE kind=? AND job_id=? AND owner_id=?",
-                        (deadline, kind, job_id, _OWNER_ID),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("failed to renew RAG job leases", exc_info = True)
+        for account in {entry[0] for entry in active}:
+            run_as(account, _renew_account, [(kind, job_id) for owner, kind, job_id in active if owner == account])
         _wake.wait(_HEARTBEAT_SECONDS)
         _wake.clear()
+
+
+def _renew_account(active) -> None:
+    if account_is_retired():
+        return
+    try:
+        conn = rag_db.get_connection()
+        try:
+            deadline = _deadline()
+            for kind, job_id in active:
+                conn.execute(
+                    "UPDATE rag_job_leases SET expires_at=? "
+                    "WHERE kind=? AND job_id=? AND owner_id=?",
+                    (deadline, kind, job_id, _OWNER_ID),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("failed to renew RAG job leases", exc_info = True)
