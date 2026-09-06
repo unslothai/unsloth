@@ -2983,10 +2983,15 @@ def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch
     timer = threading.Timer(0.5, cancel.set)
     timer.start()
     try:
+        # os_isolated: the isolated Terminal runs cmd even on a host with Git
+        # bash, so the sleeper has to be one cmd understands. waitfor rather
+        # than timeout, which needs a console input handle this child does not
+        # have, and no redirect to NUL, which the container cannot open.
+        isolated_shell = inference_tools._get_shell_cmd("sleep 30", os_isolated = True)[0]
         command = (
             "sleep 30"
-            if inference_tools._get_shell_cmd("sleep 30")[0].lower().endswith("bash.exe")
-            else "timeout /t 30 /nobreak >NUL"
+            if isolated_shell.lower().endswith(("bash", "bash.exe"))
+            else "waitfor /t 30 unsloth_cancel_probe"
         )
         cancelled = inference_tools._bash_exec(command, cancel_event = cancel, timeout = 20)
     finally:

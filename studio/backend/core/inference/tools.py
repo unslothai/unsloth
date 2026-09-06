@@ -7505,7 +7505,10 @@ def _release_batch_script(handle: "object | None") -> None:
         import ctypes
 
         ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(ctypes.c_void_p(handle))
-    except (OSError, AttributeError, ImportError):
+    # TypeError: a caller that passes something that is not a handle at all.
+    # This runs in the launch's finally, where raising would replace the tool's
+    # own result with a traceback.
+    except (OSError, AttributeError, ImportError, TypeError):
         pass
 
 

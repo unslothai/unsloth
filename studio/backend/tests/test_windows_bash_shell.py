@@ -453,13 +453,21 @@ def test_isolated_batch_script_carries_every_line_with_echo_off(tmp_path):
     # Reserving the name must not create the file: it is written only after the
     # sandbox is prepared, so that it inherits the container's ACE.
     assert not os.path.exists(path)
-    assert tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path) is None
-    with open(path, "rb") as handle:
-        body = handle.read()
-    assert body == b"@echo off\r\necho one\r\necho two\r\nexit /b 3\r\n"
-    # Exclusive creation: the name is never reused over an existing file.
-    with pytest.raises(FileExistsError):
-        tools._write_isolated_batch_script("echo again", path)
+    # On Windows the file is created through a handle that denies writers and
+    # that handle comes back for the caller to release; elsewhere an exclusive
+    # create is enough and there is nothing to hold.
+    handle = tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path)
+    assert (handle is None) is (sys.platform != "win32")
+    try:
+        with open(path, "rb") as reader:
+            body = reader.read()
+        assert body == b"@echo off\r\necho one\r\necho two\r\nexit /b 3\r\n"
+        # The name is never reused over an existing file.
+        with pytest.raises(OSError) as excinfo:
+            tools._write_isolated_batch_script("echo again", path)
+        assert isinstance(excinfo.value, FileExistsError) or excinfo.value.winerror == 80
+    finally:
+        tools._release_batch_script(handle)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "CreateFileW sharing is Windows only")

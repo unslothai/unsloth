@@ -1111,9 +1111,11 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
         # Required mode: on Windows this is cmd even when Git bash exists.
         if sys.platform == "win32":
             # The isolated Terminal hands cmd a batch file written in the workdir.
-            assert specs[0].argv[:3] == ("cmd", "/d", "/c")
-            assert specs[0].argv[3].endswith(".cmd")
-            assert os.path.dirname(specs[0].argv[3]) == os.path.normpath(specs[0].workdir)
+            # call, not the bare path: cmd's search for a command named like a
+            # batch file is refused inside the container.
+            assert specs[0].argv[:4] == ("cmd", "/d", "/c", "call")
+            assert specs[0].argv[4].endswith(".cmd")
+            assert os.path.dirname(specs[0].argv[4]) == os.path.normpath(specs[0].workdir)
         else:
             assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok", os_isolated = True))
 
