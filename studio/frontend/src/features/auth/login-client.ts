@@ -20,21 +20,55 @@ export type TokenResponse = {
   must_change_password: boolean;
 };
 
-let loginMode: LoginMode = "single";
+// A hint lets multi-account documents hide Full access before React mounts. Legacy
+// owner-only browsers keep their existing startup request count (no status probe here).
+export const LOGIN_MODE_HINT_KEY = "unsloth.auth-login-mode.v1";
+function initialLoginMode(): LoginMode {
+  try {
+    return typeof window !== "undefined" &&
+      window.localStorage.getItem(LOGIN_MODE_HINT_KEY) === "multi"
+      ? "multi"
+      : "single";
+  } catch {
+    return "single";
+  }
+}
+let loginMode: LoginMode = initialLoginMode();
 let statusKnown = false;
 let inflight: Promise<AuthStatusResponse> | null = null;
 const listeners = new Set<() => void>();
 export const getLoginMode = (): LoginMode => loginMode;
 export const subscribeLoginMode = (listener: () => void): (() => void) => {
+  if (listeners.size === 0 && typeof window !== "undefined") {
+    window.addEventListener("storage", onLoginModeStorage);
+  }
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+    if (listeners.size === 0 && typeof window !== "undefined") {
+      window.removeEventListener("storage", onLoginModeStorage);
+    }
   };
 };
+function onLoginModeStorage(event: StorageEvent): void {
+  // Tighten policy in peer tabs immediately. A removed hint can also be account
+  // cleanup, so relaxing policy always waits for a fresh server status instead.
+  if (
+    event.key === LOGIN_MODE_HINT_KEY &&
+    event.newValue === "multi" &&
+    (!event.storageArea || event.storageArea === window.localStorage)
+  )
+    setLoginMode("multi");
+}
 export function setLoginMode(mode: LoginMode): void {
   statusKnown = true;
-  if (mode === "multi" && typeof window !== "undefined") {
-    resetFullAccessForMultiUser(window.localStorage);
+  if (typeof window !== "undefined") {
+    if (mode === "multi") {
+      resetFullAccessForMultiUser(window.localStorage);
+      window.localStorage.setItem(LOGIN_MODE_HINT_KEY, "multi");
+    } else if (window.localStorage.getItem(LOGIN_MODE_HINT_KEY) !== null) {
+      window.localStorage.removeItem(LOGIN_MODE_HINT_KEY);
+    }
   }
   if (loginMode === mode) return;
   loginMode = mode;
@@ -56,7 +90,8 @@ export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
   }
 }
 export function ensureLoginMode(): void {
-  if (!statusKnown) void fetchAuthStatus().catch(() => undefined);
+  if (!statusKnown && loginMode === "multi")
+    void fetchAuthStatus().catch(() => undefined);
 }
 
 export class LoginError extends Error {

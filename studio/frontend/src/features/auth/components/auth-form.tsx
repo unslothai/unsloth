@@ -4,7 +4,7 @@
 import { apiUrl } from "@/lib/api-base";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
-import { fetchAuthStatus, loginFromForm, loginWithPassword, type TokenResponse } from "../login-client";
+import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
@@ -310,6 +310,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
 
       const finishSession = () => {
+        // Restore installation policy after account cleanup removed the previous hint.
+        setLoginMode(loginMode);
         if (!isLoginMode) setRequiresPasswordChange(false);
         setMustChangePassword(isLoginMode && token.must_change_password);
         storeAuthTokens(token.access_token, token.refresh_token);

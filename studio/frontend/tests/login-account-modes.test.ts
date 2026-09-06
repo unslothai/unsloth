@@ -392,3 +392,77 @@ test("cleanup retries reuse an issued setup session without consuming the code a
   assert.equal(session.access, "access");
   assert.equal(form.transitions.length, 2);
 });
+
+test("an owner-only browser never adds a startup status probe or changes stored preferences", async (t) => {
+  environment(t);
+  globalThis.fetch = async () => {
+    assert.fail("single-user startup must not probe status");
+  };
+  const api = client();
+  assert.equal(api.getLoginMode(), "single");
+  api.ensureLoginMode();
+  await tick();
+  assert.equal(window.localStorage.getItem(api.LOGIN_MODE_HINT_KEY), null);
+});
+
+test("multi-user policy survives document reloads and revalidates only multi-user hints", async (t) => {
+  environment(t);
+  const first = client();
+  first.setLoginMode("multi");
+  const reloaded = client();
+  assert.equal(reloaded.getLoginMode(), "multi");
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return Response.json({
+      initialized: true,
+      requires_password_change: false,
+      login_mode: "multi",
+    });
+  };
+  reloaded.ensureLoginMode();
+  await tick();
+  assert.equal(requests, 1);
+});
+
+test("creating an account hides full access in peer tabs without a status request", (t) => {
+  environment(t);
+  globalThis.fetch = async () => {
+    assert.fail("storage synchronization must not fetch status");
+  };
+  const handlers = new Set<(event: Partial<StorageEvent>) => void>();
+  window.addEventListener = ((
+    _name: string,
+    handler: (event: Partial<StorageEvent>) => void,
+  ) => {
+    handlers.add(handler);
+  }) as typeof window.addEventListener;
+  window.removeEventListener = ((
+    _name: string,
+    handler: (event: Partial<StorageEvent>) => void,
+  ) => {
+    handlers.delete(handler);
+  }) as typeof window.removeEventListener;
+  const api = client();
+  let notified = 0;
+  const unsubscribe = api.subscribeLoginMode(() => {
+    notified++;
+  });
+  for (const handler of handlers)
+    handler({
+      key: api.LOGIN_MODE_HINT_KEY,
+      oldValue: null,
+      newValue: "multi",
+    });
+  assert.equal(api.getLoginMode(), "multi");
+  assert.equal(notified, 1);
+  for (const handler of handlers)
+    handler({
+      key: api.LOGIN_MODE_HINT_KEY,
+      oldValue: "multi",
+      newValue: null,
+    });
+  assert.equal(api.getLoginMode(), "multi");
+  unsubscribe();
+  assert.equal(handlers.size, 0);
+});
