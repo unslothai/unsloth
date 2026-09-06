@@ -1814,12 +1814,32 @@ def _macos_developer_paths() -> tuple[str, ...]:
                     found.append(os.path.realpath(candidate))
                     if candidate not in found:
                         found.append(candidate)
+                    # xcselect validates the developer directory against the
+                    # enclosing app bundle (Info.plist, version.plist), so a
+                    # Contents/Developer inside an .app needs the bundle itself.
+                    for spelling in list(found):
+                        marker = ".app/Contents/Developer"
+                        if spelling.endswith(marker):
+                            bundle = spelling[: -len(marker) + len(".app")]
+                            if os.path.isdir(bundle) and bundle not in found:
+                                found.append(bundle)
             except (OSError, subprocess.SubprocessError):
                 pass
         _developer_paths_cache = tuple(found)
         return _developer_paths_cache
 
 
+# Files git and other tools probe on every run and may legitimately be absent.
+# The path filter above keeps only paths that exist, and under (deny default)
+# an absent file yields EPERM instead of ENOENT, which git reports as
+# "unable to access '/etc/gitconfig'" and aborts on. These literals are allowed
+# whether or not they exist.
+_MACOS_OPTIONAL_READ_LITERALS = (
+    "/etc/gitconfig",
+    "/private/etc/gitconfig",
+    "/etc/gitattributes",
+    "/private/etc/gitattributes",
+)
 _MACOS_DENIED_EXECUTABLES = (
     "/usr/bin/open",
     "/usr/bin/osascript",
@@ -1983,6 +2003,9 @@ def _macos_seatbelt_profile(
         "(deny process-exec " + " ".join(denied_exec) + ")",
         "(allow file-read-metadata " + " ".join(metadata_filters) + ")",
         "(allow file-read* file-test-existence " + " ".join(read_filters) + ")",
+        "(allow file-read* file-test-existence "
+        + " ".join(f"(literal {json.dumps(path)})" for path in _MACOS_OPTIONAL_READ_LITERALS)
+        + ")",
         "(allow file-map-executable " + " ".join(read_filters) + ")",
         "(allow file-write* " + " ".join(write_filters) + ")",
         "(allow file-read* file-test-existence file-write-data "

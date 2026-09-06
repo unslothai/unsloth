@@ -9,6 +9,7 @@ import errno
 import importlib.util
 import math
 import os
+from types import SimpleNamespace
 import shlex
 import shutil
 import socket
@@ -2913,6 +2914,9 @@ def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
         workdir = str(workdir), private_tmp = str(private_tmp), runtime_paths = ()
     )
     assert "remote ip" not in base
+    # git probes these on every run; absent files must read as absent, not denied.
+    for literal in os_sandbox._MACOS_OPTIONAL_READ_LITERALS:
+        assert f'(literal "{literal}")' in base
     with_proxy = os_sandbox._macos_seatbelt_profile(
         workdir = str(workdir),
         private_tmp = str(private_tmp),
@@ -3070,3 +3074,17 @@ print(json.dumps({{"status": status, "echo": echo, "denied": denied, "ip_denied"
         prepared.cleanup()
         upstream.close()
         thread.join(timeout = 5)
+
+
+def test_macos_developer_paths_include_the_enclosing_app_bundle(monkeypatch, tmp_path):
+    developer = tmp_path / "Xcode_16.4.app" / "Contents" / "Developer"
+    developer.mkdir(parents = True)
+    monkeypatch.setattr(os_sandbox, "_developer_paths_cache", None)
+    monkeypatch.setattr(os_sandbox.sys, "platform", "darwin")
+    monkeypatch.setattr(os_sandbox.os.path, "exists", lambda path: True if path == "/usr/bin/xcode-select" else os.path.lexists(path))
+    fake = SimpleNamespace(returncode = 0, stdout = str(developer) + "\n")
+    monkeypatch.setattr(os_sandbox.subprocess, "run", lambda *a, **k: fake)
+    paths = os_sandbox._macos_developer_paths()
+    assert paths[0] == os.path.realpath(str(developer))
+    assert str(tmp_path / "Xcode_16.4.app") in paths or os.path.realpath(str(tmp_path / "Xcode_16.4.app")) in paths
+    monkeypatch.setattr(os_sandbox, "_developer_paths_cache", None)
