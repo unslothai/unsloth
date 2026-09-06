@@ -2784,7 +2784,7 @@ def test_override_writes_are_ordered_per_model():
     # One in-flight promise per key is the ordering; what it resolves to is not,
     # so pinning the old `void` failed #10160, which reordered nothing.
     assert (
-        "const writesByKey = new Map<string, Promise<" in src
+        "const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();" in src
     ), "writes are no longer serialised through one in-flight promise per model"
     # Keyed by the same override key the server stores under.
     assert (
