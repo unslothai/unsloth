@@ -119,6 +119,8 @@ export function ReleaseNotesPanel({
       // Clipped, not just capped: this is the one part of the card allowed to
       // give up height, so its content must not paint over the buttons below.
       className={UPDATE_NOTES_ROOT_CLASS}
+      // Lets the parent apply its floor only when this panel renders.
+      data-slot="update-release-notes"
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}

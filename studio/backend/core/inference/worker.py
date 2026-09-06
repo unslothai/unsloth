@@ -713,7 +713,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         try:
             for cumulative_text in generator:
-                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                # cancel_event is an mp.Event - checked instantly, no queue polling.
                 if cancel_event.is_set():
                     logger.info("Generation cancelled for request %s", request_id)
                     break
@@ -1125,7 +1125,7 @@ def run_inference_process(
             mask_accelerators_for_cpu_audio(os.environ)
             logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
 
-    # ── 0. MLX fast-path — skip torch/transformers ──
+    # ── 0. MLX fast-path - skip torch/transformers ──
     _ensure_backend_on_path()
 
     if is_apple_silicon():

@@ -14,16 +14,15 @@ wherever the repo's CPU suite runs.
 
 from __future__ import annotations
 
-# Minimum height before a drop counts, so a genuinely short fence is never read as a collapsed
-# tall one.
+# Minimum height before a drop counts, so a genuinely short fence is never read as a collapsed tall one.
 TALL_PX = 400
-# Streamdown's inline fallback is 200px plus the wrapper's padding and header row. A drop landing
-# in this band is that fallback specifically, which is what lets a collapse be attributed.
+# Streamdown's inline fallback is 200px plus the wrapper's padding and header row.
 PLACEHOLDER_LO, PLACEHOLDER_HI = 150, 300
-# Frames a drop may take to come back. Going short and STAYING short is a different bug.
+# Frames a drop may take to come back.
+# Going short and STAYING short is a different bug.
 RECOVERY_FRAMES = 240
-# Document-space top movement between two frames of a scroll gesture beyond this is content above
-# being relaid out under the user.
+# Document-space top movement between two frames of a scroll gesture beyond this is content above being relaid out under
+# the user.
 SHIFT_PX = 8
 
 
@@ -58,9 +57,9 @@ def analyse_stream(frames: list[dict]) -> dict:
                         placeholder_frames += 1
                 continue
             start_frame, before = open_drop
-            # A collapse can deepen after it opens (1700 -> 700 -> 200), so track the worst drop
-            # while it stays open. Measuring only the first step reports 1000px for a 1500px
-            # collapse and disagrees with the heightAtFloor of the same event.
+            # A collapse can deepen after it opens (1700 -> 700 -> 200), so track the worst drop while it stays open.
+            # Measuring only the first step reports 1000px for a 1500px collapse and disagrees with the heightAtFloor of
+            # the same event.
             worst_drop_px = max(worst_drop_px, before - height)
             if PLACEHOLDER_LO <= height <= PLACEHOLDER_HI:
                 placeholder_frames += 1
@@ -92,10 +91,9 @@ def analyse_stream(frames: list[dict]) -> dict:
                 )
                 open_drop = None
 
-        # A drop still open when the log ends is recorded, not discarded: the ~150 frame tail is
-        # shorter than RECOVERY_FRAMES, so a block collapsing at finalization and staying short
-        # never trips the branch above and would appear in neither `collapses` nor `detail`.
-        # Still not counted as a collapse: it never came back.
+        # A drop still open when the log ends is recorded, not discarded: the ~150 frame tail is shorter than
+        # RECOVERY_FRAMES, so a block collapsing at finalization and staying short never trips the branch above and
+        # would appear in neither `collapses` nor `detail`.
         if open_drop is not None:
             start_frame, before = open_drop
             detail.append(

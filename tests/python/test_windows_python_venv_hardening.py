@@ -47,9 +47,9 @@ def _link_dir(link: Path, target: Path) -> None:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS),
-    # and every venv and rollback case in this file reads its stdout, so an interpreter that
-    # died at startup would surface as install.ps1 losing half a moved environment.
+    # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS), and every venv and rollback
+    # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
+    # half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -193,7 +193,6 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     )
 
     if case == "clean":
-        # Nothing moved, so the original is intact and there is nothing to restore.
         assert state["active"] == "False", out
         assert state["dir"] == "", out
         return
@@ -201,10 +200,9 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert state["active"] == "True", out
     assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
     assert Path(state["dir"]).is_dir(), out
-    # Both halves are named, so the user is not left hunting for the moved tree.
-    # Match the warning lines themselves rather than the bare paths: $existing is a
-    # prefix of the rollback dir, so "str(existing) in out" alone is satisfied by the
-    # dir= line and would stay green even with the warning missing entirely.
+    # Both halves are named, so the user is not left hunting for the moved tree. Match the warning lines themselves
+    # rather than the bare paths: $existing is a prefix of the rollback dir, so "str(existing) in out" alone is
+    # satisfied by the dir= line and would stay green even with the warning missing entirely.
     assert f"still in place: {existing}" in out, out
     assert f"moved aside:    {state['dir']}" in out, out
 
@@ -232,7 +230,6 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     )
     target = tmp_path / "unsloth_studio"
     backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
-    # The half the interrupted move left behind, and the half that got across.
     (target / "Scripts").mkdir(parents = True)
     (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
     (backup / "Lib" / "site-packages").mkdir(parents = True)
@@ -260,7 +257,6 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
 
     # The file that never moved is the whole point: the pre-merge path deleted it.
     assert (target / "Scripts" / "unsloth.exe").read_text(encoding = "utf-8") == "irreplaceable", out
-    # ...and the half that did move comes back rather than being stranded.
     assert (target / "Lib" / "site-packages" / "marker.txt").is_file(), out
     assert not backup.exists(), out
     assert "active=False" in out, out
@@ -289,7 +285,6 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     )
     target = tmp_path / "unsloth_studio"
     backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
-    # The half left behind, and a moved half with several siblings at two levels.
     (target / "Scripts").mkdir(parents = True)
     (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
     (target / "Lib").mkdir()
