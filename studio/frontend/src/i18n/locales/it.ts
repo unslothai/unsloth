@@ -909,7 +909,11 @@ export const it = {
         currentStreak: "Serie attuale",
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
-        activityDescription: "Periodo: {weeks} · {total}",
+        activityDescription: {
+          daily: "Periodo: {weeks} · {total}",
+          weekly: "Settimana di punta {total} · ultime {weeks}",
+          cumulative: "{total} accumulati nelle ultime {weeks}",
+        },
         mode: {
           daily: "Giornaliera",
           weekly: "Settimanale",

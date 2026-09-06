@@ -944,7 +944,11 @@ export const fr = {
         currentStreak: "Série en cours",
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
-        activityDescription: "{total} au cours des {weeks} dernières",
+        activityDescription: {
+          daily: "{total} au cours des {weeks} dernières",
+          weekly: "Semaine record {total} · {weeks} dernières",
+          cumulative: "{total} cumulés sur les {weeks} dernières",
+        },
         mode: {
           daily: "Quotidienne",
           weekly: "Hebdomadaire",
