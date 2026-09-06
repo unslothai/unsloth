@@ -18,8 +18,15 @@ fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 command -v docker >/dev/null 2>&1 \
     || fail "docker is not installed. Install Docker Engine first (https://docs.docker.com/engine/install/), then run this again." 2
 
+# Every grep of a command's output below reads a variable, not a pipe. `grep -q` exits on the first
+# match and closes the pipe; `set -o pipefail` above then promotes the producer's SIGPIPE (141) to the
+# status of the whole pipeline, so a match reads as a miss whenever the producer was still writing.
+# Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
+# and the script elevating to install on the one daemon it exists to leave alone.
+
 # Docker Desktop ships its own GPU integration; installing here would configure a daemon it does not use. Checked before elevating.
-if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
+docker_info="$(docker info 2>/dev/null || true)"
+if grep -qi 'Operating System: Docker Desktop' <<<"$docker_info"; then
     if [[ "$(uname -s)" == Darwin ]]; then
         say "Docker Desktop on macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
         say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
@@ -48,10 +55,13 @@ esac
 
 # Rootless Docker keeps its own daemon, which the steps below would miss; root sees a different one, and `curl | sudo bash` arrives root with DOCKER_HOST stripped, so probe SUDO_UID's socket too.
 rootless_daemon() {
-    docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless && return 0
-    [[ -n "${SUDO_UID:-}" && -S "${RUN_USER_DIR}/${SUDO_UID}/docker.sock" ]] \
-        && DOCKER_HOST="unix://${RUN_USER_DIR}/${SUDO_UID}/docker.sock" \
-           docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless
+    local opts
+    opts="$(docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null || true)"
+    grep -q rootless <<<"$opts" && return 0
+    [[ -n "${SUDO_UID:-}" && -S "${RUN_USER_DIR}/${SUDO_UID}/docker.sock" ]] || return 1
+    opts="$(DOCKER_HOST="unix://${RUN_USER_DIR}/${SUDO_UID}/docker.sock" \
+            docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null || true)"
+    grep -q rootless <<<"$opts"
 }
 if rootless_daemon; then
     fail "rootless Docker detected. Follow NVIDIA's rootless procedure instead:
@@ -70,7 +80,9 @@ fi
 # On WSL 2 the Windows driver puts nvidia-smi under /usr/lib/wsl/lib, which sudo's secure_path drops from PATH.
 NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
 [[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
-if [[ -z "$NVSMI" ]] || ! "$NVSMI" -L 2>/dev/null | grep -q '^GPU'; then
+gpu_list=""
+[[ -n "$NVSMI" ]] && gpu_list="$("$NVSMI" -L 2>/dev/null || true)"
+if [[ -z "$NVSMI" ]] || ! grep -q '^GPU' <<<"$gpu_list"; then
     if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
         fail "no NVIDIA GPU is visible in this WSL 2 distro. Install a current NVIDIA Windows driver
        from nvidia.com (never a Linux driver inside WSL), restart WSL (wsl --shutdown), then run
@@ -82,7 +94,10 @@ if [[ -z "$NVSMI" ]] || ! "$NVSMI" -L 2>/dev/null | grep -q '^GPU'; then
        Unsloth images need driver 570.26 or newer." 2
 fi
 MIN_DRIVER=570.26
-DRIVER="$("$NVSMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')"
+# `sed -n 1p`, not `head -1`: head closes the pipe after one line, and nvidia-smi prints one per GPU,
+# so on a multi-GPU host the SIGPIPE becomes the substitution's status and `set -e` kills the script
+# here with nothing printed. sed reads to the end. (Measured: exit 141, no output, 8 GPUs.)
+DRIVER="$("$NVSMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | sed -n 1p | tr -d '[:space:]')"
 driver_ok() {
     [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
 }
@@ -95,7 +110,8 @@ case "$(uname -m)" in
 esac
 
 configured() {
-    docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
+    local info; info="$(docker info 2>/dev/null || true)"
+    grep -qi 'Runtimes:.*nvidia' <<<"$info"
 }
 
 if configured; then

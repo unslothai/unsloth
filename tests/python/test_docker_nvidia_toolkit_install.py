@@ -51,6 +51,9 @@ _REAL_TOOLS = (
     "cut",
     "rm",
     "true",
+    # A stub that pauses mid-output is how the SIGPIPE cases below are made
+    # deterministic; without it they reproduce only on a loaded runner.
+    "sleep",
 )
 
 
@@ -83,6 +86,8 @@ def _setup(
     wsl: bool = False,
     driver_version: str = "580.65.06",
     rootless: bool | str = False,
+    chunked: bool = False,
+    gpus: int = 1,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -95,10 +100,14 @@ def _setup(
     rec = f'echo "$(basename "$0") $*" >> {log}\n'
     _stub(bindir / "id", f"echo {uid}\n")
     _stub(bindir / "sudo", rec + "exit 0\n")
+    # One driver line per GPU, as the real one prints. `pause` between them is what makes an
+    # early-exiting consumer (head -1) close the pipe while this is still writing.
+    pause = "sleep 0.05\n" if chunked else ""
+    query = "".join(f'echo " {driver_version}"\n{pause}' for _ in range(gpus)) + "exit 0\n"
     _stub(
         bindir / "nvidia-smi",
         (
-            f'if [ "$1" = --query-gpu=driver_version ]; then echo " {driver_version}"; exit 0; fi\n'
+            f'if [ "$1" = --query-gpu=driver_version ]; then\n{query}fi\n'
             'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n'
         )
         if driver
@@ -119,6 +128,9 @@ def _setup(
         + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; missing*) echo "context not found" >&2; exit 1 ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
+        # A real daemon does not hand `docker info` over in one write. Pausing here puts the
+        # rest of the output after the point where a `grep -q` consumer has already matched.
+        + ("  sleep 0.05\n" if chunked else "")
         + (
             '  if [ "$2" = "--format" ]; then\n'
             '    case "${DOCKER_HOST:-}" in *docker.sock) echo "name=rootless,name=seccomp" ;; *) echo "name=seccomp" ;; esac; exit 0\n'
@@ -131,6 +143,8 @@ def _setup(
             )
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
+        # Trailing output, so a consumer that stops at the Runtimes line leaves this unwritten.
+        + ("  sleep 0.05\n  echo \" Default Runtime: runc\"\n" if chunked else "")
         + "  exit 0\nfi\n"
         + (
             "exit 0\n"
@@ -482,6 +496,44 @@ def test_the_default_sockets_are_accepted(tmp_path: Path):
         env["DOCKER_HOST"] = sock
         res = _run(env)
         assert "not the system daemon" not in res.stderr, sock
+
+
+def test_docker_desktop_is_still_seen_when_the_daemon_answers_in_pieces(tmp_path: Path):
+    """The guard must not depend on winning a race with its own consumer.
+
+    `grep -q` exits on the first match and closes the pipe, and under `set -o pipefail` the
+    producer's SIGPIPE (141) becomes the status of the pipeline, so the match reads as a miss.
+    Whether that happens depends only on whether `docker info` still had output to write, which
+    is why it showed up as an intermittent CI failure (the script printed "Re-running with sudo."
+    and exited 0 where the test expected the Docker Desktop refusal) rather than a steady one.
+    """
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000, chunked = True)
+    res = _run(env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "Docker Desktop for Linux has no NVIDIA GPU support" in res.stderr
+    # The point of checking before elevating: no sudo, and nothing installed.
+    assert not any(c.startswith(("sudo", "apt-get")) for c in _calls(log))
+
+
+def test_a_chunked_daemon_does_not_hide_the_nvidia_runtime(tmp_path: Path):
+    """Same pipeline shape in `configured()`, and the cost is a pointless reinstall."""
+    _, log, env = _setup(tmp_path, configured = True, chunked = True)
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "already lists the nvidia runtime" in res.stdout
+    assert not any(c.startswith(("apt-get", "nvidia-ctk")) for c in _calls(log))
+
+
+def test_the_driver_version_survives_a_multi_gpu_host(tmp_path: Path):
+    """`head -1` closes the pipe after one line and nvidia-smi prints one per GPU.
+
+    Inside a command substitution that SIGPIPE becomes the assignment's status, and `set -e`
+    then ends the script where it stands, with nothing printed for the user to act on.
+    """
+    _, _, env = _setup(tmp_path, chunked = True, gpus = 8)
+    res = _run(env)
+    assert res.returncode == 0, f"rc={res.returncode} out={res.stdout!r} err={res.stderr!r}"
+    assert res.stdout.strip(), "the script exited without printing anything"
 
 
 def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
