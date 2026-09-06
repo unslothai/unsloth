@@ -144,7 +144,7 @@ def _setup(
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         # Trailing output, so a consumer that stops at the Runtimes line leaves this unwritten.
-        + ("  sleep 0.05\n  echo \" Default Runtime: runc\"\n" if chunked else "")
+        + ('  sleep 0.05\n  echo " Default Runtime: runc"\n' if chunked else "")
         + "  exit 0\nfi\n"
         + (
             "exit 0\n"
