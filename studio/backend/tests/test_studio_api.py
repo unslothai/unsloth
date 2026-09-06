@@ -251,6 +251,10 @@ def test_curl_with_tools(base_url: str, api_key: str):
             "stream": True,
             "enable_tools": True,
             "enabled_tools": ["python"],
+            # The shape the API keys tab hands out for this example. A curl caller cannot
+            # render an approval prompt, and the confirm gate only asks over the opt-in
+            # X-Unsloth-Events frames, so it says plainly that the tools run unprompted.
+            "permission_mode": "off",
             "session_id": "test-session",
         },
         headers = {"Authorization": f"Bearer {api_key}"},

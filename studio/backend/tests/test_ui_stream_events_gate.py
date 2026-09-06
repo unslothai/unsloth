@@ -254,6 +254,19 @@ _USAGE_EXAMPLES = (
 )
 
 
+_LIVE_SMOKE = Path(__file__).resolve().parent / "test_studio_api.py"
+
+
+def test_the_live_tool_smoke_sends_the_shape_the_examples_hand_out():
+    # Example 4 in the live smoke is the same curl the API keys tab shows, so it has to
+    # stay runnable for the same reason and in the same way.
+    src = _LIVE_SMOKE.read_text(encoding = "utf-8")
+    body = src[src.index("def test_curl_with_tools") :]
+    body = body[: body.index("\ndef ")]
+    assert '"enable_tools": True' in body
+    assert '"permission_mode": "off"' in body
+
+
 def test_the_bundled_api_examples_are_still_runnable():
     # Copy-paste snippets from the API keys tab. They stream with python and terminal
     # enabled and deliberately do not take the control frames, so without an explicit
