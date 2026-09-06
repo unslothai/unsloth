@@ -4538,7 +4538,9 @@ def unsloth_save_pretrained_gguf(
                     f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
                 )
             _outtype = "f16"
-        return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
+        return _unsloth_save_lora_gguf(
+            self, tokenizer, save_directory, outtype = _outtype, token = token
+        )
 
     # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup; only the filename stem is
     # trimmed.
@@ -5556,6 +5558,15 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
+# Every alias huggingface_hub will read a token from, so a forced-anonymous child loses all of them.
+_HF_TOKEN_ENV_KEYS = (
+    "HF_TOKEN",
+    "HF_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+)
+
 
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded base, else the
@@ -5700,6 +5711,7 @@ def _unsloth_save_lora_gguf(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
     # Resolve a token even for local saves: the converter may fetch a gated/private base config.
+    # token=False is huggingface_hub's forced-anonymous sentinel, so it must not resolve one.
     if token is None:
         token = get_token()
 
@@ -5760,10 +5772,19 @@ def _unsloth_save_lora_gguf(
             cmd.append("--trust-remote-code")
 
         # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
+        # The child inherits our env, so every branch has to scrub first: granting one alias leaves
+        # ours sitting in another, and withholding one is not the same as denying it.
         env = os.environ.copy()
+        if (isinstance(token, str) and token) or token is False:
+            for _key in _HF_TOKEN_ENV_KEYS:
+                env.pop(_key, None)
         if isinstance(token, str) and token:
             env["HF_TOKEN"] = token
             env["HUGGING_FACE_HUB_TOKEN"] = token
+            # An inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1 makes the child ignore what we just granted.
+            env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+        elif token is False:
+            env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime

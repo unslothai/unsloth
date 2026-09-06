@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from hub.utils.hf_tokens import HfTokenArg
 from utils.paths import recipe_datasets_root, resolve_dataset_path
 
 _DATA_DESIGNER_FOOTER = (
@@ -46,7 +47,7 @@ def publish_recipe_dataset(
     artifact_path: str,
     repo_id: str,
     description: str,
-    hf_token: str | None = None,
+    hf_token: HfTokenArg = None,
     private: bool = False,
 ) -> str:
     dataset_path = _resolve_recipe_artifact_path(artifact_path)
@@ -71,6 +72,8 @@ def publish_recipe_dataset(
         ) from exc
 
     try:
+        # False is huggingface_hub's forced-anonymous sentinel. Do not collapse
+        # it to None: that would pick up the operator's HF_TOKEN from the env.
         client = HuggingFaceHubClient(token = hf_token)
         client._validate_repo_id(repo_id = repo_id)
         client._validate_dataset_path(base_dataset_path = dataset_path)

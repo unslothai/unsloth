@@ -28,6 +28,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from hub.utils.hf_tokens import HfTokenArg, normalize_token
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
@@ -51,6 +52,16 @@ if not _IS_MLX:
         _TORCH_IMPORT_ERROR = _torch_exc
 
 logger = get_logger(__name__)
+
+
+def _export_hub_push_token(hf_token: HfTokenArg) -> Optional[str]:
+    """Return a real Hub push credential, or None when push must be refused.
+
+    Only a push takes this: a write has no anonymous mode, so the sentinel and a missing
+    token both mean refuse. Reads keep the sentinel, so they use normalize_token instead.
+    """
+    token = normalize_token(hf_token)
+    return token if isinstance(token, str) else None
 
 
 def _export_runtime_available() -> bool:
@@ -465,7 +476,7 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
@@ -478,7 +489,7 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str)
         """
-        token = hf_token if hf_token and hf_token.strip() else None
+        token = normalize_token(hf_token)
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -710,7 +721,7 @@ class ExportBackend:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -863,7 +874,8 @@ class ExportBackend:
                 output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                push_token = _export_hub_push_token(hf_token)
+                if not repo_id or push_token is None:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
@@ -878,7 +890,7 @@ class ExportBackend:
                             repo_id,
                             self.current_tokenizer,
                             save_directory = save_directory,
-                            token = hf_token,
+                            token = push_token,
                             private = private,
                         )
                     else:
@@ -892,18 +904,18 @@ class ExportBackend:
                                 repo_id,
                                 self.current_tokenizer,
                                 save_directory = tmp_dir,
-                                token = hf_token,
+                                token = push_token,
                                 private = private,
                             )
                 elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive quantization.
-                    hf_api = HfApi(token = hf_token)
+                    hf_api = HfApi(token = push_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
                         repo_id = repo_id,
                         private = private,
-                        token = hf_token,
+                        token = push_token,
                     )
                     content = MODEL_CARD.format(
                         username = repo_id.split("/")[0],
@@ -913,7 +925,7 @@ class ExportBackend:
                         extra = "unsloth",
                     )
                     ModelCard(content).push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                        repo_id, token = push_token, commit_message = "Unsloth Model Card"
                     )
                     hf_api.upload_folder(
                         folder_path = output_path,
@@ -926,7 +938,7 @@ class ExportBackend:
                         repo_id,
                         self.current_tokenizer,
                         save_method = hub_save_method,
-                        token = hf_token,
+                        token = push_token,
                         private = private,
                     )
                 logger.info(f"Model pushed successfully to {repo_id}")
@@ -945,7 +957,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -990,7 +1002,8 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                push_token = _export_hub_push_token(hf_token)
+                if not repo_id or push_token is None:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
@@ -1005,7 +1018,7 @@ class ExportBackend:
                             repo_id,
                             self.current_tokenizer,
                             save_directory = save_directory,
-                            token = hf_token,
+                            token = push_token,
                             private = private,
                         )
                     else:
@@ -1019,7 +1032,7 @@ class ExportBackend:
                                 repo_id,
                                 self.current_tokenizer,
                                 save_directory = tmp_dir,
-                                token = hf_token,
+                                token = push_token,
                                 private = private,
                             )
                 else:
@@ -1027,12 +1040,12 @@ class ExportBackend:
                         base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
-                    hf_api = HfApi(token = hf_token)
+                    hf_api = HfApi(token = push_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
                         repo_id = repo_id,
                         private = private,
-                        token = hf_token,
+                        token = push_token,
                     )
                     username = repo_id.split("/")[0]
 
@@ -1044,7 +1057,7 @@ class ExportBackend:
                         extra = "unsloth",
                     )
                     card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    card.push_to_hub(repo_id, token = push_token, commit_message = "Unsloth Model Card")
 
                     if save_directory:
                         hf_api.upload_folder(
@@ -1075,7 +1088,7 @@ class ExportBackend:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -1129,11 +1142,13 @@ class ExportBackend:
             )
         shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
-        # push shares and names token= itself.
+        # push shares and names token= itself. False must be forwarded, not dropped: omitting token= sends
+        # _resolve_imatrix_file to get_token(), which is the ambient credential this caller was denied.
+        local_token = normalize_token(hf_token)
         local_token_kw = (
-            {"token": hf_token}
+            {"token": local_token}
             if imatrix_file
-            and hf_token
+            and local_token is not None
             and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
             else {}
         )
@@ -1285,7 +1300,8 @@ class ExportBackend:
                 output_path = str(Path(abs_save_dir).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                push_token = _export_hub_push_token(hf_token)
+                if not repo_id or push_token is None:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
@@ -1298,7 +1314,7 @@ class ExportBackend:
                     repo_id,
                     self.current_tokenizer,
                     quantization_method = quant_method,
-                    token = hf_token,
+                    token = push_token,
                     private = private,
                     **imatrix_kw,
                     **shard_kw,
@@ -1323,7 +1339,7 @@ class ExportBackend:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
@@ -1402,7 +1418,7 @@ class ExportBackend:
                         save_method = "lora",
                         quantization_method = outtype,
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
-                        token = hf_token or None,
+                        token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(
@@ -1425,7 +1441,8 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                push_token = _export_hub_push_token(hf_token)
+                if not repo_id or push_token is None:
                     return (
                         False,
                         "Repository ID and Hugging Face token required for Hub upload",
@@ -1443,7 +1460,7 @@ class ExportBackend:
                             "retry.",
                             None,
                         )
-                    hf_api = HfApi(token = hf_token)
+                    hf_api = HfApi(token = push_token)
                     hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     hf_api.upload_folder(
                         folder_path = output_path,
@@ -1454,7 +1471,7 @@ class ExportBackend:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
+                        hf_api = HfApi(token = push_token)
                         hf_api.create_repo(repo_id, private = private, exist_ok = True)
                         hf_api.upload_folder(
                             folder_path = tmp_dir,
@@ -1462,8 +1479,8 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
-                    self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_model.push_to_hub(repo_id, token = push_token, private = private)
+                    self.current_tokenizer.push_to_hub(repo_id, token = push_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

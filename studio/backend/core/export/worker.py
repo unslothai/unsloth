@@ -32,6 +32,8 @@ from utils.native_tls import activate_native_tls
 
 activate_native_tls()
 
+from hub.utils.hf_tokens import normalize_token
+
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
 # parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
@@ -560,7 +562,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+            _activate_transformers_version(checkpoint_path, normalize_token(config.get("hf_token")))
         except Exception as exc:
             _send_response(
                 resp_queue,
