@@ -68,8 +68,8 @@ SLOTH = "\U0001f9a5"
 RULE_CHAR = "─"
 REPLACEMENT = "�"
 
-# The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The
-# OEM-code-page bug only reproduces on 5.1, which the Windows runner covers.
+# The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The OEM-code-page bug only reproduces on 5.1,
+# which the Windows runner covers.
 _PWSH = shutil.which("powershell") if sys.platform == "win32" else shutil.which("pwsh")
 pwsh_only = pytest.mark.skipif(_PWSH is None, reason = "PowerShell is unavailable")
 
@@ -164,9 +164,8 @@ def _run_capturing_bytes(
     is how the CLI spawns setup for ``unsloth studio update``. Piped stdout is
     required to reproduce, and is captured as bytes, never decoded here.
     """
-    # Unique per call. The name used to be (stem, shape), which several tests
-    # share, so under pytest-xdist one case could unlink the script after another
-    # had written it and before its pwsh child opened it. pwsh is installed on
+    # Unique per call. The name used to be (stem, shape), which several tests share, so under pytest-xdist one case
+    # could unlink the script after another had written it and before its pwsh child opened it. pwsh is installed on
     # ubuntu-latest, so these do not skip there and would race for real.
     tmp = (
         REPO_ROOT
@@ -182,9 +181,9 @@ def _run_capturing_bytes(
             argv = base + ["-Command", f"& '{literal}' *>&1"]
         else:
             argv = base + ["-File", str(tmp)]
-        # run_pwsh, not subprocess.run: the byte-level cases read this stdout as the setup
-        # log, and an interpreter that aborted leaves an empty or truncated stream, which
-        # reads as the banner being mangled or lost. See tests/_shared/unsloth_pwsh_runner.py.
+        # run_pwsh, not subprocess.run: the byte-level cases read this stdout as the setup log, and an interpreter that
+        # aborted leaves an empty or truncated stream, which reads as the banner being mangled or lost.
+        # See tests/_shared/unsloth_pwsh_runner.py.
         proc = run_pwsh(argv, stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 180)
         assert proc.returncode == 0, proc.stderr.decode("utf-8", errors = "replace")
         return proc.stdout
@@ -233,11 +232,8 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     assert matches[0] == "  gpu            none (chat-only / GGUF)"
 
 
-# The banner and the footer are the two blocks a user actually reads in the
-# desktop setup log, and neither goes through step/substep, so they need their
-# own byte-level coverage.
-
-
+# The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
+# step/substep, so they need their own byte-level coverage.
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
@@ -262,8 +258,6 @@ def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
 
 # Source contracts. These run everywhere, including the Linux backend CI job,
 # so a regression is caught without waiting for a Windows runner.
-
-
 def _strip_comments(source: str) -> str:
     return re.sub(r"(?m)#.*$", "", source)
 
@@ -340,9 +334,8 @@ def _function_match(masked: str, name: str) -> re.Match[str] | None:
     return re.search(r"(?im)^[ \t]*function\s+" + re.escape(name) + r"\b", masked)
 
 
-# Write-Host may only appear inside a helper that has already ruled out the
-# redirected sink: Write-StudioLine itself, and setup.ps1's step/substep, which
-# return through the console mirror before reaching their interactive branch.
+# Write-Host may only appear inside a helper that has already ruled out the redirected sink: Write-StudioLine itself,
+# and setup.ps1's step/substep, which return through the console mirror before reaching their interactive branch.
 WRITE_HOST_ALLOW_LIST = {
     SETUP_PS1: ("Write-StudioLine", "step", "substep"),
     INSTALL_PS1: ("Write-StudioLine",),
@@ -492,33 +485,28 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     ), f"{rust_file} does not force PYTHONIOENCODING"
 
 
-# The console-less spawn. Windows only, and last in the file because it reuses
-# the literal masking above to brace-match the blocks it lifts.
+# The console-less spawn. Windows only, and last in the file because it reuses the literal masking above to
+# brace-match the blocks it lifts.
 #
-# A GitHub runner hands a CREATE_NO_WINDOW child a console anyway
-# (GetConsoleOutputCP 437, GetConsoleWindow 0), so the UTF-8 setter in the
-# preamble succeeds there and every version of these scripts emits a clean
-# banner. The cases above therefore cannot tell this fix from what preceded it.
-# Calling FreeConsole() in the child first puts it in the state install.rs's own
-# comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard:
-# without the sink, Write-Host throws `HostException: GetConsoleScreenBufferInfo,
-# The Win32 internal error "The handle is invalid" 0x6`, the script dies with
-# exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell
-# stack trace where the banner should be.
+# A GitHub runner hands a CREATE_NO_WINDOW child a console anyway (GetConsoleOutputCP 437, GetConsoleWindow 0), so the
+# UTF-8 setter in the preamble succeeds there and every version of these scripts emits a clean banner. The cases above
+# therefore cannot tell this fix from what preceded it. Calling FreeConsole() in the child first puts it in the state
+# install.rs's own comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard: without the sink,
+# Write-Host throws `HostException: GetConsoleScreenBufferInfo, The Win32 internal error "The handle is invalid" 0x6`,
+# the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where the
+# banner should be.
 #
-# Everything the probe prints is sliced out of the script under test; only the
-# FreeConsole prologue and the stderr diagnostics are harness. Restating the
-# banner here would only assert that this file can print a sloth.
-
+# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue and the stderr
+# diagnostics are harness.
 CREATE_NO_WINDOW = 0x08000000
 
-# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the
-# runner appends. Not Bypass: RemoteSigned is what the shipped spawn uses.
+# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends. Not Bypass:
+# RemoteSigned is what the shipped spawn uses.
 TAURI_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]
 
-# install.rs::powershell_exe. Resolved absolutely for the same reason it is
-# there, and not fallen back to a bare `powershell.exe`: pwsh 7 is UTF-8 by
-# default and would pass this without exercising anything.
+# install.rs::powershell_exe.
+# Resolved absolutely for the same reason it is there, and not fallen back to a bare `powershell.exe`: pwsh 7 is UTF-8
+# by default and would pass this without exercising anything.
 _WINDOWS_POWERSHELL = (
     Path(os.environ.get("SystemRoot", r"C:\Windows"))
     / r"System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -534,14 +522,13 @@ powershell_51_only = pytest.mark.skipif(
     reason = "Windows PowerShell 5.1 is unavailable",
 )
 
-# Documented kernel32 calls and nothing else, so the probe reaches the target
-# state without the scripts under test knowing they are being tested.
+# Documented kernel32 calls and nothing else, so the probe reaches the target state without the scripts under test
+# knowing they are being tested.
 _FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern bool FreeConsole();
 '@
 $null = [Force.Native]::FreeConsole()"""
 
-# The first line of the preamble, and the anchor the slice starts from.
 _UTF8_ENCODER = "$_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false"
 
 
@@ -597,8 +584,8 @@ def _console_less_probe(path: Path) -> str:
     """Assemble a probe out of the script's own preamble, helpers and banner."""
     source = path.read_text(encoding = "utf-8")
     masked = _mask_literals(source)
-    # Sliced too: it is what turns the Write-Host throw into a dead script
-    # rather than a skipped line, so restating it would be assuming the result.
+    # Sliced too: it is what turns the Write-Host throw into a dead script rather than a skipped line, so restating it
+    # would be assuming the result.
     eap = _slice_optional(source, r'(?m)^[ \t]*\$ErrorActionPreference = "Stop"')
     assert eap, f"{path.name} no longer stops on error before the banner"
     parts = [eap, _FREE_CONSOLE, "", _slice_preamble(source), ""]
@@ -617,13 +604,14 @@ def _console_less_probe(path: Path) -> str:
         r"(?m)^[ \t]*\$Rule = \[string\]::new\(\[char\]0x2500, 52\)",
         r"(?m)^[ \t]*\$Sloth = \[char\]::ConvertFromUtf32\(0x1F9A5\)",
     ):
-        # setup.ps1 inlines the sloth in the banner; install.ps1 binds it first.
+        # setup.ps1 inlines the sloth in the banner;
+        # install.ps1 binds it first.
         assignment = _slice_optional(source, pattern)
         if assignment:
             parts.append(assignment)
     parts += ["", _slice_banner(source, masked), ""]
-    # On stderr, which the app reads on a separate reader, so stdout stays
-    # exactly the byte stream the log panel is built from.
+    # On stderr, which the app reads on a separate reader, so stdout stays exactly the byte stream the log panel is
+    # built from.
     parts += [
         '[Console]::Error.WriteLine("psversion=" + $PSVersionTable.PSVersion.ToString())',
         '[Console]::Error.WriteLine("console_outputencoding_codepage=" + [Console]::OutputEncoding.CodePage)',
@@ -649,10 +637,9 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
         text = _console_less_probe(path) if source is None else source
         probe.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
-        # run_pwsh, not subprocess.run: the console-less cases are phrased as "this run
-        # exited non-zero having printed almost nothing", which is also what an aborted
-        # interpreter looks like, so the two must not be confused. The retry covers 5.1
-        # here as well. See tests/_shared/unsloth_pwsh_runner.py.
+        # run_pwsh, not subprocess.run: the console-less cases are phrased as "this run exited non-zero having printed
+        # almost nothing", which is also what an aborted interpreter looks like, so the two must not be confused.
+        # See tests/_shared/unsloth_pwsh_runner.py.
         proc = run_pwsh(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
@@ -736,8 +723,8 @@ def test_console_less_banner_is_valid_utf8(path: Path) -> None:
         "log shows U+FFFD. With no console the UTF-8 setter throws, and only the "
         "writers bound in its catch branch keep the stream UTF-8." + detail
     )
-    # Strict on purpose; UnicodeDecodeError is the failure. Reruns the cached
-    # bytes rather than trusting the lossy pass above to have caught everything.
+    # Strict on purpose; UnicodeDecodeError is the failure. Reruns the cached bytes rather than trusting the lossy
+    # pass above to have caught everything.
     _run_console_less(path)[1].decode("utf-8")
 
 
@@ -753,9 +740,9 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     )
 
 
-# Sliced back out to rebuild the function this replaced, so parity is measured against the real
-# predecessor. The comments go with the guard: they do not execute, but leaving them behind
-# would make the reconstruction something this test invented rather than the merge-base function.
+# Sliced back out to rebuild the function this replaced, so parity is measured against the real predecessor. The
+# comments go with the guard: they do not execute, but leaving them behind would make the reconstruction something
+# this test invented rather than the merge-base function.
 _VT_FAST_PATH = re.compile(
     r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
     r"(?:^[ \t]*#.*\n)*"

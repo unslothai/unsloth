@@ -4220,16 +4220,18 @@ def _preflight_gguf_disk(
 
     # Cleared when the cache shares a filesystem with room for the export but not a cached base too: dropping
     # the optional half beats failing. The message travels with the flag, since more than one filesystem can
-    # set it.
+    # set it and each has to name the one it measured.
     sibling_prewarm_ok = True
     prewarm_drop_message = None
     # Resolved once, above the split, since the cache need not be on either filesystem. Zero whenever the pre-
     # warm cannot run, which leaves every branch below inert.
     cache_extra = max(0, need_with_cache - need)
     cache_directory = _hub_cache_directory() if cache_extra > 0 else None
-    # The cache lands wherever HF_HOME points, not necessarily save_directory's disk. Charging it here drops
-    # the pre-warm on a disk that had room, and the next export re-downloads the base. It only LOWERS the
-    # figure and only the pre-warm reads it.
+    # The cache copy lands wherever the cache is, which need not be the filesystem holding `save_directory`:
+    # `HF_HOME` on a data volume is the ordinary layout on a machine with more than one disk. Charging it here
+    # drops the pre-warm on a disk that had room, and the next export re-downloads the base. It only LOWERS
+    # the figure and only the pre-warm reads it, so nothing that fit before is refused now. Unresolvable
+    # leaves it charged here, where it was charged before.
     cache_here = cache_extra
     if (
         cache_extra > 0
@@ -5682,8 +5684,8 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
             f"(got {type(imatrix_file).__name__})."
         )
 
-    # imatrix_file=True auto-resolves from the upstream Unsloth GGUF repo; hf_hub_download is imported here
-    # since nothing else needs it.
+    # imatrix_file=True auto-resolves from the upstream Unsloth GGUF repo. HfApi is the module-level import
+    # (save.py top); hf_hub_download is imported here since nothing else needs it.
     from huggingface_hub import hf_hub_download
 
     if token is None:

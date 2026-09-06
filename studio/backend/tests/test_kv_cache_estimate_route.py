@@ -277,19 +277,14 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got == str(q8)
 
-    def test_nested_fallback_prefers_the_shared_head(self, tmp_path):
-        """A -shared- head borrows the target's token_embd/output instead of
-        carrying its own: 1.35 GB smaller at Q8_0 and no worse, accepting
-        identically to the full head (159 of 284) on the shipped prebuilt. Only
-        qwen4exp reaches this path, and its MTP graph and the borrow ship in the
-        same fork, so a build that can draft one carries the other."""
+    def test_nested_fallback_prefers_the_self_contained_head(self, tmp_path):
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
-        _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
-        shared = _write_gguf(snap / "MTP" / "mtp-model-shared-Q8_0.gguf", _MLA_NO_HEAD)
+        full = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-shared-Q8_0.gguf", _MLA_NO_HEAD)
 
         got, _ = models_routes._resolve_mtp_drafter(str(main))
-        assert got == str(shared)
+        assert got == str(full)
 
     def test_precision_outranks_the_shared_preference(self, tmp_path):
         """Q8_0 first is the stronger rule: a shared bf16 head is both larger than

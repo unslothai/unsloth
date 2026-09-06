@@ -344,7 +344,7 @@ class _Module:
                 and body == -1
                 or (kind.startswith("function") and semicolon != -1 and semicolon < body)
             ):
-                return None  # An overload signature; the implementation follows it.
+                return None
             end = _block_end(self.blanked, line_start)
         elif kind == "type":
             end = _statement_end(self.blanked, start)
@@ -357,8 +357,7 @@ class _Module:
             return None
         text = self.text[line_start:end].strip("\n")
         if not _balanced(_blank_noise(text)) or "\nexport " in text:
-            # Over-sliced into whatever followed. Refuse rather than emit source that will
-            # not parse: an unfollowed name is the state this harness was already in.
+            # Over-sliced into whatever followed.
             return None
         return text
 
@@ -395,7 +394,6 @@ def _resolve_module(spec: str, importer: Path, root: Path) -> Path | None:
         base = (importer.parent / spec).resolve()
     else:
         return None  # A package, not our source.
-    # Appended, not `with_suffix`: `./rag.types` must become `rag.types.ts`, not `rag.ts`.
     for candidate in (
         base,
         Path(f"{base}.ts"),
@@ -476,7 +474,6 @@ def resolve_dependencies(
         return modules[path]
 
     defined = _harness_bindings(harness_source)
-    # name -> (kind, source text, the names it referenced that this tried to resolve)
     pulled: dict[str, tuple[str, str, set[str]]] = {}
     order: list[str] = []
     seen: set[tuple[Path, str]] = set()
@@ -507,8 +504,8 @@ def resolve_dependencies(
         if text is None:
             return
         defined.add(name)
-        # Dependencies first: a hoisted `function` would not care, but a `const` read before
-        # its declaration is a TDZ error rather than `undefined`.
+        # Dependencies first: a hoisted `function` would not care, but a `const` read before its declaration is a TDZ
+        # error rather than `undefined`.
         wanted = set()
         for reference in home.references(text):
             if (
@@ -517,7 +514,6 @@ def resolve_dependencies(
                 or reference in home.reexports
             ):
                 # A name this module really does resolve, so failing to follow it matters.
-                # Anything else is a local binding or a runtime global, both already present.
                 wanted.add(reference)
             pull(reference, origin)
         pulled[name] = (
@@ -532,12 +528,11 @@ def resolve_dependencies(
         for reference in home.references(harness_source):
             pull(reference, source)
 
-    # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]`
-    # with `B` refused crashes the whole harness on load, which is worse than the lazy
-    # ReferenceError it replaced. Drop those to a fixed point instead. Functions and types
-    # are lazy or erased, so an unfollowed reference in one costs nothing until it is called.
-    # A fixture the harness defines does not rescue one either: the fixtures sit BELOW this
-    # block, so reading one from here is a TDZ error rather than a resolution.
+    # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]` with `B` refused crashes the
+    # whole harness on load, which is worse than the lazy ReferenceError it replaced. Drop those to a fixed point
+    # instead. Functions and types are lazy or erased, so an unfollowed reference in one costs nothing until it is
+    # called. A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading
+    # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
         doomed = {

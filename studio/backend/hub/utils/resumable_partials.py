@@ -351,7 +351,8 @@ def _objection_to(descriptor: int) -> Optional[str]:
         return "hard linked from elsewhere"
     euid = getattr(os, "geteuid", None)
     if euid is None:
-        # No owner to compare against, so nothing here can be vouched for.
+        # No owner to compare against, so nothing here can be vouched for. Reachable only if the writer
+        # is ever enabled without geteuid; _exclusion_is_provable refuses that today.
         return "on a platform where ownership cannot be established"
     if info.st_uid != euid():
         return "owned by another user"
