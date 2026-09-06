@@ -124,7 +124,9 @@ def test_the_saved_provider_target_and_key_are_one_snapshot(monkeypatch):
 @pytest.mark.parametrize(
     "handler",
     [
-        provider_routes.update_provider_config,
+        # update_provider_config splits its serialized mutation into
+        # _apply_provider_update so the catalog proof can run outside the lock.
+        provider_routes._apply_provider_update,
         provider_routes.migrate_provider_api_key,
         provider_routes.delete_provider_config,
     ],
