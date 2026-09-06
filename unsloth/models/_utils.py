@@ -272,8 +272,9 @@ def _unsloth_install_pretrain_detector(model):
         return model
     marker = getattr(model, "_unsloth_pretrain_marker", None)
     if isinstance(marker, dict):
-        # A live hook is already recording: keep it and do NOT clear seen, since a grad-enabled probe
-        # may already have flagged the poisoned cache and a re-entrant call must not erase that.
+        # A live hook is already recording: keep it (no duplicates) and do NOT clear seen, since a
+        # grad-enabled probe may already have flagged the poisoned cache and a re-entrant
+        # get_peft_model / patch_peft_model call must not erase that before train() resets it.
         if "hook" in marker:
             return model
         # Marker exists but its hook was torn down, so reinstall fresh and reset seen.
@@ -2226,8 +2227,10 @@ try:
     # Xformers <= 0.0.32.post2 dispatches FA3 wrongly on Blackwell/RTX 50x: `capability >= (9, 0)`
     # matches SM 10.0/11.0/12.0 and runs sm_90a kernels on non-Hopper GPUs (CUDA error in
     # flash_fwd_launch_template.h:188). Fixed in 0.0.33 with `<= (9, 0)`; see
-    # facebookresearch/xformers#1329.
-    if DEVICE_TYPE == "cuda":
+    # facebookresearch/xformers#1329. is_available() as well as DEVICE_TYPE: a CUDA-built torch
+    # on a driverless host keeps DEVICE_TYPE at "cuda" and get_device_capability() would raise
+    # out of _lazy_init().
+    if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
         major_version, minor_version = torch.cuda.get_device_capability()
         if (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and (
             Version(xformers_version) <= Version("0.0.32.post2")
@@ -3724,10 +3727,8 @@ def patch_peft_fast_inference(model):
 
         model.load_lora = functools.partial(load_lora, model)
 
-        # Without an engine there was no `save_lora` at all, and `save_lora` needs none: it is `save_pretrained`
-        # over the adapter. Gating it on the engine gave `fast_inference = False` GRPO runs `AttributeError:
-        # 'Lfm2ForCausalLM' object has no attribute 'save_lora'`. Set only when absent, so a model carrying its
-        # own keeps it.
+        # An engine keeps the Zoo helper it has always had: vLLM reads the saved adapter back through its own LoRA
+        # loader, so what that file may carry is its call, not one to change here.
         if not hasattr(model, "save_lora"):
             try:
                 from unsloth_zoo.vllm_utils import save_lora

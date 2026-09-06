@@ -4337,6 +4337,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )
@@ -4757,7 +4758,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training directly — no inner thread, we ARE the subprocess.
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,

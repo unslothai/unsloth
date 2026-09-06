@@ -26,6 +26,7 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -146,6 +147,10 @@ const STREAMDOWN_COMPONENTS = {
 const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
+
+// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
+// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
+const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -810,6 +815,7 @@ const MarkdownTextImpl = () => {
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
+            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}

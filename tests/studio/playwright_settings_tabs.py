@@ -211,8 +211,7 @@ ON_SUBPAGE_JS = """() => ({
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
-# Deep-open the archived chats, then walk away partway through the hold. Both halves run in
-# the page, because a route handler that sleeps blocks this script too.
+# Deep-open the archived chats, then walk away partway through the hold.
 ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
@@ -297,10 +296,10 @@ def run_chunk_fail(page) -> None:
     settle_panel(page)
     # Read the nav size instead of hardcoding it. The invariant is that blocking a
     # panel does not collapse the dialog, not that the dialog has any particular
-    # number of tabs -- and the hardcoded 12 outlived its truth: the
-    # keyboard-shortcuts page made it 13 and this smoke started failing with
-    # "took the dialog down" while reporting dialog: True, which reads like an
-    # error-handling regression and was a stale constant.
+    # number of tabs. The hardcoded 12 outlived its truth once a page was added,
+    # and this smoke started failing with "took the dialog down" while reporting
+    # dialog: True, which reads like an error-handling regression and was a stale
+    # constant.
     nav_before = page.evaluate(
         "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
     )
@@ -399,17 +398,77 @@ def run_lan_address_actions(page) -> None:
     log("each LAN address keeps its own QR and copy target")
 
 
+def assert_persisted_monitor_restores(page) -> None:
+    """An open resource monitor returns after reload without opening Settings."""
+    page.evaluate(
+        """() => localStorage.setItem(
+            'unsloth_monitor_overlay',
+            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 }),
+        )"""
+    )
+    page.reload(wait_until = "domcontentloaded")
+    page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
+
+    monitor = page.locator('[data-testid="floating-monitor"]')
+    try:
+        monitor.wait_for(state = "visible", timeout = 15000)
+        visible = True
+    except Exception:
+        visible = False
+    dialog_count = page.locator('div[role="dialog"]').count()
+    report["persisted_monitor"] = {
+        "visible_after_reload": visible,
+        "settings_dialog_count": dialog_count,
+    }
+    if not visible:
+        fail("persisted open resource monitor did not return after reload")
+    elif dialog_count:
+        fail("persisted monitor required Settings to open")
+    else:
+        log("persisted resource monitor restored before Settings opened")
+
+    page.evaluate("() => window.__settingsSmoke.open('resources')")
+    dialog = page.locator('div[role="dialog"]').first
+    dialog.wait_for(state = "visible", timeout = 15000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=\"floating-monitor\"]').length === 1",
+        timeout = 15000,
+    )
+    while_open = monitor.count()
+    page.evaluate("() => window.__settingsSmoke.close()")
+    dialog.wait_for(state = "hidden", timeout = 15000)
+    monitor.wait_for(state = "visible", timeout = 15000)
+    after_close = monitor.count()
+    report["persisted_monitor"].update(
+        {
+            "count_while_settings_open": while_open,
+            "count_after_settings_close": after_close,
+        }
+    )
+    if while_open != 1 or after_close != 1:
+        fail(
+            "resource monitor ownership did not transfer cleanly through Settings "
+            f"(open={while_open}, closed={after_close})"
+        )
+
+    page.evaluate("() => window.__settingsSmoke.setMonitor(false)")
+    monitor.wait_for(state = "hidden", timeout = 15000)
+    report["steps"].append("persisted-monitor-reload")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
         return
+
     # --- 1. a deep-open walked away from mid-load is not replayed later --------------
     run_abandoned_deep_open(page)
+
+    assert_persisted_monitor_restores(page)
 
     # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)
     settle_panel(page)
-    # Start off the persisted tab, so the first iteration is a real switch.
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     settle_panel(page)
     for tab in TABS:
@@ -433,7 +492,6 @@ def run(page) -> None:
     # --- 3. every lan address has actions bound to that address ----------------------
     run_lan_address_actions(page)
 
-    # --- 4. close/reopen, and deep-open straight to a tab ----------------------------
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(300)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
@@ -563,8 +621,8 @@ def main() -> int:
                         raise
                     time.sleep(2)
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
-            # Vite dev re-optimizes deps on first sight and full-reloads; settle, then
-            # reload once for a stable dep graph.
+            # Vite dev re-optimizes deps on first sight and full-reloads; settle, then reload once for a stable dep
+            # graph.
             page.wait_for_timeout(4000)
             page.reload(wait_until = "domcontentloaded")
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
@@ -585,8 +643,7 @@ def main() -> int:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     except Exception as exc:
-        # A cold-start dev server can fail to serve a module before anything is under
-        # test. Report that rather than dying with no record.
+        # A cold-start dev server can fail to serve a module before anything is under test.
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
         write_report()

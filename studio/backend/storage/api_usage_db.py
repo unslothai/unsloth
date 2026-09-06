@@ -211,7 +211,8 @@ class ApiUsageWriter:
             if not self._stopped:
                 self._stopped = True
                 self._queue.put_nowait(_STOP)
-        # Production calls this through asyncio.to_thread so even the bounded
+        # Production calls this through asyncio.to_thread so even the bounded wait cannot pause inference or the event
+        # loop.
         self._thread.join(timeout = max(0.0, timeout))
         drained = not self._thread.is_alive()
         if not drained:
@@ -240,7 +241,8 @@ class ApiUsageWriter:
                             break
                         # record_api_usage already made its bounded fast retries: retain this accepted item at
                         # the head of
-                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it.
+                        # the single writer until a long transaction releases SQLite, with the stop sentinel behind it
+                        # so final shutdown drains rather than silently dropping usage.
                         busy_failures += 1
                         if busy_failures == 1 or busy_failures % 20 == 0:
                             logger.warning(
