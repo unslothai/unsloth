@@ -123,6 +123,17 @@ def _auth_state(studio_mod):
         conn.close()
 
 
+def _host_studio_layout(fake_venv):
+    # The layout run() resolves on this host: the entry point is unsloth.exe
+    # under Scripts on Windows, so a POSIX bin/unsloth fake makes the
+    # entry-point check exit before the re-exec these fixtures capture.
+    if sys.platform == "win32":
+        python = fake_venv / "Scripts" / "python.exe"
+        return python, python.parent / "unsloth.exe"
+    python = fake_venv / "bin" / "python"
+    return python, python.parent / "unsloth"
+
+
 def _install_prompt_env(
     monkeypatch,
     tmp_path,
@@ -177,14 +188,14 @@ def _install_run_reexec(monkeypatch, events):
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    fake_python, fake_bin = _host_studio_layout(fake_venv)
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
     # A built frontend dist is present by default so the public-launch UI check
     # passes deterministically (independent of whether the repo dist was built);
     # the missing-dist lockout guard has its own dedicated test.
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
