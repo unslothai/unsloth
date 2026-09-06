@@ -104,10 +104,14 @@ def test_cleanup_runs_after_everything_except_an_overridden_dispatch(cleanup_job
 
 
 def _manifest_step(doc: dict, job: str) -> str:
-    return [s for s in doc["jobs"][job]["steps"] if s.get("name") == "Create multi-arch manifest"][0]["run"]
+    return [s for s in doc["jobs"][job]["steps"] if s.get("name") == "Create multi-arch manifest"][
+        0
+    ]["run"]
 
 
-def _run_manifest(step: str, tmp_path: Path, *, existing: list[str], tags: list[str]) -> tuple[subprocess.CompletedProcess, str]:
+def _run_manifest(
+    step: str, tmp_path: Path, *, existing: list[str], tags: list[str]
+) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "docker.log"
@@ -127,13 +131,22 @@ def _run_manifest(step: str, tmp_path: Path, *, existing: list[str], tags: list[
     digests = tmp_path / "digests"
     digests.mkdir()
     (digests / ("a" * 64)).write_text("", encoding = "utf-8")
-    script = step.replace("${{ env.REGISTRY }}", "docker.io").replace("${{ env.IMAGE_NAME }}", "unsloth/unsloth")
+    script = step.replace("${{ env.REGISTRY }}", "docker.io").replace(
+        "${{ env.IMAGE_NAME }}", "unsloth/unsloth"
+    )
     assert "${{" not in script
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["DOCKER_METADATA_OUTPUT_JSON"] = '{"tags": [' + ", ".join(f'"docker.io/unsloth/unsloth:{t}"' for t in tags) + "]}"
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags": [' + ", ".join(f'"docker.io/unsloth/unsloth:{t}"' for t in tags) + "]}"
+    )
     res = subprocess.run(
-        ["bash", "-e", "-c", script], capture_output = True, text = True, env = env, cwd = str(digests), timeout = 60
+        ["bash", "-e", "-c", script],
+        capture_output = True,
+        text = True,
+        env = env,
+        cwd = str(digests),
+        timeout = 60,
     )
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
 
@@ -144,7 +157,9 @@ def test_an_existing_dated_pin_is_never_replaced(doc: dict, job: str, tmp_path: 
     rewrite an allegedly immutable pin with different contents."""
     step = _manifest_step(doc, job)
     res, log = _run_manifest(
-        step, tmp_path, existing = ["core-nightly-2026.09.06"],
+        step,
+        tmp_path,
+        existing = ["core-nightly-2026.09.06"],
         tags = ["core", "core-nightly-2026.09.06", "core-build-777"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
@@ -158,7 +173,10 @@ def test_an_existing_dated_pin_is_never_replaced(doc: dict, job: str, tmp_path: 
 def test_a_new_dated_pin_is_created(doc: dict, job: str, tmp_path: Path):
     step = _manifest_step(doc, job)
     res, log = _run_manifest(
-        step, tmp_path, existing = [], tags = ["latest", "nightly-2026.09.06", "build-777"],
+        step,
+        tmp_path,
+        existing = [],
+        tags = ["latest", "nightly-2026.09.06", "build-777"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
     for t in ("latest", "nightly-2026.09.06", "build-777"):
@@ -180,13 +198,19 @@ def _run_cleanup(
     log = tmp_path / "curl.log"
     listing = tmp_path / "tags.json"
     page2 = tmp_path / "tags2.json"
-    nxt = ', "next": "https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth/tags?page=2&page_size=100"' if second_page else ', "next": null'
+    nxt = (
+        ', "next": "https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth/tags?page=2&page_size=100"'
+        if second_page
+        else ', "next": null'
+    )
     listing.write_text(
         '{"results": [' + ", ".join(f'{{"name": "{t}"}}' for t in (tags or [])) + "]" + nxt + "}",
         encoding = "utf-8",
     )
     page2.write_text(
-        '{"results": [' + ", ".join(f'{{"name": "{t}"}}' for t in (second_page or [])) + '], "next": null}',
+        '{"results": ['
+        + ", ".join(f'{{"name": "{t}"}}' for t in (second_page or []))
+        + '], "next": null}',
         encoding = "utf-8",
     )
     (bin_dir / "curl").write_text(
@@ -289,11 +313,18 @@ def test_the_prune_follows_every_page(cleanup_job: dict, tmp_path: Path):
     returns."""
     step = cleanup_job["steps"][-1]["run"]
     res, log = _run_cleanup(
-        step, tmp_path, event = "schedule",
+        step,
+        tmp_path,
+        event = "schedule",
         tags = ["latest", "nightly-2026.09.05"],
         second_page = ["nightly-2026.06.01", "core-nightly-2026.06.01", "stable"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
     deleted = [l.split("/tags/")[1].split(" ")[0] for l in log.splitlines() if "-X DELETE" in l]
-    assert deleted == ["core-build-777", "build-777", "nightly-2026.06.01", "core-nightly-2026.06.01"], deleted
+    assert deleted == [
+        "core-build-777",
+        "build-777",
+        "nightly-2026.06.01",
+        "core-nightly-2026.06.01",
+    ], deleted
     assert log.count("page_size=100") == 2, "the second page was not fetched"
