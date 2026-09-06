@@ -352,7 +352,7 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
         bin_dir,
         'case "$4" in\n'
         f'  --raw) printf "{_raw_index()}" ;;\n'
-        f"  *core-sha-*) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
+        f"  *core-build-*) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         f"  *) printf '\"{OTHER_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
@@ -362,7 +362,7 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
     env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
     )
     path = tmp_path / "digest_step.sh"
     path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
@@ -382,7 +382,9 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
-def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: str, tmp_path: Path):
+def test_the_digest_export_still_works_without_a_handle_tag(
+    manifest_digest_step: str, tmp_path: Path
+):
     bin_dir = tmp_path / "bin"
     _docker_stub(
         bin_dir,
@@ -413,11 +415,7 @@ def test_the_digest_export_still_works_without_a_sha_tag(manifest_digest_step: s
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
 def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: str, tmp_path: Path):
-    """:core-sha- is immutable across COMMITS but not across REFS: a branch push and a
-    lightweight v* tag push at one commit produce the same short sha and land in
-    different concurrency groups, so both write this name and neither waits. If the
-    tag resolves to a manifest that does not contain the per-arch digests this run
-    pushed, the step has to fail rather than hand build-studio another run's base."""
+    """Even under this run's own name, a manifest without the per-arch digests this run pushed must fail rather than hand build-studio another run's base."""
     bin_dir = tmp_path / "bin"
     # the tag now resolves to a manifest built from somebody else's arches, while
     # this run's own per-arch indexes still answer with their real children
@@ -434,7 +432,7 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
     env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
     )
     path = tmp_path / "digest_step.sh"
     path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
@@ -477,7 +475,7 @@ def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
     env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-sha-abc1234"]}'
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
     )
     path = tmp_path / "digest_step.sh"
     path.write_text(_expand(manifest_digest_step), encoding = "utf-8")

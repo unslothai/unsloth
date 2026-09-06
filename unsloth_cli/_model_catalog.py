@@ -324,6 +324,64 @@ def _gguf_file_is_loadable(path: Path) -> bool:
     return present >= set(range(1, total + 1))
 
 
+def _is_gguf_file(path: str) -> bool:
+    try:
+        return path.lower().endswith(".gguf") and Path(path).is_file()
+    except OSError:
+        return False
+
+
+def _is_loose_gguf_companion(path: str) -> bool:
+    """Whether a scan row names a GGUF SIDECAR rather than a model.
+
+    ``_scan_models_dir`` screens mmproj, MTP drafter and imatrix files when it decides a
+    directory is a model, and ``_local_dir_holds_a_payload`` requires a main GGUF inside one,
+    but a loose ``.gguf`` child is listed on its extension alone. Resolving through the folder
+    used to hide that by rewriting the sidecar row onto the real model; loading the file the row
+    names offers a projector the loader refuses, so apply the same rule the directories get.
+    """
+    if not _is_gguf_file(path):
+        return False
+    try:
+        from hub.services.models.common import _is_main_gguf_filename
+    except ImportError:
+        return False
+    return not _is_main_gguf_filename(Path(path).name)
+
+
+def _gguf_file_as_the_loader_opens_it(path: str) -> str:
+    """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
+
+    Asked of _local_gguf_load_path, not restated: the scan's _GGUF_SPLIT_RE takes three or more
+    digits and the loader's _GGUF_SPLIT_FILE_RE exactly five, so a local rule would rewrite
+    model-002-of-003.gguf onto a sibling detect_gguf_model still opens as its own model.
+    """
+    try:
+        from utils.models.model_config import _local_gguf_load_path
+    except ImportError:
+        return path
+    try:
+        resolved = _local_gguf_load_path(Path(path))
+        return path if resolved.samefile(path) else str(resolved)
+    except OSError:
+        return path
+
+
+def _gguf_load_target(target: str) -> str:
+    """The GGUF a picker row should load.
+
+    A row naming a .gguf loads that file: resolving it through the folder returned the best quant
+    across every unrelated GGUF beside it (#10352). Shards are the exception, collapsed to the
+    one the loader opens anyway so _dedup_key offers a split family once.
+
+    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the F16,
+    where cached and exported rows take a Q4-class quant. An OOM by source alone, not a taste.
+    """
+    if _is_gguf_file(target):
+        return _gguf_file_as_the_loader_opens_it(target)
+    return _preferred_complete_gguf(target) or target
+
+
 def _preferred_complete_gguf(path: str) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -578,14 +636,13 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
             continue
+        if _is_loose_gguf_companion(model.path):
+            continue
         if _local_is_a_diffusers_pipeline(model):
             continue
         target = model.load_id or model.id
-        # A GGUF DIRECTORY goes through detect_gguf_model, which sorts by size and takes the largest
-        # complete file, commonly the F16, while cached and exported rows resolve a Q4-class quant. Same
-        # folder, dramatically bigger load by source alone, so an OOM rather than a preference.
         if is_gguf:
-            target = _preferred_complete_gguf(target) or target
+            target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
                 "Downloaded",
