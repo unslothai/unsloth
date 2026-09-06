@@ -253,6 +253,12 @@ def cmp_versions(a: str, b: str) -> int:
         return tuple(int(x) for x in re.findall(r"\d+", normalise_version(v)))
 
     ta, tb = to_tuple(a), to_tuple(b)
+    # PEP 440 pads the shorter release segment with zeros, so `0.11` and `0.11.0` are the
+    # same version. Comparing the raw tuples made `0.11` sort BELOW `0.11.0`, which discarded
+    # a ceiling-derived minor whenever the floor spelled out its patch.
+    width = max(len(ta), len(tb))
+    ta = ta + (0,) * (width - len(ta))
+    tb = tb + (0,) * (width - len(tb))
     if ta < tb:
         return -1
     if ta > tb:
@@ -748,22 +754,25 @@ def _requested_bounds(
 
 def _apply_requested_bounds(
     installed: str,
+    installed_exact: bool,
     exact: str,
     floor: str,
     ceiling: str,
     cap: str,
     floor_excludes_itself: bool,
     exclusions: list[str],
-) -> str:
+) -> tuple[str, bool]:
     """What one pip command leaves installed, given what was there before it ran.
 
-    `""` means "moved somewhere only the index names", which the rules treat as unjudgeable
-    rather than guessing a minor.
+    Returns `(version, exact)`. `("", True)` means "moved somewhere only the index names",
+    which the rules treat as unjudgeable rather than guessing a minor. An OPEN floor comes
+    back inexact: pip takes the newest release above it, so `>=0.11.1` can land anywhere
+    from 0.11.1 upwards and the caller may only use it where every such version agrees.
     """
     if exact:
-        return exact
+        return exact, True
     if not floor and not ceiling and not cap and not exclusions:
-        return installed
+        return installed, installed_exact
     if installed:
         satisfied = True
         if any(_version_is_excluded(installed, ver) for ver in exclusions):
@@ -777,32 +786,42 @@ def _apply_requested_bounds(
             if below < 0 or (floor_excludes_itself and below == 0):
                 satisfied = False
         if satisfied:
-            return installed  # already inside the window, so pip leaves it alone
+            # Already inside the window, so pip leaves it alone and its provenance stands.
+            return installed, installed_exact
     if ceiling:
         # pip moves to the NEWEST release the window admits, which the ceiling names even
         # offline. Returning the floor modelled `>=0.8,<0.11` as 0.8 and hid a 0.10 landing.
         landing = _highest_minor_below(ceiling)
         if landing and (not floor or cmp_versions(landing, floor) >= 0):
-            return landing
+            return landing, True
     if cap and (not floor or cmp_versions(cap, floor) >= 0):
-        return cap  # `<=V` allows V, so V is what pip picks
+        return cap, True  # `<=V` allows V, so V is what pip picks
     landing = ""
     if floor and not floor_excludes_itself:
         landing = floor
     if landing and any(_version_is_excluded(landing, ver) for ver in exclusions):
-        return ""  # the window names a version its own exclusion rules out
-    return landing
+        return "", True  # the window names a version its own exclusion rules out
+    # An OPEN floor bounds the landing without naming it: pip installs the newest release
+    # above it, which can be several minors up. Returning it as the answer reported a
+    # mismatch against a version pip would never have left in place.
+    return landing, not landing
 
 
-def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
+def _effective_requested_version(
+    install_cell: str, package: str, oracle: str
+) -> tuple[str, bool]:
     """What pip actually leaves installed, when the cell's range rules the oracle out.
 
     resolved_set only overrides the oracle on an exact `==` pin, so a range such as
     `torchcodec>=0.10.0,<0.11.0` still reads as whatever the image preinstalled. Each
     command is replayed in order against what the previous one left, because pip does not
     reinstall a package that already satisfies the new requirement.
+
+    Returns `(version, exact)`; an inexact answer is a FLOOR, usable only where every
+    version at or above it gives the caller the same verdict.
     """
     installed = oracle
+    installed_exact = True
     for (
         exact,
         floor,
@@ -815,12 +834,19 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
         if removed:
             # Uninstalled, so there is nothing left to judge unless a later command puts it
             # back. Reporting the oracle here flagged a package the cell had just deleted.
-            installed = ""
+            installed, installed_exact = "", True
             continue
-        installed = _apply_requested_bounds(
-            installed, exact, floor, ceiling, cap, floor_excludes_itself, exclusions
+        installed, installed_exact = _apply_requested_bounds(
+            installed,
+            installed_exact,
+            exact,
+            floor,
+            ceiling,
+            cap,
+            floor_excludes_itself,
+            exclusions,
         )
-    return installed
+    return installed, installed_exact
 
 
 def rule_inst_004_torchcodec_torch(
@@ -835,13 +861,15 @@ def rule_inst_004_torchcodec_torch(
     # resolved_set keeps the oracle's preinstalled version for anything the cell does not pin
     # exactly, so a cell asking for `torchcodec>=0.12.0` still reads as Colab's 0.11 and the
     # branches below report a mismatch pip would never produce. Judge what pip installs.
-    codec_v = _effective_requested_version(install_cell, "torchcodec", codec_v)
+    codec_v, codec_exact = _effective_requested_version(install_cell, "torchcodec", codec_v)
     if not codec_v:
         return findings  # the cell moved it somewhere only the index names
     # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
     # to 2.11), so that half of the matrix is open-ended and cannot be a finite set of minors.
     # Without this, adding the 2.11 row below would flag torch 2.11 with torchcodec 0.12
     # through 0.15, all of which upstream supports, and R-INST-004 is an error.
+    # An inexact codec is a floor: everything at or above it is possible, which is enough
+    # for a check that only asks whether both sides clear a floor of their own.
     if (
         cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
         and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
@@ -853,6 +881,8 @@ def rule_inst_004_torchcodec_torch(
     if allowed is None:
         if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
             return findings  # older than the table, and no row to judge it by
+        if not codec_exact and cmp_versions(c_minor, TORCHCODEC_ABI_STABLE_CODEC) < 0:
+            return findings  # a newer release above this floor would be ABI-stable and fine
         # Past the ABI floor with no lockstep row, and the exemption above already returned
         # for every 0.12+, so this codec is pre-0.12: built against a single older torch
         # minor, and this torch is newer than any of them. Silence here would mean the
@@ -867,6 +897,9 @@ def rule_inst_004_torchcodec_torch(
                 hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
             )
         )
+        return findings
+    if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
+        # Some release at or above the floor sits in this row, so nothing is proven.
         return findings
     if c_minor not in allowed:
         findings.append(

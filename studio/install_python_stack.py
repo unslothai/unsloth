@@ -498,7 +498,12 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
             return None  # window sits entirely below what any torch index publishes
     local = str(torch_version).partition("+")[2].strip().lower()
     if local == "cpu" or re.fullmatch(r"cu\d+", local):
-        return f"https://download.pytorch.org/whl/{local}"
+        # An explicit pin wins, exactly as it does for the torch repair helpers. Synthesising
+        # the public URL from the local tag sent an authenticated, corporate or air-gapped
+        # mirror to download.pytorch.org, and the --index-url that follows also makes
+        # _install_env_for_cmd drop the inherited index configuration, so the codec install
+        # fails outright wherever public PyTorch is unreachable.
+        return _explicit_torch_index_url() or f"https://download.pytorch.org/whl/{local}"
     return None
 
 

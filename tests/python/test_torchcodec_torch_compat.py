@@ -1134,7 +1134,7 @@ def test_a_patch_level_ceiling_keeps_its_own_minor():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     cell = '!pip install torch==2.9.0 "torchcodec<0.10.5"'
-    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == "0.10"
+    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("0.10", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
@@ -1147,12 +1147,12 @@ def test_a_strict_lower_bound_excludes_the_installed_version():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     cell = '!pip install torch==2.12.0 "torchcodec>0.11.0"'
-    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ""
+    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("", True)
     assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
 
     # A strict bound the installed version already clears leaves it alone.
     satisfied = '!pip install "torchcodec>0.10.0"'
-    assert nv._effective_requested_version(satisfied, "torchcodec", "0.11.0") == "0.11.0"
+    assert nv._effective_requested_version(satisfied, "torchcodec", "0.11.0") == ("0.11.0", True)
 
 
 def test_a_later_install_keeps_what_an_earlier_one_landed_on():
@@ -1163,16 +1163,16 @@ def test_a_later_install_keeps_what_an_earlier_one_landed_on():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     widened = '!pip install torch==2.12.0 "torchcodec>=0.12.0"\n!pip install "torchcodec>=0.10.0"'
-    assert nv._effective_requested_version(widened, "torchcodec", "0.11.0") == "0.12.0"
+    assert nv._effective_requested_version(widened, "torchcodec", "0.11.0") == ("0.12.0", False)
     assert nv.rule_inst_004_torchcodec_torch(widened, colab, "nb.ipynb", 0) == []
 
     # A later command that does NOT admit the earlier landing still moves it back down.
     narrowed = '!pip install "torchcodec>=0.12.0"\n!pip install "torchcodec<0.12.0"'
-    assert nv._effective_requested_version(narrowed, "torchcodec", "0.11.0") == "0.11"
+    assert nv._effective_requested_version(narrowed, "torchcodec", "0.11.0") == ("0.11", True)
 
     # An exact pin after an uninstall restores a version rather than staying gone.
     restored = '!pip uninstall -y torchcodec\n!pip install "torchcodec==0.11.1"'
-    assert nv._effective_requested_version(restored, "torchcodec", "0.11.0") == "0.11.1"
+    assert nv._effective_requested_version(restored, "torchcodec", "0.11.0") == ("0.11.1", True)
 
 
 def test_an_exclusion_rules_out_the_installed_version():
@@ -1194,20 +1194,81 @@ def test_an_exclusion_rules_out_the_installed_version():
         '!pip install "torch==2.12.0" "torchcodec!=0.11.0"',
         '!pip install "torch==2.12.0" "torchcodec!=0.11.*"',
     ):
-        assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == "", cell
+        assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("", True), cell
         assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
 
     # An exclusion that does NOT cover the installed version leaves it alone, so a real
     # mismatch is still reported.
     untouched = '!pip install "torch==2.9.0" "torchcodec!=0.12.0"'
-    assert nv._effective_requested_version(untouched, "torchcodec", "0.11.0") == "0.11.0"
+    assert nv._effective_requested_version(untouched, "torchcodec", "0.11.0") == ("0.11.0", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
 
     # A window whose own landing the exclusion rules out names nothing.
     self_excluded = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.12.0"'
-    assert nv._effective_requested_version(self_excluded, "torchcodec", "0.11.0") == ""
+    assert nv._effective_requested_version(self_excluded, "torchcodec", "0.11.0") == ("", True)
     # ...but an exclusion elsewhere in the range leaves the landing intact.
     kept = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.11.0"'
-    assert nv._effective_requested_version(kept, "torchcodec", "0.11.0") == "0.12.0"
+    assert nv._effective_requested_version(kept, "torchcodec", "0.11.0") == ("0.12.0", False)
+
+
+def test_an_open_floor_is_a_floor_not_a_landing():
+    """pip installs the NEWEST release above an open `>=`, so `torchcodec>=0.11.1` on a
+    torch 2.12 cell can land on the ABI-stable line. Recording the floor as the answer
+    reported a mismatch against a version pip would never have left in place."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    open_floor = '!pip install "torch==2.12.0" "torchcodec>=0.11.1"'
+    assert nv._effective_requested_version(open_floor, "torchcodec", "0.11.0") == ("0.11.1", False)
+    assert nv.rule_inst_004_torchcodec_torch(open_floor, colab, "nb.ipynb", 0) == []
+
+    # The floor is still usable where every version at or above it gives the same answer:
+    # torch 2.10 cannot take any 0.12+ codec, so this one is still reported.
+    too_old = '!pip install "torch==2.10.0" "torchcodec>=0.12.0"'
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(too_old, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+
+def test_versions_are_compared_with_pep440_zero_padding():
+    """PEP 440 pads the shorter release segment, so `0.11` and `0.11.0` are one version.
+    Comparing the raw tuples sorted `0.11` below `0.11.0`, which threw away the
+    ceiling-derived minor whenever the floor spelled out its patch."""
+    from scripts import notebook_validator as nv
+
+    assert nv.cmp_versions("0.11", "0.11.0") == 0
+    assert nv.cmp_versions("2.12", "2.12.0.0") == 0
+    assert nv.cmp_versions("0.11", "0.11.1") == -1
+    assert nv.cmp_versions("0.12", "0.11.9") == 1
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    strict_window = '!pip install "torch==2.12.0" "torchcodec>0.11.0,<0.12.0"'
+    assert nv._effective_requested_version(strict_window, "torchcodec", "0.11.0") == ("0.11", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(strict_window, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+
+def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
+    """UNSLOTH_TORCH_INDEX_URL names the index torch itself came from. Rebuilding a public
+    download.pytorch.org URL from the local tag sent an authenticated or air-gapped mirror
+    to the internet, and the `--index-url` that follows also drops the inherited index
+    configuration, so the codec install fails outright where public PyTorch is unreachable."""
+    from studio import install_python_stack as ips
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu128"
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/pytorch/cu128/")
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/pytorch/cu128"
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu126"
+
+    # The override does not make an untagged or rocm torch start pinning.
+    assert ips._torchcodec_index_url("2.11.0") is None
+    assert ips._torchcodec_index_url("2.11.0+rocm7.0") is None
