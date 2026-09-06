@@ -45,6 +45,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from utils.account_context import current_account_id
+
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
@@ -67,7 +69,7 @@ MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -95,9 +97,10 @@ def _apply_idle_floor(seconds: int) -> int:
 
 def _cached_setting(key: str, default: Any) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
+    cache_key = (current_account_id(), key)
     now = time.monotonic()
     with _cache_lock:
-        hit = _cache.get(key)
+        hit = _cache.get(cache_key)
         if hit is not None and now - hit[0] < _CACHE_TTL_S:
             return hit[1]
     try:
@@ -107,13 +110,14 @@ def _cached_setting(key: str, default: Any) -> Any:
         stored = None
     value = default if stored is None else stored
     with _cache_lock:
-        _cache[key] = (now, value)
+        _cache[cache_key] = (now, value)
     return value
 
 
 def _invalidate(key: str) -> None:
+    cache_key = (current_account_id(), key)
     with _cache_lock:
-        _cache.pop(key, None)
+        _cache.pop(cache_key, None)
 
 
 def get_openai_auto_switch_enabled() -> bool:

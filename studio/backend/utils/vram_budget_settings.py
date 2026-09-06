@@ -26,6 +26,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from utils.account_context import current_account_id
+
 VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
@@ -44,22 +46,23 @@ VRAM_FRACTION_DECIMALS = 3
 # Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 # Bumped on every write: a read that began before it must not cache its stale value, or the new
 # budget appears to revert for the rest of the TTL.
-_generation: dict[str, int] = {}
+_generation: dict[tuple[str, str], int] = {}
 
 # Retries converge; the bound only stops a write storm spinning here forever.
 _MAX_REREADS = 3
 
 
 def _cached_setting(key: str) -> Any:
+    cache_key = (current_account_id(), key)
     for _attempt in range(_MAX_REREADS):
         with _cache_lock:
-            hit = _cache.get(key)
+            hit = _cache.get(cache_key)
             if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
                 return hit[1]
-            generation = _generation.get(key, 0)
+            generation = _generation.get(cache_key, 0)
         try:
             from storage.studio_db import get_app_setting
             stored = get_app_setting(key, None)
@@ -67,17 +70,18 @@ def _cached_setting(key: str) -> Any:
             # An unreadable DB must not fail a load; fall back to the default.
             return None
         with _cache_lock:
-            if _generation.get(key, 0) == generation:
-                _cache[key] = (time.monotonic(), stored)
+            if _generation.get(cache_key, 0) == generation:
+                _cache[cache_key] = (time.monotonic(), stored)
                 return stored
         # A write landed mid-read, so `stored` predates it and must not be cached.
     return stored
 
 
 def _invalidate(key: str) -> None:
+    cache_key = (current_account_id(), key)
     with _cache_lock:
-        _cache.pop(key, None)
-        _generation[key] = _generation.get(key, 0) + 1
+        _cache.pop(cache_key, None)
+        _generation[cache_key] = _generation.get(cache_key, 0) + 1
 
 
 def coerce_fraction(value: Any) -> Optional[float]:

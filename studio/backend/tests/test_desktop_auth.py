@@ -709,7 +709,7 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
 
     secret = studio_cli._create_desktop_secret_in_cli()
     studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
@@ -745,7 +745,7 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     assert credential_key is not None
     auth_storage._credential_encryption_key_cache = None
     assert credential_secrets.get_hf_token() == "hf_survives_reset"
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 

@@ -23,6 +23,7 @@ from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
 from utils.utils import hf_env_offline
 from loggers import get_logger
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
 from utils.upload_limits import (
@@ -67,8 +68,8 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
-SEED_UPLOAD_DIR = seed_uploads_root()
-UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
+SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
+UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
 # since those directories can be shared by several recipes.

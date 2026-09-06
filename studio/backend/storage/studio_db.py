@@ -99,7 +99,7 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
@@ -309,7 +309,7 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create tables and indexes if they don't exist. Called once per process."""
+    """Create tables and indexes if they don't exist. Called once per database."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -1236,11 +1236,16 @@ def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
 
 
+def reset_schema_state_for_tests() -> None:
+    """Forget initialized database paths between tests."""
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection(
     busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS, *, check_same_thread: bool = True
 ) -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
-    global _schema_ready
+    """Open studio.db with WAL mode, create tables once per database, enable foreign keys."""
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(
@@ -1249,13 +1254,15 @@ def get_connection(
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
-    if not _schema_ready:
+    # The usual path is already canonical: keep repeated opens free of another realpath.
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
                     conn.commit()
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -1266,17 +1273,18 @@ def get_connection(
 # Every accessor here opens and closes its own connection, so a writer is routinely the last
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
-_wal_keeper: sqlite3.Connection | None = None
+_wal_keepers: dict[Path, sqlite3.Connection] = {}
 _wal_keeper_lock = threading.Lock()
 
 
 def open_wal_keeper() -> bool:
     """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
-    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
-    # database or a dead thread, and reusing it would keep nothing for the current one.
-    close_wal_keeper()
-    global _wal_keeper
+    db_path = studio_db_path().resolve()
     with _wal_keeper_lock:
+        # Replace only this database's earlier lifespan keeper.
+        previous = _wal_keepers.pop(db_path, None)
+        if previous is not None:
+            _close_keeper(previous)
         # Only ever runs the pragma below, on this thread. check_same_thread is off so a
         # keeper stranded by an earlier lifespan can still be closed from this one.
         conn = get_connection(check_same_thread = False)
@@ -1293,21 +1301,32 @@ def open_wal_keeper() -> bool:
             conn.close()
             logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
             return False
-        _wal_keeper = conn
+        _wal_keepers[db_path] = conn
         return True
 
 
-def close_wal_keeper() -> None:
-    """Release the keeper; last-close checkpointing resumes."""
-    global _wal_keeper
-    with _wal_keeper_lock:
-        conn, _wal_keeper = _wal_keeper, None
-    if conn is None:
-        return
+def _close_keeper(conn: sqlite3.Connection) -> None:
     try:
         conn.close()
     except Exception as exc:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(path: str | Path) -> None:
+    """Release one database before archiving its account's workspace."""
+    db_path = Path(path).resolve()
+    with _wal_keeper_lock:
+        conn = _wal_keepers.pop(db_path, None)
+        if conn is not None:
+            _close_keeper(conn)
+
+
+def close_wal_keeper() -> None:
+    """Release all keepers at application shutdown."""
+    with _wal_keeper_lock:
+        for conn in _wal_keepers.values():
+            _close_keeper(conn)
+        _wal_keepers.clear()
 
 
 def create_run(

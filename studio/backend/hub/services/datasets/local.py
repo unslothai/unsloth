@@ -10,7 +10,6 @@ import json
 import uuid
 from contextlib import suppress
 from pathlib import Path
-
 from fastapi import HTTPException, UploadFile
 
 from hub.schemas.datasets import (
@@ -20,6 +19,7 @@ from hub.schemas.datasets import (
 )
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
+from utils.paths.lazy import LazyPath
 from utils.paths.path_utils import (
     any_not_appledouble_metadata,
     drop_appledouble_metadata,
@@ -34,8 +34,8 @@ DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
-LOCAL_DATASETS_ROOT = recipe_datasets_root()
-DATASET_UPLOAD_DIR = dataset_uploads_root()
+LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
+DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
 
 
 def _safe_read_metadata(path: Path) -> dict | None:

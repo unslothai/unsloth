@@ -71,11 +71,11 @@ def isolated_databases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    providers_db._schema_ready = False
-    credential_secrets._schema_ready = False
+    providers_db._schema_ready = set()
+    credential_secrets._schema_ready = set()
     yield
-    providers_db._schema_ready = False
-    credential_secrets._schema_ready = False
+    providers_db._schema_ready = set()
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 
@@ -593,7 +593,7 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
 
     credential_secrets.save_hf_token("hf-after-restart")
     auth_storage._credential_encryption_key_cache = None
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     assert (
         settings_route.get_hugging_face_token("alice", via_api_key = False).token
         == "hf-after-restart"

@@ -25,7 +25,7 @@ def _reset_studio_db(
         "UNSLOTH_STUDIO_PROJECTS_HOME",
         str(projects_home if projects_home is not None else tmp_path / "Projects"),
     )
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 @pytest.fixture
