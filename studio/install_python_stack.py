@@ -7229,6 +7229,53 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
+    # 3c. torchcodec on Linux aarch64 + CUDA (DGX Spark GB10, Jetson). PyPI ships no
+    #     aarch64 wheel, so pip_install() above filtered torchcodec out of
+    #     extras-no-deps.txt via PLATFORM_LACKS_TORCHCODEC_WHEEL and the audio extras
+    #     stay off for good. download.pytorch.org/whl/cuXXX DOES carry aarch64 CUDA
+    #     wheels, so retry from there. Best effort: on failure the audio extras stay
+    #     disabled exactly as they are today, so this can only add support (#4446).
+    if (
+        PLATFORM_LACKS_TORCHCODEC_WHEEL
+        and IS_LINUX
+        and platform.machine() in {"aarch64", "arm64"}
+        and not NO_TORCH
+    ):
+        # Shares the one memoized `import torch` subprocess with the repair paths
+        # rather than spawning another 90s-bounded probe.
+        _tc_ran, _tc_importable, _tc_torch_ver, _tc_hip, _tc_cuda = _probe_torch_runtime()
+        _tc_cu_tag = ""
+        if _tc_ran and _tc_importable and not _tc_hip:
+            # torch.version.cuda "13.0.1" -> "cu130". A ROCm or CPU-only torch reports
+            # no CUDA and is skipped: there is no aarch64 wheel for it either way.
+            _tc_parts = (_tc_cuda or "").split(".")
+            if len(_tc_parts) >= 2 and _tc_parts[0].isdigit() and _tc_parts[1].isdigit():
+                _tc_cu_tag = f"cu{_tc_parts[0]}{_tc_parts[1]}"
+        if not _tc_cu_tag:
+            _note("aarch64 without a CUDA torch -- skipping torchcodec (audio extras stay off)")
+        else:
+            _progress("torchcodec (aarch64)")
+            # --index-url, not --extra-index-url: PyPI has no aarch64 candidate at all,
+            # and the pinned-index handling (_is_pinned_index_cmd) already neutralises
+            # inherited index env vars for exactly this shape of command. --no-deps
+            # keeps the pin from dragging the torch stack along, and constrain=False
+            # skips the extras-no-deps pin, which names a version this index does not
+            # build for aarch64.
+            if not pip_install_try(
+                f"Installing torchcodec (Linux aarch64, PyTorch {_tc_cu_tag} index)",
+                "--upgrade",
+                "--no-deps",
+                "--no-cache-dir",
+                "torchcodec",
+                "--index-url",
+                f"https://download.pytorch.org/whl/{_tc_cu_tag}",
+                constrain = False,
+            ):
+                _note(
+                    f"torchcodec has no aarch64 wheel on the {_tc_cu_tag} index -- "
+                    "audio/video extras stay disabled"
+                )
+
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
     #    changes, since Windows can remove shared files during replacement.
     #    Skip when torch is unavailable or Windows ROCm has no working build.
