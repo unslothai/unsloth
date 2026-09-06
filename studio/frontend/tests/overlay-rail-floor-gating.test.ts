@@ -151,11 +151,10 @@ function floorLiterals(file: ts.SourceFile): ts.Node[] {
 }
 
 /**
- * The components that ARE the protected panel, and the `data-slot` names they
- * declare, both read out of the tree rather than matched by name. A substring
- * rule would accept a `<ChangelogToggle>`, and an unresolved `data-slot` would
- * accept `has-[[data-slot=card-footer]]:`, which an always-present footer makes
- * permanent. A panel is one that renders the shared notes layout root.
+ * The protected panels and the slots they declare, read out of the tree, not
+ * matched by name: a substring rule accepts a `<ChangelogToggle>` and a free
+ * `data-slot` accepts `card-footer`, which an always-present footer makes
+ * permanent. A panel is one rendering the shared notes layout root.
  */
 function notesPanels(): { components: Set<string>; slots: Set<string> } {
   const components = new Set<string>();
@@ -214,14 +213,11 @@ function branchConditions(literal: ts.Node): string[] {
  * is true while the panel is closed, which is #10117 exactly. It must render the
  * notes themselves.
  */
-/**
- * The className of the element painted inside the slot this floor is on: the
- * floor's own JSX element, then its first child element.
- */
+/** The className painted inside this floor's own slot: its element's first child. */
 function paintedSurface(literal: ts.Node): string | null {
   let node: ts.Node | undefined = literal;
   while (node && !ts.isJsxAttribute(node)) node = node.parent;
-  // attribute -> attributes -> opening tag -> the element that owns the children
+  // attribute -> attributes -> opening tag
   const opening = node?.parent?.parent;
   if (!opening || !ts.isJsxOpeningElement(opening)) return null;
   const owner = opening.parent;
@@ -275,7 +271,7 @@ for (const name of CHILDREN) {
     assert.ok(resolved, `<${name} /> did not resolve`);
     const file = parse(resolved.path, `${name}.tsx`);
     const source = readFileSync(resolved.path, "utf8");
-    // Invisible to the analysis below, and the rail already keeps its geometry in CSS.
+    // Invisible to the analysis below; the rail keeps its geometry in CSS.
     assert.doesNotMatch(
       source,
       /\bminHeight\s*:/,
@@ -313,11 +309,8 @@ Floor found in: ${literal.getText().slice(0, 200)}
 Ternary conditions around it: ${branchConditions(literal).join(", ") || "(none)"}`,
       );
 
-      // A gated floor still has to be filled, or the gap returns the other way.
-      // The surface is this floor's own painted child, not any `grow` in the
-      // file: an alternate branch carrying one would answer for a surface that
-      // does not, and the desktop card's rail is never rendered by the browser
-      // suite that would otherwise catch it.
+      // This floor's own painted child, not any `grow` in the file: an alternate
+      // branch carrying one would answer for a surface that does not.
       const surface = paintedSurface(literal);
       assert.ok(
         surface,

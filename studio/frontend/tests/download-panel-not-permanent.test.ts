@@ -80,15 +80,11 @@ job list at all, it can no longer know when to unmount.`,
   return name;
 }
 
-/**
- * Is this leaf the test "the list is empty"? Operand order matters: an
- * unordered match also accepts `0 < jobKeys.length`, the exact inverse, and the
- * always-true `0 <= jobKeys.length`. Hence the explicit shapes.
- */
+/** Operand order matters: unordered also accepts `0 < jobKeys.length`, the inverse. */
 function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
   const length = `${jobKeys}.length`;
   const K = ts.SyntaxKind;
-  // [left, operator, right], each meaning "the list is empty".
+  // [left, operator, right], each meaning the list is empty.
   const shapes: [string, ts.SyntaxKind, string][] = [
     [length, K.EqualsEqualsEqualsToken, "0"],
     ["0", K.EqualsEqualsEqualsToken, length],
@@ -103,7 +99,6 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
     const op = node.operatorToken.kind;
     return shapes.some(([l, o, r]) => left === l && op === o && right === r);
   }
-  // !jobKeys.length
   return (
     ts.isPrefixUnaryExpression(node) &&
     node.operator === K.ExclamationToken &&
@@ -112,14 +107,10 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
 }
 
 /**
- * Does an empty list force `condition` true?
- *
- * Finding the comparison somewhere inside the condition is not the same
- * question, and answers it wrongly in both directions: `jobKeys.length === 0 &&
- * activeCount > 0` only unmounts for one of the empty states, and
- * `!(jobKeys.length === 0)` unmounts for none of them. So the condition is
- * evaluated with the empty test pinned true and every other term unknown; only
- * a definite true counts.
+ * Does an empty list force `condition` true? Finding the comparison somewhere
+ * inside it is a different question, wrong in both directions: `... === 0 &&
+ * activeCount > 0` covers some empty states, `!(... === 0)` none. Evaluated with
+ * the empty test pinned true and every other term unknown.
  */
 type Truth = true | false | null;
 
@@ -150,7 +141,7 @@ function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
       return null;
     }
   }
-  return null; // Any other term: unknown, so it cannot carry the guard.
+  return null; // Unknown, so it cannot carry the guard.
 }
 
 function returnsNull(statement: ts.Statement): boolean {
