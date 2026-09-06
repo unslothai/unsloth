@@ -71,7 +71,14 @@ class _Recorder:
     carries them is exactly the chunk a pause prevents.
     """
 
-    def __init__(self, monkeypatch, streams, *, signal, pause_after = 1):
+    def __init__(
+        self,
+        monkeypatch,
+        streams,
+        *,
+        signal,
+        pause_after = 1,
+    ):
         self.payloads: list[dict] = []
         self.signal = signal
         self.pause_after = pause_after
@@ -272,7 +279,14 @@ class TestAGiveUpStillReportsWhatItDecoded:
         recorder = _Recorder(
             monkeypatch,
             [
-                [_delta("Once "), _delta("upon "), _delta("a "), _delta("time"), _finish(), _done()],
+                [
+                    _delta("Once "),
+                    _delta("upon "),
+                    _delta("a "),
+                    _delta("time"),
+                    _finish(),
+                    _done(),
+                ],
             ],
             signal = signal,
             pause_after = 4,
@@ -280,9 +294,7 @@ class TestAGiveUpStillReportsWhatItDecoded:
         items = self._run(recorder.backend, signal = signal, policy = policy)
 
         metadata = [
-            item
-            for item in items
-            if isinstance(item, dict) and item.get("type") == "metadata"
+            item for item in items if isinstance(item, dict) and item.get("type") == "metadata"
         ]
         assert metadata, "a turn that gave up must still end on a terminal metadata event"
         assert metadata[-1]["finish_reason"] == "length"

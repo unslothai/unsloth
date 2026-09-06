@@ -28643,7 +28643,9 @@ class LlamaCppBackend:
             # cap the caller never agreed to and cells the watermark cannot see. The
             # per-chunk tally is one delta per token, which is exactly what this needs.
             _charged_usage = _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
-            _charged_tokens = int(_charged_usage.get("completion_tokens") or 0) or _tokens_this_stream
+            _charged_tokens = (
+                int(_charged_usage.get("completion_tokens") or 0) or _tokens_this_stream
+            )
             checkpoint = _preemption.StreamCheckpoint(
                 visible_text = content_text,
                 reasoning_text = reasoning_text,
@@ -32409,9 +32411,9 @@ class LlamaCppBackend:
                 # carries the partial back as prompt, and it leaves the caller's cap
                 # unspent, so a chat paused n times may emit (n+1) times what it asked
                 # for. The plain path already falls back to the same estimate.
-                _pre_charged = int(_pre_usage.get("completion_tokens") or 0) or self._preempt_charged(
-                    content_accum, reasoning_accum
-                )
+                _pre_charged = int(
+                    _pre_usage.get("completion_tokens") or 0
+                ) or self._preempt_charged(content_accum, reasoning_accum)
                 _checkpoint = _preemption.StreamCheckpoint(
                     visible_text = content_accum,
                     reasoning_text = reasoning_accum,
