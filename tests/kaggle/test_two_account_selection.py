@@ -499,9 +499,9 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
     loop = source.split("for account_id in order:", 1)[1]
-    assert "in_flight_for_commit(survey" in loop.split("concurrency_verdict(", 1)[0], (
-        "the gate does not ask each surveyed account whether this commit is already running"
-    )
+    assert (
+        "in_flight_for_commit(survey" in loop.split("concurrency_verdict(", 1)[0]
+    ), "the gate does not ask each surveyed account whether this commit is already running"
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s

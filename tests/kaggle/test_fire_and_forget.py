@@ -1511,5 +1511,5 @@ def test_the_pass_budget_starts_before_the_kernel_listing():
     """Five slow listing pages under the socket timeout are minutes. A budget
     started after them is that much later than the job timeout was sized for."""
     source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
-    body = source[source.index("def main("):]
+    body = source[source.index("def main(") :]
     assert body.index("deadline = time.time() + BUDGET_SEC") < body.index("ours = find_ours(")
