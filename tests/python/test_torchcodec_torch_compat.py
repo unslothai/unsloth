@@ -1303,14 +1303,16 @@ def test_an_equal_strict_bound_upgrades_the_floor():
 
     colab = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
     assert nv._effective_requested_version(combined, "torchcodec", "0.10.0") == ("0.11", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # Order does not matter, and a plain `>=` is still inclusive.
     reordered = '!pip install "torchcodec>0.10,>=0.10,<0.12"'
     assert nv._requested_bounds(reordered, "torchcodec")[0][4] is True
-    assert nv._requested_bounds('!pip install "torchcodec>=0.10,<0.12"', "torchcodec")[0][4] is False
+    assert (
+        nv._requested_bounds('!pip install "torchcodec>=0.10,<0.12"', "torchcodec")[0][4] is False
+    )
 
 
 def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
