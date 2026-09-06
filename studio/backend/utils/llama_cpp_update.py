@@ -519,7 +519,9 @@ def _llama_only_status(
     # bundle a migration would. The drift only needs its own offer when nothing else
     # would move the install.
     to_backend = (
-        None if job_running or update_available else _pending_backend_migration(binary, marker)
+        None
+        if job_running or update_available
+        else _pending_backend_migration(binary, marker, force_refresh = force_refresh)
     )
 
     with _job_lock:
@@ -661,8 +663,13 @@ def _pending_backend_migration(
     """
     if marker is None or _switch_support(binary, marker) is not None:
         return None
-    if _env_backend_override() is not None:
+    _override = _env_backend_override()
+    if _override is not None and _override != "auto":
         # The environment owns the backend; an offer here could not be applied.
+        # "auto" is the exception: environment_backend_override treats it as a
+        # recognized value, but it asks for the same detection the migration
+        # re-applies, and the job invokes the installer with --llama-backend auto,
+        # so suppressing on it would withhold the offer from a host that can take it.
         return None
     if marker_backend_request(marker) != "auto":
         return None
@@ -1200,6 +1207,7 @@ def _whisper_phase_plan(
     *,
     llama_will_run: bool,
     llama_skip_reason: Optional[str] = None,
+    migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or
     re-pair with the new backend for a switch.
@@ -1216,10 +1224,18 @@ def _whisper_phase_plan(
     away and back. So allow a repair-only job for that one refusal, and only while the
     pairing is genuinely stale, which keeps an ordinary already-selected request a
     refusal rather than a no-op job reporting success."""
-    if backend_request is None:
-        return (
+    # A migration is switch-SHAPED (it carries a backend request so the marker is
+    # asserted after the install) but update-BEHAVED: it reinstalls llama.cpp at the
+    # same release on a different backend. So whisper needs the ordinary chained plan,
+    # which both catches up on its own releases and re-pairs against the new ggml.
+    # Taking the repair-only branch here would silently drop a whisper release update
+    # that the banner was showing, since a self-contained install returns no phase.
+    if backend_request is None or migration:
+        chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
+        if backend_request is None or chained.get("phase") is not None:
+            return chained
     try:
         from utils import whisper_cpp_update
         if not llama_will_run:
@@ -1357,6 +1373,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             backend_request,
             llama_will_run = llama_spec is not None,
             llama_skip_reason = llama_plan.get("skip_reason"),
+            migration = migration,
         )
         whisper_spec = (whisper_plan or {}).get("phase")
         if llama_spec is None and whisper_spec is None:

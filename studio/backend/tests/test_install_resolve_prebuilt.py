@@ -2461,3 +2461,88 @@ def test_the_icd_search_path_is_built_per_call_not_at_import(monkeypatch):
     # And the probe on top of it answers instead of propagating.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     assert _REAL_AMD_VULKAN_ICD_PRESENT() in (True, False)
+
+
+# ---------------------------------------------------------------------------
+# The Windows Vulkan ICD registry, which is a different key and a different call
+# shape from the Intel display-class walk above: values, not subkeys, and the DWORD
+# data carries the enable flag.
+# ---------------------------------------------------------------------------
+
+
+class _FakeIcdWinreg:
+    HKEY_LOCAL_MACHINE = object()
+    REG_DWORD = 4
+    REG_SZ = 1
+
+    def __init__(self, by_key):
+        self._by_key = by_key
+
+    def OpenKey(self, parent, name):
+        if name not in self._by_key:
+            raise FileNotFoundError(name)
+        entries = self._by_key[name]
+
+        class _Key:
+            def __enter__(_self):
+                return entries
+
+            def __exit__(_self, *exc):
+                return False
+
+        return _Key()
+
+    def QueryInfoKey(self, entries):
+        return (0, len(entries), 0)
+
+    def EnumValue(self, entries, index):
+        return entries[index]
+
+
+def _icd_paths(monkeypatch, by_key):
+    monkeypatch.setattr(ilp.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "winreg", _FakeIcdWinreg(by_key))
+    return ilp._amd_vulkan_icd_manifest_paths()
+
+
+_DRIVERS_KEY = r"SOFTWARE\Khronos\Vulkan\Drivers"
+
+
+def test_the_windows_radeon_manifest_is_recognized(monkeypatch):
+    # The Radeon/Adrenalin driver registers amd-vulkan64.json in System32 (and
+    # amd-vulkan32.json in SysWOW64), not the AMDVLK amdvlk64.json. A needle list that
+    # only knew the AMDVLK spelling answered False on the ordinary Windows gfx1150 and
+    # gfx1151 host, so the Windows half of this route could never fire.
+    monkeypatch.setattr(
+        ilp,
+        "_amd_vulkan_icd_manifest_paths",
+        lambda: [r"C:\Windows\System32\amd-vulkan64.json"],
+    )
+    assert _REAL_AMD_VULKAN_ICD_PRESENT() is True
+
+
+def test_a_disabled_registry_registration_does_not_answer_for_the_driver(monkeypatch):
+    # The value name is the manifest path and the DWORD data is the enable flag: zero
+    # loads it, anything else the loader skips (Vulkan-Loader LoaderDriverInterface.md).
+    # A stale or deliberately disabled AMD entry must not route this host onto a bundle
+    # that would enumerate no device and fall back to CPU.
+    disabled = _icd_paths(
+        monkeypatch,
+        {_DRIVERS_KEY: [(r"C:\Windows\System32\amd-vulkan64.json", 1, _FakeIcdWinreg.REG_DWORD)]},
+    )
+    assert disabled == []
+    enabled = _icd_paths(
+        monkeypatch,
+        {_DRIVERS_KEY: [(r"C:\Windows\System32\amd-vulkan64.json", 0, _FakeIcdWinreg.REG_DWORD)]},
+    )
+    assert enabled == [r"C:\Windows\System32\amd-vulkan64.json"]
+
+
+def test_a_non_dword_icd_registration_is_ignored(monkeypatch):
+    # The interface specifies a DWORD. Anything else is not a registration this code
+    # can read an enable flag out of, so it fails towards the status quo.
+    paths = _icd_paths(
+        monkeypatch,
+        {_DRIVERS_KEY: [(r"C:\Windows\System32\amd-vulkan64.json", "0", _FakeIcdWinreg.REG_SZ)]},
+    )
+    assert paths == []

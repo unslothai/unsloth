@@ -891,3 +891,65 @@ def test_running_job_status_does_not_resolve_options_again(monkeypatch, tmp_path
 
     assert status["job"]["state"] == "running"
     assert status["options"] == []
+
+
+def test_an_explicit_auto_in_the_environment_still_gets_the_migration(monkeypatch, tmp_path):
+    # environment_backend_override treats "auto" as a recognized value, so a bare
+    # suppression on "an override exists" withheld the offer from a host that can
+    # take it: "auto" asks for exactly the detection the migration re-applies, and
+    # the job runs the installer with --llama-backend auto. Only a concrete
+    # selection owns the backend.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+    _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    assert upd.get_update_status()["backend_migration_available"] is True
+
+
+def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
+    # The resolver is memoized for 24h, so a status built with force_refresh=True has
+    # to forward it: a driver or GPU change between polls otherwise keeps answering
+    # from the pre-change resolve for the rest of the TTL, and the explicit "check
+    # again" the user asked for reports no drift.
+    _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    seen: list = []
+    real = upd._pending_backend_migration
+
+    def _spy(binary, marker, *, force_refresh = False):
+        seen.append(force_refresh)
+        return real(binary, marker, force_refresh = force_refresh)
+
+    monkeypatch.setattr(upd, "_pending_backend_migration", _spy)
+    upd.get_update_status(force_refresh = True)
+    assert seen == [True], seen
+
+
+def test_a_migration_keeps_a_pending_whisper_update(monkeypatch):
+    # A migration carries a backend request so the marker is asserted after the install,
+    # but it is update-BEHAVED: it reinstalls llama.cpp at the same release on another
+    # backend. The switch branch calls repair_pairing_plan(), which returns no phase for
+    # a self-contained whisper install, so a whisper release update the banner was
+    # showing would be dropped on the round the migration is taken. The chained plan
+    # both catches whisper up and re-pairs it against the new ggml.
+    chained = {"phase": {"kind": "whisper", "tag": "w2"}, "update_available": True}
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: chained)
+    repair_calls = []
+    monkeypatch.setattr(
+        whisper_upd, "repair_pairing_plan", lambda: (repair_calls.append(True), {})[1]
+    )
+    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
+
+    plan = _whisper_phase_plan("auto", llama_will_run = True, migration = True)
+    assert plan == chained, plan
+    assert repair_calls == [], "a migration must not take the repair-only branch"
+
+
+def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
+    # Negative control for the test above: without it, a migration flag that was always
+    # on would read the same as one that works. A real backend switch installs the same
+    # release on a new backend, so whisper only needs re-pairing.
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"phase": {"kind": "whisper"}})
+    marker = {"repaired": True}
+    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: marker)
+    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
+    assert _whisper_phase_plan("vulkan", llama_will_run = True) is marker

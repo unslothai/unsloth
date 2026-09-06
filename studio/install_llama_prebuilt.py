@@ -7684,10 +7684,14 @@ _VULKAN_ICD_REGISTRY_KEYS = (
     r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers",
 )
 # Manifest FILE NAMES the AMD drivers register: mesa RADV (radeon_icd.x86_64.json),
-# AMDVLK (amd_icd64.json, amd_pro_icd64.json) and the Windows proprietary ICD
-# (amdvlk64.json). Matched against the basename, never the whole path: a bare "amd"
+# AMDVLK (amd_icd64.json, amd_pro_icd64.json), and on Windows both the AMDVLK build
+# (amdvlk64.json) and the Radeon/Adrenalin ICD, which is amd-vulkan64.json in
+# System32 with amd-vulkan32.json in SysWOW64. The basename is matched with "-"
+# folded to "_" so the hyphenated Windows spelling needs no second needle; without
+# it the normal Adrenalin host answered False and the Windows half of this route
+# could never fire. Matched against the basename, never the whole path: a bare "amd"
 # anywhere in a directory name would otherwise answer for the driver.
-_AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro")
+_AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
 
 
 # The loader's own search order, most specific first. Built per call rather than at
@@ -7729,8 +7733,16 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
                 with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
                     for index in range(winreg.QueryInfoKey(key)[1]):
                         try:
-                            name, _value, _kind = winreg.EnumValue(key, index)
+                            name, value, kind = winreg.EnumValue(key, index)
                         except OSError:
+                            continue
+                        # The value name is the manifest path and the DWORD data is the
+                        # enable flag: "If the value is 0, then the loader will attempt to
+                        # load the file", and the loader skips the rest (Vulkan-Loader
+                        # LoaderDriverInterface.md). A disabled or stale AMD registration
+                        # must therefore not answer for the driver, or this routes a host
+                        # onto a bundle that enumerates no device and falls back to CPU.
+                        if kind != winreg.REG_DWORD or value != 0:
                             continue
                         paths.append(name)
             except OSError:
@@ -7762,7 +7774,7 @@ def _amd_vulkan_icd_present() -> bool:
     """
     try:
         return any(
-            needle in PurePath(path).name.lower()
+            needle in PurePath(path).name.lower().replace("-", "_")
             for path in _amd_vulkan_icd_manifest_paths()
             for needle in _AMD_VULKAN_ICD_NEEDLES
         )
