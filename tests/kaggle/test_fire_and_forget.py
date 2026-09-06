@@ -360,7 +360,12 @@ def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monk
         "age_hours": 0.4,
     }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
-    assert record["verdict"] == "infra"
+    # `pending`, not `infra`: an infra verdict posts a green status and its
+    # kernel is released by --delete-collected, so the "next pass retries"
+    # promise would be broken by the very step that publishes it.
+    assert record["verdict"] == "pending"
+    assert record["verdict"] not in collect.DELETABLE
+    assert collect.statuses_from([record]) == []
     assert deleted == [], "evidence that would not download must not be deleted"
 
 
@@ -604,16 +609,23 @@ def _fake_gh(
     monkeypatch,
     resolve_to = None,
     post_ok = True,
+    lookup_error = "",
 ):
     """Stand in for `gh`, recording every call. `resolve_to` is what
-    `repos/../commits/<sha>` answers; None means the commit is gone."""
+    `repos/../commits/<sha>` answers; None means the commit is gone, in the
+    words GitHub actually uses (a 422 "No commit found"); `lookup_error` is
+    what a lookup that could not be made says instead."""
     calls: list[list[str]] = []
 
     def _gh(args):
         calls.append(list(args))
         if "/commits/" in args[1]:
-            return (0, resolve_to) if resolve_to else (1, "")
-        return (0 if post_ok else 1, "")
+            if lookup_error:
+                return (1, "", lookup_error)
+            if resolve_to:
+                return (0, resolve_to, "")
+            return (1, "", "gh: No commit found for SHA: 2ecb19df (HTTP 422)")
+        return (0 if post_ok else 1, "", "")
 
     monkeypatch.setattr(post_statuses, "_gh", _gh)
     return calls
@@ -1081,3 +1093,34 @@ def test_pending_is_posted_only_for_a_kernel_that_was_actually_dispatched(path):
         s for _j, n, s in _steps(_wf(path)) if n == "Mark the dispatch pending on this commit"
     )
     assert step.get("if") == "steps.launch.outputs.verdict == 'dispatched'", step.get("if")
+
+
+def test_a_lookup_that_could_not_be_made_keeps_the_kernel(monkeypatch, capsys):
+    """Only GitHub saying the commit is not there releases a kernel. A 5xx, a
+    rate limit or a dropped connection says nothing about the commit, and
+    reading it as "gone" would delete the only copy of the result."""
+    calls = _fake_gh(monkeypatch, lookup_error = "gh: HTTP 503 Service Unavailable")
+    outcome = post_statuses.post_all([dict(_STATUS)], "unslothai/unsloth")
+    assert outcome["failed"] == [_STATUS["slug"]]
+    assert outcome["unresolved"] == []
+    assert not any("/statuses/" in c[1] for c in calls)
+    assert "Commit lookup failed" in capsys.readouterr().out
+
+
+def test_resolve_sha_separates_missing_from_unknown(monkeypatch):
+    """Measured: a commit that is not there answers HTTP 422 "No commit found
+    for SHA", not a 404. Anything else is an unknown, never a missing."""
+    answers = {}
+
+    def _gh(args):
+        return answers[args[1]]
+
+    monkeypatch.setattr(post_statuses, "_gh", _gh)
+    answers["repos/o/r/commits/aa"] = (0, "a" * 40, "")
+    answers["repos/o/r/commits/bb"] = (1, "", "gh: No commit found for SHA: bb (HTTP 422)")
+    answers["repos/o/r/commits/cc"] = (1, "", "gh: HTTP 502 Bad Gateway")
+    answers["repos/o/r/commits/dd"] = (1, "", "")
+    assert post_statuses.resolve_sha("o/r", "aa") == ("ok", "a" * 40)
+    assert post_statuses.resolve_sha("o/r", "bb") == ("missing", None)
+    assert post_statuses.resolve_sha("o/r", "cc") == ("error", None)
+    assert post_statuses.resolve_sha("o/r", "dd") == ("error", None)

@@ -385,14 +385,17 @@ def collect_one(
             record["reason"] = "another collector finished this kernel first"
             _log(f"{slug} was collected by another pass")
             return record
-        record["verdict"] = "infra"
+        # Kept, and NOT judged: the evidence is still up there and the next
+        # pass tries again. This is `pending` rather than `infra` on purpose.
+        # An `infra` verdict is posted as a green status and its kernel is
+        # released by --delete-collected, which would turn one transient
+        # listing failure into the permanent loss of a real result.
+        record["verdict"] = "pending"
         record["reason"] = (
-            f"the kernel finished but its evidence would not download ({type(exc).__name__})"
+            f"the kernel finished but its evidence would not download this pass "
+            f"({type(exc).__name__}); kept for the next one"
         )
         _log(f"could not collect {slug}: {type(exc).__name__}")
-        # NOT deleted. The evidence is still up there and the next pass can try
-        # again; deleting now would destroy the only copy of a finished run's
-        # result to save one session slot the kernel is no longer using.
         return record
 
     record["evidence"] = evidence

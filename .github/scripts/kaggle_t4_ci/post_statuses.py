@@ -46,22 +46,38 @@ STATES = ("error", "failure", "pending", "success")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _gh(args: list[str]) -> tuple[int, str]:
+def _gh(args: list[str]) -> tuple[int, str, str]:
     proc = subprocess.run(["gh", *args], capture_output = True, text = True)
-    return proc.returncode, (proc.stdout or "").strip()
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
-def resolve_sha(repo: str, sha: str) -> str | None:
-    """The full 40-character sha for an abbreviation, or None if the repository
-    no longer has that commit."""
-    code, out = _gh(["api", f"repos/{repo}/commits/{sha}", "-q", ".sha"])
-    if code != 0 or not FULL_SHA.match(out):
-        return None
-    return out
+# What GitHub says when the commit is genuinely not there, measured:
+#
+#     gh api repos/unslothai/unsloth/commits/deadbeef00
+#     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
+#
+# A 422 or 404 carrying that message is the only answer that releases the
+# kernel. Everything else a lookup can fail with (a 5xx, rate limiting, the
+# network) says nothing about the commit, and reading it as "gone" would
+# delete the only copy of the result behind a transient error.
+MISSING_MARKERS = ("no commit found", "http 404", "http 422")
+
+
+def resolve_sha(repo: str, sha: str) -> tuple[str, str | None]:
+    """``("ok", full_sha)``, ``("missing", None)`` when the repository no
+    longer has the commit, or ``("error", None)`` when the lookup itself
+    failed and nothing is known about the commit."""
+    code, out, err = _gh(["api", f"repos/{repo}/commits/{sha}", "-q", ".sha"])
+    if code == 0 and FULL_SHA.match(out):
+        return "ok", out
+    text = f"{out} {err}".lower()
+    if any(m in text for m in MISSING_MARKERS):
+        return "missing", None
+    return "error", None
 
 
 def post_one(repo: str, full_sha: str, status: dict) -> bool:
-    code, _ = _gh(
+    code, _out, _err = _gh(
         [
             "api",
             f"repos/{repo}/statuses/{full_sha}",
@@ -105,14 +121,21 @@ def post_all(statuses: list[dict], repo: str) -> dict:
             print(f"::warning title=Malformed status record::{why}; not posted")
             outcome["invalid"].extend(slugs)
             continue
-        full = resolve_sha(repo, status["sha"])
-        if full is None:
+        found, full = resolve_sha(repo, status["sha"])
+        if found == "missing":
             print(
                 f"::warning title=Could not resolve a collected commit::{status['sha']} is "
                 f"no longer a commit in this repository, so its {status['context']} result "
                 "cannot be posted. The kernel is released; nothing will ever post for it."
             )
             outcome["unresolved"].extend(slugs)
+            continue
+        if found != "ok":
+            print(
+                f"::warning title=Commit lookup failed::could not ask GitHub about "
+                f"{status['sha']} this pass; the kernel is kept so the next pass can try again"
+            )
+            outcome["failed"].extend(slugs)
             continue
         print(f"posting {status['context']}={status['state']} for {full}")
         if post_one(repo, full, status):
