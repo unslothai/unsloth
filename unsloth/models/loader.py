@@ -52,6 +52,17 @@ from .loader_utils import (
 )
 import os, contextlib, sys
 
+# Read ONCE, at import. `from_pretrained` below resets UNSLOTH_FORCE_FLOAT32 and
+# re-derives it for every load, so by the time the forced-float32 decision runs
+# the value the user set before importing unsloth is gone. unsloth_zoo gates its
+# gemma4_float32 patches on that same variable at IMPORT time, so a user who
+# set it already has the fp32 residual / fp16 sub-layer patches installed. The
+# loader has to take the forced path with them: left on the ordinary bf16 path,
+# the patched embedding hands an fp32 residual to bf16 projections and the
+# first matmul raises "expected mat1 and mat2 to have the same dtype, but got:
+# float != c10::BFloat16". Measured on unsloth/gemma-4-e2b-it-unsloth-bnb-4bit.
+_UNSLOTH_REQUESTED_FORCE_FLOAT32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+
 try:
     from huggingface_hub import get_token
 except:
@@ -1865,7 +1876,13 @@ class FastModel(FastBaseModel):
             if (
                 disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
                 or disable_name.lower() in model_types_all
-            ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+            ) and (
+                (dtype == torch.float16)
+                or not SUPPORTS_BFLOAT16
+                # An explicit request before import, whose patches are already
+                # installed; see _UNSLOTH_REQUESTED_FORCE_FLOAT32 at the top.
+                or _UNSLOTH_REQUESTED_FORCE_FLOAT32
+            ):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
