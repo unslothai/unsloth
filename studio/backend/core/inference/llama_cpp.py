@@ -21228,6 +21228,13 @@ class LlamaCppBackend:
                         "model_path": model_path,
                         "n_ctx": effective_ctx,
                         "n_threads": n_threads,
+                        # The micro-batch that LAUNCHES, after the Studio field, the
+                        # extras, LLAMA_ARG_UBATCH and the slot-dependent floor have
+                        # all had their say. The cost gate divides the spilled-weight
+                        # streaming cost by it, so scoring at the 512 default while
+                        # the child runs -ub 64 prices prefill eight times too cheap
+                        # and can return the opposite placement.
+                        "n_ubatch": _effective_ubatch,
                         # The slot count the KV and recurrent state were PRICED at.
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
@@ -26594,11 +26601,31 @@ class LlamaCppBackend:
         # Slots are SIZING, not placement, and these numbers were priced at Unsloth's
         # own --parallel. A pass-through is appended after it and llama.cpp is
         # last-wins, so a larger one grows the attention cache and the recurrent
-        # state under a deficit computed for the smaller count. Only larger matters:
-        # a smaller value leaves the plan over-reserved, the safe direction.
+        # state under a deficit computed for the smaller count.
+        #
+        # A SMALLER value used to be waved through as "over-reserved, the safe
+        # direction". That was true while the plan only had to be feasible: a
+        # cache reservation larger than the child's cannot OOM it. It stopped
+        # being true when the plan started being SCORED. ``kv_cache_bytes`` is
+        # measured at the priced slot count and reaches the planner as
+        # ``kv_bytes_floor``, and ``_fit_fallback_placement`` both consumes that
+        # floor and scales its moved live-cache term from it, while the -ot
+        # placement it is compared against carries no cache term at all. So an
+        # over-sized floor inflates exactly one arm: the fitter is modelled
+        # moving more layers than it will, and is charged Access.KV_CACHE on
+        # cache the child never allocates. The bias is one-directional -- every
+        # verdict it changes is a spill ACCEPTED over a fitter that beats it.
+        #
+        # It is not a rounding error either. ``_estimate_kv_cache_bytes`` folds
+        # ``_recurrent_state_bytes(n_parallel)`` into that figure, and that method
+        # scales linearly in the slot count, so on a Nemotron-H-shaped hybrid eight
+        # slots down to one is a 3.4x floor, and re-scoring the fallback at the
+        # count the child really gets turns four of a twenty-one budget sweep
+        # from SPILL to DECLINE. Nothing here can re-measure the cache for the
+        # new count, so decline, like every other pass-through this cannot price.
         priced_parallel = int(inputs.get("n_parallel") or 1)
         override_parallel = _extra_args_n_parallel(extra_args, source_env)
-        if override_parallel is not None and override_parallel > priced_parallel:
+        if override_parallel is not None and override_parallel != priced_parallel:
             logger.debug(
                 "Tensor spill: declined, --parallel %d overrides the %d slots this was priced at",
                 override_parallel,
@@ -26815,6 +26842,29 @@ class LlamaCppBackend:
                 # reserve. Both are in the footprint that produced the use_fit
                 # verdict, so omitting them makes the deficit too small.
                 extra_resident_bytes = extra_gpu_bytes,
+                # This is the only caller with somewhere else to go: declining
+                # here falls through to ``--fit on`` (see the fitting path
+                # below), so this is the one place a cost comparison can act on
+                # its answer. Everywhere else the planner is asked what it CAN
+                # place, which is a different question and keeps its old answer.
+                require_cost_win = True,
+                # Scored at the batch that launches, not the dataclass default:
+                # rank() amortises the spilled-weight stream over one ubatch, so
+                # a user who moved this knob would otherwise get the placement
+                # the gate predicted for 512 rather than the one for their value.
+                n_ubatch = (
+                    int(inputs["n_ubatch"])
+                    if int(inputs.get("n_ubatch") or 0) > 0
+                    else PlanOptions.n_ubatch
+                ),
+                # An --embedding server never decodes: llama-server returns the
+                # pooled embedding and stops, so there is no generation phase for
+                # a spill's generation advantage to be realised in. Scoring one
+                # anyway accepted spills purely on decode wins these requests can
+                # never collect. Prefill-only is the whole workload here.
+                workload_generated_tokens = (
+                    0 if self.is_embedding_gguf else PlanOptions.workload_generated_tokens
+                ),
                 # Spilled decode runs on the CPU backend (ggml migrates an op to the
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
